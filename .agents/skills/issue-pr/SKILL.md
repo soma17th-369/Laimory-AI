@@ -15,14 +15,19 @@ Use this skill to turn the current branch work into a rule-compliant commit and 
 - Do not commit unrelated user changes. Review changed files before staging.
 - Do not run destructive git commands.
 - If the branch has no `#<number>`, stop and ask for the issue number or correct branch.
-- If GitHub CLI is unavailable or unauthenticated, report the blocker and give the exact command the user needs to run.
+- Prefer `gh` CLI when it is installed and authenticated.
+- If `gh` is unavailable, use GitHub API with `GITHUB_TOKEN`.
+- Resolve `GITHUB_TOKEN` from the environment first. If it is missing, read `.env.local` in the repository root and parse a line like `GITHUB_TOKEN=...`.
+- Never print, commit, or include the token in logs, PR bodies, commit messages, or error output.
+- If neither `gh` nor a token is available, report the blocker and give the exact setup needed.
 
 ## Workflow
 
 1. Inspect branch and issue.
    - Run `git branch --show-current`.
    - Extract the issue number with `#(\d+)`.
-   - Run `gh issue view <number> --comments` to read the GitHub issue.
+   - Run `gh issue view <number> --comments` to read the GitHub issue when `gh` is available.
+   - If `gh` is unavailable, read the issue with `GET /repos/{owner}/{repo}/issues/{number}` using `GITHUB_TOKEN` from the environment or `.env.local`.
    - Determine the likely commit type from the branch prefix first: `feat`, `fix`, or `refactor`.
    - If branch prefix and issue template conflict, prefer the branch prefix and mention the mismatch.
 
@@ -59,7 +64,8 @@ Use this skill to turn the current branch work into a rule-compliant commit and 
    - Use `dev` as the base branch unless the user explicitly says otherwise.
    - Use the current branch as the head branch.
    - Push the branch if needed: `git push -u origin <current-branch>`.
-   - Create the PR with `gh pr create --base dev --head <current-branch>`.
+   - Create the PR with `gh pr create --base dev --head <current-branch>` when `gh` is available.
+   - If `gh` is unavailable, create the PR with GitHub API `POST /repos/{owner}/{repo}/pulls` using `GITHUB_TOKEN`.
    - PR title should follow the same convention as the commit message.
    - PR body should include:
      - linked issue: `Closes #<number>`
