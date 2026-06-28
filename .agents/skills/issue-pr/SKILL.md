@@ -1,118 +1,85 @@
 ---
 name: issue-pr
-description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해 변경 사항을 검토하고, 규칙에 맞는 커밋과 Pull Request를 생성하거나 갱신합니다.
+description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해 변경 사항을 검토하고, 규칙에 맞는 커밋과 Pull Request를 생성하거나 갱신합니다. 사용자가 현재 작업을 커밋하고 PR로 올리라고 요청할 때 사용합니다.
 ---
 
 # issue-pr
 
-현재 브랜치의 작업을 이슈와 연결된 커밋 및 Pull Request로 정리하는 스킬입니다.
+현재 브랜치 작업을 이슈와 연결된 커밋 및 Pull Request로 정리한다.
 
-## 기본 규칙
+## 핵심 규칙
 
-- 현재 브랜치명에서 `#<번호>` 패턴을 찾아 GitHub 이슈 번호로 사용한다.
-- 작업 브랜치는 `dev`에서 분기된 `feat/#33`, `fix/#25`, `refactor/#10` 같은 형식을 기준으로 한다.
-- 모든 사용자에게 보이는 커밋 메시지, PR 제목, PR 본문은 한글로 작성한다.
-- 커밋 메시지 형식은 반드시 `type : 한글 요약`을 사용한다. 예: `feat : 로그인 API 추가`
-- 변경 전에는 관련 파일과 diff를 읽고, 관련 없는 사용자 변경은 커밋하지 않는다.
-- 사용자가 명시하지 않은 삭제, `git reset`, `git checkout` 같은 파괴적 명령은 사용하지 않는다.
-- 브랜치명에 `#<번호>`가 없으면 작업을 중단하고 이슈 번호나 올바른 브랜치를 요청한다.
-- 기본 PR 대상 브랜치는 `dev`다. 사용자가 다른 base를 명시한 경우에만 바꾼다.
+- 현재 브랜치명에서 `#<번호>`를 추출해 GitHub 이슈 번호로 사용한다.
+- 기본 base 브랜치는 `dev`이며, 비교 범위는 `origin/dev..HEAD`다.
+- 커밋 메시지와 PR 제목은 `type : 한글 요약` 형식으로 작성한다.
+- PR 본문은 마지막 커밋 하나가 아니라 base 브랜치부터 현재 HEAD까지의 전체 누적 변경을 기준으로 작성한다.
+- 사용자에게 보이는 커밋 메시지, PR 제목, PR 본문, 결과 보고는 한글로 작성한다.
+- 관련 없는 staged 변경, 생성물, 캐시, 사용자가 만든 변경은 커밋에 섞지 않는다.
+- 사용자가 명시하지 않은 파일 삭제, `git reset`, `git checkout` 같은 파괴적 작업은 하지 않는다.
+- 토큰은 절대 출력, 커밋, PR 본문, 오류 보고에 포함하지 않는다.
 
-## GitHub 접근 규칙
+## 참고 자료와 스크립트
 
-- `gh` CLI가 설치되어 있고 인증되어 있으면 우선 사용한다.
-- `gh`가 없거나 사용할 수 없으면 GitHub API와 `GITHUB_TOKEN`을 사용한다.
-- `GITHUB_TOKEN`은 환경 변수에서 먼저 찾고, 없으면 저장소 루트의 `.env.local`에서 `GITHUB_TOKEN=...` 형식으로 읽는다.
-- 토큰은 절대 출력, 커밋, PR 본문, 커밋 메시지, 오류 보고에 포함하지 않는다.
-- Windows PowerShell에서 GitHub API로 한글 JSON을 보낼 때는 문자열 본문을 그대로 넘기지 말고 UTF-8 바이트로 전송한다.
-  - 권장 방식: `$json = $payload | ConvertTo-Json -Depth 10; $bytes = [System.Text.Encoding]::UTF8.GetBytes($json); Invoke-RestMethod ... -Body $bytes -ContentType 'application/json; charset=utf-8'`
-  - 이 규칙은 PR 제목과 본문이 `??`로 깨지는 문제를 막기 위한 필수 절차다.
-- GitHub API 호출이 네트워크 제한으로 실패하면 승인 요청을 통해 동일 작업을 다시 시도한다.
-- `gh`와 토큰을 모두 사용할 수 없으면 차단 사유와 필요한 설정을 정확히 보고한다.
+- PR 본문 템플릿: [references/pull-request-template.md](references/pull-request-template.md)
+- PR 자동화 헬퍼: [scripts/issue_pr.py](scripts/issue_pr.py)
+
+스크립트는 다음을 보장한다.
+
+- 현재 브랜치명에서 이슈 번호 추출
+- 원격 저장소 owner/repo 확인
+- `GITHUB_TOKEN` 환경 변수 또는 `.env.local` 토큰 사용
+- GitHub 이슈 조회
+- `origin/dev..HEAD` 기준 커밋 목록과 파일 변경 통계 수집
+- PR 템플릿 기반 본문 렌더링
+- 열린 PR이 있으면 갱신하고, 없으면 생성
+- GitHub API 요청을 UTF-8 JSON으로 전송해 한글 깨짐 방지
+
+## GitHub 토큰 준비
+
+- `gh` CLI가 없거나 인증되어 있지 않은 환경에서는 `GITHUB_TOKEN`이 필요하다.
+- 토큰은 GitHub Personal Access Token을 사용하고, 이 저장소의 이슈/PR을 읽고 쓸 수 있는 권한이 있어야 한다.
+- 우선순위는 환경 변수 `GITHUB_TOKEN`이 가장 높고, 없으면 저장소 루트의 `.env.local`에서 읽는다.
+- `.env.local`에는 아래처럼 한 줄로 저장한다.
+  - `GITHUB_TOKEN=ghp_xxx`
+- `.env.local`은 커밋하지 않는다. 이 저장소에서는 `.gitignore`에 포함되어 있어야 한다.
+- 토큰이 없으면 스크립트는 작업을 중단하고, 환경 변수 또는 `.env.local` 설정을 안내해야 한다.
+- 토큰 값은 어떤 출력에도 노출하지 않는다.
 
 ## 작업 절차
 
 1. 브랜치와 이슈를 확인한다.
-   - `git branch --show-current`로 현재 브랜치를 확인한다.
-   - 브랜치명에서 `#(\d+)`로 이슈 번호를 추출한다.
-   - `gh issue view <번호> --comments` 또는 GitHub API `GET /repos/{owner}/{repo}/issues/{번호}`로 이슈 내용을 읽는다.
-   - 브랜치 prefix가 `feat`, `fix`, `refactor` 중 하나면 커밋 타입은 이 값을 우선한다.
-   - 브랜치 prefix와 이슈 템플릿 성격이 다르면 브랜치 prefix를 우선하고, 결과 보고에 불일치를 남긴다.
+   - `python .agents/skills/issue-pr/scripts/issue_pr.py inspect --base dev`
+   - 스크립트 출력의 `branch`, `issue`, `commit_type`, `issue_title`, `commits`, `changed_files`를 확인한다.
+   - 브랜치명에 이슈 번호가 없거나 토큰을 찾지 못하면 중단하고 필요한 조치를 보고한다.
 
-2. 현재 작업 상태를 검토한다.
-   - `git status --short`로 변경 파일과 staged 상태를 확인한다.
-   - `git diff`와 필요한 경우 `git diff --cached`를 확인한다.
+2. 작업트리를 검토한다.
+   - `git status --short`와 `git diff`를 확인한다.
    - 이미 staged 된 변경도 사용자 작업일 수 있으므로 무조건 포함하지 않는다.
-   - 생성물, 캐시, 의존성 lockfile, 관련 없는 파일 삭제가 있으면 커밋 대상에서 제외하거나 사용자 확인을 받는다.
-   - focused test 또는 문서 변경 검증을 실행한다. 실행하지 못하면 PR 본문에 이유를 적는다.
+   - 관련 파일만 커밋 대상으로 고른다.
+   - 생성물과 캐시는 제외한다.
 
-3. PR에 들어갈 전체 변경 범위를 산정한다.
-   - PR 본문은 마지막 커밋 하나가 아니라 base 브랜치부터 현재 HEAD까지의 전체 누적 변경을 기준으로 작성한다.
-   - 기본 비교 범위는 `origin/dev..HEAD`다. 원격 정보가 낡았을 수 있으면 가능하면 `git fetch origin dev` 후 다시 계산한다.
-   - 다음 명령으로 전체 커밋과 파일 변경을 확인한다.
-     - `git log --oneline origin/dev..HEAD`
-     - `git diff --stat origin/dev..HEAD`
-     - 필요하면 `git diff --name-status origin/dev..HEAD`
-   - PR 요약에는 이 누적 범위에서 사용자에게 의미 있는 작업을 모두 반영한다.
-   - 중간 커밋 메시지에 깨진 한글이 있거나 내용이 부족하면 diff와 파일 내용을 기준으로 사람이 읽을 수 있는 한글 요약으로 재작성한다.
+3. 검증을 실행한다.
+   - 변경 범위에 맞는 focused test 또는 문서 검증을 실행한다.
+   - 문서/스킬 변경이면 최소한 `git diff --check -- <관련 파일>`을 실행한다.
+   - 실행하지 못한 검증은 PR 본문 `참고 사항`에 이유와 함께 남긴다.
 
 4. 커밋을 만든다.
-   - 관련 파일만 stage 한다. 이미 staged 된 관련 없는 변경은 건드리지 말고 `git commit --only -- <파일...>` 같은 방식으로 현재 커밋 대상에서 제외한다.
-   - 커밋 타입은 브랜치 prefix를 우선하고, 없으면 실제 변경에 따라 아래 기준으로 고른다.
-     - `feat`: 기능 추가
-     - `fix`: 버그 수정
-     - `docs`: 문서 변경
-     - `style`: 포맷팅만 변경
-     - `refactor`: 리팩토링
-     - `test`: 테스트 추가 또는 수정
-     - `chore`: 패키지, 설정, 기타 작업
-     - `design`: UI 디자인 또는 CSS 변경
-     - `comment`: 주석 추가 또는 수정
-     - `rename`: 파일 또는 폴더명 변경만 수행
-     - `remove`: 파일 또는 폴더 삭제만 수행
-   - 커밋 메시지는 `type : 한글 요약` 형식으로 짧게 작성한다.
+   - 브랜치 prefix가 `feat`, `fix`, `refactor` 중 하나면 커밋 타입은 이를 우선한다.
+   - 그 외에는 실제 변경에 따라 `docs`, `style`, `test`, `chore`, `design`, `comment`, `rename`, `remove` 중 고른다.
+   - 메시지는 `type : 한글 요약` 형식으로 작성한다.
+   - 관련 파일만 stage 하거나 `git commit --only -- <파일...>`로 커밋 범위를 제한한다.
 
-5. PR을 생성하거나 갱신한다.
-   - 브랜치가 원격에 없거나 뒤처져 있으면 `git push -u origin <현재-브랜치>`로 push 한다.
-   - 이미 열린 PR이 있는지 먼저 확인한다.
-     - `gh pr view --json url,number,title,body` 또는 GitHub API `GET /repos/{owner}/{repo}/pulls?head={owner}:{branch}&base=dev&state=open`
-   - 열린 PR이 있으면 새 PR을 만들지 말고 제목과 본문을 갱신한다.
-   - 열린 PR이 없으면 PR을 새로 만든다.
-   - PR 제목은 커밋 메시지 형식과 동일하게 `type : 한글 요약`으로 작성한다.
-   - PR 본문은 반드시 저장소의 PR 템플릿 형식을 따른다.
+5. PR 본문을 준비한다.
+   - `origin/dev..HEAD` 전체 커밋과 diff 통계를 다시 확인한다.
+   - 아래 명령으로 템플릿 기반 PR 본문 초안을 만든다.
+     - `python .agents/skills/issue-pr/scripts/issue_pr.py render --base dev --checks "<실행한 검증>" --excluded "<제외한 변경>"`
+   - 초안의 `작업 사항`이 전체 브랜치 변경을 반영하는지 확인하고, 필요하면 더 구체적인 한글 요약을 `--summary`로 넘긴다.
 
-## Pull Request 템플릿
-
-PR 본문은 아래 형식을 유지한다. 항목이 없으면 `없음`이라고 적는다.
-
-```markdown
-## 관련 이슈
-<!-- 해결한 문제를 지정하는 Issue Index에 연결해야 합니다. -->
-
-- Resolves : #<이슈번호>
-
-## 작업 사항
-<!-- 해당 Pull Request에서 수행한 작업 목록을 제시해야 합니다. -->
-
-- <origin/dev..HEAD 전체 변경 기준 작업 1>
-- <origin/dev..HEAD 전체 변경 기준 작업 2>
-
-## DB 변경 사항
-<!-- 작업 사항이 DB에 영향이 있는 작업이라면 변경 사항을 적어야 합니다. -->
-
-없음
-
-## 참고 사항
-<!-- 기능을 만들기 위해 다른사람들이 참고해야할 사항을 적습니다. -->
-
-- 테스트/체크: <실행한 명령 또는 Not run과 사유>
-- 제외한 변경: <커밋에서 제외한 생성물 또는 관련 없는 변경>
-
-## 변경된 API
-<!-- 프론트엔드 개발자와 공유하기 위해 텔레그램을 통해 공유될 API 변동사항을 적습니다. ex) [API description](명세서 링크) -->
-
-없음
-```
+6. PR을 생성하거나 갱신한다.
+   - 브랜치를 원격에 push한다.
+   - 아래 명령으로 열린 PR을 갱신하거나 새 PR을 만든다.
+     - `python .agents/skills/issue-pr/scripts/issue_pr.py upsert --base dev --title "type : 한글 요약" --checks "<실행한 검증>" --excluded "<제외한 변경>"`
+   - 이미 열린 PR이 있으면 새 PR을 만들지 않고 제목과 본문을 갱신한다.
 
 ## 이슈 템플릿 해석 기준
 
