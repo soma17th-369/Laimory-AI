@@ -15,6 +15,10 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
 - 현재 브랜치명에서 `#<번호>`를 추출해 GitHub 이슈 번호로 사용한다.
 - 기본 base 브랜치는 `dev`이며, 비교 범위는 `origin/dev..HEAD`다.
 - 커밋 메시지와 PR 제목은 `type : 한글 요약` 형식으로 작성한다.
+- PR 제목은 기본적으로 연결된 GitHub 이슈 제목을 그대로 사용한다.
+- 세부 작업을 추가로 명시해야 하면 `이슈 제목 : 추가작업` 형식으로 작성한다.
+- PR assignee는 항상 현재 GitHub token 사용자로 지정한다.
+- PR label은 이슈 제목을 기준으로 `feature`, `refactor`, `bug` 중 하나를 자동 지정한다.
 - PR 본문은 마지막 커밋 하나가 아니라 base 브랜치부터 현재 HEAD까지의 전체 누적 변경을 기준으로 작성한다.
 - 사용자에게 보이는 커밋 메시지, PR 제목, PR 본문, 결과 보고는 한글로 작성한다.
 - 관련 없는 staged 변경, 생성물, 캐시, 사용자가 만든 변경은 커밋에 섞지 않는다.
@@ -47,6 +51,9 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
 - `origin/dev..HEAD` 기준 커밋 목록과 파일 변경 통계 수집
 - PR 템플릿 기반 본문 렌더링
 - 열린 PR이 있으면 갱신하고, 없으면 생성
+- PR 제목을 이슈 제목 기준으로 지정
+- 현재 GitHub token 사용자를 PR assignee로 지정
+- 이슈 제목 기준으로 `feature`, `refactor`, `bug` label 지정
 - GitHub API 요청을 UTF-8 JSON으로 전송해 한글 깨짐 방지
 
 ## 네트워크 승인 최소화
@@ -109,8 +116,11 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
 6. PR을 생성하거나 갱신한다.
    - 브랜치를 원격에 push한다.
    - 아래 명령 한 번으로 열린 PR을 갱신하거나 새 PR을 만든다.
-     - `python .agents/skills/issue-pr/scripts/issue_pr.py finish --base dev --title "type : 한글 요약" --checks "<실행한 검증>" --excluded "<제외한 변경>"`
+     - `python .agents/skills/issue-pr/scripts/issue_pr.py finish --base dev --checks "<실행한 검증>" --excluded "<제외한 변경>"`
+   - 추가 작업을 PR 제목에 명시해야 하면 `--title-extra "<추가작업>"`를 사용한다.
+   - `--title`은 수동 override가 반드시 필요할 때만 사용한다.
    - 이미 열린 PR이 있으면 새 PR을 만들지 않고 제목과 본문을 갱신한다.
+   - PR 생성/갱신 후 현재 GitHub token 사용자를 assignee로 지정하고, 이슈 제목 기준 label을 붙인다.
 
 ## 이슈 템플릿 해석 기준
 

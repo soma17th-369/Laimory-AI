@@ -122,11 +122,46 @@ def issue(owner, repo, number):
     return api("GET", f"/repos/{owner}/{repo}/issues/{number}")
 
 
+def viewer_login():
+    return api("GET", "/user")["login"]
+
+
 def open_pr(owner, repo, head_owner, branch_name, base):
     encoded_head = urllib.parse.quote(f"{head_owner}:{branch_name}", safe="")
     encoded_base = urllib.parse.quote(base, safe="")
     prs = api("GET", f"/repos/{owner}/{repo}/pulls?head={encoded_head}&base={encoded_base}&state=open")
     return prs[0] if prs else None
+
+
+def label_from_issue_title(title, branch_name):
+    normalized = (title or "").lower()
+    if "bug" in normalized or "버그" in normalized:
+        return "bug"
+    if "refactor" in normalized or "리팩터" in normalized or "리팩토" in normalized:
+        return "refactor"
+    if "feature" in normalized or "feat" in normalized or "기능" in normalized:
+        return "feature"
+
+    prefix = commit_type(branch_name)
+    if prefix == "feat":
+        return "feature"
+    if prefix == "fix":
+        return "bug"
+    if prefix == "refactor":
+        return "refactor"
+    return None
+
+
+def pr_title(issue_title, extra):
+    if not extra:
+        return issue_title
+    return f"{issue_title} : {extra}"
+
+
+def update_issue_metadata(owner, repo, pr_number, assignee, label):
+    api("PATCH", f"/repos/{owner}/{repo}/issues/{pr_number}", {"assignees": [assignee]})
+    if label:
+        api("POST", f"/repos/{owner}/{repo}/issues/{pr_number}/labels", {"labels": [label]})
 
 
 def default_work_items(base):
@@ -195,11 +230,10 @@ def cmd_upsert(args):
     branch_name = branch()
     number = issue_number(branch_name)
     owner, repo = repo_slug()
+    issue_data = issue(owner, repo, number)
     pr_body = render_body(args)
-    title = args.title
-    if not title:
-        issue_data = issue(owner, repo, number)
-        title = f"{commit_type(branch_name) or 'chore'} : {issue_data.get('title', f'이슈 #{number} 처리')}"
+    issue_title = issue_data.get("title") or f"이슈 #{number} 처리"
+    title = args.title or pr_title(issue_title, args.title_extra)
 
     existing = open_pr(owner, repo, owner, branch_name, args.base)
     payload = {"title": title, "body": pr_body}
@@ -208,7 +242,16 @@ def cmd_upsert(args):
     else:
         payload.update({"head": branch_name, "base": args.base})
         pr = api("POST", f"/repos/{owner}/{repo}/pulls", payload)
-    print(json.dumps({"number": pr["number"], "url": pr["html_url"], "title": pr["title"]}, ensure_ascii=False))
+    assignee = viewer_login()
+    label = label_from_issue_title(issue_title, branch_name)
+    update_issue_metadata(owner, repo, pr["number"], assignee, label)
+    print(json.dumps({
+        "number": pr["number"],
+        "url": pr["html_url"],
+        "title": pr["title"],
+        "assignee": assignee,
+        "label": label,
+    }, ensure_ascii=False))
 
 
 def cmd_finish(args):
@@ -239,12 +282,14 @@ def build_parser():
 
     upsert = sub.add_parser("upsert", help="열린 PR 갱신 또는 새 PR 생성")
     add_body_args(upsert)
-    upsert.add_argument("--title", required=True)
+    upsert.add_argument("--title", help="PR 제목을 직접 지정. 생략하면 이슈 제목을 그대로 사용")
+    upsert.add_argument("--title-extra", help="이슈 제목 뒤에 ': 추가작업' 형식으로 붙일 세부 작업")
     upsert.set_defaults(func=cmd_upsert)
 
     finish = sub.add_parser("finish", help="GitHub API 호출을 한 번으로 모아 열린 PR 갱신 또는 새 PR 생성")
     add_body_args(finish)
-    finish.add_argument("--title", required=True)
+    finish.add_argument("--title", help="PR 제목을 직접 지정. 생략하면 이슈 제목을 그대로 사용")
+    finish.add_argument("--title-extra", help="이슈 제목 뒤에 ': 추가작업' 형식으로 붙일 세부 작업")
     finish.set_defaults(func=cmd_finish)
     return parser
 
