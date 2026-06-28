@@ -162,9 +162,11 @@ def issue_project_ids(owner, repo, number):
       }
     }
     """
-    result = graphql(query, {"owner": owner, "repo": repo, "number": number})
+    result = graphql(query, {"owner": owner, "repo": repo, "number": number}, allow_errors=True)
+    if result.get("errors"):
+        return [], result["errors"]
     nodes = result["data"]["repository"]["issue"]["projectItems"]["nodes"]
-    return [{"id": node["project"]["id"], "title": node["project"]["title"]} for node in nodes]
+    return [{"id": node["project"]["id"], "title": node["project"]["title"]} for node in nodes], []
 
 
 def add_to_project(project_id, content_id):
@@ -194,11 +196,14 @@ def update_issue_metadata(owner, repo, pr_number, assignee, labels):
 
 def copy_issue_projects_to_pr(owner, repo, issue_number_value, pr_node_id):
     copied = []
-    for project in issue_project_ids(owner, repo, issue_number_value):
+    projects, errors = issue_project_ids(owner, repo, issue_number_value)
+    if errors:
+        return copied, errors
+    for project in projects:
         result = add_to_project(project["id"], pr_node_id)
         if not result.get("errors"):
             copied.append(project["title"])
-    return copied
+    return copied, []
 
 
 def default_work_items(base):
@@ -282,7 +287,7 @@ def cmd_upsert(args):
     assignee = viewer_login()
     labels = issue_labels(issue_data)
     update_issue_metadata(owner, repo, pr["number"], assignee, labels)
-    projects = copy_issue_projects_to_pr(owner, repo, number, pr["node_id"])
+    projects, project_errors = copy_issue_projects_to_pr(owner, repo, number, pr["node_id"])
     print(json.dumps({
         "number": pr["number"],
         "url": pr["html_url"],
@@ -290,6 +295,7 @@ def cmd_upsert(args):
         "assignee": assignee,
         "labels": labels,
         "projects": projects,
+        "project_errors": project_errors,
     }, ensure_ascii=False))
 
 

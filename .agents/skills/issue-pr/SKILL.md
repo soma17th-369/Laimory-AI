@@ -20,6 +20,7 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
 - PR assignee는 항상 현재 GitHub token 사용자로 지정한다.
 - PR labels는 연결된 GitHub 이슈에 이미 지정된 labels를 그대로 사용한다.
 - PR projects는 연결된 GitHub 이슈가 들어 있는 Projects V2를 그대로 사용한다.
+- Projects V2 조회/추가는 token 권한이 부족할 수 있으므로, 실패하면 PR 갱신은 유지하고 권한 오류를 결과에 보고한다.
 - PR 본문은 마지막 커밋 하나가 아니라 base 브랜치부터 현재 HEAD까지의 전체 누적 변경을 기준으로 작성한다.
 - 사용자에게 보이는 커밋 메시지, PR 제목, PR 본문, 결과 보고는 한글로 작성한다.
 - 관련 없는 staged 변경, 생성물, 캐시, 사용자가 만든 변경은 커밋에 섞지 않는다.
@@ -71,6 +72,7 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
 
 - `gh` CLI가 없거나 인증되어 있지 않은 환경에서는 `GITHUB_TOKEN`이 필요하다.
 - 토큰은 GitHub Personal Access Token을 사용하고, 이 저장소의 이슈/PR을 읽고 쓸 수 있는 권한이 있어야 한다.
+- 연결된 이슈의 Projects V2까지 PR에 복사하려면 token에 Projects 접근 권한도 필요하다.
 - 우선순위는 환경 변수 `GITHUB_TOKEN`이 가장 높고, 없으면 저장소 루트의 `.env.local`에서 읽는다.
 - `.env.local`에는 아래처럼 한 줄로 저장한다.
   - `GITHUB_TOKEN=ghp_xxx`
@@ -125,6 +127,7 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
    - PR 생성/갱신 후 현재 GitHub token 사용자를 assignee로 지정한다.
    - 연결된 이슈에 이미 지정된 labels를 PR에 그대로 붙인다.
    - 연결된 이슈가 포함된 Projects V2에 PR도 추가한다.
+   - Projects V2 권한이 부족하면 PR 갱신은 실패로 보지 않고, projects 복사 실패 사유를 결과에 보고한다.
 
 ## 이슈 템플릿 해석 기준
 
