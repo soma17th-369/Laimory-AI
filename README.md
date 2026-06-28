@@ -116,7 +116,7 @@ OPENAI_API_KEY=your-api-key
 터미널에서 직접 실행할 경우:
 
 ```bash
-uv run uvicorn app.main:app --reload
+uv run uvicorn app.server:app --reload
 ```
 
 실행 후 아래 주소에서 확인할 수 있습니다.
@@ -242,7 +242,7 @@ OK → Apply → OK
 
 ```text
 1. uv sync
-2. uvicorn app.main:app --reload
+2. uvicorn app.server:app --reload
 ```
 
 ---
