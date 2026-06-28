@@ -33,5 +33,5 @@ uv run uvicorn app.server:app --reload
 ## 스킬 공유
 
 - Codex용 프로젝트 스킬 원본은 `.agents/skills/` 아래에 둡니다.
-- Claude 쪽에서 공유할 때는 `.claude/skills/`가 같은 원본을 바라보도록 구성합니다.
-- 경로 문자열만 들어 있는 파일은 실제 디렉터리 링크가 아닐 수 있으니, 링크 여부는 `LinkType` 또는 `Attributes`로 확인합니다.
+- Claude 쪽에서 공유할 때는 `.agents/skills/` 내용을 `.claude/skills/`로 복사해 동기화합니다.
+- `.claude/skills/`는 링크가 아니라 복사본이며, 필요할 때 `scripts/link-skills.ps1` 또는 `scripts/link-skills.sh`를 다시 실행해 갱신합니다.
