@@ -18,7 +18,8 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
 - PR 제목은 기본적으로 연결된 GitHub 이슈 제목을 그대로 사용한다.
 - 세부 작업을 추가로 명시해야 하면 `이슈 제목 : 추가작업` 형식으로 작성한다.
 - PR assignee는 항상 현재 GitHub token 사용자로 지정한다.
-- PR label은 이슈 제목을 기준으로 `feature`, `refactor`, `bug` 중 하나를 자동 지정한다.
+- PR labels는 연결된 GitHub 이슈에 이미 지정된 labels를 그대로 사용한다.
+- PR projects는 연결된 GitHub 이슈가 들어 있는 Projects V2를 그대로 사용한다.
 - PR 본문은 마지막 커밋 하나가 아니라 base 브랜치부터 현재 HEAD까지의 전체 누적 변경을 기준으로 작성한다.
 - 사용자에게 보이는 커밋 메시지, PR 제목, PR 본문, 결과 보고는 한글로 작성한다.
 - 관련 없는 staged 변경, 생성물, 캐시, 사용자가 만든 변경은 커밋에 섞지 않는다.
@@ -53,7 +54,8 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
 - 열린 PR이 있으면 갱신하고, 없으면 생성
 - PR 제목을 이슈 제목 기준으로 지정
 - 현재 GitHub token 사용자를 PR assignee로 지정
-- 이슈 제목 기준으로 `feature`, `refactor`, `bug` label 지정
+- 연결된 이슈의 labels를 PR에 그대로 지정
+- 연결된 이슈의 Projects V2에 PR도 추가
 - GitHub API 요청을 UTF-8 JSON으로 전송해 한글 깨짐 방지
 
 ## 네트워크 승인 최소화
@@ -120,7 +122,9 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
    - 추가 작업을 PR 제목에 명시해야 하면 `--title-extra "<추가작업>"`를 사용한다.
    - `--title`은 수동 override가 반드시 필요할 때만 사용한다.
    - 이미 열린 PR이 있으면 새 PR을 만들지 않고 제목과 본문을 갱신한다.
-   - PR 생성/갱신 후 현재 GitHub token 사용자를 assignee로 지정하고, 이슈 제목 기준 label을 붙인다.
+   - PR 생성/갱신 후 현재 GitHub token 사용자를 assignee로 지정한다.
+   - 연결된 이슈에 이미 지정된 labels를 PR에 그대로 붙인다.
+   - 연결된 이슈가 포함된 Projects V2에 PR도 추가한다.
 
 ## 이슈 템플릿 해석 기준
 

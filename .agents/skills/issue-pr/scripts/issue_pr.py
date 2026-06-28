@@ -80,6 +80,14 @@ def api(method, path, payload=None):
         raise SystemExit(f"GitHub API 연결 실패: {exc.reason}") from exc
 
 
+def graphql(query, variables=None, allow_errors=False):
+    payload = {"query": query, "variables": variables or {}}
+    result = api("POST", "/graphql", payload)
+    if result.get("errors") and not allow_errors:
+        raise SystemExit(f"GitHub GraphQL 실패: {json.dumps(result['errors'], ensure_ascii=False)}")
+    return result
+
+
 def branch():
     return run_git(["branch", "--show-current"])
 
@@ -133,23 +141,43 @@ def open_pr(owner, repo, head_owner, branch_name, base):
     return prs[0] if prs else None
 
 
-def label_from_issue_title(title, branch_name):
-    normalized = (title or "").lower()
-    if "bug" in normalized or "버그" in normalized:
-        return "bug"
-    if "refactor" in normalized or "리팩터" in normalized or "리팩토" in normalized:
-        return "refactor"
-    if "feature" in normalized or "feat" in normalized or "기능" in normalized:
-        return "feature"
+def issue_labels(issue_data):
+    return [label["name"] for label in issue_data.get("labels", [])]
 
-    prefix = commit_type(branch_name)
-    if prefix == "feat":
-        return "feature"
-    if prefix == "fix":
-        return "bug"
-    if prefix == "refactor":
-        return "refactor"
-    return None
+
+def issue_project_ids(owner, repo, number):
+    query = """
+    query($owner: String!, $repo: String!, $number: Int!) {
+      repository(owner: $owner, name: $repo) {
+        issue(number: $number) {
+          projectItems(first: 20) {
+            nodes {
+              project {
+                id
+                title
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+    result = graphql(query, {"owner": owner, "repo": repo, "number": number})
+    nodes = result["data"]["repository"]["issue"]["projectItems"]["nodes"]
+    return [{"id": node["project"]["id"], "title": node["project"]["title"]} for node in nodes]
+
+
+def add_to_project(project_id, content_id):
+    mutation = """
+    mutation($projectId: ID!, $contentId: ID!) {
+      addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+        item {
+          id
+        }
+      }
+    }
+    """
+    return graphql(mutation, {"projectId": project_id, "contentId": content_id}, allow_errors=True)
 
 
 def pr_title(issue_title, extra):
@@ -158,10 +186,19 @@ def pr_title(issue_title, extra):
     return f"{issue_title} : {extra}"
 
 
-def update_issue_metadata(owner, repo, pr_number, assignee, label):
+def update_issue_metadata(owner, repo, pr_number, assignee, labels):
     api("PATCH", f"/repos/{owner}/{repo}/issues/{pr_number}", {"assignees": [assignee]})
-    if label:
-        api("POST", f"/repos/{owner}/{repo}/issues/{pr_number}/labels", {"labels": [label]})
+    if labels:
+        api("POST", f"/repos/{owner}/{repo}/issues/{pr_number}/labels", {"labels": labels})
+
+
+def copy_issue_projects_to_pr(owner, repo, issue_number_value, pr_node_id):
+    copied = []
+    for project in issue_project_ids(owner, repo, issue_number_value):
+        result = add_to_project(project["id"], pr_node_id)
+        if not result.get("errors"):
+            copied.append(project["title"])
+    return copied
 
 
 def default_work_items(base):
@@ -243,14 +280,16 @@ def cmd_upsert(args):
         payload.update({"head": branch_name, "base": args.base})
         pr = api("POST", f"/repos/{owner}/{repo}/pulls", payload)
     assignee = viewer_login()
-    label = label_from_issue_title(issue_title, branch_name)
-    update_issue_metadata(owner, repo, pr["number"], assignee, label)
+    labels = issue_labels(issue_data)
+    update_issue_metadata(owner, repo, pr["number"], assignee, labels)
+    projects = copy_issue_projects_to_pr(owner, repo, number, pr["node_id"])
     print(json.dumps({
         "number": pr["number"],
         "url": pr["html_url"],
         "title": pr["title"],
         "assignee": assignee,
-        "label": label,
+        "labels": labels,
+        "projects": projects,
     }, ensure_ascii=False))
 
 
