@@ -18,6 +18,16 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
 - 사용자가 명시하지 않은 파일 삭제, `git reset`, `git checkout` 같은 파괴적 작업은 하지 않는다.
 - 토큰은 절대 출력, 커밋, PR 본문, 오류 보고에 포함하지 않는다.
 
+## 남은 diff 처리 원칙
+
+- `$issue-pr`가 호출되면 현재 작업트리에 남아 있는 code diff를 최대한 커밋으로 정리하는 것을 기본 목표로 한다.
+- `git status --short`, `git diff`, `git diff --cached`를 기준으로 staged/unstaged/untracked 변경을 모두 확인한다.
+- 이슈 범위와 명확히 관련 있는 변경은 가능한 한 포함한다.
+- 관련 여부가 애매하지만 사용자가 "남은 diff 전부 처리", "승인한 내용"처럼 명시했으면 생성물까지 포함해 모두 커밋 대상으로 본다.
+- 명백한 비밀 값, 로컬 환경 파일, 의존성 캐시처럼 저장소에 들어가면 안 되는 파일은 제외하고 이유를 보고한다.
+- 여러 성격의 변경이 섞여 있으면 의미 있는 단위로 커밋을 나누되, 작은 잔여 diff는 하나의 정리 커밋으로 묶어도 된다.
+- 이미 staged 된 삭제나 추가도 사용자 승인 변경으로 간주하되, diff를 읽고 깨진 문서/명백한 실수는 커밋 전에 바로잡는다.
+
 ## 참고 자료와 스크립트
 
 - PR 본문 템플릿: [references/pull-request-template.md](references/pull-request-template.md)
@@ -55,8 +65,9 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
 2. 작업트리를 검토한다.
    - `git status --short`와 `git diff`를 확인한다.
    - 이미 staged 된 변경도 사용자 작업일 수 있으므로 무조건 포함하지 않는다.
-   - 관련 파일만 커밋 대상으로 고른다.
-   - 생성물과 캐시는 제외한다.
+   - unstaged, staged, untracked 변경을 모두 확인하고 남은 code diff를 최대한 커밋 대상으로 정리한다.
+   - 이슈와 무관하거나 저장소에 들어가면 안 되는 파일만 제외한다.
+   - 사용자가 남은 diff 전체 처리를 승인했으면 생성물과 캐시도 제외하지 말고 포함 여부를 명시적으로 판단한다.
 
 3. 검증을 실행한다.
    - 변경 범위에 맞는 focused test 또는 문서 검증을 실행한다.
@@ -67,7 +78,8 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
    - 브랜치 prefix가 `feat`, `fix`, `refactor` 중 하나면 커밋 타입은 이를 우선한다.
    - 그 외에는 실제 변경에 따라 `docs`, `style`, `test`, `chore`, `design`, `comment`, `rename`, `remove` 중 고른다.
    - 메시지는 `type : 한글 요약` 형식으로 작성한다.
-   - 관련 파일만 stage 하거나 `git commit --only -- <파일...>`로 커밋 범위를 제한한다.
+   - 남은 diff가 모두 승인된 변경이면 `git add -A`로 전체 반영한다.
+   - 일부만 포함해야 하면 관련 파일만 stage 하거나 `git commit --only -- <파일...>`로 커밋 범위를 제한한다.
 
 5. PR 본문을 준비한다.
    - `origin/dev..HEAD` 전체 커밋과 diff 통계를 다시 확인한다.
