@@ -4,5 +4,4 @@
 .uv-cache/
 __pycache__/
 *.py[cod]
-.claude/skills/
 .openai-docs-cache/
