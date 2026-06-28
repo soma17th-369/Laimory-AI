@@ -173,7 +173,7 @@ def cmd_inspect(args):
     branch_name = branch()
     number = issue_number(branch_name)
     owner, repo = repo_slug()
-    issue_data = issue(owner, repo, number)
+    issue_data = {} if args.local else issue(owner, repo, number)
     data = {
         "branch": branch_name,
         "issue": number,
@@ -211,6 +211,10 @@ def cmd_upsert(args):
     print(json.dumps({"number": pr["number"], "url": pr["html_url"], "title": pr["title"]}, ensure_ascii=False))
 
 
+def cmd_finish(args):
+    cmd_upsert(args)
+
+
 def add_body_args(subparser):
     subparser.add_argument("--base", default="dev")
     subparser.add_argument("--summary", help="작업 사항. 여러 항목은 | 로 구분")
@@ -226,6 +230,7 @@ def build_parser():
 
     inspect = sub.add_parser("inspect", help="브랜치, 이슈, 전체 변경 범위 확인")
     inspect.add_argument("--base", default="dev")
+    inspect.add_argument("--local", action="store_true", help="GitHub API 호출 없이 로컬 Git 정보만 확인")
     inspect.set_defaults(func=cmd_inspect)
 
     render = sub.add_parser("render", help="PR 템플릿 기반 본문 출력")
@@ -236,6 +241,11 @@ def build_parser():
     add_body_args(upsert)
     upsert.add_argument("--title", required=True)
     upsert.set_defaults(func=cmd_upsert)
+
+    finish = sub.add_parser("finish", help="GitHub API 호출을 한 번으로 모아 열린 PR 갱신 또는 새 PR 생성")
+    add_body_args(finish)
+    finish.add_argument("--title", required=True)
+    finish.set_defaults(func=cmd_finish)
     return parser
 
 

@@ -9,6 +9,9 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
 
 ## 핵심 규칙
 
+- `$issue-pr`가 명시적으로 호출되었을 때만 커밋, push, PR 생성/갱신을 수행한다.
+- 일반적인 파일 수정, 스킬 개선, 코드 변경 요청을 처리하는 중에는 자동으로 커밋하거나 PR을 갱신하지 않는다.
+- 사용자가 최종적으로 `$issue-pr`를 호출하면 그때까지 쌓인 변경을 모아서 처리한다.
 - 현재 브랜치명에서 `#<번호>`를 추출해 GitHub 이슈 번호로 사용한다.
 - 기본 base 브랜치는 `dev`이며, 비교 범위는 `origin/dev..HEAD`다.
 - 커밋 메시지와 PR 제목은 `type : 한글 요약` 형식으로 작성한다.
@@ -21,6 +24,8 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
 ## 남은 diff 처리 원칙
 
 - `$issue-pr`가 호출되면 현재 작업트리에 남아 있는 code diff를 최대한 커밋으로 정리하는 것을 기본 목표로 한다.
+- 변경이 생길 때마다 즉시 커밋하지 않는다. 관련 작업이 끝났거나 사용자가 `$issue-pr`를 호출한 시점에 한 번에 정리한다.
+- 작은 변경 여러 개는 의미 있는 단위로 묶어 커밋 수를 줄인다.
 - `git status --short`, `git diff`, `git diff --cached`를 기준으로 staged/unstaged/untracked 변경을 모두 확인한다.
 - 이슈 범위와 명확히 관련 있는 변경은 가능한 한 포함한다.
 - 관련 여부가 애매하지만 사용자가 "남은 diff 전부 처리", "승인한 내용"처럼 명시했으면 생성물까지 포함해 모두 커밋 대상으로 본다.
@@ -44,6 +49,15 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
 - 열린 PR이 있으면 갱신하고, 없으면 생성
 - GitHub API 요청을 UTF-8 JSON으로 전송해 한글 깨짐 방지
 
+## 네트워크 승인 최소화
+
+- 기본 확인은 `inspect --local`로 수행해 GitHub API를 호출하지 않는다.
+- GitHub API 호출은 PR 생성/갱신 직전 `finish` 명령 한 번으로 모은다.
+- 네트워크 승인이 필요하면 `python .agents\skills\issue-pr\scripts\issue_pr.py finish ...` 형태로 한 번만 요청한다.
+- 승인 요청 시 가능한 경우 `prefix_rule`은 `["python", ".agents\\skills\\issue-pr\\scripts\\issue_pr.py"]`로 제안해 이후 같은 스크립트의 GitHub API 호출을 반복 승인 없이 처리한다.
+- `git push`는 별도 Git 명령이므로 이미 승인된 `["git", "push"]` prefix를 사용한다.
+- `inspect` 또는 `upsert`를 여러 번 나눠 호출해 네트워크 승인을 반복하지 않는다.
+
 ## GitHub 토큰 준비
 
 - `gh` CLI가 없거나 인증되어 있지 않은 환경에서는 `GITHUB_TOKEN`이 필요하다.
@@ -57,9 +71,14 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
 
 ## 작업 절차
 
+0. 실행 조건을 확인한다.
+   - 이 스킬은 사용자가 `$issue-pr` 또는 같은 의미의 명시적 PR 요청을 했을 때만 실행한다.
+   - 단순 수정 요청 중에는 이 스킬 절차를 시작하지 않는다.
+   - 스킬이나 코드 수정 직후에도 자동 커밋/PR 갱신을 하지 않고, 사용자가 `$issue-pr`를 다시 호출할 때까지 기다린다.
+
 1. 브랜치와 이슈를 확인한다.
-   - `python .agents/skills/issue-pr/scripts/issue_pr.py inspect --base dev`
-   - 스크립트 출력의 `branch`, `issue`, `commit_type`, `issue_title`, `commits`, `changed_files`를 확인한다.
+   - `python .agents/skills/issue-pr/scripts/issue_pr.py inspect --local --base dev`
+   - 스크립트 출력의 `branch`, `issue`, `commit_type`, `commits`, `changed_files`를 확인한다.
    - 브랜치명에 이슈 번호가 없거나 토큰을 찾지 못하면 중단하고 필요한 조치를 보고한다.
 
 2. 작업트리를 검토한다.
@@ -89,8 +108,8 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
 
 6. PR을 생성하거나 갱신한다.
    - 브랜치를 원격에 push한다.
-   - 아래 명령으로 열린 PR을 갱신하거나 새 PR을 만든다.
-     - `python .agents/skills/issue-pr/scripts/issue_pr.py upsert --base dev --title "type : 한글 요약" --checks "<실행한 검증>" --excluded "<제외한 변경>"`
+   - 아래 명령 한 번으로 열린 PR을 갱신하거나 새 PR을 만든다.
+     - `python .agents/skills/issue-pr/scripts/issue_pr.py finish --base dev --title "type : 한글 요약" --checks "<실행한 검증>" --excluded "<제외한 변경>"`
    - 이미 열린 PR이 있으면 새 PR을 만들지 않고 제목과 본문을 갱신한다.
 
 ## 이슈 템플릿 해석 기준
