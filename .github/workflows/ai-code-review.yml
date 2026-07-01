@@ -1,0 +1,40 @@
+name: AI Code Review
+
+# PR 이 열리거나 커밋이 추가될 때 AI 가 코드 리뷰를 남긴다.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# 기본 GITHUB_TOKEN 으로 PR 리뷰를 게시하려면 write 권한이 필요하다.
+permissions:
+  contents: read
+  pull-requests: write
+
+# 같은 PR 에 새 커밋이 올라오면 이전 리뷰 실행은 취소한다.
+concurrency:
+  group: ai-code-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: pip install openai
+
+      - name: Run AI code review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MODEL: gpt-4o-mini
+        run: python .github/scripts/ai_review.py
