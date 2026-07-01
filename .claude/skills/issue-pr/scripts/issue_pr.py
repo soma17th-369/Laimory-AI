@@ -42,15 +42,17 @@ def github_token():
     value = os.environ.get("GITHUB_TOKEN")
     if value:
         return value.strip()
-    env_local = ROOT / ".env.local"
-    if env_local.exists():
-        for line in env_local.read_text(encoding="utf-8").splitlines():
+    for env_name in (".env", ".env.local"):
+        env_file = ROOT / env_name
+        if not env_file.exists():
+            continue
+        for line in env_file.read_text(encoding="utf-8").splitlines():
             if line.startswith("GITHUB_TOKEN="):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
     raise SystemExit(
         "GITHUB_TOKEN을 찾을 수 없습니다. 환경 변수 GITHUB_TOKEN을 설정하거나 "
-        "저장소 루트의 .env.local에 GITHUB_TOKEN=ghp_xxx 형식으로 추가하세요. "
-        ".env.local은 커밋하지 마세요."
+        "저장소 루트의 .env에 GITHUB_TOKEN=ghp_xxx 형식으로 추가하세요. "
+        ".env은 커밋하지 마세요."
     )
 
 

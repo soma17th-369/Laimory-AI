@@ -25,8 +25,8 @@ GitHub 이슈를 받아 **실행계획을 세우고**, 사용자와 **대화하�
 
 ## GitHub 토큰 준비
 
-- `GITHUB_TOKEN` 환경 변수가 가장 우선이고, 없으면 저장소 루트의 `.env.local`에서 읽는다.
-- `.env.local`에는 `GITHUB_TOKEN=ghp_xxx` 한 줄로 저장하고 커밋하지 않는다.
+- `GITHUB_TOKEN` 환경 변수가 가장 우선이고, 없으면 저장소 루트의 `.env`에서 읽는다.
+- `.env`에는 `GITHUB_TOKEN=ghp_xxx` 한 줄로 저장하고 커밋하지 않는다.
 - 토큰이 없으면 스크립트가 중단하고 설정 방법을 안내한다. 토큰 값은 어떤 출력에도 노출하지 않는다.
 
 ## 작업 절차
@@ -101,6 +101,6 @@ python .agents/skills/issue-work/scripts/issue_work.py fetch
 
 - 명령 인자(`--issue`) 또는 현재 브랜치명에서 이슈 번호 결정
 - 원격 저장소 owner/repo 확인
-- `GITHUB_TOKEN` 환경 변수 또는 `.env.local` 토큰 사용
+- `GITHUB_TOKEN` 환경 변수 또는 `.env` 토큰 사용
 - GitHub 이슈 본문, 상태, 타입, labels, assignees, 하위 이슈 조회
 - GitHub API 응답을 UTF-8로 처리해 한글 깨짐 방지

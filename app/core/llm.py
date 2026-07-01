@@ -1,0 +1,213 @@
+"""LLM 클라이언트.
+
+여러 LLM provider(OpenAI, Gemini 등)를 공통 인터페이스(`LLMProvider`)로 감싼다.
+사용할 provider 는 `settings.llm_provider` 로 결정하며, `LLMClient` 를 통해
+provider 종류와 무관하게 동일한 방식으로 호출한다.
+
+새 provider 추가 방법:
+1. `app/core/config.py` 에 `{name}_api_key`, `{name}_model` 필드를 추가한다.
+2. 아래에 `LLMProvider` 를 상속한 클래스를 만들고 `@register_provider` 로 등록한다.
+   (`name` 클래스 변수와 `_build_client`, `complete` 만 구현하면 된다.)
+"""
+
+from abc import ABC, abstractmethod
+from functools import lru_cache
+
+from app.core.config import settings
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
+
+# provider 이름 -> provider 클래스 레지스트리
+_PROVIDERS: dict[str, type["LLMProvider"]] = {}
+
+
+def register_provider(cls: type["LLMProvider"]) -> type["LLMProvider"]:
+    """provider 클래스를 레지스트리에 등록하는 데코레이터."""
+
+    _PROVIDERS[cls.name] = cls
+    return cls
+
+
+class LLMProvider(ABC):
+    """모든 LLM provider 가 구현하는 공통 인터페이스.
+
+    자격 증명(`api_key`)과 모델(`model`)은 `settings` 에서
+    `{name}_api_key` / `{name}_model` 규칙으로 읽는다.
+    """
+
+    # 하위 클래스에서 반드시 지정한다. (예: "openai", "gemini")
+    name: str = ""
+
+    def __init__(self, model: str | None = None) -> None:
+        self.api_key: str = getattr(settings, f"{self.name}_api_key", "")
+        self.model: str = model or getattr(settings, f"{self.name}_model", "")
+
+        if not self.api_key:
+            raise ValueError(
+                f"{self.name.upper()}_API_KEY 가 설정되지 않았습니다. .env 를 확인하세요."
+            )
+        if not self.model:
+            raise ValueError(
+                f"{self.name.upper()}_MODEL 이 설정되지 않았습니다. .env 를 확인하세요."
+            )
+
+        self.client = self._build_client()
+
+    @abstractmethod
+    def _build_client(self):
+        """provider SDK 클라이언트를 생성해 반환한다."""
+
+    @abstractmethod
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> str:
+        """단일 프롬프트에 대한 응답 텍스트를 반환한다."""
+
+
+@register_provider
+class OpenAIProvider(LLMProvider):
+    """OpenAI Chat Completions provider."""
+
+    name = "openai"
+
+    def _build_client(self):
+        from openai import OpenAI
+
+        return OpenAI(api_key=self.api_key)
+
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> str:
+        messages: list[dict[str, str]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=temperature,
+            **kwargs,
+        )
+        return response.choices[0].message.content or ""
+
+
+@register_provider
+class GeminiProvider(LLMProvider):
+    """Google Gemini provider (google-genai SDK)."""
+
+    name = "gemini"
+
+    def _build_client(self):
+        from google import genai
+
+        return genai.Client(api_key=self.api_key)
+
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> str:
+        from google.genai import types
+
+        config = types.GenerateContentConfig(
+            system_instruction=system,
+            temperature=temperature,
+            **kwargs,
+        )
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config=config,
+        )
+        return response.text or ""
+
+
+def available_providers() -> list[str]:
+    """등록된 provider 이름 목록을 반환한다."""
+
+    return sorted(_PROVIDERS)
+
+
+@lru_cache
+def get_provider(name: str | None = None) -> LLMProvider:
+    """provider 인스턴스(싱글턴)를 반환한다.
+
+    Args:
+        name: provider 이름. 생략하면 `settings.llm_provider` 를 사용한다.
+    """
+
+    provider_name = (name or settings.llm_provider).lower()
+    provider_cls = _PROVIDERS.get(provider_name)
+    if provider_cls is None:
+        raise ValueError(
+            f"지원하지 않는 LLM provider: '{provider_name}'. "
+            f"사용 가능: {available_providers()}"
+        )
+    return provider_cls()
+
+
+class LLMClient:
+    """설정된 provider 를 사용하는 공통 LLM 클라이언트(facade).
+
+    provider 종류와 무관하게 `complete()` 로 동일하게 호출한다.
+    """
+
+    def __init__(self, provider: str | None = None, model: str | None = None) -> None:
+        if model is None:
+            # 기본 모델 사용 시 provider 싱글턴을 재사용한다.
+            self.provider = get_provider(provider)
+        else:
+            # 모델을 명시하면 해당 모델로 새 provider 인스턴스를 만든다.
+            provider_name = (provider or settings.llm_provider).lower()
+            provider_cls = _PROVIDERS.get(provider_name)
+            if provider_cls is None:
+                raise ValueError(
+                    f"지원하지 않는 LLM provider: '{provider_name}'. "
+                    f"사용 가능: {available_providers()}"
+                )
+            self.provider = provider_cls(model=model)
+
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> str:
+        """단일 프롬프트에 대한 응답 텍스트를 반환한다.
+
+        Args:
+            prompt: 사용자 프롬프트.
+            system: 시스템 프롬프트(선택).
+            temperature: 샘플링 온도.
+            **kwargs: 각 provider SDK 로 그대로 전달되는 추가 인자.
+        """
+
+        logger.debug(
+            "LLM 호출: provider=%s, model=%s, temperature=%s",
+            self.provider.name,
+            self.provider.model,
+            temperature,
+        )
+        return self.provider.complete(
+            prompt,
+            system=system,
+            temperature=temperature,
+            **kwargs,
+        )

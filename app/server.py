@@ -1,30 +1,27 @@
-import os
-
 import uvicorn
-from dotenv import load_dotenv
 from fastapi import FastAPI
-from rich import print
 
-load_dotenv()
+from app.api.v1.router import router as v1_router
+from app.core.config import settings
+from app.core.logging import get_logger
 
-app_env = os.getenv("APP_ENV")
-openai_api_key = os.getenv("OPENAI_API_KEY")
+logger = get_logger(__name__)
 
 app = FastAPI()
+app.include_router(v1_router)
 
+logger.info("서버 초기화 완료 (APP_ENV=%s)", settings.app_env)
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-
 @app.get("/debug/env")
 def debug_env():
     return {
-        "APP_ENV": app_env,
-        "OPENAI_API_KEY_EXISTS": openai_api_key is not None,
+        "APP_ENV": settings.app_env,
+        "OPENAI_API_KEY_EXISTS": bool(settings.openai_api_key),
     }
 
-
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host=settings.server_host, port=settings.server_port)
