@@ -133,6 +133,8 @@ pyproject.toml 수정
 ```env
 APP_ENV=local
 LOG_LEVEL=INFO
+SERVER_HOST=127.0.0.1
+SERVER_PORT=8000
 
 # 사용할 LLM provider (openai | gemini)
 LLM_PROVIDER=openai
@@ -157,6 +159,9 @@ GEMINI_MODEL=gemini-2.5-flash
 ```bash
 uv run uvicorn app.server:app --reload
 ```
+
+`python -m app.server`처럼 모듈을 직접 실행하는 경우에는 `.env`의
+`SERVER_HOST`, `SERVER_PORT` 값이 사용됩니다.
 
 실행 후 아래 주소에서 확인할 수 있습니다.
 
@@ -222,7 +227,7 @@ Script path:
 .venv/Scripts/uvicorn.exe
 
 Parameters:
-app.main:app --reload
+app.server:app --reload
 
 Working directory:
 $ProjectFileDir$

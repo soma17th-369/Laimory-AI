@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     # 로그 레벨 (DEBUG / INFO / WARNING / ERROR)
     log_level: str
 
+    # 직접 실행 시 uvicorn 바인딩 설정
+    server_host: str = "127.0.0.1"
+    server_port: int = 8000
+
     # 사용할 LLM provider (openai | gemini | ... )
     llm_provider: str
 
