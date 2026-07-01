@@ -48,7 +48,7 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
 
 - 현재 브랜치명에서 이슈 번호 추출
 - 원격 저장소 owner/repo 확인
-- `GITHUB_TOKEN` 환경 변수 또는 `.env.local` 토큰 사용
+- `GITHUB_TOKEN` 환경 변수 또는 `.env` 토큰 사용
 - GitHub 이슈 조회
 - `origin/dev..HEAD` 기준 커밋 목록과 파일 변경 통계 수집
 - PR 템플릿 기반 본문 렌더링
@@ -73,11 +73,11 @@ description: 현재 브랜치명의 #번호를 GitHub 이슈 번호로 사용해
 - `gh` CLI가 없거나 인증되어 있지 않은 환경에서는 `GITHUB_TOKEN`이 필요하다.
 - 토큰은 GitHub Personal Access Token을 사용하고, 이 저장소의 이슈/PR을 읽고 쓸 수 있는 권한이 있어야 한다.
 - 연결된 이슈의 Projects V2까지 PR에 복사하려면 token에 Projects 접근 권한도 필요하다.
-- 우선순위는 환경 변수 `GITHUB_TOKEN`이 가장 높고, 없으면 저장소 루트의 `.env.local`에서 읽는다.
-- `.env.local`에는 아래처럼 한 줄로 저장한다.
+- 우선순위는 환경 변수 `GITHUB_TOKEN`이 가장 높고, 없으면 저장소 루트의 `.env`에서 읽는다.
+- `.env`에는 아래처럼 한 줄로 저장한다.
   - `GITHUB_TOKEN=ghp_xxx`
-- `.env.local`은 커밋하지 않는다. 이 저장소에서는 `.gitignore`에 포함되어 있어야 한다.
-- 토큰이 없으면 스크립트는 작업을 중단하고, 환경 변수 또는 `.env.local` 설정을 안내해야 한다.
+- `.env`은 커밋하지 않는다. 이 저장소에서는 `.gitignore`에 포함되어 있어야 한다.
+- 토큰이 없으면 스크립트는 작업을 중단하고, 환경 변수 또는 `.env` 설정을 안내해야 한다.
 - 토큰 값은 어떤 출력에도 노출하지 않는다.
 
 ## 작업 절차
