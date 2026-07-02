@@ -1,0 +1,135 @@
+{
+  "transactionId": "txn_2026-06-30_hs_001",
+  "date": "2026-06-30",
+  "mode": "FULL_DAY",
+  "window": {
+    "start": 1782745200000,
+    "end": 1782831600000
+  },
+  "generatedAt": 1782913996259,
+  "location": {
+    "stays": [
+      {
+        "sourceId": "loc_stay_001",
+        "sourceType": "location_stay",
+        "source": "live",
+        "lat": 37.1538856,
+        "lon": 127.0781832,
+        "startTime": 1782771955976,
+        "endTime": 1782784620150,
+        "durationSec": 12664
+      }
+    ],
+    "routes": [
+      {
+        "sourceId": "loc_route_001",
+        "sourceType": "location_route",
+        "source": "live",
+        "startTime": 1782784620150,
+        "endTime": 1782790357503,
+        "durationSec": 5737,
+        "distanceMeters": 58137.19626077128,
+        "points": [
+          {
+            "lat": 37.1538856,
+            "lon": 127.0781832
+          },
+          {
+            "lat": 37.1516441,
+            "lon": 127.0765969
+          }
+        ]
+      }
+    ]
+  },
+  "notifications": {
+    "active": [],
+    "collected": [
+      {
+        "sourceId": "noti_001",
+        "sourceType": "notification",
+        "packageName": "com.kakao.talk",
+        "appName": "카카오톡",
+        "title": "권용하",
+        "text": "쉐에에엣",
+        "postTime": 1782831527081,
+        "collectedAt": 1782831527402
+      }
+    ]
+  },
+  "photos": [
+    {
+      "sourceId": "photo_001",
+      "sourceType": "photo",
+      "id": "photo_id",
+      "uri": "content://media/external/images/media/12345",
+      "dateTaken": 1782790550000,
+      "lat": 37.5321,
+      "lon": 126.9624,
+      "width": 4032,
+      "height": 3024,
+      "mimeType": "image/jpeg"
+    }
+  ],
+  "calendar": {
+    "events": [
+      {
+        "sourceId": "cal_001",
+        "sourceType": "calendar_event",
+        "title": "ASM 발대식",
+        "startTime": 1782786600000,
+        "endTime": 1782806400000,
+        "location": "용산 서울드래곤시티",
+        "description": "일정 설명"
+      }
+    ]
+  },
+  "health": {
+    "steps": {
+      "sourceId": "health_steps_001",
+      "sourceType": "health_steps",
+      "count": 10145
+    },
+    "sleep": {
+      "sourceId": "health_sleep_001",
+      "sourceType": "health_sleep",
+      "startTime": 1782759600000,
+      "endTime": 1782772200000,
+      "durationMinutes": 210
+    },
+    "totalCaloriesBurned": {
+      "sourceId": "health_total_cal_001",
+      "sourceType": "health_total_calories",
+      "kcal": 1564.5
+    },
+    "activeCaloriesBurned": {
+      "sourceId": "health_active_cal_001",
+      "sourceType": "health_active_calories",
+      "kcal": 0.0
+    },
+    "distance": {
+      "sourceId": "health_distance_001",
+      "sourceType": "health_distance",
+      "meters": 0.0
+    },
+    "heartRate": {
+      "sourceId": "health_heart_rate_001",
+      "sourceType": "health_heart_rate",
+      "samples": [
+        {
+          "time": 1782790000000,
+          "bpm": 80
+        }
+      ]
+    }
+  },
+  "userMemory": {
+    "선호": {
+      "카페": "조용한 곳 선호",
+      "운동": "저녁 러닝"
+    },
+    "관계": {
+      "권용하": "친구"
+    }
+  }
+}
