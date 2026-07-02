@@ -1,0 +1,73 @@
+[
+  {
+    "eventType": "MOVEMENT",
+    "timeRange": {
+      "startTime": "2026-06-20T10:10:00+09:00",
+      "endTime": "2026-06-20T11:00:00+09:00"
+    },
+    "title": "집에서 학교로 이동",
+    "description": "위치 로그를 바탕으로 집에서 경북대학교까지 이동한 것으로 추정됩니다.",
+    "sourceRefs": [{ "sourceType": "LOCATION", "sourceId": "movement-log-001" }],
+    "confidence": 0.86,
+    "inferenceLevel": "EVIDENCE_BASED",
+    "uncertainty": ["이동 수단은 GPS 속도와 이동 경로를 바탕으로 추정되었습니다."]
+  },
+  {
+    "eventType": "STAY",
+    "timeRange": {
+      "startTime": "2026-06-20T11:00:00+09:00",
+      "endTime": "2026-06-20T18:00:00+09:00"
+    },
+    "title": "경북대학교 체류",
+    "description": "위치 기록상 경북대학교 부근에 머문 것으로 보입니다.",
+    "sourceRefs": [{ "sourceType": "LOCATION", "sourceId": "stay-log-001" }],
+    "confidence": 0.82,
+    "inferenceLevel": "EVIDENCE_BASED",
+    "uncertainty": ["구체적인 활동은 위치 데이터만으로 확정할 수 없습니다."]
+  },
+  {
+    "eventType": "CALENDAR_EVENT",
+    "timeRange": {
+      "startTime": "2026-06-20T12:30:00+09:00",
+      "endTime": "2026-06-20T13:30:00+09:00"
+    },
+    "title": "김종찬 멘토링",
+    "description": "캘린더에 등록된 일정입니다.",
+    "sourceRefs": [{ "sourceType": "CALENDAR", "sourceId": "calendar-event-001" }],
+    "confidence": 0.95,
+    "inferenceLevel": "DIRECT",
+    "uncertainty": ["일정이 존재하지만 실제 참석 여부는 다른 근거와 함께 확인해야 합니다."]
+  },
+  {
+    "eventType": "PHOTO_MOMENT",
+    "timeRange": {
+      "startTime": "2026-06-20T17:15:00+09:00",
+      "endTime": "2026-06-20T17:15:00+09:00"
+    },
+    "title": "저녁 사진",
+    "description": "음식 사진이 촬영되었습니다.",
+    "sourceRefs": [{ "sourceType": "PHOTO", "sourceId": "photo-001" }],
+    "confidence": 0.9,
+    "inferenceLevel": "DIRECT",
+    "uncertainty": ["사진만으로 식사 전체 시간이나 동행자는 확정할 수 없습니다."]
+  },
+  {
+    "eventType": "MEAL",
+    "timeRange": {
+      "startTime": "2026-06-20T17:00:00+09:00",
+      "endTime": "2026-06-20T18:00:00+09:00"
+    },
+    "title": "저녁 식사(추정)",
+    "description": "음식점 부근 체류와 음식 사진을 근거로 저녁 식사 후보로 둡니다. 동행자·메뉴는 단정하지 않습니다.",
+    "sourceRefs": [
+      { "sourceType": "LOCATION", "sourceId": "stay-log-001" },
+      { "sourceType": "PHOTO", "sourceId": "photo-001" }
+    ],
+    "confidence": 0.58,
+    "inferenceLevel": "UNCERTAIN",
+    "uncertainty": [
+      "위치 체류만으로는 식사 여부를 확정할 수 없습니다.",
+      "음식 사진 촬영 장소와 실제 식사 장소가 다를 수 있습니다."
+    ]
+  }
+]
