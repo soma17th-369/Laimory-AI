@@ -1,0 +1,266 @@
+{
+  "userId": "user-1234",
+  "date": "2026-06-30",
+  "timezone": "Asia/Seoul",
+  "events": [
+    {
+      "clientEventId": "event-001",
+      "eventType": "SLEEP",
+      "title": "수면",
+      "description": "건강 데이터의 수면 기록을 바탕으로 생성된 이벤트입니다.",
+      "startTime": "2026-06-30T04:00:00+09:00",
+      "endTime": "2026-06-30T07:30:00+09:00",
+      "confidence": 0.9,
+      "inferenceLevel": "DIRECT",
+      "sourceRefs": [
+        {
+          "sourceType": "SLEEP",
+          "sourceId": "health-sleep-001"
+        }
+      ],
+      "uncertainty": [
+        "수면 단계는 0단계로만 제공되어 세부 수면 품질은 판단하지 않았습니다."
+      ]
+    },
+    {
+      "clientEventId": "event-002",
+      "eventType": "STAY",
+      "title": "오전 체류",
+      "description": "위치 기록상 07:25부터 10:57까지 같은 장소에 머문 것으로 보입니다.",
+      "startTime": "2026-06-30T07:25:55.976000+09:00",
+      "endTime": "2026-06-30T10:57:00.150000+09:00",
+      "confidence": 0.82,
+      "inferenceLevel": "EVIDENCE_BASED",
+      "sourceRefs": [
+        {
+          "sourceType": "LOCATION",
+          "sourceId": "location-stay-001"
+        }
+      ],
+      "uncertainty": [
+        "장소명은 좌표만으로 확정하지 않았습니다."
+      ]
+    },
+    {
+      "clientEventId": "event-003",
+      "eventType": "MOVEMENT",
+      "title": "용산 방향 이동",
+      "description": "오전 체류지에서 용산 서울드래곤시티 인근으로 약 58.1km 이동한 기록입니다.",
+      "startTime": "2026-06-30T10:57:00.150000+09:00",
+      "endTime": "2026-06-30T12:32:37.503000+09:00",
+      "confidence": 0.86,
+      "inferenceLevel": "EVIDENCE_BASED",
+      "sourceRefs": [
+        {
+          "sourceType": "LOCATION",
+          "sourceId": "location-route-001"
+        }
+      ],
+      "uncertainty": [
+        "이동 수단은 위치 경로와 거리만으로 확정하지 않았습니다."
+      ]
+    },
+    {
+      "clientEventId": "event-004",
+      "eventType": "CALENDAR_EVENT",
+      "title": "ASM 발대식 참석",
+      "description": "캘린더 일정, 서울드래곤시티 인근 체류 기록, 행사 시간대 사진들을 병합해 생성한 이벤트입니다.",
+      "startTime": "2026-06-30T12:30:00+09:00",
+      "endTime": "2026-06-30T18:01:30.711000+09:00",
+      "confidence": 0.93,
+      "inferenceLevel": "EVIDENCE_BASED",
+      "sourceRefs": [
+        {
+          "sourceType": "CALENDAR",
+          "sourceId": "calendar-1026"
+        },
+        {
+          "sourceType": "LOCATION",
+          "sourceId": "location-stay-002"
+        },
+        {
+          "sourceType": "PHOTO",
+          "sourceId": "photo-1000010496"
+        },
+        {
+          "sourceType": "PHOTO",
+          "sourceId": "photo-1000010497"
+        },
+        {
+          "sourceType": "PHOTO",
+          "sourceId": "photo-1000010499"
+        },
+        {
+          "sourceType": "PHOTO",
+          "sourceId": "photo-1000010502"
+        },
+        {
+          "sourceType": "PHOTO",
+          "sourceId": "photo-1000010503"
+        },
+        {
+          "sourceType": "PHOTO",
+          "sourceId": "photo-1000010506"
+        },
+        {
+          "sourceType": "PHOTO",
+          "sourceId": "photo-1000010520"
+        }
+      ],
+      "uncertainty": [
+        "캘린더 종료 시각은 18:00이고 위치 체류 종료는 18:01:30으로 약간 차이가 있습니다.",
+        "일부 KakaoTalk/Download 사진은 촬영 위치 또는 촬영 시각 신뢰도가 낮아 보조 근거로만 사용했습니다."
+      ]
+    },
+    {
+      "clientEventId": "event-005",
+      "eventType": "MOVEMENT",
+      "title": "행사장 인근 이동",
+      "description": "18:01부터 18:15까지 서울드래곤시티 인근에서 약 272m 이동한 기록입니다.",
+      "startTime": "2026-06-30T18:01:30.711000+09:00",
+      "endTime": "2026-06-30T18:15:30.733000+09:00",
+      "confidence": 0.78,
+      "inferenceLevel": "EVIDENCE_BASED",
+      "sourceRefs": [
+        {
+          "sourceType": "LOCATION",
+          "sourceId": "location-route-002"
+        }
+      ],
+      "uncertainty": [
+        "짧은 이동이라 실제 목적지는 확정하지 않았습니다."
+      ]
+    },
+    {
+      "clientEventId": "event-006",
+      "eventType": "PHOTO_MOMENT",
+      "title": "행사 후 사진 촬영",
+      "description": "행사장 인근 체류와 18:18, 19:03 사진 metadata를 바탕으로 생성한 이벤트입니다.",
+      "startTime": "2026-06-30T18:15:30.733000+09:00",
+      "endTime": "2026-06-30T19:03:25.061000+09:00",
+      "confidence": 0.82,
+      "inferenceLevel": "EVIDENCE_BASED",
+      "sourceRefs": [
+        {
+          "sourceType": "LOCATION",
+          "sourceId": "location-stay-003"
+        },
+        {
+          "sourceType": "PHOTO",
+          "sourceId": "photo-1000010508"
+        },
+        {
+          "sourceType": "PHOTO",
+          "sourceId": "photo-1000010511"
+        }
+      ],
+      "uncertainty": [
+        "19:03 사진은 위치 체류 종료 시각 19:01 이후 약 2분 뒤라 같은 맥락으로 병합했습니다."
+      ]
+    },
+    {
+      "clientEventId": "event-007",
+      "eventType": "PHOTO_MOMENT",
+      "title": "저녁 사진 촬영",
+      "description": "21:37과 21:44에 첫 번째 체류지와 가까운 좌표에서 촬영된 사진을 바탕으로 생성한 이벤트입니다.",
+      "startTime": "2026-06-30T21:37:08.221000+09:00",
+      "endTime": "2026-06-30T21:44:23.684000+09:00",
+      "confidence": 0.68,
+      "inferenceLevel": "UNCERTAIN",
+      "sourceRefs": [
+        {
+          "sourceType": "PHOTO",
+          "sourceId": "photo-1000010512"
+        },
+        {
+          "sourceType": "PHOTO",
+          "sourceId": "photo-1000010517"
+        }
+      ],
+      "uncertainty": [
+        "19:03 이후 21:37까지의 위치 기록이 없어 실제 이동 및 체류 구간을 복원할 수 없습니다.",
+        "사진 metadata상 좌표는 오전 체류지와 가깝지만 해당 시간대 위치 stay가 없습니다."
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "questionId": "question-001",
+      "timeRange": {
+        "startTime": "2026-06-30T19:03:25.061000+09:00",
+        "endTime": "2026-06-30T21:37:08.221000+09:00"
+      },
+      "question": "19:03 이후 21:37 이전에 용산에서 오전 체류지 근처로 이동했나요?",
+      "reason": "19:03 행사장 인근 사진 이후 위치 이동 기록이 없고, 21:37 사진은 오전 체류지와 가까운 좌표를 가집니다.",
+      "relatedEventIds": [
+        "event-006",
+        "event-007"
+      ]
+    },
+    {
+      "questionId": "question-002",
+      "timeRange": {
+        "startTime": "2026-06-30T21:57:46+09:00",
+        "endTime": "2026-06-30T21:57:50+09:00"
+      },
+      "question": "21:57에 추가된 KakaoTalk 사진 2장은 실제 촬영 이벤트인가요, 아니면 저장/다운로드된 이미지인가요?",
+      "reason": "두 사진 모두 위치 정보가 없고 하나는 dateTaken이 0이며, KakaoTalk bucket에 저장된 이미지입니다.",
+      "relatedEventIds": [
+        "event-007"
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "warningId": "warning-001",
+      "severity": "MEDIUM",
+      "message": "원본 location/photo/calendar 항목에 sourceId가 없어 예상 출력에서는 location-stay-001, photo-1000010497 같은 샘플용 sourceId를 생성했습니다.",
+      "sourceRefs": []
+    },
+    {
+      "warningId": "warning-002",
+      "severity": "MEDIUM",
+      "message": "알림 데이터가 4,672건으로 매우 많고 대부분 카카오톡 알림이라, 개별 생활 이벤트로 만들지 않고 품질 참고 데이터로만 보았습니다.",
+      "sourceRefs": [
+        {
+          "sourceType": "NOTIFICATION",
+          "sourceId": "notifications-2026-06-30"
+        }
+      ]
+    },
+    {
+      "warningId": "warning-003",
+      "severity": "LOW",
+      "message": "건강 데이터의 걸음 수는 10,145보로 확인되지만 이동 거리 summary가 0.0m로 표시되어 위치 이동 거리와 직접 병합하지 않았습니다.",
+      "sourceRefs": [
+        {
+          "sourceType": "ACTIVITY",
+          "sourceId": "health-steps-001"
+        },
+        {
+          "sourceType": "ACTIVITY",
+          "sourceId": "health-distance-001"
+        }
+      ]
+    },
+    {
+      "warningId": "warning-004",
+      "severity": "LOW",
+      "message": "일부 사진은 dateTaken이 0이거나 GPS 좌표가 없어 촬영 이벤트 근거로 쓰기 어렵습니다.",
+      "sourceRefs": [
+        {
+          "sourceType": "PHOTO",
+          "sourceId": "photo-1000010496"
+        },
+        {
+          "sourceType": "PHOTO",
+          "sourceId": "photo-1000010519"
+        },
+        {
+          "sourceType": "PHOTO",
+          "sourceId": "photo-1000010520"
+        }
+      ]
+    }
+  ]
+}

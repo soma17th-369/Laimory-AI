@@ -36,6 +36,14 @@ from app.schemas.health import (
 from app.schemas.location import LocationData, LocationRoute, LocationStay
 from app.schemas.notification import NotificationData, NotificationItem
 from app.schemas.photo import PhotoItem
+from app.schemas.timeline import (
+    TimelineDraft,
+    TimelineDraftEvent,
+    TimelineEventDraft,
+    TimelineQuestion,
+    TimelineWarning,
+    TimelineWarningSeverity,
+)
 from app.schemas.timeline_request import TimelineDraftRequest, TimeWindow
 from app.schemas.user_memory import UserMemory
 
@@ -71,7 +79,13 @@ __all__ = [
     "StepsData",
     "TimeRange",
     "TimeWindow",
+    "TimelineDraft",
+    "TimelineDraftEvent",
     "TimelineDraftRequest",
+    "TimelineEventDraft",
+    "TimelineQuestion",
+    "TimelineWarning",
+    "TimelineWarningSeverity",
     "TotalCaloriesData",
     "UserMemory",
 ]

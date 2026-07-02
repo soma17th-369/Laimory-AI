@@ -1,0 +1,284 @@
+{
+  "date": "2026-06-30",
+  "mode": "FULL_DAY",
+  "window": {
+    "start": 1782745200000,
+    "end": 1782831600000
+  },
+  "generatedAt": 1782913996259,
+  "health": [
+    {
+      "label": "걸음 수",
+      "permissionGranted": true,
+      "error": null,
+      "rows": [
+        {
+          "time": "06-30 00:00 ~ 07-01 00:00",
+          "summary": "10145 보"
+        }
+      ]
+    },
+    {
+      "label": "이동 거리",
+      "permissionGranted": true,
+      "error": null,
+      "rows": [
+        {
+          "time": "06-30 00:00 ~ 07-01 00:00",
+          "summary": "0.0 m"
+        }
+      ]
+    },
+    {
+      "label": "소모 칼로리(활동)",
+      "permissionGranted": true,
+      "error": null,
+      "rows": [
+        {
+          "time": "06-30 00:00 ~ 07-01 00:00",
+          "summary": "0.0 kcal"
+        }
+      ]
+    },
+    {
+      "label": "소모 칼로리(총)",
+      "permissionGranted": true,
+      "error": null,
+      "rows": [
+        {
+          "time": "06-30 00:00 ~ 07-01 00:00",
+          "summary": "1564.5 kcal"
+        }
+      ]
+    },
+    {
+      "label": "올라간 층수",
+      "permissionGranted": true,
+      "error": null,
+      "rows": [
+        {
+          "time": "06-30 00:00 ~ 07-01 00:00",
+          "summary": "0.0 층"
+        }
+      ]
+    },
+    {
+      "label": "고도 상승",
+      "permissionGranted": true,
+      "error": null,
+      "rows": [
+        {
+          "time": "06-30 00:00 ~ 07-01 00:00",
+          "summary": "0.0 m"
+        }
+      ]
+    },
+    {
+      "label": "운동 세션",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "계획된 운동",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "속도",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "파워",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "VO2 Max",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "휠체어 추진",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "심박수",
+      "permissionGranted": true,
+      "error": null,
+      "rows": [
+        {
+          "time": "06-30 00:00 ~ 07-01 00:00",
+          "summary": "데이터 없음"
+        }
+      ]
+    },
+    {
+      "label": "안정시 심박수",
+      "permissionGranted": true,
+      "error": null,
+      "rows": [
+        {
+          "time": "06-30 00:00 ~ 07-01 00:00",
+          "summary": "데이터 없음"
+        }
+      ]
+    },
+    {
+      "label": "심박변이도(HRV)",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "혈압",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "혈당",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "산소포화도",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "호흡수",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "체온",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "기초 체온",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "피부 온도",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "체중",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "키",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "체지방률",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "제지방량",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "체수분량",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "골밀도",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "기초대사율",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "수면",
+      "permissionGranted": true,
+      "error": null,
+      "rows": [
+        {
+          "time": "06-30 04:00 ~ 06-30 07:30",
+          "summary": "0단계 · 210분"
+        }
+      ]
+    },
+    {
+      "label": "영양",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "수분 섭취",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "생리 기간",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "생리 흐름",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "배란 테스트",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "자궁경부 점액",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "부정 출혈",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    },
+    {
+      "label": "성활동",
+      "permissionGranted": true,
+      "error": null,
+      "rows": []
+    }
+  ]
+}
