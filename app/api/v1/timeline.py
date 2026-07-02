@@ -26,6 +26,6 @@ def create_timeline_draft(request: TimelineDraftRequest) -> TimelineDraftRespons
         detail={
             "message": "타임라인 생성 파이프라인이 아직 구현되지 않았습니다.",
             "transaction_id": request.transaction_id,
-            "source_count": len(request.iter_source_items()),
+            "source_item_count": len(request.iter_source_items()),
         },
     )

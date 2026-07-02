@@ -19,15 +19,15 @@
 ```
 
 - `transactionId` 는 이 스냅샷 **세트 전체**를 식별한다.
-- 모든 source item 은 안정적이고 세트 내 유니크한 `sourceId` 를 가진다.
-  `sourceId` 는 클라이언트가 부여하며, AI 결과 검증과 이후 선택적 재처리의 기준 키가 된다.
+- 모든 source item 은 수집 주체가 전달한 안정적인 `sourceId` 를 가진다.
+  `sourceId` 는 AI 결과 검증과 이후 선택적 재처리의 기준 키가 된다.
 - 시각은 모두 Unix epoch **milliseconds** 정수다.
 
 ## 공통 필드 (모든 source item)
 
 | 필드 | 타입 | 필수 | 설명 |
 | --- | --- | --- | --- |
-| `sourceId` | string | ✅ | 세트 내 유니크한 안정적 식별자 |
+| `sourceId` | string | ✅ | 수집 주체가 전달하는 안정적 식별자 |
 | `sourceType` | enum | ✅ | item 종류 (아래 표 참고) |
 
 `sourceType` 값: `location_stay`, `location_route`, `notification`, `photo`,
@@ -48,7 +48,7 @@
 | `photos` | array | 선택 | 사진 목록 |
 | `calendar` | object | 선택 | 캘린더 데이터 (기본 빈 events) |
 | `health` | object | 선택 | 건강 데이터 |
-| `userMemory` | object(비정형) | 선택 | 사용자 메모리, **보조 context 전용** |
+| `userMemory` | object(비정형) | 선택 | 사용자 메모리 입력 |
 
 ## source type 별 payload
 
@@ -77,8 +77,8 @@
 
 ### 사용자 메모리 — `userMemory`
 사용자가 확정한 기록을 바탕으로 새롭게 정의되는 **비정형 JSON**. key/value 는 AI 가
-자동으로 분석해 채운다. 고정 스키마 없이 임의 key/value 를 허용하며, 타임라인 생성 시
-**보조 context 로만** 사용한다.
+자동으로 분석해 채운다. 고정 스키마 없이 임의 key/value 를 허용하며, 타임라인 생성 요청에
+함께 전달한다.
 
 ## validation 기준
 
@@ -87,8 +87,8 @@ DTO(`pydantic`) 에서 강제하는 규칙이다.
 - **필수 필드**: 위 표의 필수 필드가 없으면 요청은 거부된다(422).
 - **sourceId**
   - 모든 source item 에 필수, `min_length=1`.
-  - 한 요청(세트) 안에서 **유니크**해야 한다. 중복 시 거부된다.
-  - `userMemory` 는 비정형 보조 context 라 sourceId 유니크 검사 대상에서 제외한다.
+  - 서버 DTO 에서는 sourceId 중복 여부를 검증하지 않는다.
+  - `userMemory` 는 request 로 받지만 `sourceId`/`sourceType` 을 갖는 Source Item 이 아니다.
 - **transactionId**: 필수, `min_length=1`.
 - **date**: `YYYY-MM-DD` 형식.
 - **mode**: `FULL_DAY` 등 정의된 값만 허용.
@@ -100,4 +100,4 @@ DTO(`pydantic`) 에서 강제하는 규칙이다.
 ## 참고
 
 - `sourceId` 는 AI 결과 검증과 이후 선택적 재처리에 필요하다.
-- 사용자 메모리 데이터는 보조 context 로만 사용한다.
+- 사용자 메모리 데이터는 request 로 함께 받되, Source Item 계약 대상은 아니다.

@@ -70,7 +70,7 @@ class GeoPoint(CamelModel):
 class SourceItem(CamelModel):
     """모든 source item 공통 필드.
 
-    - `sourceId`: 세트 내에서 유니크하고 안정적인 식별자. 클라이언트가 부여한다.
+    - `sourceId`: 수집 주체가 전달하는 안정적인 식별자.
       AI 결과 검증과 이후 선택적 재처리의 기준 키가 된다.
     - `sourceType`: item 종류. 각 payload 모델이 고정값으로 override 한다.
     """

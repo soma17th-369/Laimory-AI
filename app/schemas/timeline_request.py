@@ -10,8 +10,8 @@
     + 건강 데이터
     + 사용자 메모리(보조 context)
 
-`transactionId` 는 이 스냅샷 세트 전체를 식별하고, 각 source item 의
-`sourceId` 는 세트 내에서 유니크하다.
+`transactionId` 는 이 스냅샷 세트 전체를 식별하고, 각 source item 은
+수집 주체가 전달한 `sourceId` 를 가진다.
 """
 
 from pydantic import Field, model_validator
@@ -65,9 +65,10 @@ class TimelineDraftRequest(CamelModel):
     user_memory: UserMemory | None = Field(default=None, alias="userMemory")
 
     def iter_source_items(self) -> list[SourceItem]:
-        """모든 도메인의 source item 을 하나의 리스트로 모은다.
+        """SourceItem 계약을 따르는 입력만 하나의 리스트로 모은다.
 
-        사용자 메모리는 비정형 보조 context 라 source item 집계에서 제외한다.
+        userMemory 는 요청 DTO 로 받지만 sourceId/sourceType 을 갖는 SourceItem 이
+        아니므로 이 목록에는 포함하지 않는다.
         """
 
         items: list[SourceItem] = []
@@ -88,16 +89,3 @@ class TimelineDraftRequest(CamelModel):
             if health_item is not None:
                 items.append(health_item)
         return items
-
-    @model_validator(mode="after")
-    def _validate_unique_source_ids(self) -> "TimelineDraftRequest":
-        seen: set[str] = set()
-        duplicates: set[str] = set()
-        for item in self.iter_source_items():
-            if item.source_id in seen:
-                duplicates.add(item.source_id)
-            seen.add(item.source_id)
-        if duplicates:
-            joined = ", ".join(sorted(duplicates))
-            raise ValueError(f"sourceId 는 세트 내에서 유니크해야 합니다. 중복: {joined}")
-        return self
