@@ -13,6 +13,14 @@ from app.schemas.common import (
     SourceType,
     TimeRange,
 )
+from app.schemas.event_candidate import (
+    AiEventCandidate,
+    CandidateTimeRange,
+    EventSourceType,
+    EventType,
+    InferenceLevel,
+    SourceRef,
+)
 from app.schemas.health import (
     ActiveCaloriesData,
     DistanceData,
@@ -31,15 +39,20 @@ from app.schemas.user_memory import UserMemory
 
 __all__ = [
     "ActiveCaloriesData",
+    "AiEventCandidate",
     "CalendarData",
     "CalendarEvent",
     "CamelModel",
+    "CandidateTimeRange",
     "CollectionMode",
     "DistanceData",
+    "EventSourceType",
+    "EventType",
     "GeoPoint",
     "HealthData",
     "HeartRateData",
     "HeartRateSample",
+    "InferenceLevel",
     "LocationData",
     "LocationRoute",
     "LocationStay",
@@ -48,6 +61,7 @@ __all__ = [
     "PhotoItem",
     "SleepData",
     "SourceItem",
+    "SourceRef",
     "SourceType",
     "StepsData",
     "TimeRange",
