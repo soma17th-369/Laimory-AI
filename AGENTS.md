@@ -35,3 +35,44 @@ uv run uvicorn app.server:app --reload
 - Codex용 프로젝트 스킬 원본은 `.agents/skills/` 아래에 둡니다.
 - Claude 쪽에서 공유할 때는 `.agents/skills/` 내용을 `.claude/skills/`로 복사해 동기화합니다.
 - `.claude/skills/`는 링크가 아니라 복사본이며, 필요할 때 `scripts/link-skills.ps1` 또는 `scripts/link-skills.sh`를 다시 실행해 갱신합니다.
+
+## Project Structure
+```
+app/
+├── server.py                  # FastAPI 앱 생성 + 라우터 등록만 (얇게)
+│
+├── core/                      # 공통 인프라
+│   ├── config.py              # 설정 (pydantic-settings, LLM_PROVIDER/API 키 등)
+│   ├── logging.py             # 관찰 로그 설정            ← 체크7
+│   └── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini 등, 확장형)
+│
+├── api/v1/
+│   ├── router.py              # v1 라우터 취합
+│   └── timeline.py            # POST /v1/timeline (초안 생성 엔드포인트)
+│
+├── schemas/                   # Pydantic 계약(contract)
+│   ├── source_item.py         # 소스 아이템 명세          ← 체크1
+│   ├── event_candidate.py     # AI 이벤트 후보 모델       ← 체크2
+│   └── timeline.py            # 타임라인 초안/이벤트 스키마
+│
+├── agents/                    # AI 에이전트
+│   ├── base.py                # 공통 에이전트 인터페이스
+│   ├── prompts/               # 프롬프트 템플릿 분리
+│   ├── events/                # 데이터별 이벤트 에이전트   ← 체크3
+│   │   ├── base_event_agent.py
+│   │   └── location_agent.py  (등 소스별로 추가)
+│   └── timeline_agent.py      # 후보 → 초안 병합          ← 체크4
+│
+├── pipeline/
+│   └── timeline_pipeline.py   # normalize→events→timeline→validate 조율 ← 체크5
+│
+└── services/
+├── normalizer.py          # 입력 → 공통 이벤트 후보 정규화
+├── validator.py           # AI 결과 검증               ← 체크6
+└── storage.py             # 검증 통과분 최종 저장       ← 체크6
+
+tests/
+├── agents/
+├── pipeline/
+└── fixtures/                  # MVP 테스트 케이스          ← 체크7
+```
