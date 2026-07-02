@@ -35,7 +35,7 @@ class PhotoEventAgent(EventAgent):
         return self._llm
 
     def _generate(self, request: TimelineDraftRequest) -> AgentEventResult:
-        items = list(request.photos)
+        items = list(getattr(request, "photos", None) or [])
         if not items:
             return AgentEventResult()
 

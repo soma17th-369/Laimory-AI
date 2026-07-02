@@ -13,6 +13,16 @@ def test_empty_photos_skips_llm():
     assert fake.calls == []
 
 
+def test_missing_photos_skips_llm():
+    fake = FakeLLM([result_json()])
+    req = make_request().model_copy(update={"photos": None})
+    result = PhotoEventAgent(llm=fake).generate(req)
+    assert result.candidates == []
+    assert result.fragments == []
+    assert result.warnings == []
+    assert fake.calls == []
+
+
 def test_photo_inferred_as_fragment():
     final = result_json(fragments=[fragment("PHOTO", "photo-1", "음식 사진")])
     fake = FakeLLM([final])

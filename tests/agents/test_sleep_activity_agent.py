@@ -21,6 +21,16 @@ def test_empty_health_skips_llm():
     assert fake.calls == []
 
 
+def test_missing_health_skips_llm():
+    fake = FakeLLM([result_json()])
+    req = make_request().model_copy(update={"health": None})
+    result = SleepActivityEventAgent(llm=fake).generate(req)
+    assert result.candidates == []
+    assert result.fragments == []
+    assert result.warnings == []
+    assert fake.calls == []
+
+
 def test_sleep_event_and_activity_fragment():
     final = result_json(
         candidates=[

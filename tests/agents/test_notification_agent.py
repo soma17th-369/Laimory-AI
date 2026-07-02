@@ -19,6 +19,16 @@ def test_empty_notifications_skips_llm():
     assert fake.calls == []
 
 
+def test_missing_notifications_skips_llm():
+    fake = FakeLLM([result_json()])
+    req = make_request().model_copy(update={"notifications": None})
+    result = NotificationEventAgent(llm=fake).generate(req)
+    assert result.candidates == []
+    assert result.fragments == []
+    assert result.warnings == []
+    assert fake.calls == []
+
+
 def test_notification_inferred_as_fragment():
     final = result_json(fragments=[fragment("NOTIFICATION", "noti-1", "카카오톡 메시지")])
     fake = FakeLLM([final])
