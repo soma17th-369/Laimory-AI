@@ -52,3 +52,20 @@ def test_location_infers_from_data_and_user_memory():
     assert result.fragments[0].source_type is EventSourceType.LOCATION
     assert result.fragments[0].source_id == "stay-1"
     assert result.fragments[0].summary == "위치상 한 장소에 체류한 기록"
+
+
+def test_location_graph_failure_returns_warning_result():
+    fake = FakeLLM([RuntimeError("graph llm down")])
+    req = make_request(
+        location=location_data(
+            stays=[stay("stay-1", 37.5, 127.0, DAY_START + 9 * HOUR, DAY_START + 10 * HOUR)]
+        )
+    )
+
+    result = LocationEventAgent(llm=fake).generate(req)
+
+    assert result.candidates == []
+    assert result.fragments == []
+    assert len(result.warnings) == 1
+    assert result.warnings[0].agent_name == "location"
+    assert "graph llm down" in result.warnings[0].message

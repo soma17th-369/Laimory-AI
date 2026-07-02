@@ -45,7 +45,7 @@ class LocationEventAgent(EventAgent):
             self._llm = default_llm()
         return self._llm
 
-    def generate(self, request: TimelineDraftRequest) -> AgentEventResult:
+    def _generate(self, request: TimelineDraftRequest) -> AgentEventResult:
         items = [*request.location.stays, *request.location.routes]
         if not items:
             return AgentEventResult()

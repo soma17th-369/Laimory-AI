@@ -46,6 +46,14 @@ def test_parse_accepts_fragment_source_id_and_summary():
     assert result.fragments[0].summary == "저녁 사진"
 
 
+def test_parse_accepts_warnings():
+    result = parse_agent_result(
+        '{"candidates": [], "fragments": [], "warnings": [{"agentName": "photo", "message": "실패"}]}'
+    )
+    assert result.warnings[0].agent_name == "photo"
+    assert result.warnings[0].message == "실패"
+
+
 def test_items_to_text_includes_source_id():
     text = items_to_text([stay("stay-1", 37.5, 127.0, DAY_START, DAY_START + HOUR)])
     assert "stay-1" in text

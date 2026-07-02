@@ -1,9 +1,10 @@
-"""통합 러너 generate_all 검증."""
+"""테스트용 Agent 취합 helper 검증."""
 
 from app.agents.base import Agent
-from app.agents.events import default_event_agents, generate_all
+from app.agents.events import default_event_agents
 from app.schemas import (
     AgentEventResult,
+    AgentWarning,
     AiEventCandidate,
     CandidateTimeRange,
     EventSourceType,
@@ -13,6 +14,22 @@ from app.schemas import (
     SourceRef,
 )
 from tests.fixtures.requests import make_request
+
+
+def _generate_all_for_test(request, agents):
+    """테스트 안에서만 쓰는 단순 취합 helper.
+
+    실전 실행 순서와 실패 정책은 pipeline/timeline agent 에서 정한다. 여기서는 각
+    Agent 반환 계약(candidates/fragments/warnings)이 합쳐질 수 있는지만 검증한다.
+    """
+
+    combined = AgentEventResult()
+    for agent in agents:
+        result = agent.generate(request)
+        combined.candidates.extend(result.candidates)
+        combined.fragments.extend(result.fragments)
+        combined.warnings.extend(result.warnings)
+    return combined
 
 
 def _candidate(source_id):
@@ -45,7 +62,7 @@ def test_default_event_agents_cover_all_sources():
     assert names == {"location", "calendar", "photo", "sleep_activity", "notification"}
 
 
-def test_generate_all_merges_candidates_and_fragments():
+def test_test_helper_merges_candidates_fragments_and_warnings():
     stub1 = _StubAgent(
         "a", AgentEventResult(candidates=[_candidate("s-1")], fragments=[])
     )
@@ -60,11 +77,13 @@ def test_generate_all_merges_candidates_and_fragments():
                     summary="사진",
                 )
             ],
+            warnings=[AgentWarning(agent_name="photo", message="일부 실패")],
         ),
     )
 
-    result = generate_all(make_request(), agents=[stub1, stub2])
+    result = _generate_all_for_test(make_request(), agents=[stub1, stub2])
 
     assert [c.source_refs[0].source_id for c in result.candidates] == ["s-1"]
     assert [f.source_id for f in result.fragments] == ["p-1"]
     assert [f.summary for f in result.fragments] == ["사진"]
+    assert [w.agent_name for w in result.warnings] == ["photo"]

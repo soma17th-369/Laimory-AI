@@ -14,6 +14,7 @@ from app.schemas.common import (
 )
 from app.schemas.event_candidate import (
     AgentEventResult,
+    AgentWarning,
     AiEventCandidate,
     CandidateTimeRange,
     EventSourceType,
@@ -41,6 +42,7 @@ from app.schemas.user_memory import UserMemory
 __all__ = [
     "ActiveCaloriesData",
     "AgentEventResult",
+    "AgentWarning",
     "AiEventCandidate",
     "CalendarData",
     "CalendarEvent",

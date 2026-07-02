@@ -16,7 +16,7 @@ class FakeLLM:
             마지막 응답을 반복한다.
     """
 
-    def __init__(self, responses: list[str]) -> None:
+    def __init__(self, responses: list[str | Exception]) -> None:
         assert responses, "responses 는 최소 1개 필요합니다."
         self._responses = list(responses)
         self.calls: list[SimpleNamespace] = []
@@ -24,7 +24,10 @@ class FakeLLM:
     def complete(self, prompt: str, *, system: str | None = None, **kwargs) -> str:
         self.calls.append(SimpleNamespace(prompt=prompt, system=system, kwargs=kwargs))
         idx = min(len(self.calls) - 1, len(self._responses) - 1)
-        return self._responses[idx]
+        response = self._responses[idx]
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def result_json(candidates: list | None = None, fragments: list | None = None) -> str:

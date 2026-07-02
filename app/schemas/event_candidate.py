@@ -177,13 +177,22 @@ class SourceFragment(CamelModel):
     )
 
 
+class AgentWarning(CamelModel):
+    """Agent 실행 중 복구 가능한 실패나 누락을 전달하는 경고."""
+
+    agent_name: str = Field(alias="agentName", min_length=1)
+    message: str = Field(min_length=1)
+
+
 class AgentEventResult(CamelModel):
     """데이터 Event Agent 의 반환 계약.
 
     Agent 는 event 후보(`candidates`)만 반환하지 않는다. 혼자서는 event 로
     확정하기 약하지만 나중에 다른 데이터와 병합될 수 있는 source 단위 요약
-    (`fragments`)을 함께 반환한다.
+    (`fragments`)을 함께 반환한다. Agent 실행이 실패해도 호출자가 전체 처리를
+    중단하지 않도록 복구 가능한 실패는 `warnings` 에 남긴다.
     """
 
     candidates: list[AiEventCandidate] = Field(default_factory=list)
     fragments: list[SourceFragment] = Field(default_factory=list)
+    warnings: list[AgentWarning] = Field(default_factory=list)

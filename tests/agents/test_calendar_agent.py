@@ -53,3 +53,20 @@ def test_calendar_infers_direct_event():
     assert result.fragments[0].source_type is EventSourceType.CALENDAR
     assert result.fragments[0].source_id == "cal-1"
     assert result.fragments[0].summary == "멘토링 일정 요약"
+
+
+def test_calendar_failure_returns_warning_result():
+    fake = FakeLLM([RuntimeError("llm down")])
+    req = make_request(
+        calendar=calendar_data(
+            events=[calendar_event("cal-1", "멘토링", DAY_START, DAY_START + HOUR)]
+        )
+    )
+
+    result = CalendarEventAgent(llm=fake).generate(req)
+
+    assert result.candidates == []
+    assert result.fragments == []
+    assert len(result.warnings) == 1
+    assert result.warnings[0].agent_name == "calendar"
+    assert "llm down" in result.warnings[0].message

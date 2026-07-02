@@ -35,7 +35,7 @@ class NotificationEventAgent(EventAgent):
             self._llm = default_llm()
         return self._llm
 
-    def generate(self, request: TimelineDraftRequest) -> AgentEventResult:
+    def _generate(self, request: TimelineDraftRequest) -> AgentEventResult:
         items = [*request.notifications.active, *request.notifications.collected]
         if not items:
             return AgentEventResult()

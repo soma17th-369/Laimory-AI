@@ -45,7 +45,7 @@ class SleepActivityEventAgent(EventAgent):
             self._llm = default_llm()
         return self._llm
 
-    def generate(self, request: TimelineDraftRequest) -> AgentEventResult:
+    def _generate(self, request: TimelineDraftRequest) -> AgentEventResult:
         health = request.health
         items = [
             item
