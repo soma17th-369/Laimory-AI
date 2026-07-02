@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from app.agents.timeline_agent import TimelineAgent, parse_timeline_draft
+from app.agents.timeline.timeline_agent import TimelineAgent, parse_timeline_draft
 from app.schemas import (
     AgentEventResult,
     AgentWarning,

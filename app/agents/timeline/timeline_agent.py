@@ -27,7 +27,7 @@ from app.schemas import (
 logger = get_logger(__name__)
 
 _SYSTEM_PROMPT = (
-    Path(__file__).parent / "prompts" / "timeline.md"
+    Path(__file__).parent / "timeline.md"
 ).read_text(encoding="utf-8")
 
 _DEFAULT_USER_ID = "user-1234"
