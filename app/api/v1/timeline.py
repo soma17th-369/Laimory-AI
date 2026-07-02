@@ -3,13 +3,9 @@
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, status
 
+from app.schemas import TimelineDraftRequest
+
 router = APIRouter()
-
-
-class TimelineDraftRequest(BaseModel):
-    """타임라인 초안 생성 요청 placeholder."""
-
-    sources: list[dict] = Field(min_length=1)
 
 
 class TimelineDraftResponse(BaseModel):
@@ -29,6 +25,7 @@ def create_timeline_draft(request: TimelineDraftRequest) -> TimelineDraftRespons
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
         detail={
             "message": "타임라인 생성 파이프라인이 아직 구현되지 않았습니다.",
-            "source_count": len(request.sources),
+            "transaction_id": request.transaction_id,
+            "source_count": len(request.iter_source_items()),
         },
     )
