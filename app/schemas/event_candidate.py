@@ -157,3 +157,42 @@ class AiEventCandidate(CamelModel):
                 "inferenceLevel 이 UNCERTAIN 인 후보는 uncertainty 근거를 최소 1개 남겨야 합니다."
             )
         return self
+
+
+class SourceFragment(CamelModel):
+    """event 로 확정하기엔 약하지만, 다른 데이터와 섞이면 event 가 될 수 있는 조각.
+
+    데이터 Event Agent 가 자기 도메인에서 "혼자서는 event 가 아니지만 병합 재료가
+    되는" source 를 `sourceId` + 내용 요약으로 남긴다.
+    Timeline Agent 가 다른 source 후보와 시간·맥락으로 병합할 때 쓴다.
+    """
+
+    source_type: EventSourceType = Field(alias="sourceType")
+    source_id: str = Field(alias="sourceId", min_length=1)
+    summary: str = Field(min_length=1, description="조각 내용 요약")
+    time_range: CandidateTimeRange | None = Field(
+        default=None,
+        alias="timeRange",
+        description="병합에 쓰는 시간 정보. 시간 구간이 없으면 생략(None).",
+    )
+
+
+class AgentWarning(CamelModel):
+    """Agent 실행 중 복구 가능한 실패나 누락을 전달하는 경고."""
+
+    agent_name: str = Field(alias="agentName", min_length=1)
+    message: str = Field(min_length=1)
+
+
+class AgentEventResult(CamelModel):
+    """데이터 Event Agent 의 반환 계약.
+
+    Agent 는 event 후보(`candidates`)만 반환하지 않는다. 혼자서는 event 로
+    확정하기 약하지만 나중에 다른 데이터와 병합될 수 있는 source 단위 요약
+    (`fragments`)을 함께 반환한다. Agent 실행이 실패해도 호출자가 전체 처리를
+    중단하지 않도록 복구 가능한 실패는 `warnings` 에 남긴다.
+    """
+
+    candidates: list[AiEventCandidate] = Field(default_factory=list)
+    fragments: list[SourceFragment] = Field(default_factory=list)
+    warnings: list[AgentWarning] = Field(default_factory=list)

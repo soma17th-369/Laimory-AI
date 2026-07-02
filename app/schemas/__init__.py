@@ -1,7 +1,6 @@
-"""AI 하루 타임라인 입력 Source Item 스키마 패키지.
+"""Laimory AI 서버 Pydantic 계약 패키지.
 
-이슈 #7 — AI 하루 타임라인 입력 Source Item 계약 정의.
-요청 DTO 는 `TimelineDraftRequest` 이며, 각 도메인 모델은 하위 모듈에 있다.
+입력 Source Item, AI Event 후보, Agent 반환값 등 서버 내부/외부 계약을 모은다.
 """
 
 from app.schemas.calendar import CalendarData, CalendarEvent
@@ -14,11 +13,14 @@ from app.schemas.common import (
     TimeRange,
 )
 from app.schemas.event_candidate import (
+    AgentEventResult,
+    AgentWarning,
     AiEventCandidate,
     CandidateTimeRange,
     EventSourceType,
     EventType,
     InferenceLevel,
+    SourceFragment,
     SourceRef,
 )
 from app.schemas.health import (
@@ -39,6 +41,8 @@ from app.schemas.user_memory import UserMemory
 
 __all__ = [
     "ActiveCaloriesData",
+    "AgentEventResult",
+    "AgentWarning",
     "AiEventCandidate",
     "CalendarData",
     "CalendarEvent",
@@ -60,6 +64,7 @@ __all__ = [
     "NotificationItem",
     "PhotoItem",
     "SleepData",
+    "SourceFragment",
     "SourceItem",
     "SourceRef",
     "SourceType",
