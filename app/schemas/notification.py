@@ -1,31 +1,20 @@
-"""알림 source item 스키마.
+"""알림 도메인 항목 스키마.
 
-현재 활성 알림(`active`)과 하루 동안 수집된 알림(`collected`)을 정의한다.
+수집 스냅샷의 `itemType=NOTIFICATION` 을 분리한 뒤의 형태를 정의한다.
+알림은 순간 이벤트라 `posted_at`(항목의 `startAt`) 하나만 시각으로 갖는다.
 """
-
-from typing import Literal
 
 from pydantic import Field
 
-from app.schemas.common import CamelModel, SourceItem, SourceType, TimestampMs
+from app.schemas.common import CamelModel
 
 
-class NotificationItem(SourceItem):
-    """알림 한 건."""
+class NotificationItem(CamelModel):
+    """알림 한 건 (NOTIFICATION)."""
 
-    source_type: Literal[SourceType.NOTIFICATION] = Field(
-        SourceType.NOTIFICATION, alias="sourceType"
-    )
-    package_name: str = Field(alias="packageName")
+    id: int
+    raw_id: str | None = Field(default=None, alias="rawId")
+    posted_at: str = Field(alias="postedAt")
     app_name: str = Field(alias="appName")
     title: str
     text: str
-    post_time: TimestampMs = Field(alias="postTime")
-    collected_at: TimestampMs = Field(alias="collectedAt")
-
-
-class NotificationData(CamelModel):
-    """알림 도메인 컨테이너."""
-
-    active: list[NotificationItem] = Field(default_factory=list)
-    collected: list[NotificationItem] = Field(default_factory=list)

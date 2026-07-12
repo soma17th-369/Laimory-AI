@@ -10,7 +10,9 @@ provider 종류와 무관하게 동일한 방식으로 호출한다.
    (`name` 클래스 변수와 `_build_client`, `complete` 만 구현하면 된다.)
 """
 
+import base64
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from functools import lru_cache
 
 from app.core.config import settings
@@ -20,6 +22,14 @@ logger = get_logger(__name__)
 
 # provider 이름 -> provider 클래스 레지스트리
 _PROVIDERS: dict[str, type["LLMProvider"]] = {}
+
+
+@dataclass(frozen=True)
+class ImageInput:
+    """vision 호출에 넘길 이미지 한 장 (raw bytes + MIME 타입)."""
+
+    data: bytes
+    mime_type: str = "image/jpeg"
 
 
 def register_provider(cls: type["LLMProvider"]) -> type["LLMProvider"]:
@@ -69,6 +79,24 @@ class LLMProvider(ABC):
     ) -> str:
         """단일 프롬프트에 대한 응답 텍스트를 반환한다."""
 
+    def complete_with_images(
+        self,
+        prompt: str,
+        images: list[ImageInput],
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> str:
+        """프롬프트 + 이미지(vision) 입력에 대한 응답 텍스트를 반환한다.
+
+        vision 을 지원하는 provider 만 override 한다. 기본은 미지원 예외.
+        """
+
+        raise NotImplementedError(
+            f"{self.name} provider 는 이미지(vision) 입력을 지원하지 않습니다."
+        )
+
 
 @register_provider
 class OpenAIProvider(LLMProvider):
@@ -93,6 +121,37 @@ class OpenAIProvider(LLMProvider):
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=temperature,
+            **kwargs,
+        )
+        return response.choices[0].message.content or ""
+
+    def complete_with_images(
+        self,
+        prompt: str,
+        images: list[ImageInput],
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> str:
+        content: list[dict] = [{"type": "text", "text": prompt}]
+        for image in images:
+            b64 = base64.b64encode(image.data).decode("ascii")
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{image.mime_type};base64,{b64}"},
+                }
+            )
+        messages: list[dict] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": content})
 
         response = self.client.chat.completions.create(
             model=self.model,
@@ -132,6 +191,34 @@ class GeminiProvider(LLMProvider):
         response = self.client.models.generate_content(
             model=self.model,
             contents=prompt,
+            config=config,
+        )
+        return response.text or ""
+
+    def complete_with_images(
+        self,
+        prompt: str,
+        images: list[ImageInput],
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> str:
+        from google.genai import types
+
+        config = types.GenerateContentConfig(
+            system_instruction=system,
+            temperature=temperature,
+            **kwargs,
+        )
+        parts: list = [prompt]
+        for image in images:
+            parts.append(
+                types.Part.from_bytes(data=image.data, mime_type=image.mime_type)
+            )
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=parts,
             config=config,
         )
         return response.text or ""
@@ -207,6 +294,31 @@ class LLMClient:
         )
         return self.provider.complete(
             prompt,
+            system=system,
+            temperature=temperature,
+            **kwargs,
+        )
+
+    def complete_with_images(
+        self,
+        prompt: str,
+        images: list[ImageInput],
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> str:
+        """프롬프트 + 이미지(vision) 입력에 대한 응답 텍스트를 반환한다."""
+
+        logger.debug(
+            "LLM vision 호출: provider=%s, model=%s, images=%d",
+            self.provider.name,
+            self.provider.model,
+            len(images),
+        )
+        return self.provider.complete_with_images(
+            prompt,
+            images,
             system=system,
             temperature=temperature,
             **kwargs,

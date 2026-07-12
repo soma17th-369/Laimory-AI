@@ -2,11 +2,19 @@
 
 This agent merges ``AiEventCandidate`` values produced by data-specific Event
 Agents into a user-editable ``TimelineDraft``. The LLM decides the semantic
-merge, while code owns deterministic draft ids and fallback warnings.
+merge; this module owns only the prompt, the tolerant parse, and the fallback
+draft used when the LLM response is unusable.
+
+정렬·겹침·지속시간·sourceRef 같은 **결정론적 확정**은 여기서 하지 않는다. main agent
+그래프의 마지막 node 가 `app/services/draft_repair.py` 로 처리한다. 이 agent 가
+돌려주는 draft 는 아직 다듬어지지 않은 LLM 결과이며, `clientEventId` 도 파싱 순서로
+붙인 임시 값이다.
 """
 
 import json
 from pathlib import Path
+
+from pydantic import ValidationError
 
 from app.agents.base import Agent
 from app.agents.parsing import (
@@ -20,10 +28,11 @@ from app.schemas import (
     AgentEventResult,
     TimelineDraft,
     TimelineDraftRequest,
+    TimelineEventDraft,
+    TimelineQuestion,
     TimelineWarning,
     TimelineWarningSeverity,
 )
-
 logger = get_logger(__name__)
 
 _SYSTEM_PROMPT = (
@@ -42,25 +51,52 @@ def build_timeline_prompt(
 ) -> str:
     """Build the user prompt for timeline merging."""
 
+    window_start = request.window.start if request.window else "정보 없음"
+    window_end = request.window.end if request.window else "정보 없음"
     return (
         "[draft metadata]\n"
         f"userId: {_DEFAULT_USER_ID}\n"
         f"date: {request.date}\n"
-        f"timezone: {_DEFAULT_TIMEZONE}\n\n"
+        f"timezone: {_DEFAULT_TIMEZONE}\n"
+        f"windowStart: {window_start}\n"
+        f"windowEnd: {window_end}\n\n"
         f"[user memory]\n{user_memory_text}\n\n"
         f"[AI Event candidates]\n{candidates_text}\n\n"
         f"[Source fragments]\n{fragments_text}\n\n"
-        "Sort and merge candidates into the TimelineDraft JSON format. "
-        "Use candidates as the primary evidence and fragments only as supporting evidence."
+        "Create a user-reviewable TimelineDraft JSON. "
+        "Merge candidates and fragments from different sources that point to the same "
+        "real-life event into ONE timeline event when they share overlapping time, the "
+        "same place, the same activity meaning, or repeatedly indicate the same situation "
+        "(e.g. movement + photo + notification + activity in the same window). "
+        "Preserve every merged sourceRef, span the merged event from earliest startTime to "
+        "latest endTime, and prefer a human event type over raw types. Do not force-merge "
+        "unrelated activities; when sources conflict, use questions or warnings instead. "
+        "Sort events by actual candidate time, and expose uncertain or missing context "
+        "through questions, warnings, and uncertainty. "
+        "Do not copy example dates; use the metadata date and the provided candidate times."
     )
 
 
-def parse_timeline_draft(text: str) -> TimelineDraft:
-    """Parse an LLM response into ``TimelineDraft`` and assign stable ids.
+def _invalid_item_warning(kind: str, index: int) -> TimelineWarning:
+    """스키마 검증에 실패해 제외한 항목을 알리는 warning."""
 
-    The LLM may omit ids or hallucinate ids. Event ids are always rewritten as
-    ``event-001`` style ``clientEventId`` values in event order. Missing
-    question/warning ids are also filled deterministically.
+    return TimelineWarning(
+        warning_id=f"warning-invalid-{kind}-{index:03d}",
+        severity=TimelineWarningSeverity.MEDIUM,
+        message=f"LLM 응답의 {kind} 항목({index}번)이 형식 검증에 실패해 제외했습니다.",
+    )
+
+
+def parse_timeline_draft(text: str, request: TimelineDraftRequest) -> TimelineDraft:
+    """LLM 응답을 ``TimelineDraft`` 로 파싱한다(부분 손상에 강하게).
+
+    - JSON 객체를 찾지 못하거나 ``json.loads`` 에 실패하면 예외를 던져 상위
+      fallback(빈 draft)로 넘긴다.
+    - 개별 event/question/warning 이 스키마(ISO datetime·timezone·start/end 순서 등)
+      검증에 실패하면 그 항목만 건너뛰고 warning 으로 남긴다. 한 항목의 손상이
+      전체 draft 를 무너뜨리지 않게 한다.
+    - ``clientEventId`` 는 검증을 통과한 event 순서대로 다시 부여하고,
+      ``userId``/``date``/``timezone`` 은 LLM 값 대신 요청 기준값을 신뢰한다.
     """
 
     start = text.find("{")
@@ -70,18 +106,52 @@ def parse_timeline_draft(text: str) -> TimelineDraft:
 
     payload = json.loads(text[start : end + 1])
 
-    for index, event in enumerate(payload.get("events") or [], start=1):
-        event.pop("eventId", None)
-        event["clientEventId"] = f"event-{index:03d}"
+    skipped: list[TimelineWarning] = []
 
-    for index, question in enumerate(payload.get("questions") or [], start=1):
-        question.setdefault("questionId", f"question-{index:03d}")
+    events: list[TimelineEventDraft] = []
+    for index, raw in enumerate(payload.get("events") or [], start=1):
+        if not isinstance(raw, dict):
+            skipped.append(_invalid_item_warning("event", index))
+            continue
+        item = {**raw}
+        item.pop("eventId", None)
+        item["clientEventId"] = f"event-{len(events) + 1:03d}"
+        try:
+            events.append(TimelineEventDraft.model_validate(item))
+        except ValidationError:
+            skipped.append(_invalid_item_warning("event", index))
 
-    for index, warning in enumerate(payload.get("warnings") or [], start=1):
-        warning.setdefault("warningId", f"warning-{index:03d}")
-        warning.setdefault("severity", TimelineWarningSeverity.MEDIUM.value)
+    questions: list[TimelineQuestion] = []
+    for index, raw in enumerate(payload.get("questions") or [], start=1):
+        if not isinstance(raw, dict):
+            continue
+        item = {**raw}
+        item.setdefault("questionId", f"question-{len(questions) + 1:03d}")
+        try:
+            questions.append(TimelineQuestion.model_validate(item))
+        except ValidationError:
+            skipped.append(_invalid_item_warning("question", index))
 
-    return TimelineDraft.model_validate(payload)
+    warnings: list[TimelineWarning] = []
+    for index, raw in enumerate(payload.get("warnings") or [], start=1):
+        if not isinstance(raw, dict):
+            continue
+        item = {**raw}
+        item.setdefault("warningId", f"warning-{len(warnings) + 1:03d}")
+        item.setdefault("severity", TimelineWarningSeverity.MEDIUM.value)
+        try:
+            warnings.append(TimelineWarning.model_validate(item))
+        except ValidationError:
+            continue  # 경고 자체가 깨지면 조용히 버린다
+
+    return TimelineDraft(
+        user_id=_DEFAULT_USER_ID,
+        date=request.date,
+        timezone=request.timezone or _DEFAULT_TIMEZONE,
+        events=events,
+        questions=questions,
+        warnings=[*warnings, *skipped],
+    )
 
 
 class TimelineAgent(Agent):
@@ -103,7 +173,10 @@ class TimelineAgent(Agent):
         request: TimelineDraftRequest,
         agent_result: AgentEventResult,
     ) -> TimelineDraft:
-        """Return a schema-complete ``TimelineDraft``."""
+        """Return a schema-complete but **not yet repaired** ``TimelineDraft``.
+
+        정렬·id 확정·겹침 정리는 main agent 의 repair node 가 이어서 수행한다.
+        """
 
         carried = _carry_over_warnings(agent_result)
         try:
@@ -138,7 +211,7 @@ class TimelineAgent(Agent):
             items_to_text(agent_result.fragments),
         )
         text = self.llm.complete(prompt, system=_SYSTEM_PROMPT, temperature=0.2)
-        draft = parse_timeline_draft(text)
+        draft = parse_timeline_draft(text, request)
         draft.warnings = [*carried_warnings, *draft.warnings]
         return draft
 
@@ -169,3 +242,4 @@ def _empty_draft(
         timezone=_DEFAULT_TIMEZONE,
         warnings=warnings or [],
     )
+

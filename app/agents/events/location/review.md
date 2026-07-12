@@ -1,10 +1,15 @@
-# Location Event Agent 검토(review) 프롬프트
+# Location Event Agent 검토 프롬프트
 
-아래는 1차 추론 초안(JSON)입니다. 과한 추론을 검토해 보수적으로 정리하세요.
+아래는 1차 추론 초안(JSON)입니다. 센서 라벨 나열이 아니라 “이 위치 데이터가 생긴 원인이 된 사용자의 일상 이벤트”로 잘 추론되었는지 검토하세요.
 
-- 근거가 약한 event 는 confidence 를 낮추거나 fragments 로 옮깁니다.
-- inferenceLevel 이 UNCERTAIN 인데 uncertainty 가 비어 있으면 채웁니다.
-- 입력에 없는 sourceId 를 참조하는 항목은 제거합니다.
+## 검토 기준
+
+- 제목이 `체류`, `이동`, `위치 기록`처럼 딱딱한 데이터 라벨이면 사람의 행동처럼 고칩니다.
+- 위치 근거가 충분한데도 너무 소극적으로 raw 요약만 했다면 candidate 또는 더 구체적인 fragment로 바꿉니다.
+- 근거가 약한 구체 활동은 candidate로 확정하지 말고 fragment나 낮은 confidence로 둡니다.
+- `UNCERTAIN` candidate인데 `uncertainty`가 비어 있으면 반드시 채웁니다.
+- 입력에 없는 sourceId를 참조하는 항목은 제거합니다.
+- 예시 날짜를 사용한 항목은 제거하거나 입력 실제 시간으로 고칩니다.
 
 system 프롬프트에 정의된 동일한 JSON 형식으로만 다시 출력하세요.
 

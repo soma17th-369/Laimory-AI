@@ -46,28 +46,16 @@ class SleepActivityEventAgent(EventAgent):
         return self._llm
 
     def _generate(self, request: TimelineDraftRequest) -> AgentEventResult:
-        health = getattr(request, "health", None)
-        if health is None:
-            return AgentEventResult()
-
-        items = [
-            item
-            for item in (
-                health.sleep,
-                health.steps,
-                health.total_calories_burned,
-                health.active_calories_burned,
-                health.distance,
-                health.heart_rate,
-            )
-            if item is not None
-        ]
+        items = list(getattr(request, "healths", None) or [])
         if not items:
             return AgentEventResult()
 
         infer_prompt = build_infer_prompt(
             user_memory_to_text(request.user_memory),
             items_to_text(items),
+            date=request.date,
+            window_start=request.window.start if request.window else None,
+            window_end=request.window.end if request.window else None,
         )
         final = self._run_graph(infer_prompt)
         return parse_agent_result(final)

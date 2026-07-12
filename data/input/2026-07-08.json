@@ -1,0 +1,452 @@
+{
+  "recordDate": "2026-07-08",
+  "recordTimeZone": "Asia/Seoul",
+  "timelineWindow": {
+    "startTime": "2026-07-08T00:00",
+    "endTime": "2026-07-08T23:53:28.969"
+  },
+  "sourceItems": [
+    {
+      "rawId": "02ecc2e5-bd40-45ae-b179-896a77bb3d16",
+      "itemType": "HEALTH",
+      "startAt": "2026-07-08T00:00",
+      "endAt": "2026-07-09T00:00",
+      "payload": {
+        "metric": "STEPS",
+        "value": "10631보"
+      }
+    },
+    {
+      "rawId": "45409e16-479b-440a-b580-0ee8df745d34",
+      "itemType": "STAY",
+      "startAt": "2026-07-08T00:35:38.286",
+      "endAt": "2026-07-08T00:53:38.479",
+      "payload": {
+        "latitude": 37.153867,
+        "longitude": 127.0782359,
+        "place": "오산운암3단지 주공아파트",
+        "address": "경기도 오산시 운암로 90"
+      }
+    },
+    {
+      "rawId": "654d5041-f653-4943-9b14-324202a6354b",
+      "itemType": "HEALTH",
+      "startAt": "2026-07-08T01:10",
+      "endAt": "2026-07-08T06:50",
+      "payload": {
+        "metric": "SLEEP",
+        "value": "340분"
+      }
+    },
+    {
+      "rawId": "17f08088-38cd-46af-802f-0b7b586d58ba",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T02:32:16.975",
+      "endAt": null,
+      "payload": {
+        "appName": "카카오톡",
+        "title": "17기 춘식이",
+        "text": "다들 학복스에서 사시나요 공홈에서 사시나요??"
+      }
+    },
+    {
+      "rawId": "6cd317a0-4a84-4d93-a8d7-5e2935d6cd52",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T07:35:16.746",
+      "endAt": null,
+      "payload": {
+        "appName": "자리톡",
+        "title": "구미시 비",
+        "text": "우산 챙기셨나요? 오늘 날씨 확인하기 ☂️"
+      }
+    },
+    {
+      "rawId": "3f01fbdc-a0cc-4e4f-b47e-a158645f9334",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T07:52:29.719",
+      "endAt": null,
+      "payload": {
+        "appName": "카카오톡",
+        "title": "이구글_16th",
+        "text": "너무 하나하나 여쭤봐서 죄송해요 ㅠㅠ 감사합니다!!"
+      }
+    },
+    {
+      "rawId": "de13f3c1-5000-45d9-ba0a-aeac6e817f82",
+      "itemType": "CALENDAR",
+      "startAt": "2026-07-08T09:00",
+      "endAt": "2026-07-08T23:00",
+      "payload": {
+        "title": "ASM 프로젝트 MVP 개발",
+        "description": "",
+        "locationText": "집(경기도 오산시 운암로 90)",
+        "allDay": false
+      }
+    },
+    {
+      "rawId": "2ceb2621-af5e-4e97-af6c-70a572068207",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T09:01:58.295",
+      "endAt": null,
+      "payload": {
+        "appName": "메시지",
+        "title": "⁨02-586-2415⁩",
+        "text": "<제목:‎ [한마음혈액원‎ 단체(가두)‎ 헌혈안내(재발송)]>‎ \n첨부 파일 3개"
+      }
+    },
+    {
+      "rawId": "6acfc86b-43bc-437b-9660-77b6f4dbadfe",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T09:05:30.144",
+      "endAt": null,
+      "payload": {
+        "appName": "카카오톡",
+        "title": "18 김홍조 형",
+        "text": "화나네요"
+      }
+    },
+    {
+      "rawId": "6f666be5-50be-476e-b279-9ee968eba4cd",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T10:24:41.425",
+      "endAt": null,
+      "payload": {
+        "appName": "카카오톡",
+        "title": "헤무13th",
+        "text": "24인치는 너무 큰것 같네요 노트북하고 포터블 모니터 2개 올려버리면"
+      }
+    },
+    {
+      "rawId": "a8713f04-2f5a-4d87-8583-4ef33a962591",
+      "itemType": "STAY",
+      "startAt": "2026-07-08T11:12:21.904",
+      "endAt": "2026-07-08T11:20:23.976",
+      "payload": {
+        "latitude": 37.1538661,
+        "longitude": 127.0782298,
+        "place": "오산운암3단지 주공아파트",
+        "address": "경기도 오산시 운암로 90"
+      }
+    },
+    {
+      "rawId": "17826d78-3cb3-4bee-aba1-6122917bddca",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T11:59:09.745",
+      "endAt": null,
+      "payload": {
+        "appName": "카카오톡",
+        "title": "17 방용환",
+        "text": "오후부터 뭐 하려나"
+      }
+    },
+    {
+      "rawId": "3f9f61c5-cc0a-4d53-84d7-66b97b6f1474",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T12:27:44.667",
+      "endAt": null,
+      "payload": {
+        "appName": "카카오톡",
+        "title": "정민호",
+        "text": "혹시 16기 교육생 중에서 MM에 대리 공지 해주실 분 계실까요??"
+      }
+    },
+    {
+      "rawId": "fbd67c4b-1fda-4d29-a112-b6da3e8ebbf9",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T13:00:20.275",
+      "endAt": null,
+      "payload": {
+        "appName": "메시지",
+        "title": "⁨02-3429-5364⁩",
+        "text": "<제목:‎ [SSAFY‎ 취업지원센터]>‎ \n[Web발신]\n안녕하세요. 전형선님의 취업 성공을 기원하는 SSAFY 취업지원센터입니다.\r\n최근 취업이나 창업 등 새로운 시작을 하셨다면 아래 링크를 통해 알려주세요\r\n 소식을 공유해주신 모든 분께 축하 선물을 보내드립니다.\r\n\r\n** 취업 소식 공유하기\r\nhttps://forms.gle/jtpf5P918VDNgdW59\r\n \r\n1. 취업 소식이란?\r\n - 정규직/계약직 취업\r\n - 채용 연계형 인턴/교육 참여(참여 예정 포함)\r\n - 창업, 프리랜서, 대학원 연구용역 등 SW 외의 분야 취업 포함\r\n \r\n2. 취업 증빙 자료 제출은 선택\r\n - 합격 메일, 명함, 명패, 계약서, 사업자 등록증(창업) 등\r\n \r\n기쁜 소식이 있다면 언제든 공유해 주세요. 소중한 발걸음이 원하는 결실로 이어질 때까지 SSAFY가 함께하겠습니다.\r\n\r\n- SSAFY 취업지원센터 -"
+      }
+    },
+    {
+      "rawId": "5e2f8dac-098f-4e82-b802-3e4add365d6f",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T13:37:03.085",
+      "endAt": null,
+      "payload": {
+        "appName": "YouTube",
+        "title": "김링고",
+        "text": "롤 26.14 패치 명단 공개│이걸 변경하네 ㄷㄷ"
+      }
+    },
+    {
+      "rawId": "4aeeecb5-bfe3-4f80-a43e-d91548608746",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T13:39:39.058",
+      "endAt": null,
+      "payload": {
+        "appName": "Webex",
+        "title": "일반: 서울_제17기_박천웅",
+        "text": "다들 클로드만 쓰시는 것 같아... 조용히 codex 소식 올려봅니다...\nhttps://x.com/OpenAI/status/2074704958419792299"
+      }
+    },
+    {
+      "rawId": "239f871e-844d-43f0-8ba1-cf3a39e655c1",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T13:45:11.128",
+      "endAt": null,
+      "payload": {
+        "appName": "카카오톡",
+        "title": "김소연 | note11g",
+        "text": "ㅋㅋㅋㅋㅋ"
+      }
+    },
+    {
+      "rawId": "af110570-680c-4cb9-acc0-2f54c028a87b",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T13:54:58.540",
+      "endAt": null,
+      "payload": {
+        "appName": "카카오톡",
+        "title": "하다",
+        "text": "그렇게 쌓인 레거시가 한가득"
+      }
+    },
+    {
+      "rawId": "d3449ad0-79d1-4238-8104-47ac6eadd51e",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T14:13:59.061",
+      "endAt": null,
+      "payload": {
+        "appName": "메시지",
+        "title": "⁨KT⁩",
+        "text": "<제목:‎ [KT안내]‎ 고객‎ 보답‎ 프로그램>‎ \n[Web발신]\n[KT안내] 고객 보답 프로그램\n \n'26.7월 제공되는 고객 보답 프로그램 혜택을 안내 드립니다.\n \n■ [로밍] 데이터 50% 추가 6개월\n - 제공기간 : '26.3.1~8.31\n - 함께쓰는로밍 가입 시 자동 제공\n \n■ [멤버십] 인기 브랜드 할인 6개월\n- 제공기간 : ’26.2.4~7.31, 매월 2회\n- 7월 1차 혜택 (26.7.1~7.15)\n ① 배스킨라빈스 50%할인(최대 5천원)\n ② 쇼핑라운지 5천원 할인\n*①,②의 2종 중 택 1\n \n■ [데이터] 매월 100GB 6개월\n - 제공기간 : ‘26.2.1~7.31\n - 매월 1일 자동 제공\n \n ※ 자세히 보기 :\n - https://kt.com/package \n \n ※ KT 전담 고객센터\n - 개인 : 080-470-7790\n (운영시간 09~18시, 일/공휴일 제외)\n - 법인 : 080-789-0016\n (운영시간 09~18시, 토/일/공휴일 제외)\n \nKT 드림\n\n마이케이티앱에서 자세히 보기 : https://kt.com/bd2r"
+      }
+    },
+    {
+      "rawId": "87ad7e0d-b8ce-49f3-87ac-5b33723fd656",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T14:20:34.903",
+      "endAt": null,
+      "payload": {
+        "appName": "카카오톡",
+        "title": "[SSAFY] 김민규",
+        "text": "사진을 보냈습니다."
+      }
+    },
+    {
+      "rawId": "fb8e87d1-2661-4a4e-8972-c730b60dd478",
+      "itemType": "STAY",
+      "startAt": "2026-07-08T14:26:36.387",
+      "endAt": "2026-07-08T14:36:05.129",
+      "payload": {
+        "latitude": 37.1557778,
+        "longitude": 127.0783316,
+        "place": "오산운암3단지 주공아파트",
+        "address": "경기도 오산시 운암로 90"
+      }
+    },
+    {
+      "rawId": "36b19708-c6ba-4f7b-bd2e-720e8c707117",
+      "itemType": "PHOTO",
+      "startAt": "2026-07-08T14:33:51.244",
+      "endAt": null,
+      "payload": {
+        "fileName": "20260708_143351.jpg",
+        "photoFile": "003_20260708_143351.jpg",
+        "latitude": 37.155737699999996,
+        "longitude": 127.07791919972222,
+        "description": null
+      }
+    },
+    {
+      "rawId": "80e288e7-8b6e-41ca-ad45-83aaf0e66e08",
+      "itemType": "PHOTO",
+      "startAt": "2026-07-08T14:34:40.163",
+      "endAt": null,
+      "payload": {
+        "fileName": "20260708_143440.jpg",
+        "photoFile": "002_20260708_143440.jpg",
+        "latitude": 37.15590079972222,
+        "longitude": 127.07819279972222,
+        "description": null
+      }
+    },
+    {
+      "rawId": "af12d347-a8f9-4105-9abd-802c95b18f5f",
+      "itemType": "PHOTO",
+      "startAt": "2026-07-08T15:07:28.617",
+      "endAt": null,
+      "payload": {
+        "fileName": "20260708_150728.jpg",
+        "photoFile": "001_20260708_150728.jpg",
+        "latitude": 37.15386469972222,
+        "longitude": 127.07823729972222,
+        "description": null
+      }
+    },
+    {
+      "rawId": "c91c1d20-06a0-47e9-8dce-8d6951db3a6f",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T15:23:00.455",
+      "endAt": null,
+      "payload": {
+        "appName": "카카오톡",
+        "title": "네이터/15th",
+        "text": "그리디는 특히 증명이 있어야됩니다"
+      }
+    },
+    {
+      "rawId": "3ed0d22e-fdc1-4c1c-8770-158133b76199",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T17:00:39.175",
+      "endAt": null,
+      "payload": {
+        "appName": "메시지",
+        "title": "⁨02-3429-5364⁩",
+        "text": "<제목:‎ SSAFY‎ 【현대오토에버】‎ 채용설명회‎ 만족도>‎ \n[Web발신]\r\nSSAFY 현대오토에버 채용설명회 만족도 설문 안내\r\n\n안녕하세요! SSAFY 취업지원센터입니다.\r\n\n월요일 및 금일 진행된 현대오토에버 채용설명회와 관련하여 만족도 설문조사를 진행합니다.\r\n\n채용설명회에 참여한 교육생분들은 설문에 반드시 응해주시길 바랍니다.\r\n\n설문 링크:  https://forms.gle/JYuqniqdtLVhH4wy7\r\n\n이번 설명회가 2026년 하반기 취업 준비에 의미 있는 도움이 되기를 바랍니다.\r\n\n감사합니다.\r\n"
+      }
+    },
+    {
+      "rawId": "e015a889-3517-45ac-9e12-ea94702fb7e7",
+      "itemType": "PHOTO",
+      "startAt": "2026-07-08T17:27:20.309",
+      "endAt": null,
+      "payload": {
+        "fileName": "20260708_172720.jpg",
+        "photoFile": "000_20260708_172720.jpg",
+        "latitude": 37.1538649,
+        "longitude": 127.0782303,
+        "description": null
+      }
+    },
+    {
+      "rawId": "9da4549e-f89a-4540-826d-8cbe60dabf8f",
+      "itemType": "MOVEMENT",
+      "startAt": "2026-07-08T21:39:24.180",
+      "endAt": "2026-07-08T21:54:06.009",
+      "payload": {
+        "start": {
+          "latitude": 37.1538364,
+          "longitude": 127.0782267,
+          "place": "오산운암3단지 주공아파트",
+          "address": "경기도 오산시 운암로 90"
+        },
+        "end": {
+          "latitude": 37.1532693,
+          "longitude": 127.0794219,
+          "place": "오산운암3단지 주공아파트 인근",
+          "address": "경기도 오산시 운암로 90 인근"
+        },
+        "distanceMeters": 1870.0412461314306,
+        "transports": "WALKING"
+      }
+    },
+    {
+      "rawId": "34258893-8c56-43ce-9e9a-d2605ad31ce8",
+      "itemType": "STAY",
+      "startAt": "2026-07-08T21:54:06.009",
+      "endAt": "2026-07-08T22:00:51.381",
+      "payload": {
+        "latitude": 37.1532693,
+        "longitude": 127.0794219,
+        "place": "오산운암3단지 주공아파트 인근",
+        "address": "경기도 오산시 운암로 90 인근"
+      }
+    },
+    {
+      "rawId": "2c3b35da-2c35-4a77-966f-e567a7ae3907",
+      "itemType": "MOVEMENT",
+      "startAt": "2026-07-08T22:00:51.381",
+      "endAt": "2026-07-08T22:07:01.001",
+      "payload": {
+        "start": {
+          "latitude": 37.1532693,
+          "longitude": 127.0794219,
+          "place": "오산운암3단지 주공아파트 인근",
+          "address": "경기도 오산시 운암로 90 인근"
+        },
+        "end": {
+          "latitude": 37.154238,
+          "longitude": 127.07852,
+          "place": "오산운암3단지 주공아파트",
+          "address": "경기도 오산시 운암로 90"
+        },
+        "distanceMeters": 509.13179335826516,
+        "transports": "WALKING"
+      }
+    },
+    {
+      "rawId": "0a1057be-b779-42b0-955c-06fccc063b4e",
+      "itemType": "STAY",
+      "startAt": "2026-07-08T22:33:07.007",
+      "endAt": "2026-07-08T23:31:18.716",
+      "payload": {
+        "latitude": 37.1538097,
+        "longitude": 127.078222,
+        "place": "오산운암3단지 주공아파트",
+        "address": "경기도 오산시 운암로 90"
+      }
+    },
+    {
+      "rawId": "37af39db-f018-4973-bdf1-95724c74f824",
+      "itemType": "NOTIFICATION",
+      "startAt": "2026-07-08T22:40:01.843",
+      "endAt": null,
+      "payload": {
+        "appName": "카카오톡",
+        "title": "피자맛있다",
+        "text": "부럽"
+      }
+    },
+    {
+      "rawId": "ec06c681-3a6d-41f7-9fe5-92b205756ce5",
+      "itemType": "MOVEMENT",
+      "startAt": "2026-07-08T23:31:18.716",
+      "endAt": "2026-07-08T23:31:48.817",
+      "payload": {
+        "start": {
+          "latitude": 37.1538097,
+          "longitude": 127.078222,
+          "place": "오산운암3단지 주공아파트",
+          "address": "경기도 오산시 운암로 90"
+        },
+        "end": {
+          "latitude": 37.1547864,
+          "longitude": 127.0784331,
+          "place": "오산운암3단지 주공아파트",
+          "address": "경기도 오산시 운암로 90"
+        },
+        "distanceMeters": 103.6201051725968,
+        "transports": "ON_BICYCLE"
+      }
+    },
+    {
+      "rawId": "4157d626-6ba5-4cca-8d5d-41c506b11771",
+      "itemType": "STAY",
+      "startAt": "2026-07-08T23:31:48.817",
+      "endAt": "2026-07-08T23:53:28.969",
+      "payload": {
+        "latitude": 37.1547864,
+        "longitude": 127.0784331,
+        "place": "오산운암3단지 주공아파트",
+        "address": "경기도 오산시 운암로 90"
+      }
+    },
+    {
+      "rawId": "3a9d1cbf-c9b6-4af6-a00b-b867aeecea56",
+      "itemType": "MOVEMENT",
+      "startAt": "2026-07-08T23:53:28.969",
+      "endAt": "2026-07-08T23:54:00.018",
+      "payload": {
+        "start": {
+          "latitude": 37.1547864,
+          "longitude": 127.0784331,
+          "place": "오산운암3단지 주공아파트",
+          "address": "경기도 오산시 운암로 90"
+        },
+        "end": {
+          "latitude": 37.1538214,
+          "longitude": 127.0782094,
+          "place": "오산운암3단지 주공아파트",
+          "address": "경기도 오산시 운암로 90"
+        },
+        "distanceMeters": 109.11916149597809,
+        "transports": "ON_BICYCLE"
+      }
+    }
+  ]
+}

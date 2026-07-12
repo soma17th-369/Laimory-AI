@@ -31,6 +31,9 @@ class TimelineEventDraft(CamelModel):
     event_type: EventType = Field(alias="eventType")
     title: str = Field(min_length=1)
     description: str = Field(default="")
+    address: str | None = None
+    place_label: str | None = Field(default=None, alias="placeLabel")
+    tags: list[str] = Field(default_factory=list)
     start_time: AwareDatetime = Field(alias="startTime")
     end_time: AwareDatetime = Field(alias="endTime")
     confidence: float = Field(ge=0.0, le=1.0)
