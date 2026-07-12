@@ -1,4 +1,4 @@
-# AI 하루 타임라인 입력 Source Item 계약
+﻿# AI 하루 타임라인 입력 Source Item 계약
 
 이슈 #7 — AI 하루 타임라인 Agent 가 입력으로 받는 **Source Item 계약**을 정의한다.
 요청 DTO 는 `app/schemas/timeline_request.py` 의 `TimelineDraftRequest` 이며,
@@ -30,7 +30,7 @@
 | `sourceId` | string | ✅ | 수집 주체가 전달하는 안정적 식별자 |
 | `sourceType` | enum | ✅ | item 종류 (아래 표 참고) |
 
-`sourceType` 값: `location_stay`, `location_route`, `notification`, `photo`,
+`sourceType` 값: `stay`, `movement`, `notification`, `photo`,
 `calendar_event`, `health_steps`, `health_sleep`, `health_total_calories`,
 `health_active_calories`, `health_distance`, `health_heart_rate`.
 
@@ -43,7 +43,7 @@
 | `mode` | enum(`FULL_DAY`) | ✅ | 수집 모드 |
 | `window.start` / `window.end` | int(ms) | ✅ | 하루 수집 범위 |
 | `generatedAt` | int(ms) | ✅ | JSON 생성 시각 |
-| `location` | object | 선택 | 위치 데이터 (기본 빈 stays/routes) |
+| `sourceItems` | array | 선택 | STAY/MOVEMENT 등 수집 항목 목록 |
 | `notifications` | object | 선택 | 알림 데이터 (기본 빈 active/collected) |
 | `photos` | array | 선택 | 사진 목록 |
 | `calendar` | object | 선택 | 캘린더 데이터 (기본 빈 events) |
@@ -52,10 +52,10 @@
 
 ## source type 별 payload
 
-### 위치 — `location.stays[]` (`location_stay`)
+### 체류 — `sourceItems[]` (`STAY`)
 `source`(str), `lat`, `lon`, `startTime`, `endTime`, `durationSec`
 
-### 위치 — `location.routes[]` (`location_route`)
+### 이동 — `sourceItems[]` (`MOVEMENT`)
 `source`(str), `startTime`, `endTime`, `durationSec`, `distanceMeters`, `points[]`(`{lat, lon}`)
 
 ### 알림 — `notifications.active[]` / `notifications.collected[]` (`notification`)
@@ -101,3 +101,4 @@ DTO(`pydantic`) 에서 강제하는 규칙이다.
 
 - `sourceId` 는 AI 결과 검증과 이후 선택적 재처리에 필요하다.
 - 사용자 메모리 데이터는 request 로 함께 받되, Source Item 계약 대상은 아니다.
+

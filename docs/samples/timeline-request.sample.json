@@ -11,7 +11,7 @@
     "stays": [
       {
         "sourceId": "loc_stay_001",
-        "sourceType": "location_stay",
+        "sourceType": "stay",
         "source": "live",
         "lat": 37.1538856,
         "lon": 127.0781832,
@@ -23,7 +23,7 @@
     "routes": [
       {
         "sourceId": "loc_route_001",
-        "sourceType": "location_route",
+        "sourceType": "movement",
         "source": "live",
         "startTime": 1782784620150,
         "endTime": 1782790357503,
@@ -133,3 +133,4 @@
     }
   }
 }
+

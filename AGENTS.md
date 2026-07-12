@@ -48,31 +48,51 @@ app/
 │
 ├── api/v1/
 │   ├── router.py              # v1 라우터 취합
-│   └── timeline.py            # POST /v1/timeline (초안 생성 엔드포인트)
+│   └── timeline.py            # POST /v1/timeline (taskId 접수 → 202), GET /{taskId}
 │
 ├── schemas/                   # Pydantic 계약(contract)
-│   ├── source_item.py         # 소스 아이템 명세          ← 체크1
-│   ├── event_candidate.py     # AI 이벤트 후보 모델       ← 체크2
+│   ├── source_snapshot.py     # 수집 원본(taskId/sourceItems) 입력 계약
+│   ├── location.py/calendar.py/health.py/notification.py/photo.py  # 분리된 도메인 항목
+│   ├── event_candidate.py     # AI 이벤트 후보 모델
+│   ├── timeline_request.py    # 정규화된 요청(main agent 입력)
 │   └── timeline.py            # 타임라인 초안/이벤트 스키마
 │
 ├── agents/                    # AI 에이전트
 │   ├── base.py                # 공통 에이전트 인터페이스
-│   ├── prompts/               # 프롬프트 템플릿 분리
-│   ├── events/                # 데이터별 이벤트 에이전트   ← 체크3
-│   │   ├── base_event_agent.py
-│   │   └── location_agent.py  (등 소스별로 추가)
-│   └── timeline_agent.py      # 후보 → 초안 병합          ← 체크4
-│
-├── pipeline/
-│   └── timeline_pipeline.py   # normalize→events→timeline→validate 조율 ← 체크5
+│   ├── parsing.py             # LLM 호출/프롬프트/응답 파싱 유틸
+│   ├── events/                # 데이터별 이벤트 에이전트 (source별 폴더)
+│   │   └── base_event_agent.py
+│   ├── timeline/timeline_agent.py   # 후보 → 초안 병합 (LLM 병합/파싱까지만)
+│   └── main/main_agent.py     # events → timeline → repair 조율(LangGraph)
 │
 └── services/
-├── normalizer.py          # 입력 → 공통 이벤트 후보 정규화
-├── validator.py           # AI 결과 검증               ← 체크6
-└── storage.py             # 검증 통과분 최종 저장       ← 체크6
+    ├── source_repository.py   # taskId로 수집 스냅샷 조회 (DB 추상화, 인메모리 스텁)
+    ├── normalizer.py          # 수집 스냅샷을 itemType별로 분리·정규화
+    ├── draft_repair.py        # draft 확정 repair (아래 순서대로 조립)
+    ├── validator.py           # 요청 시간 범위(window) 강제: 범위 밖 event 제거/경고
+    ├── source_lookup.py       # sourceRef → 입력 항목 역참조. rawId가 정식 식별자이고,
+    │                          #   LLM이 붙인 sourceType 라벨은 입력의 실제 타입으로 정정한다
+    ├── sleep_guard.py         # 수면 경계 강제: 기상 이전 event 제거, 수면에 걸친 event 클램프
+    ├── stay_merge.py          # 이동 없이 이어진 같은 장소 STAY 묶기 (끊긴 수집 복원, 입력만 분석)
+    ├── calendar_guard.py      # timeline 에서 통째로 빠진 캘린더 일정을 event 로 복원 (누락 방지)
+    ├── calendar_location.py    # 캘린더 locationText ↔ STAY place/address 일치 시 confidence 보강
+    ├── meal_guard.py           # MEAL event 지속시간 20~60분 강제 (긴 체류 전체를 식사로 잡지 않음)
+    ├── place_resolver.py       # placeLabel을 근거 place로 확정, 근거 없는 address 제거
+    ├── place_text.py           # 장소 문자열 정규화·비교 (calendar_location/place_resolver/stay_merge 공용)
+    ├── task_store.py          # 처리 task 상태 저장 (PROCESSING/SUCCESS/FAILED)
+    ├── timeline_runner.py     # 백그라운드: 조회→정규화→main agent→상태/콜백
+    └── callback.py            # 완료 결과 App Server 콜백
+
+# 처리 흐름: taskId 접수 → 202 즉시응답 → (백그라운드) DB 조회 → normalize → main agent → 상태 갱신/콜백
+# main agent 그래프: run_event_agents → merge_results → run_timeline_agent → repair_draft
+#   앞 3개는 LLM 이 의미를 판단하는 확률적 단계, repair_draft 는 코드가 확정하는 결정론적 단계다.
+# repair_draft 순서: sourceType 정정 → 캘린더 복원 → duration → 근거 구간 정렬 → MEAL
+#   → 수면 경계 → window → 장소 확정 → 정렬 → 체류 병합 → 겹침 정리 → confidence 보강
+#   → clientEventId 재부여
 
 tests/
-├── agents/
-├── pipeline/
-└── fixtures/                  # MVP 테스트 케이스          ← 체크7
+├── agents/                    # Event Agent live 입력 테스트(opt-in)
+├── api/ · services/ · main/   # 엔드포인트·정규화·저장소·파이프라인 단위 테스트
+├── integration/               # 실제 LLM 통합 테스트(opt-in)
+└── fixtures/                  # 요청/스냅샷 빌더
 ```
