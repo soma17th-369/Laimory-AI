@@ -1,151 +1,217 @@
-"""테스트용 입력 요청 빌더.
+"""테스트용 입력 빌더.
 
-source type 별로 최소한의 `TimelineDraftRequest` 를 손쉽게 만들도록 돕는다.
-필요한 도메인만 채워 각 Event Agent 를 독립적으로 검증할 수 있다.
+- `make_request`: 정규화된 `TimelineDraftRequest` 를 손쉽게 만든다(Agent/파이프라인
+  단위 테스트용). 도메인 항목은 override 로 주입한다.
+- `make_snapshot` / `*_source_item`: 수집 원본(`CollectedSnapshot`)을 만든다
+  (normalizer/저장소/엔드포인트 e2e 테스트용).
+
+시각은 새 계약대로 ISO 문자열을 사용한다.
 """
 
 from app.schemas import (
-    ActiveCaloriesData,
-    CalendarData,
-    CalendarEvent,
-    CollectionMode,
-    DistanceData,
-    HealthData,
-    HeartRateData,
-    HeartRateSample,
-    LocationData,
-    LocationRoute,
-    LocationStay,
-    NotificationData,
+    CalendarItem,
+    CollectedSnapshot,
+    CollectedSourceItem,
+    HealthItem,
+    HealthMetric,
+    ItemType,
+    MovementItem,
     NotificationItem,
     PhotoItem,
-    SleepData,
-    StepsData,
+    StayItem,
     TimelineDraftRequest,
+    TimelineWindow,
     TimeWindow,
-    TotalCaloriesData,
 )
 
-# 하루 기준 epoch milliseconds (2026-06-20 00:00 UTC 근처의 임의 고정값).
-DAY_START = 1_750_000_000_000
-HOUR = 3_600_000
+DATE = "2026-06-20"
+WINDOW_START = "2026-06-20T00:00:00"
+WINDOW_END = "2026-06-21T00:00:00"
+
+
+# --- 정규화된 요청(TimelineDraftRequest) 빌더 ---------------------------------
 
 
 def make_request(**overrides) -> TimelineDraftRequest:
-    """봉투 필수 필드를 채운 요청을 만든다. 도메인은 override 로 주입한다."""
+    """봉투 필수 필드를 채운 요청을 만든다. 도메인 리스트는 override 로 주입한다."""
 
     defaults = dict(
-        transaction_id="tx-test",
-        date="2026-06-20",
-        mode=CollectionMode.FULL_DAY,
-        window=TimeWindow(start=DAY_START, end=DAY_START + 24 * HOUR),
-        generated_at=DAY_START,
+        task_id="task-test",
+        date=DATE,
+        timezone="Asia/Seoul",
+        window=TimeWindow(start=WINDOW_START, end=WINDOW_END),
     )
     defaults.update(overrides)
     return TimelineDraftRequest(**defaults)
 
 
-def stay(source_id, lat, lon, start, end) -> LocationStay:
-    return LocationStay(
-        source_id=source_id,
-        source="live",
-        lat=lat,
-        lon=lon,
-        start_time=start,
-        end_time=end,
-        duration_sec=(end - start) // 1000,
+def stay_item(
+    item_id,
+    lat=37.5,
+    lon=127.0,
+    start=WINDOW_START,
+    end=WINDOW_END,
+    raw_id=None,
+    place=None,
+    address="서울특별시 어딘가",
+    places=None,
+) -> StayItem:
+    return StayItem(
+        id=item_id,
+        raw_id=raw_id,
+        start_at=start,
+        end_at=end,
+        latitude=lat,
+        longitude=lon,
+        place=place,
+        address=address,
+        places=["장소명"] if places is None else places,
+        duration_text="1시간",
     )
 
 
-def route(source_id, start, end, distance=1000.0) -> LocationRoute:
-    return LocationRoute(
-        source_id=source_id,
-        source="live",
-        start_time=start,
-        end_time=end,
-        duration_sec=(end - start) // 1000,
+def movement_item(
+    item_id, start=WINDOW_START, end=WINDOW_END, distance=1000.0, raw_id=None
+) -> MovementItem:
+    return MovementItem(
+        id=item_id,
+        raw_id=raw_id,
+        start_at=start,
+        end_at=end,
         distance_meters=distance,
+        transports=["WALKING"],
     )
 
 
-def calendar_event(source_id, title, start, end) -> CalendarEvent:
-    return CalendarEvent(
-        source_id=source_id,
+def calendar_item(
+    item_id, title, start=WINDOW_START, end=WINDOW_END, raw_id=None, location_text=None
+) -> CalendarItem:
+    return CalendarItem(
+        id=item_id,
+        raw_id=raw_id,
+        start_at=start,
+        end_at=end,
         title=title,
-        start_time=start,
-        end_time=end,
+        location_text=location_text,
     )
 
 
-def photo(source_id, at, mime="image/jpeg", lat=None, lon=None) -> PhotoItem:
-    return PhotoItem(
-        source_id=source_id,
-        id=source_id,
-        uri=f"file:///{source_id}.jpg",
-        date_taken=at,
-        lat=lat,
-        lon=lon,
-        width=1920,
-        height=1080,
-        mime_type=mime,
-    )
-
-
-def notification(source_id, app_name, title, post) -> NotificationItem:
+def notification_item(item_id, app_name, title, posted=WINDOW_START, raw_id=None) -> NotificationItem:
     return NotificationItem(
-        source_id=source_id,
-        package_name=f"com.{app_name.lower()}",
+        id=item_id,
+        raw_id=raw_id,
+        posted_at=posted,
         app_name=app_name,
         title=title,
         text="본문",
-        post_time=post,
-        collected_at=post,
     )
 
 
-def sleep(source_id, start, end) -> SleepData:
-    return SleepData(
-        source_id=source_id,
-        start_time=start,
-        end_time=end,
-        duration_minutes=(end - start) // 60_000,
+def photo_item(item_id, taken=WINDOW_START, lat=None, lon=None, raw_id=None) -> PhotoItem:
+    return PhotoItem(
+        id=item_id,
+        raw_id=raw_id,
+        taken_at=taken,
+        filename=f"{item_id}.jpg",
+        client_photo_uri=f"content://{item_id}",
+        latitude=lat,
+        longitude=lon,
+        description="사진 설명",
     )
 
 
-def heart_rate(source_id, sample_times) -> HeartRateData:
-    return HeartRateData(
-        source_id=source_id,
-        samples=[HeartRateSample(time=t, bpm=70) for t in sample_times],
+def steps_item(item_id, count, start=WINDOW_START, end=WINDOW_END, raw_id=None) -> HealthItem:
+    return HealthItem(
+        id=item_id,
+        raw_id=raw_id,
+        metric=HealthMetric.STEPS,
+        start_at=start,
+        end_at=end,
+        value=count,
     )
 
 
-def steps(source_id, count) -> StepsData:
-    return StepsData(source_id=source_id, count=count)
+def sleep_item(item_id, start, end, minutes, raw_id=None) -> HealthItem:
+    return HealthItem(
+        id=item_id,
+        raw_id=raw_id,
+        metric=HealthMetric.SLEEP,
+        start_at=start,
+        end_at=end,
+        duration_minutes=minutes,
+    )
 
 
-def total_calories(source_id, kcal) -> TotalCaloriesData:
-    return TotalCaloriesData(source_id=source_id, kcal=kcal)
+# --- 수집 원본(CollectedSnapshot) 빌더 ----------------------------------------
 
 
-def active_calories(source_id, kcal) -> ActiveCaloriesData:
-    return ActiveCaloriesData(source_id=source_id, kcal=kcal)
+def source_item(item_id, item_type, payload, start=WINDOW_START, end=None) -> CollectedSourceItem:
+    return CollectedSourceItem(
+        id=item_id,
+        item_type=item_type,
+        start_at=start,
+        end_at=end,
+        payload=payload,
+    )
 
 
-def distance(source_id, meters) -> DistanceData:
-    return DistanceData(source_id=source_id, meters=meters)
+def make_snapshot(task_id="task-test", source_items=None, **overrides) -> CollectedSnapshot:
+    """수집 원본 스냅샷을 만든다. sourceItems 는 리스트로 주입한다."""
+
+    defaults = dict(
+        task_id=task_id,
+        record_date="2026-06-20T22:00:00",
+        record_time_zone="Asia/Seoul",
+        timeline_window=TimelineWindow(start_time="20260620T000000", end_time="20260621T000000"),
+        source_items=list(source_items or []),
+    )
+    defaults.update(overrides)
+    return CollectedSnapshot(**defaults)
 
 
-def location_data(stays=(), routes=()) -> LocationData:
-    return LocationData(stays=list(stays), routes=list(routes))
+def default_source_items() -> list[CollectedSourceItem]:
+    """도메인마다 한 건씩 담긴 대표 sourceItems."""
 
-
-def notification_data(active=(), collected=()) -> NotificationData:
-    return NotificationData(active=list(active), collected=list(collected))
-
-
-def calendar_data(events=()) -> CalendarData:
-    return CalendarData(events=list(events))
-
-
-def health_data(**kwargs) -> HealthData:
-    return HealthData(**kwargs)
+    return [
+        source_item(
+            101,
+            ItemType.STAY,
+            {"latitude": 37.5, "longitude": 127.0, "address": "주소", "places": ["장소"], "durationText": "1시간"},
+            end=WINDOW_END,
+        ),
+        source_item(
+            102,
+            ItemType.MOVEMENT,
+            {
+                "start": {"latitude": 37.5, "longitude": 127.0},
+                "end": {"latitude": 37.6, "longitude": 127.1},
+                "distanceMeters": 5000.0,
+                "transports": ["IN_VEHICLE"],
+            },
+            end=WINDOW_END,
+        ),
+        source_item(
+            103,
+            ItemType.CALENDAR,
+            {"title": "회의", "description": "", "locationText": "회의실", "allDay": False},
+            end=WINDOW_END,
+        ),
+        source_item(104, ItemType.HEALTH, {"metric": "STEPS", "value": 10145}, end=WINDOW_END),
+        source_item(
+            105,
+            ItemType.HEALTH,
+            {"metric": "SLEEP", "durationMinutes": 210},
+            start="2026-06-20T04:00:00",
+            end="2026-06-20T07:30:00",
+        ),
+        source_item(
+            106,
+            ItemType.NOTIFICATION,
+            {"appName": "카카오톡", "title": "제목", "text": "본문"},
+        ),
+        source_item(
+            107,
+            ItemType.PHOTO,
+            {"filename": "p.jpg", "clientPhotoUri": "content://p", "description": "설명"},
+        ),
+    ]
