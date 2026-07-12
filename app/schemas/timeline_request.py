@@ -1,91 +1,62 @@
-"""AI 하루 타임라인 입력 요청 DTO.
+"""정규화된 타임라인 초안 생성 요청 DTO.
 
-하루 단위 라이프로그 raw snapshot 을 표현한다.
+`app/services/normalizer.py` 가 수집 스냅샷(`CollectedSnapshot`)의 평평한
+`sourceItems` 를 `itemType` 기준으로 분리해 만든 결과이며, main agent 와 각
+Event Agent 가 입력으로 소비한다.
 
-    기본 메타데이터
-    + 위치 체류/이동 기록
-    + 알림 수집 기록
-    + 사진 메타데이터
-    + 캘린더 일정
-    + 건강 데이터
-    + 사용자 메모리(보조 context)
-
-`transactionId` 는 이 스냅샷 세트 전체를 식별하고, 각 source item 은
-수집 주체가 전달한 `sourceId` 를 가진다.
+`taskId` 가 이 처리 단위를 식별하고, 각 도메인 리스트는 해당 종류의 항목만
+담는다. 시각은 ISO 문자열 그대로 유지한다.
 """
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
-from app.schemas.calendar import CalendarData
-from app.schemas.common import CamelModel, CollectionMode, SourceItem, TimestampMs
-from app.schemas.health import HealthData
-from app.schemas.location import LocationData
-from app.schemas.notification import NotificationData
+from app.schemas.calendar import CalendarItem
+from app.schemas.common import CamelModel
+from app.schemas.health import HealthItem
+from app.schemas.stay import MovementItem, StayItem
+from app.schemas.notification import NotificationItem
 from app.schemas.photo import PhotoItem
 from app.schemas.user_memory import UserMemory
 
 
 class TimeWindow(CamelModel):
-    """하루 수집 범위 (Unix epoch milliseconds)."""
+    """타임라인 생성 대상 시간 창 (ISO 문자열)."""
 
-    start: TimestampMs
-    end: TimestampMs
-
-    @model_validator(mode="after")
-    def _validate_window(self) -> "TimeWindow":
-        if self.end < self.start:
-            raise ValueError("window.end 는 window.start 이상이어야 합니다.")
-        return self
+    start: str
+    end: str
 
 
 class TimelineDraftRequest(CamelModel):
-    """타임라인 초안 생성 요청.
+    """정규화된 타임라인 초안 생성 요청.
 
-    AI 하루 타임라인 Agent 가 입력으로 받는 Source Item 계약이다.
+    수집 스냅샷을 도메인별로 분리한 뒤의 형태다. main agent 는 이 요청을 각
+    Event Agent 에 넘겨 event 후보를 뽑고, Timeline Agent 로 병합한다.
     """
 
-    transaction_id: str = Field(
-        alias="transactionId",
-        min_length=1,
-        description="스냅샷 세트 전체를 식별하는 ID",
-    )
-    date: str = Field(
-        pattern=r"^\d{4}-\d{2}-\d{2}$",
-        description="수집 대상 날짜 (YYYY-MM-DD)",
-    )
-    mode: CollectionMode
-    window: TimeWindow
-    generated_at: TimestampMs = Field(alias="generatedAt")
-
-    location: LocationData = Field(default_factory=LocationData)
-    notifications: NotificationData = Field(default_factory=NotificationData)
-    photos: list[PhotoItem] = Field(default_factory=list)
-    calendar: CalendarData = Field(default_factory=CalendarData)
-    health: HealthData = Field(default_factory=HealthData)
+    task_id: str = Field(alias="taskId", min_length=1)
+    date: str = Field(description="수집 대상 날짜 (YYYY-MM-DD)")
+    timezone: str = "Asia/Seoul"
+    window: TimeWindow | None = None
     user_memory: UserMemory | None = Field(default=None, alias="userMemory")
 
-    def iter_source_items(self) -> list[SourceItem]:
-        """SourceItem 계약을 따르는 입력만 하나의 리스트로 모은다.
+    stays: list[StayItem] = Field(default_factory=list)
+    movements: list[MovementItem] = Field(default_factory=list)
+    calendars: list[CalendarItem] = Field(default_factory=list)
+    healths: list[HealthItem] = Field(default_factory=list)
+    notifications: list[NotificationItem] = Field(default_factory=list)
+    photos: list[PhotoItem] = Field(default_factory=list)
 
-        userMemory 는 요청 DTO 로 받지만 sourceId/sourceType 을 갖는 SourceItem 이
-        아니므로 이 목록에는 포함하지 않는다.
+    def iter_source_items(self) -> list:
+        """모든 도메인 항목을 하나의 리스트로 모은다(로깅/집계용).
+
+        userMemory 는 도메인 항목이 아니므로 포함하지 않는다.
         """
 
-        items: list[SourceItem] = []
-        items.extend(self.location.stays)
-        items.extend(self.location.routes)
-        items.extend(self.notifications.active)
-        items.extend(self.notifications.collected)
-        items.extend(self.photos)
-        items.extend(self.calendar.events)
-        for health_item in (
-            self.health.steps,
-            self.health.sleep,
-            self.health.total_calories_burned,
-            self.health.active_calories_burned,
-            self.health.distance,
-            self.health.heart_rate,
-        ):
-            if health_item is not None:
-                items.append(health_item)
-        return items
+        return [
+            *self.stays,
+            *self.movements,
+            *self.calendars,
+            *self.healths,
+            *self.notifications,
+            *self.photos,
+        ]

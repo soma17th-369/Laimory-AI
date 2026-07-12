@@ -1,4 +1,4 @@
-"""Location Event Agent 패키지."""
+"""Location Event Agent package."""
 
 from app.agents.events.location.agent import LocationEventAgent
 

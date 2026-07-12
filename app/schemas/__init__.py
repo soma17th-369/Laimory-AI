@@ -1,17 +1,11 @@
 """Laimory AI 서버 Pydantic 계약 패키지.
 
-입력 Source Item, AI Event 후보, Agent 반환값 등 서버 내부/외부 계약을 모은다.
+수집 스냅샷(원본) 입력, 도메인별로 분리된 항목, AI Event 후보, Agent 반환값 등
+서버 내부/외부 계약을 모은다.
 """
 
-from app.schemas.calendar import CalendarData, CalendarEvent
-from app.schemas.common import (
-    CamelModel,
-    CollectionMode,
-    GeoPoint,
-    SourceItem,
-    SourceType,
-    TimeRange,
-)
+from app.schemas.calendar import CalendarItem
+from app.schemas.common import CamelModel, GeoPlace, Latitude, Longitude
 from app.schemas.event_candidate import (
     AgentEventResult,
     AgentWarning,
@@ -23,19 +17,18 @@ from app.schemas.event_candidate import (
     SourceFragment,
     SourceRef,
 )
-from app.schemas.health import (
-    ActiveCaloriesData,
-    DistanceData,
-    HealthData,
-    HeartRateData,
-    HeartRateSample,
-    SleepData,
-    StepsData,
-    TotalCaloriesData,
-)
-from app.schemas.location import LocationData, LocationRoute, LocationStay
-from app.schemas.notification import NotificationData, NotificationItem
+from app.schemas.health import HealthItem
+from app.schemas.stay import MovementItem, StayItem
+from app.schemas.notification import NotificationItem
 from app.schemas.photo import PhotoItem
+from app.schemas.source_snapshot import (
+    CollectedSnapshot,
+    CollectedSourceItem,
+    HealthMetric,
+    ItemType,
+    TimelineWindow,
+)
+from app.schemas.task import TaskRecord, TaskStatus, TimelineCallbackPayload
 from app.schemas.timeline import (
     TimelineDraft,
     TimelineDraftEvent,
@@ -48,37 +41,33 @@ from app.schemas.timeline_request import TimelineDraftRequest, TimeWindow
 from app.schemas.user_memory import UserMemory
 
 __all__ = [
-    "ActiveCaloriesData",
     "AgentEventResult",
     "AgentWarning",
     "AiEventCandidate",
-    "CalendarData",
-    "CalendarEvent",
+    "CalendarItem",
     "CamelModel",
     "CandidateTimeRange",
-    "CollectionMode",
-    "DistanceData",
+    "CollectedSnapshot",
+    "CollectedSourceItem",
     "EventSourceType",
     "EventType",
-    "GeoPoint",
-    "HealthData",
-    "HeartRateData",
-    "HeartRateSample",
+    "GeoPlace",
+    "HealthItem",
+    "HealthMetric",
     "InferenceLevel",
-    "LocationData",
-    "LocationRoute",
-    "LocationStay",
-    "NotificationData",
+    "ItemType",
+    "Latitude",
+    "Longitude",
+    "MovementItem",
     "NotificationItem",
     "PhotoItem",
-    "SleepData",
     "SourceFragment",
-    "SourceItem",
     "SourceRef",
-    "SourceType",
-    "StepsData",
-    "TimeRange",
+    "StayItem",
+    "TaskRecord",
+    "TaskStatus",
     "TimeWindow",
+    "TimelineCallbackPayload",
     "TimelineDraft",
     "TimelineDraftEvent",
     "TimelineDraftRequest",
@@ -86,6 +75,6 @@ __all__ = [
     "TimelineQuestion",
     "TimelineWarning",
     "TimelineWarningSeverity",
-    "TotalCaloriesData",
+    "TimelineWindow",
     "UserMemory",
 ]

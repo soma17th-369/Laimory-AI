@@ -1,0 +1,169 @@
+"""수집 원본을 도메인별 요청 모델로 정규화한다."""
+
+from __future__ import annotations
+
+import re
+
+from app.core.logging import get_logger
+from app.schemas import (
+    CalendarItem,
+    CollectedSnapshot,
+    CollectedSourceItem,
+    HealthItem,
+    ItemType,
+    MovementItem,
+    NotificationItem,
+    PhotoItem,
+    StayItem,
+    TimelineDraftRequest,
+    TimeWindow,
+)
+
+logger = get_logger(__name__)
+
+
+def split_source_items(
+    snapshot: CollectedSnapshot,
+) -> dict[ItemType, list[CollectedSourceItem]]:
+    """`sourceItems`를 `itemType` 기준으로 그룹화한다."""
+
+    groups: dict[ItemType, list[CollectedSourceItem]] = {
+        item_type: [] for item_type in ItemType
+    }
+    for item in snapshot.source_items:
+        groups[item.item_type].append(item)
+    return groups
+
+
+def _base_payload(item: CollectedSourceItem) -> dict:
+    return {
+        "id": item.id,
+        "rawId": item.raw_id,
+        "startAt": item.start_at,
+        "endAt": item.end_at,
+    }
+
+
+def _stay(item: CollectedSourceItem) -> StayItem:
+    return StayItem.model_validate(_base_payload(item) | item.payload)
+
+
+def _movement(item: CollectedSourceItem) -> MovementItem:
+    payload = dict(item.payload)
+    transports = payload.get("transports")
+    if isinstance(transports, str):
+        payload["transports"] = [transports]
+    return MovementItem.model_validate(_base_payload(item) | payload)
+
+
+def _calendar(item: CollectedSourceItem) -> CalendarItem:
+    return CalendarItem.model_validate(_base_payload(item) | item.payload)
+
+
+def _normalize_health_payload(payload: dict) -> dict:
+    normalized = dict(payload)
+    metric = normalized.get("metric")
+    value = normalized.get("value")
+    if not isinstance(value, str):
+        return normalized
+
+    match = re.search(r"\d+(?:\.\d+)?", value)
+    if match is None:
+        return normalized
+
+    number = float(match.group())
+    if metric == "SLEEP" and "durationMinutes" not in normalized:
+        normalized["durationMinutes"] = int(number)
+        normalized.pop("value", None)
+    else:
+        normalized["value"] = number
+    return normalized
+
+
+def _health(item: CollectedSourceItem) -> HealthItem:
+    return HealthItem.model_validate(
+        _base_payload(item) | _normalize_health_payload(item.payload)
+    )
+
+
+def _notification(item: CollectedSourceItem) -> NotificationItem:
+    return NotificationItem.model_validate(
+        {
+            "id": item.id,
+            "rawId": item.raw_id,
+            "postedAt": item.start_at,
+            **item.payload,
+        }
+    )
+
+
+def _photo(item: CollectedSourceItem) -> PhotoItem:
+    payload = dict(item.payload)
+    if "clientPhotoUri" not in payload and "photoFile" in payload:
+        payload["clientPhotoUri"] = payload["photoFile"]
+    return PhotoItem.model_validate(
+        {"id": item.id, "rawId": item.raw_id, "takenAt": item.start_at, **payload}
+    )
+
+
+_PARSERS = {
+    ItemType.STAY: ("stays", _stay),
+    ItemType.MOVEMENT: ("movements", _movement),
+    ItemType.CALENDAR: ("calendars", _calendar),
+    ItemType.HEALTH: ("healths", _health),
+    ItemType.NOTIFICATION: ("notifications", _notification),
+    ItemType.PHOTO: ("photos", _photo),
+}
+
+
+def _to_date(record_date: str) -> str:
+    return record_date[:10]
+
+
+def normalize(snapshot: CollectedSnapshot) -> TimelineDraftRequest:
+    """수집 원본을 도메인별로 분리하고 검증해 TimelineDraftRequest를 만든다."""
+
+    groups = split_source_items(snapshot)
+
+    domains: dict[str, list] = {field: [] for field, _ in _PARSERS.values()}
+    for item_type, items in groups.items():
+        field, parser = _PARSERS[item_type]
+        for item in items:
+            try:
+                domains[field].append(parser(item))
+            except Exception as exc:  # noqa: BLE001 - 개별 항목 실패는 건너뛴다.
+                logger.warning(
+                    "수집 항목 정규화 실패: itemType=%s, id=%s, rawId=%s, error=%s",
+                    item_type.value,
+                    item.id,
+                    item.raw_id,
+                    exc,
+                )
+
+    window = None
+    if snapshot.timeline_window is not None:
+        window = TimeWindow(
+            start=snapshot.timeline_window.start_time,
+            end=snapshot.timeline_window.end_time,
+        )
+
+    request = TimelineDraftRequest(
+        task_id=snapshot.task_id,
+        date=_to_date(snapshot.record_date),
+        timezone=snapshot.record_time_zone,
+        window=window,
+        user_memory=snapshot.user_memory,
+        **domains,
+    )
+    logger.info(
+        "정규화 완료: taskId=%s, stays=%d, movements=%d, calendars=%d, "
+        "healths=%d, notifications=%d, photos=%d",
+        request.task_id,
+        len(request.stays),
+        len(request.movements),
+        len(request.calendars),
+        len(request.healths),
+        len(request.notifications),
+        len(request.photos),
+    )
+    return request

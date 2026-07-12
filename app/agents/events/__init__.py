@@ -5,8 +5,8 @@
 Event Agent 를 모은다.
 
 각 Agent 는 `Agent` 인터페이스를 구현하며 `generate(request) -> AgentEventResult`
-로 자신이 담당하는 데이터를 추론한다. 실제 실행 흐름은 이후 pipeline/timeline
-agent 에서 조율한다.
+로 자신이 담당하는 데이터를 추론한다. 실제 실행 흐름은 이후 메인 에이전트에서
+조율한다.
 """
 
 from app.agents.events.base_event_agent import EventAgent

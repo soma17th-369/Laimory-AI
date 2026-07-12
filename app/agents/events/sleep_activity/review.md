@@ -1,11 +1,16 @@
-# Sleep/Activity Event Agent 검토(review) 프롬프트
+# Sleep/Activity Event Agent 검토 프롬프트
 
-아래는 1차 추론 초안(JSON)입니다. 과한 추론을 검토해 보수적으로 정리하세요.
+아래는 1차 추론 초안(JSON)입니다. 건강 수치 나열이 아니라 “이 데이터가 생긴 원인이 된 사용자의 하루 리듬과 활동”으로 잘 추론되었는지 검토하세요.
 
-- 근거가 약한 event 는 confidence 를 낮추거나 fragments 로 옮깁니다.
-- 하루 단위 활동 집계(걸음/칼로리/거리)를 시간 구간이 없는데 event 로 확정했다면 fragment 로 되돌립니다.
-- inferenceLevel 이 UNCERTAIN 인데 uncertainty 가 비어 있으면 채웁니다.
-- 입력에 없는 sourceId 를 참조하는 항목은 제거합니다.
+## 검토 기준
+
+- 수면 구간이 있는데 `SLEEP` candidate가 없으면 추가합니다.
+- 수면 종료 시각이 있는데 `WAKE_UP` candidate가 없으면 반드시 추가합니다.
+- 제목이 `건강 데이터`, `활동 데이터`, `수면 기록`처럼 데이터 라벨이면 사람의 행동처럼 고칩니다.
+- 하루 단위 활동 집계는 원본 수치 요약이 아니라 “하루 중 활동이 있었던 단서”로 fragment에 남깁니다.
+- `UNCERTAIN` candidate인데 `uncertainty`가 비어 있으면 반드시 채웁니다.
+- 입력에 없는 sourceId를 참조하는 항목은 제거합니다.
+- 예시 날짜를 사용한 항목은 제거하거나 입력 실제 시간으로 고칩니다.
 
 system 프롬프트에 정의된 동일한 JSON 형식으로만 다시 출력하세요.
 

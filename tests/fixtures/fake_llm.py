@@ -21,13 +21,28 @@ class FakeLLM:
         self._responses = list(responses)
         self.calls: list[SimpleNamespace] = []
 
-    def complete(self, prompt: str, *, system: str | None = None, **kwargs) -> str:
-        self.calls.append(SimpleNamespace(prompt=prompt, system=system, kwargs=kwargs))
+    def _next(self) -> str:
         idx = min(len(self.calls) - 1, len(self._responses) - 1)
         response = self._responses[idx]
         if isinstance(response, Exception):
             raise response
         return response
+
+    def complete(self, prompt: str, *, system: str | None = None, **kwargs) -> str:
+        self.calls.append(
+            SimpleNamespace(prompt=prompt, system=system, images=None, kwargs=kwargs)
+        )
+        return self._next()
+
+    def complete_with_images(
+        self, prompt: str, images, *, system: str | None = None, **kwargs
+    ) -> str:
+        self.calls.append(
+            SimpleNamespace(
+                prompt=prompt, system=system, images=list(images), kwargs=kwargs
+            )
+        )
+        return self._next()
 
 
 def result_json(candidates: list | None = None, fragments: list | None = None) -> str:

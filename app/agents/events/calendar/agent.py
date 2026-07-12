@@ -35,13 +35,16 @@ class CalendarEventAgent(EventAgent):
         return self._llm
 
     def _generate(self, request: TimelineDraftRequest) -> AgentEventResult:
-        items = list(request.calendar.events)
+        items = list(request.calendars)
         if not items:
             return AgentEventResult()
 
         infer_prompt = build_infer_prompt(
             user_memory_to_text(request.user_memory),
             items_to_text(items),
+            date=request.date,
+            window_start=request.window.start if request.window else None,
+            window_end=request.window.end if request.window else None,
         )
         text = self.llm.complete(infer_prompt, system=_SYSTEM_PROMPT, temperature=0.2)
         return parse_agent_result(text)

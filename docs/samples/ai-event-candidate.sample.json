@@ -7,20 +7,20 @@
     },
     "title": "집에서 학교로 이동",
     "description": "위치 로그를 바탕으로 집에서 경북대학교까지 이동한 것으로 추정됩니다.",
-    "sourceRefs": [{ "sourceType": "LOCATION", "sourceId": "movement-log-001" }],
+    "sourceRefs": [{ "sourceType": "MOVEMENT", "sourceId": "movement-log-001" }],
     "confidence": 0.86,
     "inferenceLevel": "EVIDENCE_BASED",
     "uncertainty": ["이동 수단은 GPS 속도와 이동 경로를 바탕으로 추정되었습니다."]
   },
   {
-    "eventType": "STAY",
+    "eventType": "REST",
     "timeRange": {
       "startTime": "2026-06-20T11:00:00+09:00",
       "endTime": "2026-06-20T18:00:00+09:00"
     },
     "title": "경북대학교 체류",
     "description": "위치 기록상 경북대학교 부근에 머문 것으로 보입니다.",
-    "sourceRefs": [{ "sourceType": "LOCATION", "sourceId": "stay-log-001" }],
+    "sourceRefs": [{ "sourceType": "STAY", "sourceId": "stay-log-001" }],
     "confidence": 0.82,
     "inferenceLevel": "EVIDENCE_BASED",
     "uncertainty": ["구체적인 활동은 위치 데이터만으로 확정할 수 없습니다."]
@@ -60,7 +60,7 @@
     "title": "저녁 식사(추정)",
     "description": "음식점 부근 체류와 음식 사진을 근거로 저녁 식사 후보로 둡니다. 동행자·메뉴는 단정하지 않습니다.",
     "sourceRefs": [
-      { "sourceType": "LOCATION", "sourceId": "stay-log-001" },
+      { "sourceType": "STAY", "sourceId": "stay-log-001" },
       { "sourceType": "PHOTO", "sourceId": "photo-001" }
     ],
     "confidence": 0.58,
@@ -71,3 +71,5 @@
     ]
   }
 ]
+
+

@@ -46,6 +46,23 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = ""
 
+    # 사진 vision describe 에서 실제 이미지를 읽어올 로컬 디렉터리.
+    # 값이 있으면 `LocalFilePhotoImageSource` 로 해당 디렉터리의 실제 파일을 읽고,
+    # 비어 있으면(기본) 이미지 없이 메타데이터 기반 fallback 으로 동작한다.
+    # (S3 가 연결되면 별도 이미지 소스로 교체한다.)
+    photo_image_dir: str | None = None
+
+    # 타임라인 메인 에이전트 전체 실행 timeout(초). 초과 시 task 를 FAILED 로 처리한다.
+    pipeline_timeout_sec: float = 60.0
+
+    # 처리 완료 시 결과를 POST 로 되돌려줄 App Server 콜백 URL.
+    # 새 입력 계약에는 요청 단위 callbackUrl 이 없어, 설정으로 고정한다.
+    # 비어 있으면 콜백을 보내지 않고 상태 조회(GET)로만 결과를 확인한다.
+    callback_url: str | None = None
+
+    # App Server 콜백 POST 요청 timeout(초).
+    callback_timeout_sec: float = 10.0
+
 
 @lru_cache
 def get_settings() -> Settings:

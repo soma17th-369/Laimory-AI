@@ -46,13 +46,16 @@ class LocationEventAgent(EventAgent):
         return self._llm
 
     def _generate(self, request: TimelineDraftRequest) -> AgentEventResult:
-        items = [*request.location.stays, *request.location.routes]
+        items = [*request.stays, *request.movements]
         if not items:
             return AgentEventResult()
 
         infer_prompt = build_infer_prompt(
             user_memory_to_text(request.user_memory),
             items_to_text(items),
+            date=request.date,
+            window_start=request.window.start if request.window else None,
+            window_end=request.window.end if request.window else None,
         )
         final = self._run_graph(infer_prompt)
         return parse_agent_result(final)

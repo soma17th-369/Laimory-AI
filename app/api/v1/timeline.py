@@ -1,31 +1,76 @@
-"""타임라인 초안 생성 엔드포인트."""
+"""타임라인 초안 생성 엔드포인트.
 
-from pydantic import BaseModel, Field
-from fastapi import APIRouter, HTTPException, status
+`POST /v1/timeline` 은 `taskId` 만 받아 처리 task 를 만들고(PROCESSING) 즉시
+응답을 돌려준다(HTTP 종료). 실제 처리는 백그라운드에서 진행되는데, `taskId`
+로 DB(`SourceRepository`)에서 수집 스냅샷을 읽어와 정규화한 뒤 메인 에이전트를
+실행한다. 완료 시 상태를 갱신하고, `settings.callback_url` 이 설정돼 있으면
+결과를 App Server 로 콜백한다. `GET /v1/timeline/{taskId}` 로 처리 상태와
+결과를 조회할 수 있다.
+"""
 
-from app.schemas import TimelineDraftRequest
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from pydantic import Field
+
+from app.schemas import TaskRecord, TaskStatus
+from app.schemas.common import CamelModel
+from app.services.source_repository import SourceRepository, get_source_repository
+from app.services.task_store import TaskStore, get_task_store
+from app.services.timeline_runner import process_timeline_task
 
 router = APIRouter()
 
 
-class TimelineDraftResponse(BaseModel):
-    """타임라인 초안 생성 응답 placeholder."""
+class TimelineTriggerRequest(CamelModel):
+    """초안 생성 요청. 수집 데이터는 DB 에 있고, 여기서는 `taskId` 만 받는다."""
 
-    events: list[dict] = Field(default_factory=list)
+    task_id: str = Field(alias="taskId", min_length=1)
 
 
-@router.post("", response_model=TimelineDraftResponse, status_code=status.HTTP_200_OK)
-def create_timeline_draft(request: TimelineDraftRequest) -> TimelineDraftResponse:
-    """입력 소스로부터 타임라인 초안을 생성한다.
+class TimelineDispatchResponse(CamelModel):
+    """초안 처리 접수 응답. 실제 결과는 콜백 또는 상태 조회로 받는다."""
 
-    실제 AI 파이프라인은 `app.pipeline.timeline_pipeline` 구현 후 이곳에 연결한다.
+    task_id: str = Field(alias="taskId")
+    status: TaskStatus
+
+
+@router.post(
+    "",
+    response_model=TimelineDispatchResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_timeline_draft(
+    request: TimelineTriggerRequest,
+    background_tasks: BackgroundTasks,
+    store: TaskStore = Depends(get_task_store),
+    repo: SourceRepository = Depends(get_source_repository),
+) -> TimelineDispatchResponse:
+    """`taskId` 로 타임라인 초안 생성을 접수한다.
+
+    task 를 PROCESSING 으로 만든 뒤 실제 처리(DB 조회 → 정규화 → 메인 에이전트)를
+    백그라운드로 넘기고, 즉시 taskId 를 반환한다.
     """
 
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail={
-            "message": "타임라인 생성 파이프라인이 아직 구현되지 않았습니다.",
-            "transaction_id": request.transaction_id,
-            "source_item_count": len(request.iter_source_items()),
-        },
+    record = store.create(request.task_id, request.task_id)
+
+    background_tasks.add_task(process_timeline_task, request.task_id, store, repo)
+
+    return TimelineDispatchResponse(
+        task_id=record.task_id,
+        status=record.status,
     )
+
+
+@router.get("/{task_id}", response_model=TaskRecord)
+async def get_timeline_task(
+    task_id: str,
+    store: TaskStore = Depends(get_task_store),
+) -> TaskRecord:
+    """처리 task 의 상태와 결과를 조회한다."""
+
+    record = store.get(task_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"존재하지 않는 task 입니다: {task_id}",
+        )
+    return record
