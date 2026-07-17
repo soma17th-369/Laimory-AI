@@ -36,6 +36,7 @@ app/
 │   ├── location.py/calendar.py/health.py/notification.py/photo.py
 │   ├── event_candidate.py     # AI 이벤트 후보 모델
 │   ├── timeline_request.py    # 정규화된 요청(main agent 입력)
+│   ├── repair.py              # Repair Agent 계약(문제 목록 + 도구 호출 계획)
 │   └── timeline.py            # 타임라인 초안/이벤트 스키마
 │
 ├── agents/                    # AI 에이전트
@@ -44,12 +45,17 @@ app/
 │   ├── events/                # 데이터별 이벤트 에이전트
 │   │   └── base_event_agent.py
 │   ├── timeline/timeline_agent.py # 후보 → 초안 병합
+│   ├── repair/                # 초안 검토·개선 (LLM 분석 + 도구 호출)
+│   │   ├── repair_agent.py    # 확정 → 분석 → 도구 실행 → 재확정 반복
+│   │   ├── tools.py           # 도구 카탈로그 (서비스·상류 Agent 를 도구로)
+│   │   └── prompt.md          # 분석·계획 system prompt
 │   └── main/main_agent.py     # events → timeline → repair 조율(LangGraph)
 │
 └── services/
     ├── source_repository.py   # taskId로 수집 스냅샷 조회
     ├── normalizer.py          # 수집 스냅샷 분리·정규화
     ├── draft_repair.py        # draft 확정 repair
+    ├── draft_edit.py          # event 수정·삭제 (Repair 계획의 결정론 적용)
     ├── validator.py           # 요청 시간 범위(window) 강제
     ├── source_lookup.py       # sourceRef → 입력 항목 역참조, sourceType 정정
     ├── sleep_guard.py         # 수면 경계 강제 (기상 이전 event 제거)
@@ -64,7 +70,7 @@ app/
     └── callback.py            # 완료 결과 콜백
 
 tests/
-├── agents/                    # Event Agent live 입력 테스트(opt-in)
+├── agents/                    # Event/Repair Agent 테스트 (live 입력 테스트는 opt-in)
 ├── api/ · services/ · main/   # 단위 테스트
 ├── integration/               # 실제 LLM 통합 테스트(opt-in)
 └── fixtures/                  # 요청/스냅샷 빌더
@@ -72,7 +78,17 @@ tests/
 
 처리 흐름은 `taskId 접수 → 202 즉시 응답 → DB 조회 → normalize → main agent → 상태 갱신/콜백` 순서입니다.
 
-Main Agent 그래프는 `run_event_agents → merge_results → run_timeline_agent → repair_draft` 순서로 실행됩니다.
+Main Agent 그래프는 `run_event_agents → merge_results → run_timeline_agent → run_repair_agent` 순서로 실행됩니다.
+
+Repair Agent 는 Timeline Agent 가 만든 초안을 검토·개선해 최종 초안을 확정합니다. 한 번의 실행은
+`repair_draft(코드 확정) → 분석(LLM) → 도구 실행 → repair_draft(재확정)` 을 되풀이하며, 반복은
+LLM 이 `done` 을 내거나 `settings.repair_max_iterations`(기본 3)에서 멈춥니다. LLM 호출이나 응답
+파싱이 실패하면 마지막으로 확정된 초안을 그대로 돌려주고 warning 을 남깁니다.
+
+Repair Agent 는 초안을 직접 다시 쓰지 않고 **결정론 서비스와 상류 Agent 를 도구로 호출**합니다
+(`lookup_source`, `update_event`/`delete_event`, `enforce_sleep_boundary` 같은 서비스 재적용,
+`rerun_event_agent`/`rerun_timeline_agent`). 정렬·`clientEventId` 재부여·window 강제는 도구가
+아니며, 매 반복 끝의 `repair_draft` 가 항상 코드로 확정합니다.
 
 ---
 

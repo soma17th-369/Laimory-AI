@@ -1,13 +1,17 @@
 ﻿"""병렬 메인 에이전트 검증.
 
-Event Agent 병렬 팬아웃 → 취합 → Timeline Agent 로 draft 를 만드는 흐름과,
-개별 Event Agent 실패가 전체를 멈추지 않고 warning 으로 이어지는지 확인한다.
+Event Agent 병렬 팬아웃 → 취합 → Timeline Agent → Repair Agent 로 draft 를 만드는
+흐름과, 개별 Event Agent 실패가 전체를 멈추지 않고 warning 으로 이어지는지 확인한다.
+
+Repair Agent 는 반복 상한 0(결정론 확정만) 으로 주입한다. 여기서 보려는 것은 배선과
+확정 결과이고, LLM 분석·도구 호출은 `tests/agents/test_repair_agent.py` 가 본다.
 """
 
 import asyncio
 import json
 
 from app.agents.events.base_event_agent import EventAgent
+from app.agents.repair import RepairAgent
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.agents.main import run_main_agent
 from app.schemas import (
@@ -20,6 +24,7 @@ from app.schemas import (
     SourceRef,
 )
 from tests.fixtures.fake_llm import FakeLLM
+from tests.fixtures.pipeline import confirm_only_repair_agent
 from tests.fixtures.requests import make_request, stay_item
 
 
@@ -121,6 +126,7 @@ def test_repair_node_sorts_events_and_reassigns_ids():
             _request(),
             event_agents=[_StubAgent("a", AgentEventResult(candidates=[_candidate("s-1")]))],
             timeline_agent=_timeline_agent_returning_unsorted_events(),
+            repair_agent=confirm_only_repair_agent(),
         )
     )
 
@@ -139,11 +145,51 @@ def test_main_agent_merges_and_builds_draft():
             _request(),
             event_agents=agents,
             timeline_agent=_timeline_agent_returning_one_event(),
+            repair_agent=confirm_only_repair_agent(),
         )
     )
 
     assert len(draft.events) == 1
     assert draft.events[0].client_event_id == "event-001"
+
+
+def test_repair_agent_receives_draft_sources_and_reruns():
+    """활성 Repair Agent 가 그래프에 연결되어 draft 를 실제로 고치는지 본다.
+
+    배선이 끊기면(예: draft 나 event_results 를 넘기지 않으면) 여기서 걸린다.
+    """
+
+    repair_plan = json.dumps(
+        {
+            "issues": [{"clientEventId": "event-001", "problem": "제목이 데이터 라벨"}],
+            "toolCalls": [
+                {
+                    "tool": "update_event",
+                    "args": {"clientEventId": "event-001", "fields": {"title": "카페에서 쉬었다"}},
+                }
+            ],
+            "done": True,
+        },
+        ensure_ascii=False,
+    )
+    repair_llm = FakeLLM([repair_plan])
+
+    draft = asyncio.run(
+        run_main_agent(
+            _request(),
+            event_agents=[_StubAgent("a", AgentEventResult(candidates=[_candidate("s-1")]))],
+            timeline_agent=_timeline_agent_returning_one_event(),
+            repair_agent=RepairAgent(llm=repair_llm, max_iterations=2),
+        )
+    )
+
+    assert [event.title for event in draft.events] == ["카페에서 쉬었다"]
+
+    # Timeline Agent 가 만든 draft 와, 다시 돌릴 수 있는 Event Agent 이름이 실려야 한다.
+    prompt = repair_llm.calls[0].prompt
+    assert "[draft]" in prompt
+    assert "rawId=s-1" in prompt
+    assert "rerun_event_agent" in prompt and "a" in prompt
 
 
 def test_main_agent_isolates_failing_event_agent():
@@ -157,6 +203,7 @@ def test_main_agent_isolates_failing_event_agent():
             _request(),
             event_agents=agents,
             timeline_agent=_timeline_agent_returning_one_event(),
+            repair_agent=confirm_only_repair_agent(),
         )
     )
 
