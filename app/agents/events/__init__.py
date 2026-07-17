@@ -15,6 +15,7 @@ from app.agents.events.location import LocationEventAgent
 from app.agents.events.notification import NotificationEventAgent
 from app.agents.events.photo import PhotoEventAgent
 from app.agents.events.sleep_activity import SleepActivityEventAgent
+from app.schemas import AgentEventResult
 
 
 def default_event_agents() -> list[EventAgent]:
@@ -29,6 +30,22 @@ def default_event_agents() -> list[EventAgent]:
     ]
 
 
+def merge_event_results(results: list[AgentEventResult]) -> AgentEventResult:
+    """Event Agent 결과들을 하나의 `AgentEventResult` 로 취합한다.
+
+    main agent 의 취합 node 와, Event Agent 를 다시 돌린 뒤 Timeline Agent 를 재실행
+    하는 Repair Agent 도구가 함께 쓴다. 두 곳이 서로 다르게 취합하면 재실행 결과가
+    처음 결과와 다른 규칙으로 병합된다.
+    """
+
+    merged = AgentEventResult()
+    for result in results:
+        merged.candidates.extend(result.candidates)
+        merged.fragments.extend(result.fragments)
+        merged.warnings.extend(result.warnings)
+    return merged
+
+
 __all__ = [
     "CalendarEventAgent",
     "EventAgent",
@@ -37,4 +54,5 @@ __all__ = [
     "PhotoEventAgent",
     "SleepActivityEventAgent",
     "default_event_agents",
+    "merge_event_results",
 ]

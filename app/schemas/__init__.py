@@ -21,6 +21,12 @@ from app.schemas.health import HealthItem
 from app.schemas.stay import MovementItem, StayItem
 from app.schemas.notification import NotificationItem
 from app.schemas.photo import PhotoItem
+from app.schemas.repair import (
+    RepairIssue,
+    RepairPlan,
+    RepairToolCall,
+    RepairToolResult,
+)
 from app.schemas.source_snapshot import (
     CollectedSnapshot,
     CollectedSourceItem,
@@ -61,6 +67,10 @@ __all__ = [
     "MovementItem",
     "NotificationItem",
     "PhotoItem",
+    "RepairIssue",
+    "RepairPlan",
+    "RepairToolCall",
+    "RepairToolResult",
     "SourceFragment",
     "SourceRef",
     "StayItem",

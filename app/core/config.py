@@ -53,7 +53,12 @@ class Settings(BaseSettings):
     photo_image_dir: str | None = None
 
     # 타임라인 메인 에이전트 전체 실행 timeout(초). 초과 시 task 를 FAILED 로 처리한다.
-    pipeline_timeout_sec: float = 60.0
+    # Repair Agent 가 분석·개선을 반복하며 LLM 을 여러 번 부르므로 넉넉히 잡는다.
+    pipeline_timeout_sec: float = 120.0
+
+    # Repair Agent 의 분석-개선 반복 상한. 한 번의 반복이 LLM 호출 1회다.
+    # 0 이면 LLM 개선 없이 결정론 확정(draft_repair)만 수행한다.
+    repair_max_iterations: int = 3
 
     # 처리 완료 시 결과를 POST 로 되돌려줄 App Server 콜백 URL.
     # 새 입력 계약에는 요청 단위 callbackUrl 이 없어, 설정으로 고정한다.
