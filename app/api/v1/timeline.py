@@ -8,6 +8,8 @@
 결과를 조회할 수 있다.
 """
 
+from uuid import uuid4
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import Field
 
@@ -30,6 +32,7 @@ class TimelineDispatchResponse(CamelModel):
     """초안 처리 접수 응답. 실제 결과는 콜백 또는 상태 조회로 받는다."""
 
     task_id: str = Field(alias="taskId")
+    transaction_id: str = Field(alias="transactionId")
     status: TaskStatus
 
 
@@ -50,12 +53,20 @@ async def create_timeline_draft(
     백그라운드로 넘기고, 즉시 taskId 를 반환한다.
     """
 
-    record = store.create(request.task_id, request.task_id)
+    transaction_id = f"tx-{uuid4()}"
+    record = store.create(request.task_id, transaction_id)
 
-    background_tasks.add_task(process_timeline_task, request.task_id, store, repo)
+    background_tasks.add_task(
+        process_timeline_task,
+        request.task_id,
+        store,
+        repo,
+        transaction_id,
+    )
 
     return TimelineDispatchResponse(
         task_id=record.task_id,
+        transaction_id=transaction_id,
         status=record.status,
     )
 

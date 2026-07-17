@@ -14,6 +14,15 @@ import json
 
 from app.agents.repair import RepairAgent
 from app.agents.timeline.timeline_agent import TimelineAgent
+from app.core.observability import (
+    ContentCapture,
+    InMemoryObservationSink,
+    ObservationEventType,
+    ObservationStage,
+    Observer,
+    observation_context,
+    observation_scope,
+)
 from app.schemas import (
     AgentEventResult,
     AiEventCandidate,
@@ -158,6 +167,48 @@ def test_applies_update_event_from_plan():
     assert result.events[0].title == "카페에서 쉬었다"
     # 지정하지 않은 필드는 그대로다.
     assert result.events[0].start_time.hour == 9
+
+
+def test_repair_observes_plan_tool_result_and_each_confirmed_timeline():
+    plan = _plan(
+        [
+            {
+                "tool": "update_event",
+                "args": {
+                    "clientEventId": "event-001",
+                    "fields": {"title": "관측된 수정"},
+                },
+            }
+        ],
+        done=True,
+    )
+    sink = InMemoryObservationSink()
+    observer = Observer(sink, content_capture=ContentCapture.SANITIZED)
+    request = _request()
+
+    with observation_context(request.transaction_id, observer):
+        with observation_scope(ObservationStage.REPAIR_AGENT, agent="repair"):
+            RepairAgent(llm=FakeLLM([plan]), max_iterations=2).generate(
+                request,
+                _draft(_event("체류", "09:00", "10:00")),
+            )
+
+    types = [event.event_type for event in sink.events]
+    assert ObservationEventType.PLAN in types
+    assert ObservationEventType.TOOL_CALL in types
+    assert types.count(ObservationEventType.DRAFT_UPDATED) == 2
+    plan_event = next(
+        event for event in sink.events if event.event_type is ObservationEventType.PLAN
+    )
+    tool_event = next(
+        event
+        for event in sink.events
+        if event.event_type is ObservationEventType.TOOL_CALL
+    )
+    assert plan_event.iteration == 1
+    assert tool_event.iteration == 1
+    assert tool_event.payload["call"]["tool"] == "update_event"
+    assert tool_event.payload["timeline"]["events"][0]["title"] == "관측된 수정"
 
 
 def test_applies_delete_event_and_renumbers():

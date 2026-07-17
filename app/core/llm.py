@@ -11,12 +11,19 @@ provider 종류와 무관하게 동일한 방식으로 호출한다.
 """
 
 import base64
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import Any
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.observability import (
+    ObservationEventType,
+    ObservationStage,
+    emit_observation,
+)
 
 logger = get_logger(__name__)
 
@@ -30,6 +37,92 @@ class ImageInput:
 
     data: bytes
     mime_type: str = "image/jpeg"
+
+
+@dataclass(frozen=True)
+class TokenUsage:
+    """Provider가 보고한 요청별 토큰 사용량의 공통 표현."""
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    cached_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    tool_tokens: int | None = None
+    provider_details: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class LLMCompletion:
+    """텍스트와 같은 응답에서 추출한 사용량을 함께 운반한다."""
+
+    text: str
+    usage: TokenUsage | None = None
+
+
+def _dump_model(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return model_dump(mode="json", by_alias=True, exclude_none=True)
+    if isinstance(value, dict):
+        return dict(value)
+    return None
+
+
+def _openai_usage(response: Any) -> TokenUsage | None:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+
+    prompt_details = getattr(usage, "prompt_tokens_details", None)
+    completion_details = getattr(usage, "completion_tokens_details", None)
+    details = {
+        key: value
+        for key, value in {
+            "promptTokensDetails": _dump_model(prompt_details),
+            "completionTokensDetails": _dump_model(completion_details),
+        }.items()
+        if value
+    }
+    return TokenUsage(
+        input_tokens=getattr(usage, "prompt_tokens", None),
+        output_tokens=getattr(usage, "completion_tokens", None),
+        total_tokens=getattr(usage, "total_tokens", None),
+        cached_tokens=getattr(prompt_details, "cached_tokens", None),
+        reasoning_tokens=getattr(completion_details, "reasoning_tokens", None),
+        provider_details=details or None,
+    )
+
+
+def _gemini_usage(response: Any) -> TokenUsage | None:
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None:
+        return None
+
+    values = {
+        "input_tokens": getattr(usage, "prompt_token_count", None),
+        "output_tokens": getattr(usage, "candidates_token_count", None),
+        "total_tokens": getattr(usage, "total_token_count", None),
+        "cached_tokens": getattr(usage, "cached_content_token_count", None),
+        "reasoning_tokens": getattr(usage, "thoughts_token_count", None),
+        "tool_tokens": getattr(usage, "tool_use_prompt_token_count", None),
+    }
+    if not any(value is not None for value in values.values()):
+        return None
+    return TokenUsage(
+        **values,
+        provider_details=_dump_model(usage),
+    )
+
+
+def _as_completion(result: LLMCompletion | str) -> LLMCompletion:
+    """기존 문자열 반환 provider도 안전하게 수용한다."""
+
+    if isinstance(result, LLMCompletion):
+        return result
+    return LLMCompletion(text=result)
 
 
 def register_provider(cls: type["LLMProvider"]) -> type["LLMProvider"]:
@@ -76,8 +169,8 @@ class LLMProvider(ABC):
         system: str | None = None,
         temperature: float = 0.7,
         **kwargs,
-    ) -> str:
-        """단일 프롬프트에 대한 응답 텍스트를 반환한다."""
+    ) -> LLMCompletion:
+        """단일 프롬프트의 텍스트와 provider 사용량을 반환한다."""
 
     def complete_with_images(
         self,
@@ -87,7 +180,7 @@ class LLMProvider(ABC):
         system: str | None = None,
         temperature: float = 0.7,
         **kwargs,
-    ) -> str:
+    ) -> LLMCompletion:
         """프롬프트 + 이미지(vision) 입력에 대한 응답 텍스트를 반환한다.
 
         vision 을 지원하는 provider 만 override 한다. 기본은 미지원 예외.
@@ -116,7 +209,7 @@ class OpenAIProvider(LLMProvider):
         system: str | None = None,
         temperature: float = 0.7,
         **kwargs,
-    ) -> str:
+    ) -> LLMCompletion:
         messages: list[dict[str, str]] = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -128,7 +221,10 @@ class OpenAIProvider(LLMProvider):
             temperature=temperature,
             **kwargs,
         )
-        return response.choices[0].message.content or ""
+        return LLMCompletion(
+            text=response.choices[0].message.content or "",
+            usage=_openai_usage(response),
+        )
 
     def complete_with_images(
         self,
@@ -138,7 +234,7 @@ class OpenAIProvider(LLMProvider):
         system: str | None = None,
         temperature: float = 0.7,
         **kwargs,
-    ) -> str:
+    ) -> LLMCompletion:
         content: list[dict] = [{"type": "text", "text": prompt}]
         for image in images:
             b64 = base64.b64encode(image.data).decode("ascii")
@@ -159,7 +255,10 @@ class OpenAIProvider(LLMProvider):
             temperature=temperature,
             **kwargs,
         )
-        return response.choices[0].message.content or ""
+        return LLMCompletion(
+            text=response.choices[0].message.content or "",
+            usage=_openai_usage(response),
+        )
 
 
 @register_provider
@@ -180,7 +279,7 @@ class GeminiProvider(LLMProvider):
         system: str | None = None,
         temperature: float = 0.7,
         **kwargs,
-    ) -> str:
+    ) -> LLMCompletion:
         from google.genai import types
 
         config = types.GenerateContentConfig(
@@ -193,7 +292,10 @@ class GeminiProvider(LLMProvider):
             contents=prompt,
             config=config,
         )
-        return response.text or ""
+        return LLMCompletion(
+            text=response.text or "",
+            usage=_gemini_usage(response),
+        )
 
     def complete_with_images(
         self,
@@ -203,7 +305,7 @@ class GeminiProvider(LLMProvider):
         system: str | None = None,
         temperature: float = 0.7,
         **kwargs,
-    ) -> str:
+    ) -> LLMCompletion:
         from google.genai import types
 
         config = types.GenerateContentConfig(
@@ -221,7 +323,10 @@ class GeminiProvider(LLMProvider):
             contents=parts,
             config=config,
         )
-        return response.text or ""
+        return LLMCompletion(
+            text=response.text or "",
+            usage=_gemini_usage(response),
+        )
 
 
 def available_providers() -> list[str]:
@@ -292,12 +397,58 @@ class LLMClient:
             self.provider.model,
             temperature,
         )
-        return self.provider.complete(
-            prompt,
-            system=system,
-            temperature=temperature,
-            **kwargs,
+        emit_observation(
+            ObservationEventType.PROMPT,
+            stage=ObservationStage.LLM,
+            provider=self.provider.name,
+            model=self.provider.model,
+            payload={
+                "prompt": prompt,
+                "system": system,
+                "temperature": temperature,
+                "options": kwargs,
+            },
         )
+        started = time.perf_counter()
+        try:
+            completion = _as_completion(
+                self.provider.complete(
+                    prompt,
+                    system=system,
+                    temperature=temperature,
+                    **kwargs,
+                )
+            )
+        except Exception as exc:
+            emit_observation(
+                ObservationEventType.FAILED,
+                stage=ObservationStage.LLM,
+                provider=self.provider.name,
+                model=self.provider.model,
+                duration_ms=(time.perf_counter() - started) * 1000,
+                payload={"error": str(exc), "errorType": type(exc).__name__},
+            )
+            raise
+
+        usage = completion.usage
+        response_payload: dict[str, Any] = {"response": completion.text}
+        if usage is not None and usage.provider_details:
+            response_payload["usageDetails"] = usage.provider_details
+        emit_observation(
+            ObservationEventType.RESPONSE,
+            stage=ObservationStage.LLM,
+            provider=self.provider.name,
+            model=self.provider.model,
+            duration_ms=(time.perf_counter() - started) * 1000,
+            input_tokens=usage.input_tokens if usage else None,
+            output_tokens=usage.output_tokens if usage else None,
+            total_tokens=usage.total_tokens if usage else None,
+            cached_tokens=usage.cached_tokens if usage else None,
+            reasoning_tokens=usage.reasoning_tokens if usage else None,
+            tool_tokens=usage.tool_tokens if usage else None,
+            payload=response_payload,
+        )
+        return completion.text
 
     def complete_with_images(
         self,
@@ -316,10 +467,60 @@ class LLMClient:
             self.provider.model,
             len(images),
         )
-        return self.provider.complete_with_images(
-            prompt,
-            images,
-            system=system,
-            temperature=temperature,
-            **kwargs,
+        emit_observation(
+            ObservationEventType.PROMPT,
+            stage=ObservationStage.LLM,
+            provider=self.provider.name,
+            model=self.provider.model,
+            payload={
+                "prompt": prompt,
+                "system": system,
+                "temperature": temperature,
+                "options": kwargs,
+                "images": [
+                    {"mimeType": image.mime_type, "byteLength": len(image.data)}
+                    for image in images
+                ],
+            },
         )
+        started = time.perf_counter()
+        try:
+            completion = _as_completion(
+                self.provider.complete_with_images(
+                    prompt,
+                    images,
+                    system=system,
+                    temperature=temperature,
+                    **kwargs,
+                )
+            )
+        except Exception as exc:
+            emit_observation(
+                ObservationEventType.FAILED,
+                stage=ObservationStage.LLM,
+                provider=self.provider.name,
+                model=self.provider.model,
+                duration_ms=(time.perf_counter() - started) * 1000,
+                payload={"error": str(exc), "errorType": type(exc).__name__},
+            )
+            raise
+
+        usage = completion.usage
+        response_payload: dict[str, Any] = {"response": completion.text}
+        if usage is not None and usage.provider_details:
+            response_payload["usageDetails"] = usage.provider_details
+        emit_observation(
+            ObservationEventType.RESPONSE,
+            stage=ObservationStage.LLM,
+            provider=self.provider.name,
+            model=self.provider.model,
+            duration_ms=(time.perf_counter() - started) * 1000,
+            input_tokens=usage.input_tokens if usage else None,
+            output_tokens=usage.output_tokens if usage else None,
+            total_tokens=usage.total_tokens if usage else None,
+            cached_tokens=usage.cached_tokens if usage else None,
+            reasoning_tokens=usage.reasoning_tokens if usage else None,
+            tool_tokens=usage.tool_tokens if usage else None,
+            payload=response_payload,
+        )
+        return completion.text

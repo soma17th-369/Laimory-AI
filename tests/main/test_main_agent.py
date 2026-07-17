@@ -14,6 +14,12 @@ from app.agents.events.base_event_agent import EventAgent
 from app.agents.repair import RepairAgent
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.agents.main import run_main_agent
+from app.core.observability import (
+    ContentCapture,
+    InMemoryObservationSink,
+    ObservationStage,
+    Observer,
+)
 from app.schemas import (
     AgentEventResult,
     AiEventCandidate,
@@ -153,6 +159,40 @@ def test_main_agent_merges_and_builds_draft():
     assert draft.events[0].client_event_id == "event-001"
 
 
+def test_main_agent_observations_share_transaction_across_threaded_stages():
+    sink = InMemoryObservationSink()
+    observer = Observer(sink, content_capture=ContentCapture.SANITIZED)
+
+    asyncio.run(
+        run_main_agent(
+            _request(),
+            event_agents=[
+                _StubAgent(
+                    "location",
+                    AgentEventResult(candidates=[_candidate("s-1")]),
+                )
+            ],
+            timeline_agent=_timeline_agent_returning_one_event(),
+            repair_agent=confirm_only_repair_agent(),
+            observer=observer,
+        )
+    )
+
+    assert sink.events
+    assert {event.transaction_id for event in sink.events} == {"tx-test"}
+    stages = {event.stage for event in sink.events}
+    assert ObservationStage.MAIN_AGENT in stages
+    assert ObservationStage.EVENT_AGENT in stages
+    assert ObservationStage.TIMELINE_AGENT in stages
+    assert ObservationStage.REPAIR_AGENT in stages
+    event_agents = {
+        event.agent
+        for event in sink.events
+        if event.stage is ObservationStage.EVENT_AGENT
+    }
+    assert event_agents == {"location"}
+
+
 def test_repair_agent_receives_draft_sources_and_reruns():
     """활성 Repair Agent 가 그래프에 연결되어 draft 를 실제로 고치는지 본다.
 
@@ -211,4 +251,3 @@ def test_main_agent_isolates_failing_event_agent():
     assert len(draft.events) == 1
     # 실패는 upstream warning 으로 draft 에 남는다.
     assert any("boom" in w.message for w in draft.warnings)
-

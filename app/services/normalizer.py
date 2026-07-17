@@ -120,7 +120,11 @@ def _to_date(record_date: str) -> str:
     return record_date[:10]
 
 
-def normalize(snapshot: CollectedSnapshot) -> TimelineDraftRequest:
+def normalize(
+    snapshot: CollectedSnapshot,
+    *,
+    transaction_id: str | None = None,
+) -> TimelineDraftRequest:
     """수집 원본을 도메인별로 분리하고 검증해 TimelineDraftRequest를 만든다."""
 
     groups = split_source_items(snapshot)
@@ -149,6 +153,7 @@ def normalize(snapshot: CollectedSnapshot) -> TimelineDraftRequest:
 
     request = TimelineDraftRequest(
         task_id=snapshot.task_id,
+        transaction_id=transaction_id or snapshot.task_id,
         date=_to_date(snapshot.record_date),
         timezone=snapshot.record_time_zone,
         window=window,

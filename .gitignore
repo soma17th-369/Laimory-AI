@@ -5,3 +5,9 @@
 __pycache__/
 *.py[cod]
 .openai-docs-cache/
+data/output/runs/
+
+# 에이전트 설정·스킬·작업 기록. 개인 영역이라 저장소에 올리지 않는다(AGENTS.md 참고).
+# .claude/skills/ 는 scripts/link-skills 가 .agents/skills/ 에서 생성하는 복사본이다.
+.agents/
+.claude/

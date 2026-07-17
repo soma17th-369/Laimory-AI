@@ -34,6 +34,7 @@ class TimelineDraftRequest(CamelModel):
     """
 
     task_id: str = Field(alias="taskId", min_length=1)
+    transaction_id: str = Field(alias="transactionId", min_length=1)
     date: str = Field(description="수집 대상 날짜 (YYYY-MM-DD)")
     timezone: str = "Asia/Seoul"
     window: TimeWindow | None = None

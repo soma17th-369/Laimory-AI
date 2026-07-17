@@ -7,6 +7,11 @@ monkeypatch 로 대체하고, 스냅샷은 인메모리 저장소에 시드한�
 
 import asyncio
 
+from app.core.observability import (
+    ContentCapture,
+    InMemoryObservationSink,
+    Observer,
+)
 from app.schemas import TaskStatus, TimelineDraft
 from app.services import timeline_runner
 from app.services.source_repository import InMemorySourceRepository
@@ -60,6 +65,35 @@ def test_success_marks_success_and_sends_callback(monkeypatch):
     assert len(sent) == 1
     assert sent[0][0] == "https://app.example/cb"
     assert sent[0][1].status is TaskStatus.SUCCESS
+
+
+def test_transaction_id_reaches_request_and_all_runner_observations(monkeypatch):
+    transaction_id = "tx-runner-1"
+    captured_requests = []
+    sink = InMemoryObservationSink()
+    observer = Observer(sink, content_capture=ContentCapture.SANITIZED)
+    store = InMemoryTaskStore()
+    store.create(_TASK_ID, transaction_id)
+
+    async def fake_main_agent(request):
+        captured_requests.append(request)
+        return _draft()
+
+    monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
+    monkeypatch.setattr(timeline_runner.settings, "callback_url", None)
+
+    asyncio.run(
+        timeline_runner.process_timeline_task(
+            _TASK_ID,
+            store,
+            _seeded_repo(),
+            observer=observer,
+        )
+    )
+
+    assert captured_requests[0].transaction_id == transaction_id
+    assert sink.events
+    assert {event.transaction_id for event in sink.events} == {transaction_id}
 
 
 def test_no_callback_url_skips_callback(monkeypatch):
