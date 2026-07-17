@@ -29,6 +29,12 @@ from app.agents.events import merge_event_results
 from app.agents.events.base_event_agent import EventAgent
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.core.logging import get_logger
+from app.core.observability import (
+    ObservationEventType,
+    ObservationStage,
+    emit_observation,
+    observation_scope,
+)
 from app.schemas import (
     AgentEventResult,
     EventSourceType,
@@ -235,7 +241,8 @@ def _rerun_event_agent(ctx: RepairContext, args: dict) -> str:
         )
 
     # EventAgent.generate 는 자기 실패를 warning 으로 흡수하므로 예외로 새지 않는다.
-    result = agent.generate(ctx.request)
+    with observation_scope(ObservationStage.EVENT_AGENT, agent=str(agent_name)):
+        result = agent.generate(ctx.request)
     ctx.event_results[str(agent_name)] = result
     return (
         f"{agent_name} Event Agent 를 다시 돌렸습니다: "
@@ -249,7 +256,8 @@ def _rerun_timeline_agent(ctx: RepairContext, args: dict) -> str:
         raise RepairToolError("Timeline Agent 가 연결되지 않아 재실행할 수 없습니다.")
 
     merged = merge_event_results(list(ctx.event_results.values()))
-    ctx.draft = ctx.timeline_agent.generate(ctx.request, merged)
+    with observation_scope(ObservationStage.TIMELINE_AGENT, agent="timeline"):
+        ctx.draft = ctx.timeline_agent.generate(ctx.request, merged)
     return (
         f"Timeline Agent 를 다시 돌려 draft 를 새로 만들었습니다: "
         f"events={len(ctx.draft.events)}건. 이전 draft 의 수정 내용은 남지 않습니다."
@@ -385,6 +393,14 @@ def execute_tool_calls(
                     message=f"없는 도구입니다. 사용 가능: {', '.join(sorted(_TOOLS))}",
                 )
             )
+            emit_observation(
+                ObservationEventType.TOOL_CALL,
+                payload={
+                    "call": call.model_dump(by_alias=True, mode="json"),
+                    "result": results[-1].model_dump(by_alias=True, mode="json"),
+                    "timeline": ctx.draft.model_dump(by_alias=True, mode="json"),
+                },
+            )
             continue
 
         try:
@@ -398,6 +414,15 @@ def execute_tool_calls(
                 exc,
             )
             results.append(RepairToolResult(tool=call.tool, ok=False, message=str(exc)))
+
+        emit_observation(
+            ObservationEventType.TOOL_CALL,
+            payload={
+                "call": call.model_dump(by_alias=True, mode="json"),
+                "result": results[-1].model_dump(by_alias=True, mode="json"),
+                "timeline": ctx.draft.model_dump(by_alias=True, mode="json"),
+            },
+        )
 
     ctx.log.extend(results)
     return results

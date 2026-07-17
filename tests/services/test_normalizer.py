@@ -31,6 +31,7 @@ def test_normalize_maps_every_domain():
     request = normalize(snapshot)
 
     assert request.task_id == snapshot.task_id
+    assert request.transaction_id == snapshot.task_id
     assert request.date == "2026-06-20"  # recordDate 앞 10자
     assert request.timezone == "Asia/Seoul"
     assert request.window.start == "20260620T000000"
@@ -53,6 +54,15 @@ def test_normalize_maps_every_domain():
 
     assert len(request.photos) == 1
     assert request.photos[0].client_photo_uri == "content://p"
+
+
+def test_normalize_propagates_explicit_transaction_id():
+    request = normalize(
+        make_snapshot(source_items=[]),
+        transaction_id="tx-observation-123",
+    )
+
+    assert request.transaction_id == "tx-observation-123"
 
 
 def test_health_metric_branches():

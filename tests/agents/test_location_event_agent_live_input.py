@@ -7,6 +7,7 @@ from tests.agents.live_input_helpers import (
     assert_agent_result_shape,
     dump_agent_result,
     prepare_live_llm_env,
+    run_live_event_agent,
     stay_request,
 )
 
@@ -16,7 +17,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.live_llm]
 def test_location_event_agent_with_real_input_fixture_writes_result() -> None:
     prepare_live_llm_env()
 
-    result = LocationEventAgent().generate(stay_request())
+    request = stay_request()
+    result = run_live_event_agent(LocationEventAgent(), request)
     actual = dump_agent_result("location", result)
 
     assert_agent_result_shape(actual, result)

@@ -25,6 +25,7 @@ app/
 ├── core/                      # 공통 인프라
 │   ├── config.py              # 설정 (pydantic-settings, LLM_PROVIDER/API 키 등)
 │   ├── logging.py             # 관찰 로그 설정
+│   ├── observability/         # transaction 기반 관측 계약·sink·마스킹
 │   └── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini 등, 확장형)
 │
 ├── api/v1/
@@ -215,3 +216,69 @@ GET /health
 __pycache__/
 *.pyc
 ```
+
+---
+
+## 실제 LLM 테스트 입력
+
+실제 LLM 테스트 입력은 날짜별 디렉터리로 관리합니다.
+
+```text
+data/input/
+└── 2026-07-08/
+    ├── 2026-07-08.json
+    ├── 000_20260708_172720.jpg
+    └── ...
+```
+
+새 날짜를 추가할 때는 `data/input/<YYYY-MM-DD>/` 디렉터리를 만들고, 같은 날짜의
+`<YYYY-MM-DD>.json`과 JSON이 참조하는 사진을 함께 넣습니다. 기본 테스트 날짜는
+`2026-07-08`이며 다른 날짜를 실행하려면 다음 환경변수를 지정합니다.
+
+```powershell
+$env:LAIMORY_LIVE_DATA_DATE="2026-07-09"
+$env:LAIMORY_LIVE_LLM="1"
+uv run pytest tests/agents -m live_llm -s
+```
+
+Event Agent 5종은 서로 독립된 live 테스트라 필요한 Agent만 파일 단위로 실행할 수
+있습니다. 전체 Event → Timeline → Repair 흐름은 별도 통합 테스트로 실행합니다.
+
+```powershell
+# 특정 Event Agent만 실행
+uv run pytest tests/agents/test_location_event_agent_live_input.py -s
+
+# 전체 파이프라인 실행
+uv run pytest tests/integration/test_live_llm_data_fixture.py -s
+
+# 일반 테스트만 실행하고 실제 LLM 호출은 제외
+uv run pytest tests -m "not live_llm"
+```
+
+실제 LLM 결과는 실행할 때마다 다음처럼 별도 디렉터리에 누적됩니다.
+
+```text
+data/output/runs/
+└── 2026-07-08/
+    └── 20260717T123456.123456+0900-openai-gpt-5/
+        ├── metadata.json
+        ├── observations.jsonl
+        ├── event-agents/
+        │   ├── calendar.json
+        │   └── ...
+        ├── timeline-draft.actual.json
+        └── timeline-draft.diff.txt
+```
+
+같은 pytest 프로세스에서 실행한 Agent 테스트는 하나의 run 디렉터리를 공유합니다.
+여러 프로세스의 결과를 의도적으로 한 실행으로 묶으려면 동일한
+`LAIMORY_LIVE_RUN_ID`를 지정할 수 있습니다.
+
+`observations.jsonl`에는 같은 `transactionId`로 연결된 Main/Event/Timeline/Repair/LLM
+이벤트와 provider가 보고한 토큰 사용량이 기록됩니다. 기본 서버 관측은 본문을 저장하지
+않으며, live JSONL은 민감값을 마스킹한 `SANITIZED` 정책을 사용합니다. 전체 이벤트
+계약, 토큰 필드 의미, sink 실패 격리와 테스트 방법은
+[타임라인 테스트와 관측 로그](docs/timeline-observability.md)를 참고하세요.
+
+live 테스트는 fallback 초안만으로 성공 처리하지 않습니다. 실제 LLM `RESPONSE`가
+없거나 `FAILED` 이벤트가 있으면 provider 연결 실패로 테스트가 실패합니다.

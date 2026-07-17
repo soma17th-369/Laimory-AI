@@ -33,6 +33,15 @@ from app.agents.events.base_event_agent import EventAgent
 from app.agents.repair.repair_agent import RepairAgent
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.core.logging import get_logger
+from app.core.observability import (
+    ObservationEventType,
+    ObservationStage,
+    Observer,
+    current_observation_context,
+    emit_observation,
+    observation_context,
+    observation_scope,
+)
 from app.schemas import AgentEventResult, TimelineDraft, TimelineDraftRequest
 
 logger = get_logger(__name__)
@@ -74,9 +83,29 @@ def _build_graph():
         request = state["request"]
         agents = state["event_agents"]
 
+        def run_one(name: str, agent: EventAgent) -> AgentEventResult:
+            with observation_scope(ObservationStage.EVENT_AGENT, agent=name):
+                emit_observation(
+                    ObservationEventType.STARTED,
+                    payload={
+                        "request": request.model_dump(by_alias=True, mode="json")
+                    },
+                )
+                result = agent.generate(request)
+                emit_observation(
+                    ObservationEventType.COMPLETED,
+                    payload={
+                        "result": result.model_dump(by_alias=True, mode="json")
+                    },
+                )
+                return result
+
         # Agent.generate 는 내부에서 실패를 warning 으로 흡수하므로 예외로 새지 않는다.
         results = await asyncio.gather(
-            *(asyncio.to_thread(agent.generate, request) for agent in agents.values())
+            *(
+                asyncio.to_thread(run_one, name, agent)
+                for name, agent in agents.items()
+            )
         )
         return {"event_results": dict(zip(agents, results))}
 
@@ -88,14 +117,39 @@ def _build_graph():
             len(merged.fragments),
             len(merged.warnings),
         )
+        emit_observation(
+            ObservationEventType.COMPLETED,
+            stage=ObservationStage.MAIN_AGENT,
+            agent="main",
+            payload={"mergedResult": merged.model_dump(by_alias=True, mode="json")},
+        )
         return {"merged_result": merged}
 
     async def run_timeline_agent_node(state: _MainAgentState) -> _MainAgentState:
-        draft = await asyncio.to_thread(
-            state["timeline_agent"].generate,
-            state["request"],
-            state["merged_result"],
-        )
+        def run_timeline() -> TimelineDraft:
+            with observation_scope(ObservationStage.TIMELINE_AGENT, agent="timeline"):
+                emit_observation(
+                    ObservationEventType.STARTED,
+                    payload={
+                        "agentResult": state["merged_result"].model_dump(
+                            by_alias=True,
+                            mode="json",
+                        )
+                    },
+                )
+                result = state["timeline_agent"].generate(
+                    state["request"],
+                    state["merged_result"],
+                )
+                emit_observation(
+                    ObservationEventType.COMPLETED,
+                    payload={
+                        "timeline": result.model_dump(by_alias=True, mode="json")
+                    },
+                )
+                return result
+
+        draft = await asyncio.to_thread(run_timeline)
         logger.info(
             "타임라인 초안 생성 완료: events=%d, questions=%d, warnings=%d",
             len(draft.events),
@@ -106,15 +160,33 @@ def _build_graph():
 
     async def run_repair_agent_node(state: _MainAgentState) -> _MainAgentState:
         # Repair Agent 는 LLM 을 여러 번 부르는 블로킹 호출이라 스레드에 올린다.
-        draft = await asyncio.to_thread(
-            lambda: state["repair_agent"].generate(
-                state["request"],
-                state["draft"],
-                event_results=state["event_results"],
-                event_agents=state["event_agents"],
-                timeline_agent=state["timeline_agent"],
-            )
-        )
+        def run_repair() -> TimelineDraft:
+            with observation_scope(ObservationStage.REPAIR_AGENT, agent="repair"):
+                emit_observation(
+                    ObservationEventType.STARTED,
+                    payload={
+                        "timeline": state["draft"].model_dump(
+                            by_alias=True,
+                            mode="json",
+                        )
+                    },
+                )
+                result = state["repair_agent"].generate(
+                    state["request"],
+                    state["draft"],
+                    event_results=state["event_results"],
+                    event_agents=state["event_agents"],
+                    timeline_agent=state["timeline_agent"],
+                )
+                emit_observation(
+                    ObservationEventType.COMPLETED,
+                    payload={
+                        "timeline": result.model_dump(by_alias=True, mode="json")
+                    },
+                )
+                return result
+
+        draft = await asyncio.to_thread(run_repair)
         logger.info(
             "타임라인 초안 확정 완료: events=%d, questions=%d, warnings=%d",
             len(draft.events),
@@ -142,6 +214,7 @@ async def run_main_agent(
     event_agents: list[EventAgent] | None = None,
     timeline_agent: TimelineAgent | None = None,
     repair_agent: RepairAgent | None = None,
+    observer: Observer | None = None,
 ) -> TimelineDraft:
     """요청을 받아 확정된 `TimelineDraft` 를 생성한다.
 
@@ -168,12 +241,34 @@ async def run_main_agent(
         len(agents),
     )
 
-    final_state = await _build_graph().ainvoke(
-        {
-            "request": request,
-            "event_agents": agents,
-            "timeline_agent": timeline,
-            "repair_agent": repair,
-        }
-    )
-    return final_state["draft"]
+    async def invoke_graph() -> TimelineDraft:
+        with observation_scope(ObservationStage.MAIN_AGENT, agent="main"):
+            emit_observation(
+                ObservationEventType.STARTED,
+                payload={
+                    "request": request.model_dump(by_alias=True, mode="json"),
+                    "eventAgents": list(agents),
+                },
+            )
+            final_state = await _build_graph().ainvoke(
+                {
+                    "request": request,
+                    "event_agents": agents,
+                    "timeline_agent": timeline,
+                    "repair_agent": repair,
+                }
+            )
+            draft = final_state["draft"]
+            emit_observation(
+                ObservationEventType.COMPLETED,
+                payload={
+                    "timeline": draft.model_dump(by_alias=True, mode="json")
+                },
+            )
+            return draft
+
+    if current_observation_context() is not None:
+        return await invoke_graph()
+
+    with observation_context(request.transaction_id, observer or Observer()):
+        return await invoke_graph()

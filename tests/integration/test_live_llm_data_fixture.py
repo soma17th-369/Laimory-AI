@@ -1,160 +1,31 @@
-"""실제 LLM 으로 data fixture 를 실행하는 opt-in 통합 테스트.
+"""실제 LLM으로 날짜별 fixture를 실행하는 opt-in 전체 파이프라인 테스트.
 
-기본 테스트 실행에서는 네트워크/비용이 발생하지 않도록 skip 한다.
-실행하려면 `LAIMORY_LIVE_LLM=1` 과 provider 별 API key/model 설정이 필요하다.
+기본 테스트 실행에서는 네트워크와 비용이 발생하지 않도록 건너뛴다. 실행하려면
+``LAIMORY_LIVE_LLM=1``과 provider별 API key/model 설정이 필요하다.
 """
 
 import asyncio
 import difflib
 import json
 import os
-import re
-import sys
-import threading
-import time
-from contextlib import contextmanager
-from datetime import datetime
-from datetime import timedelta, timezone
 from pathlib import Path
 
 import pytest
-from dotenv import load_dotenv
+
+from tests.fixtures.live_llm import (
+    live_trace_console,
+    prepare_live_llm_env,
+    trace,
+)
+from tests.fixtures.live_pipeline import TracedEventAgent, TracedTimelineAgent
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT_DIR / "data"
-SNAPSHOT_PATH = DATA_DIR / "input" / "2026-07-08.json"
 EXPECTED_PATH = DATA_DIR / "output" / "timeline-draft.expected.json"
-ACTUAL_PATH = DATA_DIR / "output" / "timeline-draft.live-actual.json"
-DIFF_PATH = DATA_DIR / "output" / "timeline-draft.live-diff.txt"
-KST = timezone(timedelta(hours=9))
 
 
-def _load_repo_env() -> None:
-    """PyCharm 단독 실행에서도 repo root 의 `.env` 를 먼저 읽는다."""
-
-    load_dotenv(ROOT_DIR / ".env", override=False)
-
-
-def _load_json(path: Path):
+def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _write_json(path: Path, payload: dict) -> None:
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-
-
-def _summary_number(text: str) -> float | None:
-    match = re.search(r"-?\d+(?:\.\d+)?", text)
-    return float(match.group()) if match else None
-
-
-def _time_text_to_ms(raw: str, year: int) -> int:
-    """`06-30 04:00` 형식의 KST 시각을 epoch milliseconds 로 바꾼다."""
-
-    dt = datetime.strptime(f"{year}-{raw}", "%Y-%m-%d %H:%M").replace(tzinfo=KST)
-    return int(dt.timestamp() * 1000)
-
-
-def _range_text_to_ms(raw: str, year: int) -> tuple[int, int]:
-    start_text, end_text = [part.strip() for part in raw.split("~", maxsplit=1)]
-    return _time_text_to_ms(start_text, year), _time_text_to_ms(end_text, year)
-
-
-def _health_item(items: list[dict], label: str) -> dict | None:
-    for item in items:
-        if item.get("label") == label:
-            rows = item.get("rows") or []
-            return rows[0] if rows else None
-    return None
-
-
-def _normalize_request_payload(raw: dict) -> dict:
-    """raw dump fixture 를 현재 `TimelineDraftRequest` 계약에 맞춘다."""
-
-    year = int(raw["date"][:4])
-    payload = {
-        "transactionId": f"tx-{raw['date']}",
-        "date": raw["date"],
-        "mode": raw["mode"],
-        "window": raw["window"],
-        "generatedAt": raw["generatedAt"],
-        "location": {"stays": [], "routes": []},
-        "notifications": {"active": [], "collected": []},
-        "photos": [],
-        "calendar": {"events": []},
-        "health": {},
-    }
-
-    for index, stay in enumerate(raw.get("location", {}).get("stays", []), start=1):
-        payload["location"]["stays"].append(
-            {**stay, "sourceId": f"location-stay-{index:03d}"}
-        )
-    for index, route in enumerate(raw.get("location", {}).get("routes", []), start=1):
-        payload["location"]["routes"].append(
-            {**route, "sourceId": f"location-route-{index:03d}"}
-        )
-
-    for group in ("active", "collected"):
-        for index, item in enumerate(raw.get("notifications", {}).get(group, []), start=1):
-            payload["notifications"][group].append(
-                {**item, "sourceId": f"notification-{group}-{index:04d}"}
-            )
-
-    for photo in raw.get("photos", []):
-        source_id = f"photo-{photo['id']}"
-        normalized = {
-            **photo,
-            "sourceId": source_id,
-            "id": str(photo["id"]),
-            "lat": photo.get("lat", photo.get("latitude")),
-            "lon": photo.get("lon", photo.get("longitude")),
-        }
-        payload["photos"].append(normalized)
-
-    for event in raw.get("calendar", []):
-        payload["calendar"]["events"].append(
-            {**event, "sourceId": f"calendar-{event['id']}"}
-        )
-
-    health = raw.get("health", [])
-    if row := _health_item(health, "걸음 수"):
-        payload["health"]["steps"] = {
-            "sourceId": "health-steps-001",
-            "count": int(_summary_number(row.get("summary", "")) or 0),
-        }
-    if row := _health_item(health, "이동 거리"):
-        payload["health"]["distance"] = {
-            "sourceId": "health-distance-001",
-            "meters": _summary_number(row.get("summary", "")) or 0.0,
-        }
-    if row := _health_item(health, "소모 칼로리(활동)"):
-        payload["health"]["activeCaloriesBurned"] = {
-            "sourceId": "health-active-calories-001",
-            "kcal": _summary_number(row.get("summary", "")) or 0.0,
-        }
-    if row := _health_item(health, "소모 칼로리(총)"):
-        payload["health"]["totalCaloriesBurned"] = {
-            "sourceId": "health-total-calories-001",
-            "kcal": _summary_number(row.get("summary", "")) or 0.0,
-        }
-    if row := _health_item(health, "수면"):
-        start, end = _range_text_to_ms(row["time"], year)
-        payload["health"]["sleep"] = {
-            "sourceId": "health-sleep-001",
-            "startTime": start,
-            "endTime": end,
-            "durationMinutes": int(_summary_number(row.get("summary", "")) or 0),
-        }
-    if _health_item(health, "심박수"):
-        payload["health"]["heartRate"] = {
-            "sourceId": "health-heart-rate-001",
-            "samples": [],
-        }
-
-    return payload
 
 
 def _dump_for_compare(payload: dict) -> list[str]:
@@ -162,196 +33,39 @@ def _dump_for_compare(payload: dict) -> list[str]:
     return [*text.splitlines(), ""]
 
 
-def _prepare_live_llm_env() -> None:
-    """앱 import 전에 live LLM 테스트에 필요한 최소 환경을 확인한다."""
-
-    _load_repo_env()
-
-    os.environ.setdefault("APP_ENV", "test")
-    os.environ.setdefault("LOG_LEVEL", "INFO")
-
-    if not os.getenv("LLM_PROVIDER"):
-        if os.getenv("OPENAI_API_KEY"):
-            os.environ["LLM_PROVIDER"] = "openai"
-        elif os.getenv("GEMINI_API_KEY"):
-            os.environ["LLM_PROVIDER"] = "gemini"
-
-    provider = os.getenv("LLM_PROVIDER", "").lower()
-    if provider not in {"openai", "gemini"}:
-        pytest.fail(
-            "실제 LLM 테스트에는 LLM_PROVIDER=openai 또는 LLM_PROVIDER=gemini 가 필요합니다."
-        )
-
-    required = {
-        "openai": ("OPENAI_API_KEY", "OPENAI_MODEL"),
-        "gemini": ("GEMINI_API_KEY", "GEMINI_MODEL"),
-    }[provider]
-    missing = [name for name in required if not os.getenv(name)]
-    if missing:
-        pytest.fail(
-            "실제 LLM 테스트 환경 변수가 부족합니다: " + ", ".join(missing)
-        )
-
-    _trace(
-        "llm env: "
-        f"provider={provider} "
-        f"model={os.getenv(required[1])} "
-        f"serial={os.getenv('LAIMORY_LIVE_LLM_SERIAL') == '1'}"
-    )
-
-
-def _trace(message: str) -> None:
-    """PyCharm pytest 콘솔에서도 바로 보이도록 live test 진행 상황을 출력한다."""
-
-    print(f"[live-llm] {message}", file=sys.__stdout__, flush=True)
-
-
-_SERIAL_AGENT_LOCK = threading.Lock()
-
-
-@contextmanager
-def _trace_heartbeat(label: str, interval_seconds: float = 10.0):
-    """LLM 호출이 길어질 때 콘솔에 주기적으로 진행 중 로그를 남긴다."""
-
-    stop_event = threading.Event()
-    started = time.perf_counter()
-
-    def _run() -> None:
-        while not stop_event.wait(interval_seconds):
-            elapsed = time.perf_counter() - started
-            _trace(f"{label} still running elapsed={elapsed:.1f}s")
-
-    thread = threading.Thread(
-        target=_run,
-        name=f"live-llm-heartbeat-{label}",
-        daemon=True,
-    )
-    thread.start()
-    try:
-        yield
-    finally:
-        stop_event.set()
-        thread.join(timeout=1.0)
-
-
-@pytest.fixture
-def live_trace_console(request):
-    """live LLM 테스트 중 pytest 출력 캡처를 잠시 꺼서 진행 상황을 바로 보여준다."""
-
-    _load_repo_env()
-    if os.getenv("LAIMORY_LIVE_LLM") != "1":
-        yield
-        return
-
-    capture_manager = request.config.pluginmanager.getplugin("capturemanager")
-    if capture_manager is None:
-        yield
-        return
-
-    capture_manager.suspend_global_capture(in_=True)
-    try:
-        yield
-    finally:
-        capture_manager.resume_global_capture()
-
-
-class _TracedEventAgent:
-    """live test 에서만 Event Agent 실행 전후를 콘솔에 남기는 wrapper."""
-
-    def __init__(self, agent) -> None:
-        self._agent = agent
-        self.name = getattr(agent, "name", agent.__class__.__name__)
-
-    def generate(self, request):
-        _trace(f"event agent start: {self.name}")
-        started = time.perf_counter()
-        if os.getenv("LAIMORY_LIVE_LLM_SERIAL") == "1":
-            with _SERIAL_AGENT_LOCK:
-                _trace(f"event agent acquired serial slot: {self.name}")
-                with _trace_heartbeat(f"event agent {self.name}"):
-                    result = self._agent.generate(request)
-        else:
-            with _trace_heartbeat(f"event agent {self.name}"):
-                result = self._agent.generate(request)
-        elapsed = time.perf_counter() - started
-        _trace(
-            f"event agent done: {self.name} "
-            f"candidates={len(result.candidates)} "
-            f"fragments={len(result.fragments)} "
-            f"warnings={len(result.warnings)} "
-            f"elapsed={elapsed:.1f}s"
-        )
-        for warning in result.warnings:
-            _trace(f"event agent warning: {self.name}: {warning.message}")
-        return result
-
-
-class _TracedTimelineAgent:
-    """live test 에서만 Timeline Agent 실행 전후를 콘솔에 남기는 wrapper."""
-
-    name = "timeline"
-
-    def __init__(self, agent) -> None:
-        self._agent = agent
-
-    def generate(self, request, agent_result):
-        _trace(
-            "timeline agent start: "
-            f"candidates={len(agent_result.candidates)} "
-            f"fragments={len(agent_result.fragments)} "
-            f"warnings={len(agent_result.warnings)}"
-        )
-        started = time.perf_counter()
-        with _trace_heartbeat("timeline agent"):
-            draft = self._agent.generate(request, agent_result)
-        elapsed = time.perf_counter() - started
-        _trace(
-            "timeline agent done: "
-            f"events={len(draft.events)} "
-            f"questions={len(draft.questions)} "
-            f"warnings={len(draft.warnings)} "
-            f"elapsed={elapsed:.1f}s"
-        )
-        return draft
-
-
 @pytest.mark.integration
 @pytest.mark.live_llm
 def test_live_llm_pipeline_matches_data_fixture_shape_and_writes_comparison(
     live_trace_console,
 ):
-    _load_repo_env()
-
-    if os.getenv("LAIMORY_LIVE_LLM") != "1":
-        pytest.skip("실제 LLM 호출은 LAIMORY_LIVE_LLM=1 일 때만 실행합니다.")
-
-    _prepare_live_llm_env()
+    prepare_live_llm_env()
 
     from app.agents.events import default_event_agents
     from app.agents.events.photo import PhotoEventAgent
     from app.agents.events.photo.describer import VisionPhotoDescriber
     from app.agents.events.photo.image_source import LocalFilePhotoImageSource
-    from app.agents.timeline.timeline_agent import TimelineAgent
     from app.agents.main import run_main_agent
+    from app.agents.timeline.timeline_agent import TimelineAgent
     from app.services.normalizer import normalize
-    from app.services.source_repository import load_snapshot_from_file
+    from tests.fixtures.live_data import resolve_live_data_case
+    from tests.fixtures.live_output import current_live_run
+    from tests.agents.live_input_helpers import live_observer
 
-    _trace("load input snapshot")
+    trace("load input snapshot")
+    live_data = resolve_live_data_case()
+    live_run = current_live_run(live_data.date)
     expected = _load_json(EXPECTED_PATH)
-    snapshot = load_snapshot_from_file(SNAPSHOT_PATH)
-    request = normalize(snapshot)
-    source_count = len(request.iter_source_items())
-    _trace(
+    request = normalize(live_data.load_snapshot())
+    trace(
         "request ready: "
         f"date={request.date} "
-        f"source_items={source_count} "
+        f"source_items={len(request.iter_source_items())} "
         f"notifications={len(request.notifications)} "
         f"photos={len(request.photos)}"
     )
 
-    # 기본 파이프라인의 Photo Agent 를 data/input 실제 이미지를 vision 으로 보는
-    # 것으로 교체한다(입력 JSON 의 photoFile=clientPhotoUri 가 실제 파일명과 일치).
-    photo_image_source = LocalFilePhotoImageSource(DATA_DIR / "input")
+    # Photo Agent만 날짜별 fixture의 실제 사진 파일을 읽는 vision 구성으로 교체한다.
+    photo_image_source = LocalFilePhotoImageSource(live_data.image_dir)
     raw_agents = [
         PhotoEventAgent(
             describer=VisionPhotoDescriber(image_source=photo_image_source)
@@ -360,37 +74,43 @@ def test_live_llm_pipeline_matches_data_fixture_shape_and_writes_comparison(
         else agent
         for agent in default_event_agents()
     ]
-    event_agents = [_TracedEventAgent(agent) for agent in raw_agents]
-    timeline_agent = _TracedTimelineAgent(TimelineAgent())
+    event_agents = [TracedEventAgent(agent) for agent in raw_agents]
+    timeline_agent = TracedTimelineAgent(TimelineAgent())
 
-    _trace("main agent start")
+    trace("main agent start")
+    observer = live_observer(request.date)
     draft = asyncio.run(
         run_main_agent(
             request,
             event_agents=event_agents,
             timeline_agent=timeline_agent,
+            observer=observer,
         )
     )
-    _trace("main agent done")
+    observer.assert_llm_calls_succeeded()
+    trace("main agent done")
 
     actual = draft.model_dump(by_alias=True, mode="json")
-    _trace(f"write actual: {ACTUAL_PATH}")
-    _write_json(ACTUAL_PATH, actual)
+    actual_path = live_run.write_json("timeline-draft.actual.json", actual)
+    trace(f"write actual: {actual_path}")
 
-    _trace("compare expected vs actual")
+    trace("compare expected vs actual")
     diff = list(
         difflib.unified_diff(
             _dump_for_compare(expected),
             _dump_for_compare(actual),
             fromfile=str(EXPECTED_PATH),
-            tofile=str(ACTUAL_PATH),
+            tofile=str(actual_path),
             lineterm="",
         )
     )
-    DIFF_PATH.write_text("\n".join(diff) + ("\n" if diff else ""), encoding="utf-8")
+    diff_path = live_run.write_text(
+        "timeline-draft.diff.txt",
+        "\n".join(diff) + ("\n" if diff else ""),
+    )
 
-    print(f"\nactual: {ACTUAL_PATH}")
-    print(f"diff: {DIFF_PATH}")
+    print(f"\nactual: {actual_path}")
+    print(f"diff: {diff_path}")
     print(
         "summary: "
         f"expected events={len(expected.get('events', []))}, "
