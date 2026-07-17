@@ -8,7 +8,6 @@ from tests.agents.live_input_helpers import (
     dump_agent_result,
     health_request,
     prepare_live_llm_env,
-    run_live_event_agent,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.live_llm]
@@ -17,8 +16,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.live_llm]
 def test_sleep_activity_event_agent_with_real_input_fixture_writes_result() -> None:
     prepare_live_llm_env()
 
-    request = health_request()
-    result = run_live_event_agent(SleepActivityEventAgent(), request)
+    result = SleepActivityEventAgent().generate(health_request())
     actual = dump_agent_result("sleep_activity", result)
 
     assert_agent_result_shape(actual, result)

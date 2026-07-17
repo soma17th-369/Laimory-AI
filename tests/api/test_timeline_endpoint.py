@@ -58,15 +58,12 @@ def test_post_accepts_and_get_returns_result(store, repo, fake_main_agent):
     body = response.json()
     assert body["status"] == TaskStatus.PROCESSING.value
     assert body["taskId"] == _TASK_ID
-    assert body["transactionId"].startswith("tx-")
-    assert body["transactionId"] != _TASK_ID
 
     # TestClient 는 백그라운드 task 완료까지 기다리므로 조회 시 이미 SUCCESS 다.
     status_res = client.get(f"/v1/timeline/{_TASK_ID}")
     assert status_res.status_code == 200
     status_body = status_res.json()
     assert status_body["status"] == TaskStatus.SUCCESS.value
-    assert status_body["transactionId"] == body["transactionId"]
     assert status_body["result"]["userId"] == "u-1"
 
 

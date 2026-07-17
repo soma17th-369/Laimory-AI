@@ -22,12 +22,11 @@ from app.agents.events.photo.image_source import (
 from app.core.llm import ImageInput
 from app.schemas import PhotoItem
 from tests.fixtures.fake_llm import FakeLLM, candidate, result_json
-from tests.fixtures.live_data import resolve_live_data_case
 from tests.fixtures.requests import make_request
 
 IMAGES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "images"
 # data/input 에 실제 촬영 이미지가 들어와 있어, 실제 바이너리 로딩을 이 파일로 검증한다.
-DATA_INPUT_DIR = resolve_live_data_case("2026-07-08").image_dir
+DATA_INPUT_DIR = Path(__file__).resolve().parents[2] / "data" / "input"
 REAL_PHOTO_FILE = "000_20260708_172720.jpg"  # = 입력 JSON 의 photoFile(=clientPhotoUri)
 _JPEG_SIGNATURE = b"\xff\xd8\xff"
 

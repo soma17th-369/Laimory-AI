@@ -52,21 +52,13 @@ FastAPI 라우터/서비스 안에서는 보통 다음과 같이 쓴다::
 """
 
 from app.core.config import settings
-from app.core.llm import (
-    LLMClient,
-    LLMCompletion,
-    TokenUsage,
-    available_providers,
-    get_provider,
-)
+from app.core.llm import LLMClient, available_providers, get_provider
 from app.core.logging import get_logger
 
 __all__ = [
     "settings",
     "get_logger",
     "LLMClient",
-    "LLMCompletion",
-    "TokenUsage",
     "get_provider",
     "available_providers",
 ]

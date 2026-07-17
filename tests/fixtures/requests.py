@@ -37,7 +37,6 @@ def make_request(**overrides) -> TimelineDraftRequest:
 
     defaults = dict(
         task_id="task-test",
-        transaction_id="tx-test",
         date=DATE,
         timezone="Asia/Seoul",
         window=TimeWindow(start=WINDOW_START, end=WINDOW_END),

@@ -7,7 +7,6 @@ from tests.agents.live_input_helpers import (
     dump_agent_result,
     photo_request,
     prepare_live_llm_env,
-    run_live_event_agent,
     vision_photo_event_agent,
 )
 
@@ -18,8 +17,7 @@ def test_photo_event_agent_with_real_input_fixture_writes_result() -> None:
     prepare_live_llm_env()
 
     # data/input 의 실제 JPEG 를 vision 으로 보며 describe → infer 를 수행한다.
-    request = photo_request()
-    result = run_live_event_agent(vision_photo_event_agent(), request)
+    result = vision_photo_event_agent().generate(photo_request())
     actual = dump_agent_result("photo", result)
 
     assert_agent_result_shape(actual, result)

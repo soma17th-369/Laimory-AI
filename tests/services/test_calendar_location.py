@@ -20,7 +20,7 @@ from tests.fixtures.requests import calendar_item, make_request, stay_item
 START = "2026-06-20T09:00:00+09:00"
 END = "2026-06-20T10:00:00+09:00"
 
-# 실제 입력(data/input/2026-07-08/2026-07-08.json)에서 가져온 조합.
+# 실제 입력(data/input/2026-07-08.json)에서 가져온 조합.
 HOME_LOCATION_TEXT = "집(경기도 오산시 운암로 90)"
 HOME_ADDRESS = "경기도 오산시 운암로 90"
 HOME_PLACE = "오산운암3단지 주공아파트"

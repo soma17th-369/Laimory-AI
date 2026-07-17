@@ -41,12 +41,6 @@ from app.agents.repair.tools import (
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.core.observability import (
-    ObservationEventType,
-    ObservationStage,
-    emit_observation,
-    observation_scope,
-)
 from app.schemas import (
     AgentEventResult,
     RepairPlan,
@@ -185,13 +179,6 @@ class RepairAgent(Agent):
 
         # LLM 이 무엇을 하든, 코드 확정은 반드시 한 번은 지나간다.
         _confirm(ctx)
-        emit_observation(
-            ObservationEventType.DRAFT_UPDATED,
-            payload={
-                "phase": "initial_confirmation",
-                "timeline": ctx.draft.model_dump(by_alias=True, mode="json"),
-            },
-        )
 
         if self._max_iterations <= 0:
             logger.info("Repair Agent 반복 상한이 0 이라 코드 확정만 수행했습니다.")
@@ -203,10 +190,6 @@ class RepairAgent(Agent):
         try:
             self._run_graph(ctx, last_good)
         except Exception as exc:  # noqa: BLE001 - 개선 실패가 draft 를 잃게 하지 않는다
-            emit_observation(
-                ObservationEventType.FAILED,
-                payload={"error": str(exc), "errorType": type(exc).__name__},
-            )
             logger.warning("Repair Agent 실행 실패: error=%s", exc, exc_info=True)
             restored = last_good[0]
             restored.warnings.append(
@@ -237,24 +220,12 @@ class RepairAgent(Agent):
         def analyze_node(state: _State) -> _State:
             iteration = state["iteration"] + 1
             remaining = max_iterations - iteration + 1
-            with observation_scope(
-                ObservationStage.REPAIR_AGENT,
-                agent=self.name,
-                iteration=iteration,
-            ):
-                text = self.llm.complete(
-                    build_repair_prompt(ctx, remaining),
-                    system=_SYSTEM_PROMPT,
-                    temperature=0.0,
-                )
-                plan = parse_repair_plan(text)
-                emit_observation(
-                    ObservationEventType.PLAN,
-                    payload={
-                        "remainingIterations": remaining,
-                        "plan": plan.model_dump(by_alias=True, mode="json"),
-                    },
-                )
+            text = self.llm.complete(
+                build_repair_prompt(ctx, remaining),
+                system=_SYSTEM_PROMPT,
+                temperature=0.0,
+            )
+            plan = parse_repair_plan(text)
             logger.info(
                 "Repair 분석 %d/%d: issues=%d, toolCalls=%d, done=%s",
                 iteration,
@@ -266,24 +237,9 @@ class RepairAgent(Agent):
             return {"iteration": iteration, "plan": plan}
 
         def execute_node(state: _State) -> _State:
-            with observation_scope(
-                ObservationStage.REPAIR_AGENT,
-                agent=self.name,
-                iteration=state["iteration"],
-            ):
-                execute_tool_calls(ctx, state["plan"].tool_calls)
-                _confirm(ctx)
-                emit_observation(
-                    ObservationEventType.DRAFT_UPDATED,
-                    payload={
-                        "phase": "iteration_confirmation",
-                        "timeline": ctx.draft.model_dump(
-                            by_alias=True,
-                            mode="json",
-                        ),
-                    },
-                )
-                last_good[0] = ctx.draft.model_copy(deep=True)
+            execute_tool_calls(ctx, state["plan"].tool_calls)
+            _confirm(ctx)
+            last_good[0] = ctx.draft.model_copy(deep=True)
             return {}
 
         def after_analyze(state: _State) -> str:

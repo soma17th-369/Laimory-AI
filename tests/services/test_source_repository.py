@@ -1,13 +1,14 @@
 """수집 스냅샷 저장소(InMemorySourceRepository) 검증."""
 
+from pathlib import Path
+
 from app.services.source_repository import (
     InMemorySourceRepository,
     load_snapshot_from_file,
 )
-from tests.fixtures.live_data import resolve_live_data_case
 from tests.fixtures.requests import default_source_items, make_snapshot
 
-_SAMPLE = resolve_live_data_case("2026-07-08").snapshot_path
+_SAMPLE = Path(__file__).resolve().parents[2] / "data" / "input" / "2026-07-08.json"
 
 
 def test_put_then_get_roundtrip():
