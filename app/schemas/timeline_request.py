@@ -60,3 +60,15 @@ class TimelineDraftRequest(CamelModel):
             *self.notifications,
             *self.photos,
         ]
+
+    def source_item_counts(self) -> dict[str, int]:
+        """본문 없이 입력 구성을 관측할 수 있는 source 종류별 개수."""
+
+        return {
+            "stays": len(self.stays),
+            "movements": len(self.movements),
+            "calendars": len(self.calendars),
+            "healths": len(self.healths),
+            "notifications": len(self.notifications),
+            "photos": len(self.photos),
+        }

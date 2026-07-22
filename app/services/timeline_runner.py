@@ -33,6 +33,7 @@ from app.core.observability import (
     ObservationStage,
     emit_observation,
     observation_context,
+    summarize_content,
 )
 from app.core.observability.runtime import build_task_observer, flush_task_observations
 from app.schemas import TaskStatus, TimelineCallbackPayload
@@ -145,7 +146,13 @@ async def _process_observed(
             emit_observation(
                 ObservationEventType.COMPLETED,
                 stage=ObservationStage.REQUEST,
-                payload={"request": request.model_dump(by_alias=True, mode="json")},
+                payload={
+                    "inputItemCounts": request.source_item_counts(),
+                    "hasUserMemory": request.user_memory is not None,
+                    "inputMetadata": summarize_content(
+                        request.model_dump(by_alias=True, mode="json")
+                    ),
+                },
             )
             active_stage = ObservationStage.MAIN_AGENT
             draft = await asyncio.wait_for(
@@ -176,7 +183,10 @@ async def _process_observed(
         emit_observation(
             ObservationEventType.FAILED,
             stage=ObservationStage.MAIN_AGENT,
-            payload={"error": error, "timeoutSec": settings.pipeline_timeout_sec},
+            payload={
+                "errorType": "TimeoutError",
+                "timeoutSec": settings.pipeline_timeout_sec,
+            },
         )
     except Exception as exc:  # noqa: BLE001 - 백그라운드 최종 방어선
         logger.warning(
@@ -187,7 +197,7 @@ async def _process_observed(
         emit_observation(
             ObservationEventType.FAILED,
             stage=active_stage,
-            payload={"error": error},
+            payload={"errorType": type(exc).__name__},
         )
 
     # 설정된 콜백 URL 이 있으면 성공/실패 통보를 App Server 로 전달한다.
@@ -215,6 +225,9 @@ async def _process_observed(
         if status == TaskStatus.SUCCESS
         else ObservationEventType.FAILED,
         stage=ObservationStage.FINAL,
-        payload={"status": status.value, **({"error": error} if error else {})},
+        payload={
+            "status": status.value,
+            **({"failureReason": "processing_failed"} if error else {}),
+        },
     )
     return status

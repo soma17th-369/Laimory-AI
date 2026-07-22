@@ -7,7 +7,6 @@ import tomllib
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -124,16 +123,14 @@ class Settings(BaseSettings):
     # Elasticsearch 접속. es_url 이 비어 있으면 ES 전송을 건너뛴다.
     es_url: str = ""
     es_api_key: str = ""
-    es_task_index: str = "agent-tasks"
-    es_event_index: str = "agent-events"
+    es_event_index: str = "ai-timeline-task"
     es_timeout_sec: float = 5.0
     es_max_retries: int = 3
-    # payload 는 원문 그대로 저장하지 않는다. SANITIZED 는 민감정보를 마스킹한 본문을,
-    # NONE 은 길이와 해시만 저장한다. 어느 정책이든 이벤트당 크기 제한을 적용한다.
-    obs_content_capture: Literal["NONE", "SANITIZED"] = "SANITIZED"
+    # payload 는 실행 메타데이터만 저장한다. 입력·프롬프트·응답·draft 본문은 길이와
+    # 해시로만 요약하고, 메타데이터에도 이벤트당 크기 제한을 적용한다.
     obs_max_payload_bytes: int = 16 * 1024
     obs_max_events_per_task: int = 1000
-    # dev 검사용: 값이 있으면 조립한 task/event 문서를 로컬에도 저장한다.
+    # dev 검사용: 값이 있으면 조립한 event 문서를 로컬에도 저장한다.
     obs_local_dir: str | None = None
 
     # 운영 로그 포맷: "rich"(로컬 콘솔) | "json"(stdout JSON, CloudWatch Logs Insights).

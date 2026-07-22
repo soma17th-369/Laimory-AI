@@ -7,7 +7,6 @@
 """
 
 from app.core.observability.models import (
-    ContentCapture,
     ObservationEvent,
     ObservationEventType,
     ObservationStage,
@@ -20,7 +19,12 @@ from app.core.observability.context import (
     observation_scope,
 )
 from app.core.observability.observer import ObservationStats, Observer
-from app.core.observability.redaction import REDACTED, capture_payload, redact_value
+from app.core.observability.redaction import (
+    REDACTED,
+    capture_payload,
+    redact_value,
+    summarize_content,
+)
 from app.core.observability.sinks import (
     CompositeObservationError,
     CompositeObservationSink,
@@ -33,7 +37,6 @@ from app.core.observability.sinks import (
 __all__ = [
     "CompositeObservationError",
     "CompositeObservationSink",
-    "ContentCapture",
     "InMemoryObservationSink",
     "JsonLinesObservationSink",
     "NullObservationSink",
@@ -51,4 +54,5 @@ __all__ = [
     "observation_context",
     "observation_scope",
     "redact_value",
+    "summarize_content",
 ]

@@ -186,7 +186,10 @@ class TimelineAgent(Agent):
             logger.warning("Timeline Agent failed: error=%s", exc, exc_info=True)
             emit_observation(
                 ObservationEventType.FAILED,
-                payload={"error": str(exc), "fallback": "empty_draft"},
+                payload={
+                    "errorType": type(exc).__name__,
+                    "fallback": "empty_draft",
+                },
             )
             return _empty_draft(
                 request,

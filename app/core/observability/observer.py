@@ -7,7 +7,7 @@ from itertools import count
 from threading import Lock
 
 from app.core.logging import get_logger
-from app.core.observability.models import ContentCapture, ObservationEvent
+from app.core.observability.models import ObservationEvent
 from app.core.observability.redaction import capture_payload
 from app.core.observability.sinks import NullObservationSink, ObservationSink
 
@@ -35,11 +35,9 @@ class Observer:
         self,
         sink: ObservationSink | None = None,
         *,
-        content_capture: ContentCapture = ContentCapture.NONE,
         max_payload_bytes: int = 16 * 1024,
     ) -> None:
         self._sink = sink or NullObservationSink()
-        self._content_capture = content_capture
         self._max_payload_bytes = max_payload_bytes
         self._sequence = count()
         self._sequence_lock = Lock()
@@ -63,7 +61,6 @@ class Observer:
                     "sequence": self._next_sequence(),
                     "payload": capture_payload(
                         event.payload,
-                        self._content_capture,
                         max_bytes=self._max_payload_bytes,
                     ),
                 }

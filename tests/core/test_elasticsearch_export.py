@@ -1,4 +1,4 @@
-"""Elasticsearch Bulk exporter의 NDJSON·재시도·부분 실패 검증."""
+"""Elasticsearch 단일 event 인덱스 Bulk exporter 검증."""
 
 import asyncio
 import json
@@ -8,7 +8,6 @@ import httpx
 from app.core.config import settings
 from app.core.observability.elasticsearch import export
 
-_TASK = {"@timestamp": "2026-07-23T00:00:00+00:00", "taskId": "t1", "status": "SUCCESS"}
 _EVENT1 = {"@timestamp": "2026-07-23T00:00:01+00:00", "taskId": "t1", "sequence": 1}
 _EVENT2 = {"@timestamp": "2026-07-23T00:00:02+00:00", "taskId": "t1", "sequence": 2}
 
@@ -20,15 +19,14 @@ async def _no_sleep(_delay) -> None:
 def _enable_es(monkeypatch, **overrides) -> None:
     monkeypatch.setattr(settings, "es_url", "http://es.test")
     monkeypatch.setattr(settings, "es_api_key", "")
-    monkeypatch.setattr(settings, "es_task_index", "agent-tasks")
-    monkeypatch.setattr(settings, "es_event_index", "agent-events")
+    monkeypatch.setattr(settings, "es_event_index", "ai-timeline-task")
     monkeypatch.setattr(settings, "es_timeout_sec", 1.0)
     monkeypatch.setattr(settings, "es_max_retries", 3)
     for key, value in overrides.items():
         monkeypatch.setattr(settings, key, value)
 
 
-async def test_export_sends_valid_ndjson_bulk(monkeypatch) -> None:
+async def test_export_sends_valid_ndjson_to_single_index(monkeypatch) -> None:
     _enable_es(monkeypatch)
     captured: dict = {}
 
@@ -37,17 +35,14 @@ async def test_export_sends_valid_ndjson_bulk(monkeypatch) -> None:
         captured["content_type"] = request.headers.get("content-type")
         return httpx.Response(200, json={"errors": False, "items": []})
 
-    await export(_TASK, [_EVENT1], transport=httpx.MockTransport(handler))
+    await export([_EVENT1], transport=httpx.MockTransport(handler))
 
     assert captured["content_type"] == "application/x-ndjson"
     assert captured["body"].endswith("\n")
     lines = captured["body"].strip().split("\n")
-    assert len(lines) == 4
-    task_action = json.loads(lines[0])["index"]
-    event_action = json.loads(lines[2])["index"]
-    assert task_action == {"_index": "agent-tasks-2026.07", "_id": "t1"}
-    assert event_action == {"_index": "agent-events-2026.07", "_id": "t1-1"}
-    assert "traceId" not in captured["body"] and "spanId" not in captured["body"]
+    assert len(lines) == 2
+    action = json.loads(lines[0])["index"]
+    assert action == {"_index": "ai-timeline-task-2026.07", "_id": "t1-1"}
 
 
 async def test_export_noop_without_es_url(monkeypatch) -> None:
@@ -58,7 +53,7 @@ async def test_export_noop_without_es_url(monkeypatch) -> None:
         calls["n"] += 1
         return httpx.Response(200, json={"errors": False})
 
-    await export(_TASK, [_EVENT1], transport=httpx.MockTransport(handler))
+    await export([_EVENT1], transport=httpx.MockTransport(handler))
     assert calls["n"] == 0
 
 
@@ -73,7 +68,7 @@ async def test_export_retries_on_429_then_succeeds(monkeypatch) -> None:
             return httpx.Response(429)
         return httpx.Response(200, json={"errors": False, "items": []})
 
-    await export(_TASK, [], transport=httpx.MockTransport(handler))
+    await export([_EVENT1], transport=httpx.MockTransport(handler))
     assert calls["n"] == 2
 
 
@@ -86,7 +81,7 @@ async def test_export_does_not_retry_on_permanent_4xx(monkeypatch) -> None:
         calls["n"] += 1
         return httpx.Response(400)
 
-    await export(_TASK, [], transport=httpx.MockTransport(handler))
+    await export([_EVENT1], transport=httpx.MockTransport(handler))
     assert calls["n"] == 1
 
 
@@ -103,7 +98,6 @@ async def test_export_retries_only_retryable_items(monkeypatch) -> None:
                 json={
                     "errors": True,
                     "items": [
-                        {"index": {"status": 200}},
                         {"index": {"status": 429}},
                         {"index": {"status": 400, "error": {"type": "mapping"}}},
                     ],
@@ -111,7 +105,7 @@ async def test_export_retries_only_retryable_items(monkeypatch) -> None:
             )
         return httpx.Response(200, json={"errors": False, "items": []})
 
-    await export(_TASK, [_EVENT1, _EVENT2], transport=httpx.MockTransport(handler))
+    await export([_EVENT1, _EVENT2], transport=httpx.MockTransport(handler))
 
     assert len(bodies) == 2
     assert '"_id": "t1-1"' in bodies[1]
@@ -125,4 +119,4 @@ async def test_export_isolates_connection_error(monkeypatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("es down")
 
-    await export(_TASK, [_EVENT1], transport=httpx.MockTransport(handler))
+    await export([_EVENT1], transport=httpx.MockTransport(handler))

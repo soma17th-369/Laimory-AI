@@ -11,7 +11,6 @@ import json
 from app.agents.main import run_main_agent
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.core.observability import (
-    ContentCapture,
     InMemoryObservationSink,
     Observer,
     observation_context,
@@ -79,7 +78,7 @@ def _seeded_repo() -> InMemorySourceRepository:
 def _capture_flush(monkeypatch) -> dict:
     captured: dict = {}
     sink = InMemoryObservationSink()
-    observer = Observer(sink, content_capture=ContentCapture.SANITIZED)
+    observer = Observer(sink)
 
     monkeypatch.setattr(
         timeline_runner,
@@ -132,6 +131,15 @@ def test_runner_emits_request_storage_callback_final(monkeypatch) -> None:
     assert ("CALLBACK", "COMPLETED") in pairs
     assert ("FINAL", "COMPLETED") in pairs
     assert {e.task_id for e in events} == {_TASK_ID}
+    request_completed = next(
+        event
+        for event in events
+        if event.stage.value == "REQUEST" and event.event_type.value == "COMPLETED"
+    )
+    assert request_completed.payload["inputMetadata"]["contentCaptured"] is False
+    serialized_payload = json.dumps(request_completed.payload, ensure_ascii=False)
+    assert "sourceItems" not in serialized_payload
+    assert "callback-token" not in serialized_payload
     # sequence 는 발급 순서대로 단조 증가한다.
     assert [e.sequence for e in events] == sorted(e.sequence for e in events)
 

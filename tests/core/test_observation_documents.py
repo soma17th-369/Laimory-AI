@@ -1,4 +1,4 @@
-"""이벤트 버퍼 → task/event Elasticsearch 문서 조립 검증."""
+"""이벤트 버퍼 → 단일 Elasticsearch event 문서 조립 검증."""
 
 from datetime import datetime, timedelta, timezone
 
@@ -23,8 +23,15 @@ def _run_events() -> list[ObservationEvent]:
     stage = ObservationStage
     event = ObservationEventType
     return [
-        _ev(0, stage.REQUEST, event.STARTED, payload={"content": {"input": "safe"}}),
-        _ev(1, stage.LLM, event.PROMPT, provider="bedrock", model="nova"),
+        _ev(0, stage.REQUEST, event.STARTED, payload={"inputItemCount": 3}),
+        _ev(
+            1,
+            stage.LLM,
+            event.PROMPT,
+            provider="bedrock",
+            model="nova",
+            payload={"promptMetadata": {"contentCaptured": False, "byteLength": 10}},
+        ),
         _ev(
             2,
             stage.LLM,
@@ -35,64 +42,53 @@ def _run_events() -> list[ObservationEvent]:
             input_tokens=10,
             output_tokens=5,
             total_tokens=15,
-            payload={"content": {"response": "ok"}},
+            payload={"responseMetadata": {"contentCaptured": False, "byteLength": 5}},
         ),
-        _ev(3, stage.FINAL, event.COMPLETED, payload={"content": {"status": "SUCCESS"}}),
+        _ev(3, stage.FINAL, event.COMPLETED, payload={"status": "SUCCESS"}),
     ]
 
 
 def test_build_documents_empty() -> None:
-    task, events = build_documents([])
-    assert task is None and events == []
+    assert build_documents([]) == []
 
 
-def test_task_summary_uses_task_id_only() -> None:
-    task, events = build_documents(
+def test_documents_use_task_id_only_and_keep_event_metadata() -> None:
+    documents = build_documents(
         _run_events(),
         agent_version="v7",
         dropped_event_count=2,
     )
 
-    assert task["taskId"] == "t1"
-    assert task["status"] == "SUCCESS"
-    assert task["llmCallCount"] == 1
-    assert task["tokenUsage"] == {"input": 10, "output": 5, "total": 15}
-    assert task["agentVersion"] == "v7"
-    assert task["durationMs"] == 3000.0
-    assert task["eventCount"] == len(events)
-    assert task["droppedEventCount"] == 2
-    assert "traceId" not in task and "spanId" not in task
+    assert [document["sequence"] for document in documents] == [0, 1, 2, 3]
+    assert all(document["taskId"] == "t1" for document in documents)
+    assert all("traceId" not in document and "spanId" not in document for document in documents)
+    assert all(document["agentVersion"] == "v7" for document in documents)
 
-
-def test_event_documents_keep_safe_payload_and_sequence() -> None:
-    _, events = build_documents(_run_events())
-
-    assert all(event["taskId"] == "t1" for event in events)
-    assert [event["sequence"] for event in events] == [0, 1, 2, 3]
-    assert all("traceId" not in event and "spanId" not in event for event in events)
-
-    prompt = next(event for event in events if event["eventType"] == "PROMPT")
-    response = next(event for event in events if event["eventType"] == "RESPONSE")
-    assert prompt["status"] == "STARTED"
-    assert response["payload"] == {"content": {"response": "ok"}}
+    response = next(document for document in documents if document["eventType"] == "RESPONSE")
     assert response["durationMs"] == 100.0
     assert response["tokenUsage"] == {"input": 10, "output": 5, "total": 15}
     assert response["modelProvider"] == "bedrock"
     assert response["modelId"] == "nova"
 
+    final = documents[-1]
+    assert final["status"] == "SUCCESS"
+    assert final["taskDurationMs"] == 3000.0
+    assert final["droppedEventCount"] == 2
+    assert final["eventCount"] == 4
 
-def test_failed_final_marks_task_failed_and_keeps_error() -> None:
-    events = [
-        _ev(0, ObservationStage.REQUEST, ObservationEventType.STARTED),
-        _ev(
-            1,
-            ObservationStage.FINAL,
-            ObservationEventType.FAILED,
-            payload={"content": {"error": "timeout"}},
-        ),
-    ]
-    task, documents = build_documents(events)
 
-    assert task["status"] == "FAILED"
+def test_failed_final_keeps_failure_metadata_without_error_body() -> None:
+    documents = build_documents(
+        [
+            _ev(0, ObservationStage.REQUEST, ObservationEventType.STARTED),
+            _ev(
+                1,
+                ObservationStage.FINAL,
+                ObservationEventType.FAILED,
+                payload={"failureReason": "processing_failed"},
+            ),
+        ]
+    )
+
     assert documents[-1]["status"] == "FAILED"
-    assert documents[-1]["payload"]["content"]["error"] == "timeout"
+    assert documents[-1]["payload"] == {"failureReason": "processing_failed"}

@@ -45,17 +45,6 @@ class ObservationEventType(StrEnum):
     DRAFT_UPDATED = "DRAFT_UPDATED"
 
 
-class ContentCapture(StrEnum):
-    """payload 본문을 관측 sink 로 전달하는 수준.
-
-    ``NONE`` 은 해시·길이만 남긴다. ``SANITIZED`` 는 마스킹과 크기 제한을 거친
-    본문을 남긴다. 원문 그대로 저장하는 모드는 두지 않는다.
-    """
-
-    NONE = "NONE"
-    SANITIZED = "SANITIZED"
-
-
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 

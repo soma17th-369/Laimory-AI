@@ -1,8 +1,8 @@
-"""수집한 관측 이벤트를 Elasticsearch 용 task/event 문서로 조립한다.
+"""수집한 관측 이벤트를 Elasticsearch event 문서로 조립한다.
 
-외부 상관키는 ``taskId`` 하나만 사용한다. 각 이벤트의 Elasticsearch ``_id`` 는
-export 시점에 ``taskId`` 와 ``sequence`` 로 파생하지만, 별도의 trace/span 식별자를
-문서 계약에 노출하지 않는다. payload 는 Observer 에서 이미 마스킹·크기 제한된 값이다.
+외부 상관키는 ``taskId`` 하나만 사용한다. Elasticsearch ``_id``는 export 시점에
+``taskId``와 ``sequence``로 파생하고 별도 식별자 필드는 만들지 않는다. 별도의 task
+요약 문서도 만들지 않으며, 종료 상태와 task 전체 처리시간은 FINAL 이벤트에 담는다.
 """
 
 from __future__ import annotations
@@ -86,66 +86,35 @@ def build_documents(
     *,
     agent_version: str = "",
     dropped_event_count: int = 0,
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-    """이벤트 버퍼를 ``(task 요약 1건, event 문서 N건)`` 으로 조립한다."""
+) -> list[dict[str, Any]]:
+    """이벤트 버퍼를 Elasticsearch event 문서 목록으로 조립한다."""
 
     if not events:
-        return None, []
+        return []
 
     ordered = sorted(
         events,
         key=lambda event: event.sequence if event.sequence is not None else -1,
     )
-    task_id = ordered[0].task_id
-    event_documents = [
+    documents = [
         _event_document(event, agent_version=agent_version) for event in ordered
     ]
 
-    final = next(
-        (event for event in reversed(ordered) if event.stage is ObservationStage.FINAL),
+    final_index = next(
+        (
+            index
+            for index in range(len(ordered) - 1, -1, -1)
+            if ordered[index].stage is ObservationStage.FINAL
+        ),
         None,
     )
-    if final is None:
-        status = "INCOMPLETE"
-    elif final.event_type is ObservationEventType.FAILED:
-        status = "FAILED"
-    else:
-        status = "SUCCESS"
-
-    totals: dict[str, int] = {}
-    llm_calls = 0
-    for event in ordered:
-        if (
-            event.stage is ObservationStage.LLM
-            and event.event_type is ObservationEventType.PROMPT
-        ):
-            llm_calls += 1
-        if event.stage is not ObservationStage.LLM or event.event_type not in {
-            ObservationEventType.RESPONSE,
-            ObservationEventType.FAILED,
-        }:
-            continue
-        for key, value in _token_usage(event).items():
-            totals[key] = totals.get(key, 0) + value
-
-    first = ordered[0]
-    last = ordered[-1]
-    task_document: dict[str, Any] = {
-        "@timestamp": first.timestamp.isoformat(),
-        "completedAt": last.timestamp.isoformat(),
-        "schemaVersion": first.schema_version,
-        "taskId": task_id,
-        "status": status,
-        "durationMs": max(
-            (last.timestamp - first.timestamp).total_seconds() * 1000,
+    if final_index is not None:
+        final = ordered[final_index]
+        documents[final_index]["taskDurationMs"] = max(
+            (final.timestamp - ordered[0].timestamp).total_seconds() * 1000,
             0.0,
-        ),
-        "eventCount": len(event_documents),
-        "droppedEventCount": dropped_event_count,
-        "llmCallCount": llm_calls,
-    }
-    if totals:
-        task_document["tokenUsage"] = totals
-    if agent_version:
-        task_document["agentVersion"] = agent_version
-    return task_document, event_documents
+        )
+        documents[final_index]["droppedEventCount"] = dropped_event_count
+        documents[final_index]["eventCount"] = len(documents)
+
+    return documents

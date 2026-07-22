@@ -5,6 +5,7 @@
   duration·provider/model/providerVersion)를, 실패 시 FAILED 를 emit 한다.
 """
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -119,10 +120,21 @@ def test_openai_complete_emits_prompt_and_response_with_tokens() -> None:
     )
     assert prompt_ev.stage is ObservationStage.LLM
     assert prompt_ev.provider == "openai" and prompt_ev.model == "gpt-test"
+    assert set(prompt_ev.payload) == {
+        "promptMetadata",
+        "systemPromptMetadata",
+    }
+    assert prompt_ev.payload["promptMetadata"]["contentCaptured"] is False
+    assert prompt_ev.payload["systemPromptMetadata"]["contentCaptured"] is False
+    assert "prompt" not in prompt_ev.payload
+    assert "system" not in prompt_ev.payload
     assert response_ev.input_tokens == 10
     assert response_ev.output_tokens == 20
     assert response_ev.total_tokens == 30
     assert response_ev.duration_ms is not None and response_ev.duration_ms >= 0
+    assert set(response_ev.payload) == {"responseMetadata"}
+    assert response_ev.payload["responseMetadata"]["contentCaptured"] is False
+    assert "hello" not in json.dumps(response_ev.payload)
     # providerVersion 은 설치된 openai SDK 버전에서 온다.
     assert response_ev.provider_version is not None
 
@@ -139,6 +151,8 @@ def test_openai_complete_emits_failed_and_reraises() -> None:
     assert len(failed) == 1
     assert failed[0].stage is ObservationStage.LLM
     assert failed[0].provider == "openai"
+    assert failed[0].payload == {"errorType": "RuntimeError"}
+    assert "boom" not in json.dumps(failed[0].payload)
 
 
 def test_openai_response_parsing_failure_is_observed() -> None:

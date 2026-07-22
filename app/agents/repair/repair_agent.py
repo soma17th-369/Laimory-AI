@@ -194,7 +194,10 @@ class RepairAgent(Agent):
             logger.warning("Repair Agent 실행 실패: error=%s", exc, exc_info=True)
             emit_observation(
                 ObservationEventType.FAILED,
-                payload={"error": str(exc), "fallback": "last_good_draft"},
+                payload={
+                    "errorType": type(exc).__name__,
+                    "fallback": "last_good_draft",
+                },
             )
             restored = last_good[0]
             restored.warnings.append(
@@ -244,7 +247,10 @@ class RepairAgent(Agent):
                 iteration=iteration,
                 payload={
                     "remainingIterations": remaining,
-                    "plan": plan.model_dump(by_alias=True, mode="json"),
+                    "issueCount": len(plan.issues),
+                    "toolCallCount": len(plan.tool_calls),
+                    "toolNames": [call.tool for call in plan.tool_calls],
+                    "done": plan.done,
                 },
             )
             return {"iteration": iteration, "plan": plan}
@@ -254,7 +260,10 @@ class RepairAgent(Agent):
                 emit_observation(
                     ObservationEventType.TOOL_CALL,
                     iteration=state["iteration"],
-                    payload={"call": call.model_dump(by_alias=True, mode="json")},
+                    payload={
+                        "tool": call.tool,
+                        "argumentNames": sorted(call.args),
+                    },
                 )
             results = execute_tool_calls(ctx, state["plan"].tool_calls)
             for result in results:
@@ -266,7 +275,6 @@ class RepairAgent(Agent):
                     payload={
                         "tool": result.tool,
                         "ok": result.ok,
-                        "message": result.message,
                     },
                 )
             _confirm(ctx)
@@ -274,7 +282,11 @@ class RepairAgent(Agent):
             emit_observation(
                 ObservationEventType.DRAFT_UPDATED,
                 iteration=state["iteration"],
-                payload={"draft": ctx.draft.model_dump(by_alias=True, mode="json")},
+                payload={
+                    "eventCount": len(ctx.draft.events),
+                    "questionCount": len(ctx.draft.questions),
+                    "warningCount": len(ctx.draft.warnings),
+                },
             )
             return {}
 

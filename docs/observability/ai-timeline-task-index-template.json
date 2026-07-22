@@ -1,5 +1,5 @@
 {
-  "index_patterns": ["agent-events-*"],
+  "index_patterns": ["ai-timeline-task-*"],
   "template": {
     "mappings": {
       "dynamic": false,
@@ -18,6 +18,9 @@
         "providerVersion": { "type": "keyword" },
         "agentVersion": { "type": "keyword" },
         "durationMs": { "type": "double" },
+        "taskDurationMs": { "type": "double" },
+        "eventCount": { "type": "integer" },
+        "droppedEventCount": { "type": "integer" },
         "tokenUsage": {
           "properties": {
             "input": { "type": "long" },

@@ -109,12 +109,16 @@ def _build_graph():
             except Exception as exc:
                 emit_observation(
                     ObservationEventType.FAILED,
-                    payload={"error": str(exc)},
+                    payload={"errorType": type(exc).__name__},
                 )
                 raise
             emit_observation(
                 ObservationEventType.COMPLETED,
-                payload={"draft": draft.model_dump(by_alias=True, mode="json")},
+                payload={
+                    "eventCount": len(draft.events),
+                    "questionCount": len(draft.questions),
+                    "warningCount": len(draft.warnings),
+                },
             )
         logger.info(
             "타임라인 초안 생성 완료: events=%d, questions=%d, warnings=%d",
@@ -141,7 +145,7 @@ def _build_graph():
             except Exception as exc:
                 emit_observation(
                     ObservationEventType.FAILED,
-                    payload={"error": str(exc)},
+                    payload={"errorType": type(exc).__name__},
                 )
                 raise
             emit_observation(
@@ -216,8 +220,9 @@ async def run_main_agent(
         emit_observation(
             ObservationEventType.STARTED,
             payload={
-                "request": request.model_dump(by_alias=True, mode="json"),
                 "agents": list(agents),
+                "inputItemCounts": request.source_item_counts(),
+                "hasUserMemory": request.user_memory is not None,
             },
         )
         final_state = await _build_graph().ainvoke(

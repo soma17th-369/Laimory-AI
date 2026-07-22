@@ -25,6 +25,7 @@ from app.core.observability import (
     ObservationEventType,
     ObservationStage,
     emit_observation,
+    summarize_content,
 )
 
 logger = get_logger(__name__)
@@ -173,9 +174,9 @@ class LLMProvider(ABC):
     ) -> None:
         """LLM 호출 직전 PROMPT 관측 이벤트를 남긴다(컨텍스트 없으면 no-op)."""
 
-        payload: dict = {"prompt": prompt}
+        payload: dict = {"promptMetadata": summarize_content(prompt)}
         if system is not None:
-            payload["system"] = system
+            payload["systemPromptMetadata"] = summarize_content(system)
         if image_count:
             payload["imageCount"] = image_count
         emit_observation(
@@ -204,7 +205,7 @@ class LLMProvider(ABC):
             cached_tokens=usage.get("cached"),
             reasoning_tokens=usage.get("reasoning"),
             tool_tokens=usage.get("tool"),
-            payload={"response": text},
+            payload={"responseMetadata": summarize_content(text)},
         )
 
     def _emit_llm_failure(self, started: float, exc: Exception) -> None:
@@ -217,7 +218,7 @@ class LLMProvider(ABC):
             model=self.model,
             provider_version=self._provider_version(),
             duration_ms=(perf_counter() - started) * 1000,
-            payload={"error": str(exc)},
+            payload={"errorType": type(exc).__name__},
         )
 
 

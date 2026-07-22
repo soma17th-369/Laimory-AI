@@ -31,15 +31,15 @@ def _buffer() -> InMemoryObservationSink:
     return sink
 
 
-async def test_flush_writes_local_task_and_events(monkeypatch, tmp_path) -> None:
+async def test_flush_writes_only_local_events(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(settings, "obs_local_dir", str(tmp_path))
     monkeypatch.setattr(settings, "obs_enabled", False)
 
     await flush_task_observations(_buffer(), task_id="t1")
 
     out = tmp_path / "t1"
-    assert (out / "task.json").exists()
     assert (out / "events.jsonl").exists()
+    assert not (out / "task.json").exists()
     assert '"taskId": "t1"' in (out / "events.jsonl").read_text(encoding="utf-8")
 
 

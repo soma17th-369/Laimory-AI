@@ -44,7 +44,8 @@ class EventAgent(Agent):
                     exc_info=True,
                 )
                 emit_observation(
-                    ObservationEventType.FAILED, payload={"error": str(exc)}
+                    ObservationEventType.FAILED,
+                    payload={"errorType": type(exc).__name__},
                 )
                 agent_name = self.name or self.__class__.__name__
                 return AgentEventResult(
@@ -59,7 +60,11 @@ class EventAgent(Agent):
             filtered = self._enforce_window(request, result)
             emit_observation(
                 ObservationEventType.COMPLETED,
-                payload={"result": filtered.model_dump(by_alias=True, mode="json")},
+                payload={
+                    "candidateCount": len(filtered.candidates),
+                    "fragmentCount": len(filtered.fragments),
+                    "warningCount": len(filtered.warnings),
+                },
             )
             return filtered
 

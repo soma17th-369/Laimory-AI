@@ -1,8 +1,13 @@
-"""관측 payload 콘텐츠 정책과 마스킹 검증."""
+"""관측 payload의 본문 비저장·마스킹·크기 제한 검증."""
 
 from copy import deepcopy
 
-from app.core.observability import ContentCapture, REDACTED, capture_payload, redact_value
+from app.core.observability import (
+    REDACTED,
+    capture_payload,
+    redact_value,
+    summarize_content,
+)
 
 
 def test_redaction_masks_nested_secrets_and_personal_text_without_mutation() -> None:
@@ -10,10 +15,8 @@ def test_redaction_masks_nested_secrets_and_personal_text_without_mutation() -> 
         "authorization": "Bearer abc.def.ghi",
         "nested": {
             "apiKey": "sk-abcdefghijklmnop",
-            "message": "연락처 010-1234-5678, mail user@example.com",
-            "inputTokens": 42,
+            "error": "연락처 010-1234-5678, mail user@example.com",
         },
-        "rows": [{"clientSecret": "hidden", "value": "safe"}],
     }
     original = deepcopy(payload)
 
@@ -22,50 +25,44 @@ def test_redaction_masks_nested_secrets_and_personal_text_without_mutation() -> 
     assert payload == original
     assert redacted["authorization"] == REDACTED
     assert redacted["nested"]["apiKey"] == REDACTED
-    assert redacted["nested"]["message"] == f"연락처 {REDACTED}, mail {REDACTED}"
-    assert redacted["nested"]["inputTokens"] == 42
-    assert redacted["rows"][0]["clientSecret"] == REDACTED
-    assert redacted["rows"][0]["value"] == "safe"
+    assert redacted["nested"]["error"] == f"연락처 {REDACTED}, mail {REDACTED}"
 
 
-def test_sanitized_capture_keeps_structure_but_removes_secret() -> None:
+def test_content_keys_are_replaced_with_length_and_hash() -> None:
     captured = capture_payload(
-        {"prompt": "use sk-abcdefghijklmnop", "result": [1, 2]},
-        ContentCapture.SANITIZED,
-        max_bytes=1024,
+        {
+            "prompt": "민감한 프롬프트 user@example.com",
+            "response": {"title": "민감한 응답"},
+            "eventCount": 3,
+        },
+        max_bytes=4096,
     )
 
-    assert captured["contentCaptured"] is True
-    assert captured["truncated"] is False
-    assert captured["content"] == {
-        "prompt": f"use {REDACTED}",
-        "result": [1, 2],
-    }
+    assert captured["eventCount"] == 3
+    assert captured["prompt"]["contentCaptured"] is False
+    assert captured["response"]["contentCaptured"] is False
+    assert len(captured["prompt"]["sha256"]) == 64
+    assert "민감한" not in str(captured)
+    assert "user@example.com" not in str(captured)
 
 
-def test_none_capture_keeps_only_length_and_stable_hash() -> None:
-    payload = {"prompt": "민감한 원문", "apiKey": "secret"}
-
-    left = capture_payload(payload, ContentCapture.NONE, max_bytes=1024)
-    right = capture_payload(payload, ContentCapture.NONE, max_bytes=1024)
+def test_content_summary_is_stable_and_contains_no_content() -> None:
+    left = summarize_content({"input": "민감한 원문"})
+    right = summarize_content({"input": "민감한 원문"})
 
     assert left == right
     assert left["contentCaptured"] is False
     assert left["byteLength"] > 0
     assert len(left["sha256"]) == 64
     assert "민감한 원문" not in str(left)
-    assert "secret" not in str(left)
 
 
-def test_sanitized_capture_truncates_large_payload() -> None:
-    captured = capture_payload(
-        {"prompt": "가" * 1000, "email": "user@example.com"},
-        ContentCapture.SANITIZED,
-        max_bytes=100,
-    )
+def test_oversized_metadata_is_hashed_without_preview() -> None:
+    captured = capture_payload({"details": "가" * 1000}, max_bytes=100)
 
-    assert captured["contentCaptured"] is True
+    assert captured["metadataCaptured"] is False
     assert captured["truncated"] is True
     assert captured["byteLength"] > 100
-    assert captured["storedByteLength"] <= 100
-    assert "user@example.com" not in captured["contentPreview"]
+    assert len(captured["sha256"]) == 64
+    assert "가" not in str(captured)
+    assert "contentPreview" not in captured

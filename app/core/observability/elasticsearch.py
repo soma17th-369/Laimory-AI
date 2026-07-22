@@ -1,7 +1,7 @@
 """Elasticsearch Bulk exporter (httpx, NDJSON).
 
-외부 문서에는 ``taskId`` 하나만 저장한다. Bulk 문서 ``_id`` 는 task 요약은 taskId,
-event는 taskId와 sequence로 파생해 같은 요청을 재전송할 때 중복 생성을 막는다.
+외부 문서에는 ``taskId`` 하나만 저장한다. Bulk 문서 ``_id``는 taskId와 sequence로
+파생해 같은 요청을 재전송할 때 중복 생성을 막는다.
 taskId는 App Server가 요청마다 새로 발급하는 일회성 식별자이며 재사용하지 않는다.
 """
 
@@ -30,19 +30,8 @@ def _index_name(base: str, timestamp_iso: str) -> str:
     return f"{base}-{year_month}"
 
 
-def _to_items(
-    task_document: dict[str, Any] | None,
-    event_documents: list[dict[str, Any]],
-) -> list[_Item]:
+def _to_items(event_documents: list[dict[str, Any]]) -> list[_Item]:
     items: list[_Item] = []
-    if task_document:
-        items.append(
-            (
-                _index_name(settings.es_task_index, task_document["@timestamp"]),
-                task_document["taskId"],
-                task_document,
-            )
-        )
     for event_document in event_documents:
         task_id = event_document["taskId"]
         sequence = event_document["sequence"]
@@ -139,16 +128,15 @@ async def _send_with_retry(client: httpx.AsyncClient, batch: list[_Item]) -> Non
 
 
 async def export(
-    task_document: dict[str, Any] | None,
     event_documents: list[dict[str, Any]],
     *,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> None:
-    """task/event 문서를 Elasticsearch ``_bulk`` 로 보낸다(실패는 격리)."""
+    """event 문서를 Elasticsearch ``_bulk``로 보낸다(실패는 격리)."""
 
     if not settings.es_url:
         return
-    items = _to_items(task_document, event_documents)
+    items = _to_items(event_documents)
     if not items:
         return
 
