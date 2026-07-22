@@ -5,9 +5,11 @@
 provider 종류와 무관하게 동일한 방식으로 호출한다.
 
 새 provider 추가 방법:
-1. `app/core/config.py` 에 `{name}_api_key`, `{name}_model` 필드를 추가한다.
+1. `app/core/config.py` 에 `{name}_model`(키로 인증하면 `{name}_api_key` 도) 필드를 추가한다.
 2. 아래에 `LLMProvider` 를 상속한 클래스를 만들고 `@register_provider` 로 등록한다.
-   (`name` 클래스 변수와 `_build_client`, `complete` 만 구현하면 된다.)
+   (`name` 클래스 변수와 `_build_client`, `complete` 를 구현한다. 키가 아니라 다른
+    방식으로 인증하면 `requires_api_key = False`, 이미지 입력을 지원하면
+    `supports_vision = True` 로 둔다. Bedrock 이 그 예다.)
 """
 
 import base64
@@ -49,11 +51,19 @@ class LLMProvider(ABC):
     # 하위 클래스에서 반드시 지정한다. (예: "openai", "gemini")
     name: str = ""
 
+    # provider 가 `{name}_api_key` 를 요구하는지. Bedrock 처럼 AWS 자격증명 체인으로
+    # 인증하는 provider 는 False 로 두어 api_key 검증을 건너뛴다.
+    requires_api_key: bool = True
+
+    # 이미지(vision) 입력 지원 여부. 지원하는 provider 는 True 로 명시하고
+    # `complete_with_images` 를 override 한다.
+    supports_vision: bool = False
+
     def __init__(self, model: str | None = None) -> None:
         self.api_key: str = getattr(settings, f"{self.name}_api_key", "")
         self.model: str = model or getattr(settings, f"{self.name}_model", "")
 
-        if not self.api_key:
+        if self.requires_api_key and not self.api_key:
             raise ValueError(
                 f"{self.name.upper()}_API_KEY 가 설정되지 않았습니다. .env 를 확인하세요."
             )
@@ -97,17 +107,46 @@ class LLMProvider(ABC):
             f"{self.name} provider 는 이미지(vision) 입력을 지원하지 않습니다."
         )
 
+    def _log_usage(
+        self, input_tokens: int | None, output_tokens: int | None
+    ) -> None:
+        """호출에 사용한 provider/model 과 토큰 사용량(입력/출력)을 로그로 남긴다.
+
+        모델 비교는 코드가 하지 않는다. 설정을 바꿔 실행한 뒤 이 로그의 토큰 양을
+        읽어 사람이 판단한다(비용 계산도 로그의 토큰으로 외부에서 한다). usage 를
+        제공하지 않는 응답이면 토큰은 ``None`` 으로 남는다.
+        """
+
+        logger.info(
+            "LLM 토큰 사용량: provider=%s, model=%s, inputTokens=%s, outputTokens=%s",
+            self.name,
+            self.model,
+            input_tokens,
+            output_tokens,
+        )
+
 
 @register_provider
 class OpenAIProvider(LLMProvider):
     """OpenAI Chat Completions provider."""
 
     name = "openai"
+    supports_vision = True
 
     def _build_client(self):
         from openai import OpenAI
 
         return OpenAI(api_key=self.api_key)
+
+    @staticmethod
+    def _usage(response) -> tuple[int | None, int | None]:
+        """OpenAI 응답에서 (입력 토큰, 출력 토큰)을 뽑는다."""
+
+        usage = getattr(response, "usage", None)
+        return (
+            getattr(usage, "prompt_tokens", None),
+            getattr(usage, "completion_tokens", None),
+        )
 
     def complete(
         self,
@@ -128,6 +167,7 @@ class OpenAIProvider(LLMProvider):
             temperature=temperature,
             **kwargs,
         )
+        self._log_usage(*self._usage(response))
         return response.choices[0].message.content or ""
 
     def complete_with_images(
@@ -159,6 +199,7 @@ class OpenAIProvider(LLMProvider):
             temperature=temperature,
             **kwargs,
         )
+        self._log_usage(*self._usage(response))
         return response.choices[0].message.content or ""
 
 
@@ -167,11 +208,22 @@ class GeminiProvider(LLMProvider):
     """Google Gemini provider (google-genai SDK)."""
 
     name = "gemini"
+    supports_vision = True
 
     def _build_client(self):
         from google import genai
 
         return genai.Client(api_key=self.api_key)
+
+    @staticmethod
+    def _usage(response) -> tuple[int | None, int | None]:
+        """Gemini 응답에서 (입력 토큰, 출력 토큰)을 뽑는다."""
+
+        usage = getattr(response, "usage_metadata", None)
+        return (
+            getattr(usage, "prompt_token_count", None),
+            getattr(usage, "candidates_token_count", None),
+        )
 
     def complete(
         self,
@@ -193,6 +245,7 @@ class GeminiProvider(LLMProvider):
             contents=prompt,
             config=config,
         )
+        self._log_usage(*self._usage(response))
         return response.text or ""
 
     def complete_with_images(
@@ -221,7 +274,141 @@ class GeminiProvider(LLMProvider):
             contents=parts,
             config=config,
         )
+        self._log_usage(*self._usage(response))
         return response.text or ""
+
+
+@register_provider
+class BedrockProvider(LLMProvider):
+    """Amazon Bedrock provider (Converse API).
+
+    OpenAI/Gemini 와 달리 provider 별 API key 가 아니라 AWS 자격증명 체인으로
+    인증한다(`requires_api_key = False`). 자격증명은 boto3 기본 체인(~/.aws
+    프로필·SSO, 환경변수, 배포 시 IAM 역할)에 맡기고, 만료·교체가 필요한 키를
+    앱 설정/.env 에 두지 않는다. 모델은 `bedrock_model`(Nova 모델 id 또는
+    크로스리전 추론 프로필 id)로 지정한다.
+
+    Converse API 는 모델과 무관한 통일된 요청·응답 구조를 제공하므로 텍스트·이미지
+    입력과 토큰 사용량(`usage`)을 일관되게 다룰 수 있다. Nova 모델은 멀티모달이라
+    이미지(vision) 입력을 지원한다.
+    """
+
+    name = "bedrock"
+    requires_api_key = False
+    supports_vision = True
+    _INFERENCE_CONFIG_KEYS = frozenset({"maxTokens", "stopSequences", "topP"})
+
+    def _build_client(self):
+        import boto3
+
+        # 로컬에서만 .env 의 프로필 이름으로 ~/.aws/credentials 를 읽는다. AgentCore
+        # 배포 환경에서는 값이 잘못 들어가도 무시하고 실행 역할의 임시 자격증명을 쓴다.
+        profile = settings.bedrock_aws_profile.strip()
+        if settings.app_env.lower() == "local" and profile:
+            session = boto3.Session(profile_name=profile)
+            return session.client(
+                "bedrock-runtime", region_name=settings.bedrock_region
+            )
+
+        return boto3.client("bedrock-runtime", region_name=settings.bedrock_region)
+
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> str:
+        response = self._converse(
+            [{"text": prompt}],
+            system=system,
+            temperature=temperature,
+            **kwargs,
+        )
+        self._log_usage(*self._usage(response))
+        return self._extract_text(response)
+
+    def complete_with_images(
+        self,
+        prompt: str,
+        images: list[ImageInput],
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> str:
+        content: list[dict] = [{"text": prompt}]
+        for image in images:
+            content.append(
+                {
+                    "image": {
+                        "format": self._image_format(image.mime_type),
+                        "source": {"bytes": image.data},
+                    }
+                }
+            )
+        response = self._converse(
+            content,
+            system=system,
+            temperature=temperature,
+            **kwargs,
+        )
+        self._log_usage(*self._usage(response))
+        return self._extract_text(response)
+
+    def _converse(
+        self,
+        content: list[dict],
+        *,
+        system: str | None,
+        temperature: float,
+        **kwargs,
+    ) -> dict:
+        """Bedrock Converse 를 호출하고 provider 전용 추가 옵션을 전달한다.
+
+        ``maxTokens``/``stopSequences``/``topP`` 는 편의를 위해 직접 받을 수 있고,
+        boto3 형식의 ``inferenceConfig`` 로 전달해도 된다. 그 밖의 값은
+        ``guardrailConfig``/``requestMetadata`` 같은 Converse 최상위 옵션으로 전달한다.
+        system 은 있을 때만 넣는다(빈 리스트는 Bedrock 이 거부한다).
+        """
+
+        inference_config = {"temperature": temperature}
+        inference_config.update(kwargs.pop("inferenceConfig", {}))
+        for key in self._INFERENCE_CONFIG_KEYS:
+            if key in kwargs:
+                inference_config[key] = kwargs.pop(key)
+
+        params: dict = dict(kwargs)
+        params.update({
+            "modelId": self.model,
+            "messages": [{"role": "user", "content": content}],
+            "inferenceConfig": inference_config,
+        })
+        if system:
+            params["system"] = [{"text": system}]
+        return self.client.converse(**params)
+
+    @staticmethod
+    def _extract_text(response: dict) -> str:
+        """Converse 응답에서 assistant 텍스트 블록을 이어붙여 반환한다."""
+
+        blocks = response["output"]["message"]["content"]
+        return "".join(block["text"] for block in blocks if "text" in block)
+
+    @staticmethod
+    def _usage(response: dict) -> tuple[int | None, int | None]:
+        """Converse 응답의 usage 에서 (입력 토큰, 출력 토큰)을 뽑는다."""
+
+        usage = response.get("usage") or {}
+        return usage.get("inputTokens"), usage.get("outputTokens")
+
+    @staticmethod
+    def _image_format(mime_type: str) -> str:
+        """MIME 타입을 Converse 가 요구하는 포맷명(png/jpeg/gif/webp)으로 변환한다."""
+
+        subtype = (mime_type or "image/jpeg").split("/")[-1].lower()
+        return "jpeg" if subtype in ("jpg", "jpeg") else subtype
 
 
 def available_providers() -> list[str]:

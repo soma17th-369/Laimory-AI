@@ -20,6 +20,7 @@
 
     gemini = LLMClient(provider="gemini")
     gpt = LLMClient(provider="openai", model="gpt-4o")
+    nova = LLMClient(provider="bedrock", model="global.amazon.nova-2-lite-v1:0")
 
 3) system 프롬프트와 파라미터 전달::
 
@@ -33,7 +34,7 @@
 
     from app.core import available_providers
 
-    print(available_providers())  # ['gemini', 'openai']
+    print(available_providers())  # ['bedrock', 'gemini', 'openai']
 
 5) 설정값과 로거 사용::
 

@@ -44,7 +44,7 @@ app/
 ├── core/                      # 공통 인프라
 │   ├── config.py              # 설정 (pydantic-settings, LLM_PROVIDER/API 키, DB_* 등)
 │   ├── logging.py             # 관찰 로그 설정            ← 체크7
-│   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini 등, 확장형)
+│   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형)
 │   ├── db.py                  # staging MySQL async engine/session (aiomysql, host/port 직결)
 │   └── db_models.py           # staging 테이블 ORM 매핑 (draft source / daily record / timeline event·item / event↔item N:M 조인)
 │

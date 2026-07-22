@@ -25,7 +25,7 @@ app/
 ├── core/                      # 공통 인프라
 │   ├── config.py              # 설정 (pydantic-settings, LLM_PROVIDER/API 키 등)
 │   ├── logging.py             # 관찰 로그 설정
-│   └── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini 등, 확장형)
+│   └── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형)
 │
 ├── api/v1/
 │   ├── router.py              # v1 라우터 취합
@@ -143,7 +143,7 @@ LOG_LEVEL=INFO
 SERVER_HOST=127.0.0.1
 SERVER_PORT=8000
 
-# 사용할 LLM provider (openai | gemini)
+# 사용할 LLM provider (openai | gemini | bedrock)
 LLM_PROVIDER=openai
 
 # OpenAI
@@ -153,9 +153,42 @@ OPENAI_MODEL=gpt-4o-mini
 # Gemini
 GEMINI_API_KEY=your-api-key
 GEMINI_MODEL=gemini-2.5-flash
+
+# Bedrock (Amazon Nova)
+# 로컬 프로필 이름만 .env 에 두고 실제 키는 ~/.aws/credentials 에 저장한다.
+# AgentCore 배포(APP_ENV=prod)에서는 이 값을 무시하고 실행 역할을 자동 사용한다.
+BEDROCK_AWS_PROFILE=laimory-bedrock
+# BEDROCK_MODEL 은 Nova 모델 id 또는 크로스리전 추론 프로필 id.
+# Nova 2 Lite 는 서울에서 Global inference profile 로 호출하며,
+# 조직 SCP가 대상 리전을 막으면 호출할 수 없다.
+BEDROCK_REGION=ap-northeast-2
+BEDROCK_MODEL=global.amazon.nova-2-lite-v1:0
 ```
 
 `.env` 파일은 민감 정보를 포함할 수 있으므로 Git에 올리지 않습니다.
+
+---
+
+## LLM Provider 전환과 토큰 로그
+
+`LLM_PROVIDER` 한 줄로 `openai` / `gemini` / `bedrock` 을 전환합니다. 각 provider 는
+자신의 `{PROVIDER}_MODEL` 을 사용합니다(openai=GPT, gemini=Gemini, bedrock=Nova).
+
+- **openai / gemini**: 키와 모델을 `.env` 에 넣으면 됩니다.
+- **bedrock**: 로컬에서는 `.env`에 `BEDROCK_AWS_PROFILE`을 지정하고 실제 Access Key와
+  Secret은 `aws configure --profile <이름>`으로 `~/.aws/credentials`에 보관합니다.
+  AgentCore(`APP_ENV=prod`)에서는 이 값이 있더라도 무시하고 Runtime 실행 역할을 씁니다.
+
+타임라인을 어떤 provider/모델로 만들었는지와 각 LLM 호출의 토큰 사용량은 **로그**로
+남습니다. 비용은 AWS Cost Explorer에서 확인하며, 호출별 토큰 양은 아래 로그로 확인합니다.
+
+```text
+메인 에이전트 시작: taskId=..., agents=N, provider=bedrock, model=global.amazon.nova-2-lite-v1:0
+LLM 토큰 사용량: provider=bedrock, model=..., inputTokens=123, outputTokens=45
+```
+
+`aws configure --profile laimory-bedrock`으로 로컬 자격증명을 설정하려면 AWS CLI가
+필요합니다. AgentCore에서는 프로필 설정을 제거하면 Runtime 실행 역할로 동작합니다.
 
 ---
 
