@@ -4,6 +4,12 @@ from abc import abstractmethod
 
 from app.agents.base import Agent
 from app.core.logging import get_logger
+from app.core.observability import (
+    ObservationEventType,
+    ObservationStage,
+    emit_observation,
+    observation_scope,
+)
 from app.schemas import AgentEventResult, AgentWarning, TimelineDraftRequest
 from app.services.validator import filter_result_to_window, resolve_window_bounds
 
@@ -24,26 +30,38 @@ class EventAgent(Agent):
         의미가 확정된 뒤 `draft_repair` 에서 다룬다.
         """
 
-        try:
-            result = self._generate(request)
-        except Exception as exc:
-            logger.warning(
-                "Event Agent 실행 실패: agent=%s, error=%s",
-                self.name,
-                exc,
-                exc_info=True,
-            )
-            agent_name = self.name or self.__class__.__name__
-            return AgentEventResult(
-                warnings=[
-                    {
-                        "agentName": agent_name,
-                        "message": f"{agent_name} agent 실행 실패: {exc}",
-                    }
-                ]
-            )
+        with observation_scope(
+            ObservationStage.EVENT_AGENT, agent=self._agent_name()
+        ):
+            emit_observation(ObservationEventType.STARTED)
+            try:
+                result = self._generate(request)
+            except Exception as exc:
+                logger.warning(
+                    "Event Agent 실행 실패: agent=%s, error=%s",
+                    self.name,
+                    exc,
+                    exc_info=True,
+                )
+                emit_observation(
+                    ObservationEventType.FAILED, payload={"error": str(exc)}
+                )
+                agent_name = self.name or self.__class__.__name__
+                return AgentEventResult(
+                    warnings=[
+                        {
+                            "agentName": agent_name,
+                            "message": f"{agent_name} agent 실행 실패: {exc}",
+                        }
+                    ]
+                )
 
-        return self._enforce_window(request, result)
+            filtered = self._enforce_window(request, result)
+            emit_observation(
+                ObservationEventType.COMPLETED,
+                payload={"result": filtered.model_dump(by_alias=True, mode="json")},
+            )
+            return filtered
 
     def _agent_name(self) -> str:
         return self.name or self.__class__.__name__

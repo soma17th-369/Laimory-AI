@@ -24,6 +24,7 @@ from app.agents.parsing import (
     user_memory_to_text,
 )
 from app.core.logging import get_logger
+from app.core.observability import ObservationEventType, emit_observation
 from app.schemas import (
     AgentEventResult,
     TimelineDraft,
@@ -183,6 +184,10 @@ class TimelineAgent(Agent):
             return self._generate(request, agent_result, carried)
         except Exception as exc:
             logger.warning("Timeline Agent failed: error=%s", exc, exc_info=True)
+            emit_observation(
+                ObservationEventType.FAILED,
+                payload={"error": str(exc), "fallback": "empty_draft"},
+            )
             return _empty_draft(
                 request,
                 warnings=[

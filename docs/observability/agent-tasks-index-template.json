@@ -1,0 +1,30 @@
+{
+  "index_patterns": ["agent-tasks-*"],
+  "template": {
+    "mappings": {
+      "dynamic": false,
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "completedAt": { "type": "date" },
+        "schemaVersion": { "type": "keyword" },
+        "taskId": { "type": "keyword" },
+        "status": { "type": "keyword" },
+        "durationMs": { "type": "double" },
+        "eventCount": { "type": "integer" },
+        "droppedEventCount": { "type": "integer" },
+        "llmCallCount": { "type": "integer" },
+        "agentVersion": { "type": "keyword" },
+        "tokenUsage": {
+          "properties": {
+            "input": { "type": "long" },
+            "output": { "type": "long" },
+            "total": { "type": "long" },
+            "cached": { "type": "long" },
+            "reasoning": { "type": "long" },
+            "tool": { "type": "long" }
+          }
+        }
+      }
+    }
+  }
+}
