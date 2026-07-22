@@ -92,7 +92,7 @@ app/
 #   → 콜백(SUCCESS/FAILED 통보만; 실제 결과는 App Server 가 staging DB 에서 읽음)
 # AI 서버는 무상태다. task 상태는 App Server 가 소유하며(AI 는 상태 저장/조회 없음),
 #   AI 는 상태를 콜백으로만 통보한다. daily_records 도 직접 조회/생성하지 않고 dailyRecordId 로 FK 만 건다.
-# 저장은 settings.db_enabled=True 일 때만. False 면 인메모리 스텁으로 저장 없이 동작.
+# 저장/조회는 항상 실제 staging DB. DB 는 필수이며(없으면 실패), 인메모리 스텁은 단위 테스트 전용.
 # 접속 스모크: scripts/db_smoke.py (SSH 터널 열고 .env 채운 뒤 실행)
 # main agent 그래프: run_event_agents → merge_results → run_timeline_agent → repair_draft
 #   앞 3개는 LLM 이 의미를 판단하는 확률적 단계, repair_draft 는 코드가 확정하는 결정론적 단계다.

@@ -74,12 +74,10 @@ class Settings(BaseSettings):
 
     # --- staging RDB(MySQL) 설정 (이슈 #25) ---
     # AI 서버는 App Server 가 적재한 timeline_draft_source_items 를 taskId 로 읽고,
-    # 분석 결과를 timeline_events/timeline_items 에 저장한다.
-    # db_enabled 가 False(기본)면 DB 를 쓰지 않고 인메모리 스텁으로 동작하므로
-    # 로컬/단위 테스트에서 접속 정보 없이도 돈다.
+    # 분석 결과를 timeline_events/timeline_items 에 저장한다. DB 는 필수다 — DB 없이
+    # 도는 모드는 없으며, 접속 정보가 없거나 접속이 안 되면 처리에 실패한다.
     # 접속은 host/port 직결이다. prod 는 VPC 로 private subnet DB 에 바로 붙고,
     # 로컬 검증은 SSH 터널을 열어 DB_HOST 를 127.0.0.1:로컬포트로 가리키면 된다.
-    db_enabled: bool = False
     db_host: str = "127.0.0.1"
     db_port: int = 3306
     db_name: str = "laimory"

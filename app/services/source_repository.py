@@ -7,9 +7,9 @@ AI 서버에는 `taskId` 만 넘긴다. AI 서버는 이 저장소로 `taskId` �
 구현은 두 가지다.
 
 - `MySQLSourceRepository`: 실제 staging DB(`timeline_draft_source_items`)에서 읽는다.
-  `settings.db_enabled` 가 True 일 때 `get_source_repository()` 가 이걸 돌려준다.
-- `InMemorySourceRepository`: 프로세스 메모리 스텁. DB 없이 도는 로컬/단위 테스트용
-  기본 구현이다.
+  DB 는 필수이므로 `get_source_repository()` 는 항상 이걸 돌려준다.
+- `InMemorySourceRepository`: 프로세스 메모리 스텁. 단위 테스트가 의존성 오버라이드로
+  직접 주입해 쓰며, 운영 경로에서는 쓰지 않는다.
 
 DB 접근이 async 이므로 `SourceRepository.get` 은 async 다.
 """
@@ -22,7 +22,6 @@ from threading import Lock
 
 from sqlalchemy import select
 
-from app.core.config import settings
 from app.core.db import session_scope
 from app.core.db_models import DraftSourceItem
 from app.schemas import CollectedSnapshot, CollectedSourceItem
@@ -36,23 +35,33 @@ class SourceBatchError(ValueError):
 
 
 def validate_source_rows(task_id: str, rows: list[DraftSourceItem]) -> int:
-    """source 묶음의 task/user/rawId/시각 일관성을 검증하고 user_id를 반환한다."""
+    """source 묶음이 파이프라인 입력 계약을 지키는지 검증하고 user_id를 반환한다.
+
+    각 예외 메시지는 (1) 어떤 규칙이 (2) 왜 깨졌고 (3) 어느 행이 문제인지 바로
+    특정할 수 있도록, taskId 와 함께 위반 행 식별자(sourceItemId/rawId 등)를 담는다.
+    """
 
     if not rows:
-        raise SourceBatchError(f"source item 이 없습니다: taskId={task_id}")
+        raise SourceBatchError(
+            f"수집 원본이 없습니다: taskId={task_id} 로 조회된 "
+            "timeline_draft_source_items 행이 0건입니다. App Server 가 해당 task 의 "
+            "원본 적재를 마쳤는지, taskId 가 올바른지 확인하세요."
+        )
 
     foreign_ids = sorted({row.task_id for row in rows if row.task_id != task_id})
     if foreign_ids:
         raise SourceBatchError(
-            f"다른 task의 source item 이 섞여 있습니다: taskId={task_id}, "
-            f"foreignTaskIds={foreign_ids}"
+            f"다른 task 의 source item 이 섞여 있습니다: 요청 taskId={task_id} 로 "
+            f"조회했으나 다른 task 의 행이 포함됐습니다(foreignTaskIds={foreign_ids}). "
+            "한 묶음은 한 task 에만 속해야 합니다 — 조회 조건과 적재 정합성을 확인하세요."
         )
 
     user_ids = {row.user_id for row in rows}
     if len(user_ids) != 1:
         raise SourceBatchError(
-            f"한 task에 여러 user_id가 섞여 있습니다: taskId={task_id}, "
-            f"userIds={sorted(user_ids)}"
+            f"한 task 에 여러 user_id 가 섞여 있습니다: taskId={task_id} 의 source item 은 "
+            f"한 사용자 소유여야 하는데 userIds={sorted(user_ids)} 로 여러 명입니다. "
+            "적재 데이터 정합성을 확인하세요."
         )
 
     missing_time_ids = [
@@ -60,26 +69,39 @@ def validate_source_rows(task_id: str, rows: list[DraftSourceItem]) -> int:
     ]
     if missing_time_ids:
         raise SourceBatchError(
-            f"start_at 없는 source item 이 있습니다: taskId={task_id}, "
-            f"sourceItemIds={missing_time_ids}"
+            f"start_at 이 없는 source item 이 있습니다: taskId={task_id}. 모든 원본은 "
+            "시각이 있어야 타임라인에 배치할 수 있습니다 — start_at 이 비어 있는 "
+            f"sourceItemIds={missing_time_ids}."
         )
 
-    raw_ids = [row.raw_id for row in rows]
     empty_raw_item_ids = [
         row.timeline_draft_source_item_id for row in rows if not row.raw_id
     ]
     if empty_raw_item_ids:
         raise SourceBatchError(
-            f"raw_id 없는 source item 이 있습니다: taskId={task_id}, "
-            f"sourceItemIds={empty_raw_item_ids}"
+            f"raw_id 가 없는 source item 이 있습니다: taskId={task_id}. raw_id 는 원본의 "
+            "정식 식별자라 비어 있으면 안 됩니다 — raw_id 가 빈 "
+            f"sourceItemIds={empty_raw_item_ids}."
         )
+
+    raw_ids = [row.raw_id for row in rows]
     duplicate_raw_ids = sorted(
         raw_id for raw_id in set(raw_ids) if raw_ids.count(raw_id) > 1
     )
     if duplicate_raw_ids:
+        # 어느 행들이 같은 raw_id 를 갖는지 함께 보여 문제 위치를 특정하기 쉽게 한다.
+        duplicates_by_raw = {
+            raw_id: [
+                row.timeline_draft_source_item_id
+                for row in rows
+                if row.raw_id == raw_id
+            ]
+            for raw_id in duplicate_raw_ids
+        }
         raise SourceBatchError(
-            f"한 task에 중복 raw_id가 있습니다: taskId={task_id}, "
-            f"rawIds={duplicate_raw_ids}"
+            f"한 task 에 중복 raw_id 가 있습니다: taskId={task_id}. 같은 task 안에서 "
+            "raw_id 는 유일해야 합니다(저장 시 디듀프 기준) — 중복 "
+            f"raw_id→sourceItemIds={duplicates_by_raw}."
         )
 
     return next(iter(user_ids))
@@ -211,10 +233,8 @@ def _adapt_snapshot_payload(payload: dict, path: Path) -> dict:
 def get_source_repository() -> SourceRepository:
     """수집 스냅샷 저장소 싱글턴을 반환한다.
 
-    `settings.db_enabled` 가 True 면 실제 MySQL 저장소를, 아니면 인메모리 스텁을
-    돌려준다.
+    DB 는 필수이므로 항상 MySQL 저장소를 돌려준다. `InMemorySourceRepository` 는
+    단위 테스트가 의존성 오버라이드로 직접 주입해 쓰는 스텁이다.
     """
 
-    if settings.db_enabled:
-        return MySQLSourceRepository()
-    return InMemorySourceRepository()
+    return MySQLSourceRepository()

@@ -22,7 +22,6 @@ from functools import lru_cache
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.db import session_scope
 from app.core.db_models import (
     DraftSourceItem,
@@ -72,12 +71,12 @@ class MySQLTimelineRepository(TimelineRepository):
 
 
 class NoopTimelineRepository(TimelineRepository):
-    """DB 비활성 시 쓰는 무동작 구현."""
+    """단위 테스트용 무동작 스텁. 실제 저장을 건너뛰고 0을 반환한다."""
 
     async def save(
         self, task_id: str, draft: TimelineDraft, daily_record_id: int
     ) -> int:
-        logger.debug("DB 비활성: 최종 타임라인 저장 건너뜀 (taskId=%s)", task_id)
+        logger.debug("무동작 저장소: 최종 타임라인 저장 건너뜀 (taskId=%s)", task_id)
         return 0
 
 
@@ -242,8 +241,10 @@ def _subtitle(event: TimelineEventDraft) -> str | None:
 
 @lru_cache
 def get_timeline_repository() -> TimelineRepository:
-    """설정에 따라 실제 MySQL 또는 무동작 저장소를 반환한다."""
+    """최종 타임라인 저장소 싱글턴을 반환한다.
 
-    if settings.db_enabled:
-        return MySQLTimelineRepository()
-    return NoopTimelineRepository()
+    DB 는 필수이므로 항상 MySQL 저장소를 돌려준다. `NoopTimelineRepository` 는
+    단위 테스트가 의존성 오버라이드로 직접 주입해 쓰는 무동작 스텁이다.
+    """
+
+    return MySQLTimelineRepository()

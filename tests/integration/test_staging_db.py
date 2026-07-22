@@ -1,10 +1,11 @@
 """실제 staging MySQL 을 대상으로 하는 opt-in 통합 테스트.
 
-기본 실행에서는 `DB_ENABLED=false` 라 skip 되고, 접속이 안 되면(터널 미개통 등)
-역시 skip 한다. 실행하려면 이슈 #25 스키마(timeline_items.daily_record_id +
-timeline_event_items 조인 테이블)가 반영된 DB 여야 한다:
+기본 실행에서는 접속 정보(DB_USER/DB_PASSWORD)가 없거나 접속이 안 되면(터널
+미개통 등) skip 한다. 실행하려면 이슈 #25 스키마(timeline_events.daily_record_id +
+timeline_event_items 복합 PK 조인, timeline_items 에서 event 직접 FK 제거)가
+반영된 DB 여야 한다:
 
-- SSH 터널을 열고(사설망 DB) `.env` 에 `DB_ENABLED=true` 와 접속 정보를 채운 뒤
+- SSH 터널을 열고(사설망 DB) `.env` 에 DB 접속 정보를 채운 뒤
 - `uv run pytest -m integration tests/integration/test_staging_db.py`
 
 쓰기 검증은 공유 데이터를 건드리지 않도록 합성 taskId/userId/date로만
@@ -113,8 +114,10 @@ async def _purge(task_id: str) -> None:
 
 @pytest.fixture
 async def require_db():
-    if not settings.db_enabled:
-        pytest.skip("DB_ENABLED=false: staging DB 통합 테스트를 건너뜁니다.")
+    if not settings.db_user or not settings.db_password:
+        pytest.skip(
+            "DB 접속 정보(DB_USER/DB_PASSWORD) 미설정: staging DB 통합 테스트를 건너뜁니다."
+        )
     try:
         async with session_scope() as session:
             await session.execute(text("SELECT 1"))

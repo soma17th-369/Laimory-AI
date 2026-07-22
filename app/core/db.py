@@ -1,7 +1,7 @@
 """staging RDB(MySQL) 접속 인프라.
 
-SQLAlchemy async engine/session 을 설정에서 조립한다. `db_enabled` 가 True 일 때만
-실제 접속이 필요하며, 접속은 host/port **직결**이다. 앱은 SSH 터널을 모른다 —
+SQLAlchemy async engine/session 을 설정에서 조립한다. DB 는 필수이며 접속은
+host/port **직결**이다. 앱은 SSH 터널을 모른다 —
 prod 는 VPC 로 private subnet DB 에 바로 붙고, 로컬 검증은 SSH 터널의 로컬 포트를
 `DB_HOST` 로 가리킨다(둘 다 같은 코드).
 
