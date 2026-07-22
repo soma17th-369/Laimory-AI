@@ -1,8 +1,7 @@
-"""POST/GET /v1/timeline 엔드포인트 검증.
+"""POST /v1/timeline 엔드포인트 검증.
 
-`taskId` 만 받아 202 를 돌려주고, 백그라운드에서 저장소 조회 → 정규화 →
-메인 에이전트 실행 후 상태 조회로 결과를 받을 수 있는지 확인한다. 메인
-에이전트는 monkeypatch 로 대체하고, 수집 스냅샷은 인메모리 저장소에 시드한다.
+요청을 202로 접수하고 백그라운드 처리를 시작하는지 확인한다. AI 서버는 작업
+상태를 보관하지 않으므로 별도의 GET 조회 API는 제공하지 않는다.
 """
 
 import pytest
@@ -15,26 +14,34 @@ from app.services.source_repository import (
     InMemorySourceRepository,
     get_source_repository,
 )
-from app.services.task_store import InMemoryTaskStore, get_task_store
+from app.services.timeline_repository import (
+    NoopTimelineRepository,
+    get_timeline_repository,
+)
 from tests.fixtures.requests import default_source_items, make_snapshot
 
 _TASK_ID = "task-endpoint-1"
+_WINDOW = {
+    "startAt": "2026-06-20T00:00:00+09:00",
+    "endAt": "2026-06-21T00:00:00+09:00",
+}
 
 
-@pytest.fixture
-def store() -> InMemoryTaskStore:
-    fresh = InMemoryTaskStore()
-    app.dependency_overrides[get_task_store] = lambda: fresh
-    yield fresh
+@pytest.fixture(autouse=True)
+def clear_dependency_overrides():
+    yield
     app.dependency_overrides.clear()
 
 
 @pytest.fixture
 def repo() -> InMemorySourceRepository:
-    fresh = InMemorySourceRepository()
-    fresh.put(make_snapshot(task_id=_TASK_ID, source_items=default_source_items()))
-    app.dependency_overrides[get_source_repository] = lambda: fresh
-    yield fresh
+    source_repo = InMemorySourceRepository()
+    source_repo.put(
+        make_snapshot(task_id=_TASK_ID, source_items=default_source_items())
+    )
+    app.dependency_overrides[get_source_repository] = lambda: source_repo
+    app.dependency_overrides[get_timeline_repository] = NoopTimelineRepository
+    return source_repo
 
 
 @pytest.fixture
@@ -49,38 +56,56 @@ def fake_main_agent(monkeypatch):
     return draft
 
 
-def test_post_accepts_and_get_returns_result(store, repo, fake_main_agent):
+def test_post_accepts_timeline_task(repo, fake_main_agent):
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/timeline",
+        json={
+            "taskId": _TASK_ID,
+            "callbackToken": "callback-token-1",
+            "dailyRecordId": 42,
+            "window": _WINDOW,
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {
+        "taskId": _TASK_ID,
+        "status": TaskStatus.PROCESSING.value,
+    }
+
+
+def test_post_missing_snapshot_is_still_accepted(fake_main_agent):
+    # 백그라운드 실패 여부는 콜백으로 통보되므로 접수 응답은 202다.
+    app.dependency_overrides[get_source_repository] = InMemorySourceRepository
+    app.dependency_overrides[get_timeline_repository] = NoopTimelineRepository
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/timeline",
+        json={
+            "taskId": "no-such-task",
+            "callbackToken": "callback-token-2",
+            "dailyRecordId": 42,
+            "window": _WINDOW,
+        },
+    )
+
+    assert response.status_code == 202
+
+
+def test_get_timeline_task_route_does_not_exist():
+    client = TestClient(app)
+
+    response = client.get("/v1/timeline/does-not-exist")
+
+    assert response.status_code == 404
+
+
+def test_post_requires_all_fields(repo):
     client = TestClient(app)
 
     response = client.post("/v1/timeline", json={"taskId": _TASK_ID})
 
-    assert response.status_code == 202
-    body = response.json()
-    assert body["status"] == TaskStatus.PROCESSING.value
-    assert body["taskId"] == _TASK_ID
-
-    # TestClient 는 백그라운드 task 완료까지 기다리므로 조회 시 이미 SUCCESS 다.
-    status_res = client.get(f"/v1/timeline/{_TASK_ID}")
-    assert status_res.status_code == 200
-    status_body = status_res.json()
-    assert status_body["status"] == TaskStatus.SUCCESS.value
-    assert status_body["result"]["userId"] == "u-1"
-
-
-def test_post_missing_snapshot_marks_failed(store, fake_main_agent):
-    # 저장소를 시드하지 않아(빈 저장소) 스냅샷 조회가 실패한다.
-    empty = InMemorySourceRepository()
-    app.dependency_overrides[get_source_repository] = lambda: empty
-    client = TestClient(app)
-
-    response = client.post("/v1/timeline", json={"taskId": "no-such-task"})
-    assert response.status_code == 202
-
-    status_res = client.get("/v1/timeline/no-such-task")
-    assert status_res.json()["status"] == TaskStatus.FAILED.value
-
-
-def test_get_unknown_task_returns_404(store):
-    client = TestClient(app)
-    res = client.get("/v1/timeline/does-not-exist")
-    assert res.status_code == 404
+    assert response.status_code == 422

@@ -14,16 +14,21 @@ dependencies = [
     "google-genai>=1.0.0",
     "langgraph>=1.2.7",
     "httpx>=0.27.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "aiomysql>=0.2.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-asyncio>=0.24.0",
+    "aiosqlite>=0.20.0",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 markers = [
     "integration: 외부 서비스나 큰 fixture 를 사용하는 통합 테스트",
     "live_llm: 실제 LLM provider 를 호출하는 테스트",

@@ -4,8 +4,12 @@
 """
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -17,7 +21,7 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_REPO_ROOT / ".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -62,11 +66,29 @@ class Settings(BaseSettings):
 
     # 처리 완료 시 결과를 POST 로 되돌려줄 App Server 콜백 URL.
     # 새 입력 계약에는 요청 단위 callbackUrl 이 없어, 설정으로 고정한다.
-    # 비어 있으면 콜백을 보내지 않고 상태 조회(GET)로만 결과를 확인한다.
+    # 비어 있으면 완료 콜백을 보내지 않는다.
     callback_url: str | None = None
 
     # App Server 콜백 POST 요청 timeout(초).
     callback_timeout_sec: float = 10.0
+
+    # --- staging RDB(MySQL) 설정 (이슈 #25) ---
+    # AI 서버는 App Server 가 적재한 timeline_draft_source_items 를 taskId 로 읽고,
+    # 분석 결과를 timeline_events/timeline_items 에 저장한다.
+    # db_enabled 가 False(기본)면 DB 를 쓰지 않고 인메모리 스텁으로 동작하므로
+    # 로컬/단위 테스트에서 접속 정보 없이도 돈다.
+    # 접속은 host/port 직결이다. prod 는 VPC 로 private subnet DB 에 바로 붙고,
+    # 로컬 검증은 SSH 터널을 열어 DB_HOST 를 127.0.0.1:로컬포트로 가리키면 된다.
+    db_enabled: bool = False
+    db_host: str = "127.0.0.1"
+    db_port: int = 3306
+    db_name: str = "laimory"
+    db_user: str = ""
+    db_password: str = ""
+    # SQLAlchemy engine 이 실행 SQL 을 로그로 남길지(디버깅용).
+    db_echo: bool = False
+    # DB 작업(조회/저장) 요청 timeout(초).
+    db_timeout_sec: float = 10.0
 
 
 @lru_cache

@@ -106,7 +106,6 @@ _MOVEMENT_SOURCE_TYPES = frozenset({EventSourceType.MOVEMENT})
 #: 한 warning 에 담을 예시 개수.
 _MAX_EXAMPLES = 3
 
-
 def _add_warning(
     draft: TimelineDraft,
     severity: TimelineWarningSeverity,
@@ -600,8 +599,11 @@ def repair_draft(draft: TimelineDraft, request: TimelineDraftRequest) -> Timelin
     merge_stay_events(draft, request)
     resolve_overlaps(draft)
     reinforce_calendar_location(draft, request)
+    # source 하나를 여러 event가 근거로 사용할 수 있다. 현재는 timeline_items에
+    # event별 source 스냅샷을 저장하고, 향후 N:M 연결 테이블이 이 관계를 맡는다.
 
-    # 병합으로 구간이 넓어졌을 수 있어 한 번 더 정렬한 뒤 최종 id 를 부여한다.
+    # 병합으로 event 구성이 바뀌었을 수 있어 한 번 더 정렬한 뒤
+    # 최종 id 를 부여한다. renumber_events 는 제거된 event 의 질문 참조도 버린다.
     sort_events(draft)
     renumber_events(draft)
     _polish_questions(draft)

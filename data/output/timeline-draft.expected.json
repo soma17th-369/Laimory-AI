@@ -1,266 +1,361 @@
 {
   "userId": "user-1234",
-  "date": "2026-06-30",
+  "date": "2026-07-08",
   "timezone": "Asia/Seoul",
   "events": [
     {
       "clientEventId": "event-001",
       "eventType": "SLEEP",
       "title": "수면",
-      "description": "건강 데이터의 수면 기록을 바탕으로 생성된 이벤트입니다.",
-      "startTime": "2026-06-30T04:00:00+09:00",
-      "endTime": "2026-06-30T07:30:00+09:00",
-      "confidence": 0.9,
+      "description": "새벽에 잠들어 아침까지 푹 잤다.",
+      "address": null,
+      "placeLabel": null,
+      "tags": [],
+      "startTime": "2026-07-08T01:10:00+09:00",
+      "endTime": "2026-07-08T06:50:00+09:00",
+      "confidence": 0.98,
       "inferenceLevel": "DIRECT",
       "sourceRefs": [
         {
           "sourceType": "SLEEP",
-          "sourceId": "health-sleep-001"
+          "rawId": "654d5041-f653-4943-9b14-324202a6354b",
+          "reason": "수면 구간을 직접 보여주는 기록이다."
         }
       ],
-      "uncertainty": [
-        "수면 단계는 0단계로만 제공되어 세부 수면 품질은 판단하지 않았습니다."
-      ]
+      "uncertainty": []
     },
     {
       "clientEventId": "event-002",
-      "eventType": "STAY",
-      "title": "오전 체류",
-      "description": "위치 기록상 07:25부터 10:57까지 같은 장소에 머문 것으로 보입니다.",
-      "startTime": "2026-06-30T07:25:55.976000+09:00",
-      "endTime": "2026-06-30T10:57:00.150000+09:00",
-      "confidence": 0.82,
+      "eventType": "WAKE_UP",
+      "title": "아침 기상",
+      "description": "아침에 일어나 하루를 시작했다.",
+      "address": null,
+      "placeLabel": null,
+      "tags": [],
+      "startTime": "2026-07-08T06:50:00+09:00",
+      "endTime": "2026-07-08T06:50:00+09:00",
+      "confidence": 0.97,
       "inferenceLevel": "EVIDENCE_BASED",
       "sourceRefs": [
         {
-          "sourceType": "LOCATION",
-          "sourceId": "location-stay-001"
+          "sourceType": "SLEEP",
+          "rawId": "654d5041-f653-4943-9b14-324202a6354b",
+          "reason": "수면 종료 시각이 기상 시점의 강한 단서가 된다."
         }
       ],
       "uncertainty": [
-        "장소명은 좌표만으로 확정하지 않았습니다."
+        "수면 종료 시각을 기상 시점으로 해석한 것이다."
       ]
     },
     {
       "clientEventId": "event-003",
-      "eventType": "MOVEMENT",
-      "title": "용산 방향 이동",
-      "description": "오전 체류지에서 용산 서울드래곤시티 인근으로 약 58.1km 이동한 기록입니다.",
-      "startTime": "2026-06-30T10:57:00.150000+09:00",
-      "endTime": "2026-06-30T12:32:37.503000+09:00",
-      "confidence": 0.86,
-      "inferenceLevel": "EVIDENCE_BASED",
+      "eventType": "WORK",
+      "title": "ASM 프로젝트 MVP 개발",
+      "description": "캘린더에 잡힌 ASM 프로젝트 MVP 개발 일정과 집 체류 기록이 함께 보이는 하루였다.",
+      "address": "경기도 오산시 운암로 90",
+      "placeLabel": "집",
+      "tags": [
+        "#ASM",
+        "#프로젝트",
+        "#개발"
+      ],
+      "startTime": "2026-07-08T09:00:00+09:00",
+      "endTime": "2026-07-08T23:00:00+09:00",
+      "confidence": 0.95,
+      "inferenceLevel": "DIRECT",
       "sourceRefs": [
         {
-          "sourceType": "LOCATION",
-          "sourceId": "location-route-001"
+          "sourceType": "CALENDAR",
+          "rawId": "de13f3c1-5000-45d9-ba0a-aeac6e817f82",
+          "reason": "ASM 프로젝트 MVP 개발 일정이 09:00~23:00로 잡혀 있다."
+        },
+        {
+          "sourceType": "STAY",
+          "rawId": "a8713f04-2f5a-4d87-8583-4ef33a962591",
+          "reason": "오전 중 집에 머문 기록이 일정과 같은 장소를 뒷받침한다."
+        },
+        {
+          "sourceType": "STAY",
+          "rawId": "fb8e87d1-2661-4a4e-8972-c730b60dd478",
+          "reason": "오후에도 같은 집에 머문 기록이 이어진다."
+        },
+        {
+          "sourceType": "STAY",
+          "rawId": "29",
+          "reason": "저녁에 집 인근에 잠깐 머문 기록이 있어 집 중심의 하루 흐름을 보강한다."
+        },
+        {
+          "sourceType": "STAY",
+          "rawId": "31",
+          "reason": "밤늦게 집에 길게 머문 기록이 개발 일정의 후반부와 맞물린다."
+        },
+        {
+          "sourceType": "STAY",
+          "rawId": "34",
+          "reason": "자정 직전까지 집에 머문 기록이 이어진다."
         }
       ],
       "uncertainty": [
-        "이동 수단은 위치 경로와 거리만으로 확정하지 않았습니다."
+        "캘린더는 개발 계획을 보여 주지만 실제로 14시간 내내 개발했는지는 확정되지 않는다.",
+        "집이라는 장소 표기는 있으나 실제 작업 장소와 완전히 일치한다고 단정할 수는 없다."
       ]
     },
     {
       "clientEventId": "event-004",
-      "eventType": "CALENDAR_EVENT",
-      "title": "ASM 발대식 참석",
-      "description": "캘린더 일정, 서울드래곤시티 인근 체류 기록, 행사 시간대 사진들을 병합해 생성한 이벤트입니다.",
-      "startTime": "2026-06-30T12:30:00+09:00",
-      "endTime": "2026-06-30T18:01:30.711000+09:00",
-      "confidence": 0.93,
+      "eventType": "CLASS",
+      "title": "SSAFY 관련 알림과 안내",
+      "description": "오전부터 오후까지 SSAFY 관련 알림과 안내 메시지가 이어졌다.",
+      "address": null,
+      "placeLabel": null,
+      "tags": [
+        "#SSAFY",
+        "#안내"
+      ],
+      "startTime": "2026-07-08T09:01:58.295000+09:00",
+      "endTime": "2026-07-08T17:00:39.175000+09:00",
+      "confidence": 0.74,
       "inferenceLevel": "EVIDENCE_BASED",
       "sourceRefs": [
         {
-          "sourceType": "CALENDAR",
-          "sourceId": "calendar-1026"
+          "sourceType": "NOTIFICATION",
+          "rawId": "2ceb2621-af5e-4e97-af6c-70a572068207",
+          "reason": "SSAFY 관련 대화 흐름을 보여주는 알림이다."
         },
         {
-          "sourceType": "LOCATION",
-          "sourceId": "location-stay-002"
+          "sourceType": "NOTIFICATION",
+          "rawId": "fbd67c4b-1fda-4d29-a112-b6da3e8ebbf9",
+          "reason": "교육생들끼리의 질문과 응답 맥락을 보강한다."
         },
         {
-          "sourceType": "PHOTO",
-          "sourceId": "photo-1000010496"
+          "sourceType": "NOTIFICATION",
+          "rawId": "3ed0d22e-fdc1-4c1c-8770-158133b76199",
+          "reason": "취업지원 관련 안내 흐름을 보강한다."
         },
         {
-          "sourceType": "PHOTO",
-          "sourceId": "photo-1000010497"
+          "sourceType": "NOTIFICATION",
+          "rawId": "87ad7e0d-b8ce-49f3-87ac-5b33723fd656",
+          "reason": "설문이나 안내성 메시지로 같은 주제를 뒷받침한다."
         },
         {
-          "sourceType": "PHOTO",
-          "sourceId": "photo-1000010499"
+          "sourceType": "NOTIFICATION",
+          "rawId": "3f9f61c5-cc0a-4d53-84d7-66b97b6f1474",
+          "reason": "오전~오후에 이어진 관련 대화의 일부다."
         },
         {
-          "sourceType": "PHOTO",
-          "sourceId": "photo-1000010502"
-        },
-        {
-          "sourceType": "PHOTO",
-          "sourceId": "photo-1000010503"
-        },
-        {
-          "sourceType": "PHOTO",
-          "sourceId": "photo-1000010506"
-        },
-        {
-          "sourceType": "PHOTO",
-          "sourceId": "photo-1000010520"
+          "sourceType": "NOTIFICATION",
+          "rawId": "4aeeecb5-bfe3-4f80-a43e-d91548608746",
+          "reason": "같은 시간대의 SSAFY/취업 관련 알림을 보강한다."
         }
       ],
       "uncertainty": [
-        "캘린더 종료 시각은 18:00이고 위치 체류 종료는 18:01:30으로 약간 차이가 있습니다.",
-        "일부 KakaoTalk/Download 사진은 촬영 위치 또는 촬영 시각 신뢰도가 낮아 보조 근거로만 사용했습니다."
+        "메신저 알림은 받은 메시지라 실제 참석이나 행동을 직접 증명하지는 않는다.",
+        "취업설명회 설문은 참여자 대상 안내라서 실제 참석 여부는 확정되지 않는다."
       ]
     },
     {
       "clientEventId": "event-005",
-      "eventType": "MOVEMENT",
-      "title": "행사장 인근 이동",
-      "description": "18:01부터 18:15까지 서울드래곤시티 인근에서 약 272m 이동한 기록입니다.",
-      "startTime": "2026-06-30T18:01:30.711000+09:00",
-      "endTime": "2026-06-30T18:15:30.733000+09:00",
-      "confidence": 0.78,
+      "eventType": "PHOTO_MOMENT",
+      "title": "배스킨라빈스 아이스크림을 사서 먹은 오후",
+      "description": "배스킨라빈스에서 아이스크림을 주문하고 받아 나온 뒤, 잠시 머문 오후였다.",
+      "address": "경기도 오산시 운암로 90",
+      "placeLabel": "오산운암3단지 주공아파트",
+      "tags": [
+        "#간식",
+        "#아이스크림",
+        "#오후",
+        "#배스킨라빈스"
+      ],
+      "startTime": "2026-07-08T14:33:51.244000+09:00",
+      "endTime": "2026-07-08T15:07:28.617000+09:00",
+      "confidence": 0.94,
       "inferenceLevel": "EVIDENCE_BASED",
       "sourceRefs": [
         {
-          "sourceType": "LOCATION",
-          "sourceId": "location-route-002"
+          "sourceType": "PHOTO",
+          "rawId": "36b19708-c6ba-4f7b-bd2e-720e8c707117",
+          "reason": "배스킨라빈스 주문 영수증이 보여 아이스크림을 산 흔적이 있다."
+        },
+        {
+          "sourceType": "PHOTO",
+          "rawId": "80e288e7-8b6e-41ca-ad45-83aaf0e66e08",
+          "reason": "배스킨라빈스 포장 봉투를 들고 이동하는 장면이 이어진다."
+        },
+        {
+          "sourceType": "PHOTO",
+          "rawId": "af12d347-a8f9-4105-9abd-802c95b18f5f",
+          "reason": "실내 책상 위 아이스크림 컵과 노트북이 보여 간식 시간의 흐름을 보강한다."
+        },
+        {
+          "sourceType": "STAY",
+          "rawId": "fb8e87d1-2661-4a4e-8972-c730b60dd478",
+          "reason": "같은 오후 시간대 집에 머문 기록이 있어 사진 장면의 배경을 보강한다."
         }
       ],
       "uncertainty": [
-        "짧은 이동이라 실제 목적지는 확정하지 않았습니다."
+        "정확히 어디에서 먹었는지는 사진만으로 단정하기 어렵다.",
+        "포장 후 바로 먹었는지, 잠시 이동 뒤 먹었는지는 확정할 수 없다."
       ]
     },
     {
       "clientEventId": "event-006",
       "eventType": "PHOTO_MOMENT",
-      "title": "행사 후 사진 촬영",
-      "description": "행사장 인근 체류와 18:18, 19:03 사진 metadata를 바탕으로 생성한 이벤트입니다.",
-      "startTime": "2026-06-30T18:15:30.733000+09:00",
-      "endTime": "2026-06-30T19:03:25.061000+09:00",
-      "confidence": 0.82,
+      "title": "저녁 식사",
+      "description": "실내에서 한 그릇 음식을 먹는 저녁 시간이었다.",
+      "address": null,
+      "placeLabel": null,
+      "tags": [
+        "#저녁",
+        "#식사",
+        "#실내"
+      ],
+      "startTime": "2026-07-08T17:27:20.309000+09:00",
+      "endTime": "2026-07-08T17:27:20.309000+09:00",
+      "confidence": 0.83,
       "inferenceLevel": "EVIDENCE_BASED",
       "sourceRefs": [
         {
-          "sourceType": "LOCATION",
-          "sourceId": "location-stay-003"
-        },
-        {
           "sourceType": "PHOTO",
-          "sourceId": "photo-1000010508"
-        },
-        {
-          "sourceType": "PHOTO",
-          "sourceId": "photo-1000010511"
+          "rawId": "e015a889-3517-45ac-9e12-ea94702fb7e7",
+          "reason": "실내에서 한 그릇 음식이 찍혀 저녁 식사 단서가 된다."
         }
       ],
       "uncertainty": [
-        "19:03 사진은 위치 체류 종료 시각 19:01 이후 약 2분 뒤라 같은 맥락으로 병합했습니다."
+        "음식 종류는 완전히 확정할 수 없다.",
+        "동반 인원이나 식사 장소는 알 수 없다."
       ]
     },
     {
       "clientEventId": "event-007",
-      "eventType": "PHOTO_MOMENT",
-      "title": "저녁 사진 촬영",
-      "description": "21:37과 21:44에 첫 번째 체류지와 가까운 좌표에서 촬영된 사진을 바탕으로 생성한 이벤트입니다.",
-      "startTime": "2026-06-30T21:37:08.221000+09:00",
-      "endTime": "2026-06-30T21:44:23.684000+09:00",
-      "confidence": 0.68,
-      "inferenceLevel": "UNCERTAIN",
+      "eventType": "EXERCISE",
+      "title": "저녁 무렵 왕복 이동",
+      "description": "저녁 무렵 집에서 나갔다가 인근을 거쳐 다시 돌아왔다.",
+      "address": "경기도 오산시 운암로 90",
+      "placeLabel": "오산운암3단지 주공아파트",
+      "tags": [
+        "#이동",
+        "#저녁",
+        "#도보"
+      ],
+      "startTime": "2026-07-08T21:39:24.180000+09:00",
+      "endTime": "2026-07-08T22:07:01.001000+09:00",
+      "confidence": 0.91,
+      "inferenceLevel": "EVIDENCE_BASED",
       "sourceRefs": [
         {
-          "sourceType": "PHOTO",
-          "sourceId": "photo-1000010512"
+          "sourceType": "MOVEMENT",
+          "rawId": "9da4549e-f89a-4540-826d-8cbe60dabf8f",
+          "reason": "집에서 나가는 이동의 시작을 보여준다."
         },
         {
-          "sourceType": "PHOTO",
-          "sourceId": "photo-1000010517"
+          "sourceType": "MOVEMENT",
+          "rawId": "2c3b35da-2c35-4a77-966f-e567a7ae3907",
+          "reason": "다시 집으로 돌아오는 이동의 끝을 보여준다."
+        },
+        {
+          "sourceType": "STAY",
+          "rawId": "29",
+          "reason": "중간에 집 인근에 잠깐 머문 기록이 있어 왕복 산책 흐름을 보강한다."
+        }
+      ],
+      "uncertainty": []
+    },
+    {
+      "clientEventId": "event-008",
+      "eventType": "EXERCISE",
+      "title": "밤늦게 자전거로 잠깐 움직인 시간",
+      "description": "밤늦게 집 안팎을 자전거로 짧게 움직였다가 다시 돌아왔다. 잠깐 몸을 풀거나 주변을 오간 시간처럼 보인다.",
+      "address": "경기도 오산시 운암로 90",
+      "placeLabel": "오산운암3단지 주공아파트",
+      "tags": [
+        "#자전거",
+        "#이동",
+        "#밤",
+        "#운동"
+      ],
+      "startTime": "2026-07-08T23:31:18.716000+09:00",
+      "endTime": "2026-07-08T23:53:28.969000+09:00",
+      "confidence": 0.78,
+      "inferenceLevel": "EVIDENCE_BASED",
+      "sourceRefs": [
+        {
+          "sourceType": "MOVEMENT",
+          "rawId": "ec06c681-3a6d-41f7-9fe5-92b205756ce5",
+          "reason": "자전거 이동의 한 구간을 보여준다."
+        },
+        {
+          "sourceType": "MOVEMENT",
+          "rawId": "3a9d1cbf-c9b6-4af6-a00b-b867aeecea56",
+          "reason": "짧은 이동 후 다시 돌아온 흐름을 보강한다."
+        },
+        {
+          "sourceType": "STAY",
+          "rawId": "31",
+          "reason": "이동 전후로 집에 머문 기록이 이어져 밤늦은 짧은 활동으로 읽힌다."
+        },
+        {
+          "sourceType": "STAY",
+          "rawId": "34",
+          "reason": "자정 직전까지 집에 머문 기록이 이어진다."
         }
       ],
       "uncertainty": [
-        "19:03 이후 21:37까지의 위치 기록이 없어 실제 이동 및 체류 구간을 복원할 수 없습니다.",
-        "사진 metadata상 좌표는 오전 체류지와 가깝지만 해당 시간대 위치 stay가 없습니다."
+        "이동 거리가 짧아 단순한 주변 이동일 수도 있다.",
+        "자전거 이동의 정확한 목적은 알 수 없다."
       ]
     }
   ],
-  "questions": [
-    {
-      "questionId": "question-001",
-      "timeRange": {
-        "startTime": "2026-06-30T19:03:25.061000+09:00",
-        "endTime": "2026-06-30T21:37:08.221000+09:00"
-      },
-      "question": "19:03 이후 21:37 이전에 용산에서 오전 체류지 근처로 이동했나요?",
-      "reason": "19:03 행사장 인근 사진 이후 위치 이동 기록이 없고, 21:37 사진은 오전 체류지와 가까운 좌표를 가집니다.",
-      "relatedEventIds": [
-        "event-006",
-        "event-007"
-      ]
-    },
-    {
-      "questionId": "question-002",
-      "timeRange": {
-        "startTime": "2026-06-30T21:57:46+09:00",
-        "endTime": "2026-06-30T21:57:50+09:00"
-      },
-      "question": "21:57에 추가된 KakaoTalk 사진 2장은 실제 촬영 이벤트인가요, 아니면 저장/다운로드된 이미지인가요?",
-      "reason": "두 사진 모두 위치 정보가 없고 하나는 dateTaken이 0이며, KakaoTalk bucket에 저장된 이미지입니다.",
-      "relatedEventIds": [
-        "event-007"
-      ]
-    }
-  ],
+  "questions": [],
   "warnings": [
     {
       "warningId": "warning-001",
-      "severity": "MEDIUM",
-      "message": "원본 location/photo/calendar 항목에 sourceId가 없어 예상 출력에서는 location-stay-001, photo-1000010497 같은 샘플용 sourceId를 생성했습니다.",
+      "severity": "LOW",
+      "message": "오전~오후의 집 체류, 캘린더 개발 일정, 사진 단서가 서로 맞물리지만 실제로 09:00~23:00 내내 개발했는지는 확정되지 않는다.",
+      "sourceRefs": [
+        {
+          "sourceType": "CALENDAR",
+          "rawId": "de13f3c1-5000-45d9-ba0a-aeac6e817f82",
+          "reason": "긴 개발 일정의 배경 단서다."
+        },
+        {
+          "sourceType": "STAY",
+          "rawId": "a8713f04-2f5a-4d87-8583-4ef33a962591",
+          "reason": "오전 집 체류 기록이다."
+        },
+        {
+          "sourceType": "STAY",
+          "rawId": "fb8e87d1-2661-4a4e-8972-c730b60dd478",
+          "reason": "오후 집 체류 기록이다."
+        },
+        {
+          "sourceType": "PHOTO",
+          "rawId": "36b19708-c6ba-4f7b-bd2e-720e8c707117",
+          "reason": "오후 간식 사진 단서다."
+        }
+      ]
+    },
+    {
+      "warningId": "warning-repair-002",
+      "severity": "LOW",
+      "message": "체류·이동 근거와 어긋난 event 1건의 시간을 근거에 맞췄습니다: 밤늦게 자전거로 잠깐 움직인 시간",
       "sourceRefs": []
     },
     {
-      "warningId": "warning-002",
+      "warningId": "warning-window-003",
       "severity": "MEDIUM",
-      "message": "알림 데이터가 4,672건으로 매우 많고 대부분 카카오톡 알림이라, 개별 생활 이벤트로 만들지 않고 품질 참고 데이터로만 보았습니다.",
-      "sourceRefs": [
-        {
-          "sourceType": "NOTIFICATION",
-          "sourceId": "notifications-2026-06-30"
-        }
-      ]
+      "message": "요청 시간 범위 경계에 걸친 event 가 있습니다: 밤늦게 자전거로 잠깐 움직인 시간",
+      "sourceRefs": []
     },
     {
-      "warningId": "warning-003",
+      "warningId": "warning-repair-004",
       "severity": "LOW",
-      "message": "건강 데이터의 걸음 수는 10,145보로 확인되지만 이동 거리 summary가 0.0m로 표시되어 위치 이동 거리와 직접 병합하지 않았습니다.",
-      "sourceRefs": [
-        {
-          "sourceType": "ACTIVITY",
-          "sourceId": "health-steps-001"
-        },
-        {
-          "sourceType": "ACTIVITY",
-          "sourceId": "health-distance-001"
-        }
-      ]
+      "message": "이동 없이 같은 장소에서 이어진 체류 event 1건을 하나로 합쳤습니다: 오후에는 집에서 머묾",
+      "sourceRefs": []
     },
     {
-      "warningId": "warning-004",
+      "warningId": "warning-repair-005",
       "severity": "LOW",
-      "message": "일부 사진은 dateTaken이 0이거나 GPS 좌표가 없어 촬영 이벤트 근거로 쓰기 어렵습니다.",
-      "sourceRefs": [
-        {
-          "sourceType": "PHOTO",
-          "sourceId": "photo-1000010496"
-        },
-        {
-          "sourceType": "PHOTO",
-          "sourceId": "photo-1000010519"
-        },
-        {
-          "sourceType": "PHOTO",
-          "sourceId": "photo-1000010520"
-        }
-      ]
+      "message": "시간이 서로 겹치는 event 1쌍이 있습니다: 오전에는 집에서 잠시 머묾 ↔ 배스킨라빈스 아이스크림을 사서 먹은 오후",
+      "sourceRefs": []
     }
   ]
 }
