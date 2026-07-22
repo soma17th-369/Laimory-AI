@@ -32,6 +32,7 @@ from app.agents.events import default_event_agents, merge_event_results
 from app.agents.events.base_event_agent import EventAgent
 from app.agents.repair.repair_agent import RepairAgent
 from app.agents.timeline.timeline_agent import TimelineAgent
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.schemas import AgentEventResult, TimelineDraft, TimelineDraftRequest
 
@@ -162,10 +163,17 @@ async def run_main_agent(
     timeline = timeline_agent if timeline_agent is not None else TimelineAgent()
     repair = repair_agent if repair_agent is not None else RepairAgent()
 
+    # 이 타임라인을 "어떤 provider/model 로 만들었는지" 를 로그에 남긴다. 모든 하위
+    # 에이전트는 설정된 provider(`settings.llm_provider`)와 그 provider 의 모델을 쓰므로
+    # 실행에 사용될 모델은 설정에서 결정론적으로 정해진다.
+    provider = settings.llm_provider
+    model = getattr(settings, f"{provider}_model", "")
     logger.info(
-        "메인 에이전트 시작: taskId=%s, agents=%d",
+        "메인 에이전트 시작: taskId=%s, agents=%d, provider=%s, model=%s",
         request.task_id,
         len(agents),
+        provider,
+        model,
     )
 
     final_state = await _build_graph().ainvoke(

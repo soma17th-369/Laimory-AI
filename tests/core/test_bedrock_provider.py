@@ -1,0 +1,250 @@
+"""Bedrock Provider 단위 테스트.
+
+AWS 계정/자격증명 없이 실행 가능하도록 boto3 client 를 mock 한다.
+converse 호출 인자(요청 구조), 텍스트 추출, 토큰 사용량 로그, 자격증명 전달,
+에러 처리를 검증한다.
+"""
+
+import logging
+
+import pytest
+
+from app.core import llm as llm_module
+from app.core.llm import (
+    BedrockProvider,
+    ImageInput,
+    available_providers,
+    get_provider,
+)
+
+
+class FakeBedrockClient:
+    """boto3 bedrock-runtime client 를 흉내낸다.
+
+    converse 호출 인자를 기록하고 정해진 응답을 돌려준다.
+    """
+
+    def __init__(self, response: dict | None = None) -> None:
+        self.calls: list[dict] = []
+        self._response = response or {
+            "output": {"message": {"content": [{"text": "안녕"}]}},
+            "usage": {"inputTokens": 12, "outputTokens": 5},
+        }
+
+    def converse(self, **kwargs):
+        self.calls.append(kwargs)
+        return self._response
+
+
+def _make_provider(monkeypatch, response=None, capture=None):
+    """boto3.client 를 FakeBedrockClient 로 바꿔치기한 BedrockProvider 를 만든다.
+
+    capture 를 주면 boto3.client 로 넘어간 (service, kwargs) 를 담아 클라이언트
+    생성 인자를 검증할 수 있다.
+    """
+
+    fake = FakeBedrockClient(response=response)
+    monkeypatch.setattr(llm_module.settings, "bedrock_aws_profile", "")
+
+    def fake_client(service_name, **kwargs):
+        if capture is not None:
+            capture["service"] = service_name
+            capture["kwargs"] = kwargs
+        return fake
+
+    monkeypatch.setattr("boto3.client", fake_client)
+    provider = BedrockProvider(model="amazon.nova-lite-v1:0")
+    return provider, fake
+
+
+def test_bedrock_registered():
+    assert "bedrock" in available_providers()
+
+
+def test_requires_no_api_key(monkeypatch):
+    # api_key 없이도(모델만 있으면) 생성된다. bedrock 은 자격증명 체인으로 인증한다.
+    provider, _ = _make_provider(monkeypatch)
+    assert provider.requires_api_key is False
+    assert provider.supports_vision is True
+    assert provider.api_key == ""  # bedrock_api_key 필드가 없어 빈 값
+
+
+def test_empty_model_raises(monkeypatch):
+    monkeypatch.setattr(llm_module.settings, "bedrock_model", "")
+    monkeypatch.setattr("boto3.client", lambda *a, **k: FakeBedrockClient())
+    with pytest.raises(ValueError):
+        BedrockProvider(model="")
+
+
+def test_client_built_with_region_only(monkeypatch):
+    # AgentCore 처럼 프로필이 없으면 기본 체인(실행 역할)에 맡긴다.
+    monkeypatch.setattr(llm_module.settings, "bedrock_aws_profile", "")
+    monkeypatch.setattr(llm_module.settings, "bedrock_region", "ap-northeast-2")
+    capture: dict = {}
+    _make_provider(monkeypatch, capture=capture)
+    assert capture["service"] == "bedrock-runtime"
+    assert capture["kwargs"] == {"region_name": "ap-northeast-2"}
+
+
+def test_client_built_from_named_local_profile(monkeypatch):
+    fake = FakeBedrockClient()
+    capture: dict = {}
+
+    class FakeSession:
+        def client(self, service_name, **kwargs):
+            capture["service"] = service_name
+            capture["kwargs"] = kwargs
+            return fake
+
+    def fake_session(*, profile_name):
+        capture["profile_name"] = profile_name
+        return FakeSession()
+
+    monkeypatch.setattr(llm_module.settings, "app_env", "local")
+    monkeypatch.setattr(llm_module.settings, "bedrock_aws_profile", "laimory-bedrock")
+    monkeypatch.setattr(llm_module.settings, "bedrock_region", "ap-northeast-2")
+    monkeypatch.setattr("boto3.Session", fake_session)
+
+    BedrockProvider(model="amazon.nova-lite-v1:0")
+
+    assert capture == {
+        "profile_name": "laimory-bedrock",
+        "service": "bedrock-runtime",
+        "kwargs": {"region_name": "ap-northeast-2"},
+    }
+
+
+def test_deployment_ignores_local_profile_and_uses_default_chain(monkeypatch):
+    fake = FakeBedrockClient()
+    capture: dict = {}
+
+    def fake_client(service_name, **kwargs):
+        capture["service"] = service_name
+        capture["kwargs"] = kwargs
+        return fake
+
+    def fail_session(**kwargs):
+        pytest.fail(f"배포 환경에서 로컬 AWS 프로필을 사용했습니다: {kwargs}")
+
+    monkeypatch.setattr(llm_module.settings, "app_env", "prod")
+    monkeypatch.setattr(llm_module.settings, "bedrock_aws_profile", "laimory-bedrock")
+    monkeypatch.setattr(llm_module.settings, "bedrock_region", "ap-northeast-2")
+    monkeypatch.setattr("boto3.Session", fail_session)
+    monkeypatch.setattr("boto3.client", fake_client)
+
+    BedrockProvider(model="amazon.nova-lite-v1:0")
+
+    assert capture == {
+        "service": "bedrock-runtime",
+        "kwargs": {"region_name": "ap-northeast-2"},
+    }
+
+
+def test_complete_builds_converse_request_and_returns_text(monkeypatch):
+    provider, fake = _make_provider(monkeypatch)
+    out = provider.complete("질문", system="지시", temperature=0.3)
+    assert out == "안녕"
+    call = fake.calls[0]
+    assert call["modelId"] == "amazon.nova-lite-v1:0"
+    assert call["messages"] == [{"role": "user", "content": [{"text": "질문"}]}]
+    assert call["system"] == [{"text": "지시"}]
+    assert call["inferenceConfig"] == {"temperature": 0.3}
+
+
+def test_complete_without_system_omits_system(monkeypatch):
+    provider, fake = _make_provider(monkeypatch)
+    provider.complete("질문")
+    assert "system" not in fake.calls[0]
+
+
+def test_complete_forwards_converse_options(monkeypatch):
+    provider, fake = _make_provider(monkeypatch)
+
+    provider.complete(
+        "질문",
+        temperature=0.3,
+        maxTokens=256,
+        topP=0.8,
+        stopSequences=["END"],
+        requestMetadata={"taskId": "task-1"},
+    )
+
+    call = fake.calls[0]
+    assert call["inferenceConfig"] == {
+        "temperature": 0.3,
+        "maxTokens": 256,
+        "topP": 0.8,
+        "stopSequences": ["END"],
+    }
+    assert call["requestMetadata"] == {"taskId": "task-1"}
+
+
+def test_complete_accepts_boto3_inference_config(monkeypatch):
+    provider, fake = _make_provider(monkeypatch)
+
+    provider.complete(
+        "질문",
+        temperature=0.7,
+        inferenceConfig={"temperature": 0.1, "maxTokens": 128},
+    )
+
+    assert fake.calls[0]["inferenceConfig"] == {
+        "temperature": 0.1,
+        "maxTokens": 128,
+    }
+
+
+def test_complete_joins_multiple_text_blocks(monkeypatch):
+    response = {
+        "output": {"message": {"content": [{"text": "가"}, {"text": "나"}]}},
+        "usage": {"inputTokens": 1, "outputTokens": 1},
+    }
+    provider, _ = _make_provider(monkeypatch, response=response)
+    assert provider.complete("x") == "가나"
+
+
+def test_complete_with_images_attaches_image_blocks(monkeypatch):
+    provider, fake = _make_provider(monkeypatch)
+    out = provider.complete_with_images(
+        "설명", [ImageInput(data=b"\xff\xd8\xff", mime_type="image/jpeg")]
+    )
+    assert out == "안녕"
+    content = fake.calls[0]["messages"][0]["content"]
+    assert content[0] == {"text": "설명"}
+    assert content[1]["image"]["format"] == "jpeg"
+    assert content[1]["image"]["source"]["bytes"] == b"\xff\xd8\xff"
+
+
+def test_logs_token_usage(monkeypatch, caplog):
+    provider, _ = _make_provider(monkeypatch)
+    with caplog.at_level(logging.INFO, logger="app.core.llm"):
+        provider.complete("x")
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any(
+        "토큰 사용량" in m
+        and "provider=bedrock" in m
+        and "inputTokens=12" in m
+        and "outputTokens=5" in m
+        for m in msgs
+    ), msgs
+
+
+def test_usage_missing_logs_none(monkeypatch, caplog):
+    response = {"output": {"message": {"content": [{"text": "hi"}]}}}  # usage 없음
+    provider, _ = _make_provider(monkeypatch, response=response)
+    with caplog.at_level(logging.INFO, logger="app.core.llm"):
+        provider.complete("x")
+    assert any("inputTokens=None" in r.getMessage() for r in caplog.records)
+
+
+def test_image_format_mapping():
+    assert BedrockProvider._image_format("image/jpeg") == "jpeg"
+    assert BedrockProvider._image_format("image/jpg") == "jpeg"
+    assert BedrockProvider._image_format("image/png") == "png"
+    assert BedrockProvider._image_format("image/webp") == "webp"
+    assert BedrockProvider._image_format("") == "jpeg"
+
+
+def test_unsupported_provider_raises():
+    with pytest.raises(ValueError):
+        get_provider("does-not-exist")

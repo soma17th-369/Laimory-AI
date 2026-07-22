@@ -50,6 +50,16 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = ""
 
+    # Amazon Bedrock (Nova 등). Bedrock 은 provider 별 api_key 가 아니라 AWS 자격증명
+    # 체인으로 인증하므로 `bedrock_api_key` 는 없다. 로컬에서는 프로필 이름만 지정하고
+    # 실제 자격증명은 ~/.aws/credentials 에 둔다. 배포 시 프로필을 비우면 AgentCore
+    # Runtime 실행 역할의 임시 자격증명을 boto3 가 자동으로 사용한다.
+    bedrock_aws_profile: str = ""
+    # model 은 Nova 모델 id 또는 크로스리전 추론 프로필 id. Nova 2 Lite 는 서울에서
+    # Global profile 을 사용하며, 조직 SCP가 대상 리전을 허용해야 호출할 수 있다.
+    bedrock_region: str = "ap-northeast-2"
+    bedrock_model: str = ""
+
     # 사진 vision describe 에서 실제 이미지를 읽어올 로컬 디렉터리.
     # 값이 있으면 `LocalFilePhotoImageSource` 로 해당 디렉터리의 실제 파일을 읽고,
     # 비어 있으면(기본) 이미지 없이 메타데이터 기반 fallback 으로 동작한다.
