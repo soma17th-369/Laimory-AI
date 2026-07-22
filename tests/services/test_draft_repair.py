@@ -165,7 +165,7 @@ def test_sorting_is_deterministic_for_fully_tied_events():
 def test_client_event_ids_are_assigned_after_sorting_and_questions_follow():
     draft = _draft(
         _event("event-001", "15:00", "16:00", STAY_REF, title="오후"),
-        _event("event-002", "09:00", "10:00", STAY_REF, title="오전"),
+        _event("event-002", "09:00", "10:00", PHOTO_REF, title="오전"),
         questions=[
             TimelineQuestion(
                 question_id="question-001",
@@ -368,10 +368,17 @@ def test_window_warning_names_the_event_by_title_not_a_stale_id():
     request = make_request(
         window={"start": f"{DAY}T10:00:00", "end": f"{DAY}T12:00:00"},
         stays=[stay_item(1, raw_id="stay-1", start=f"{DAY}T10:00:00", end=f"{DAY}T13:00:00")],
+        photos=[photo_item(2, taken=f"{DAY}T10:10:00", raw_id="photo-2")],
     )
     draft = _draft(
         _event("event-001", "11:30", "13:00", STAY_REF, title="경계에 걸친 오후"),
-        _event("event-002", "10:10", "10:20", STAY_REF, title="온전한 오전"),
+        _event(
+            "event-002",
+            "10:10",
+            "10:20",
+            (EventSourceType.PHOTO, "photo-2"),
+            title="온전한 오전",
+        ),
     )
 
     repair_draft(draft, request)

@@ -5,3 +5,13 @@
 __pycache__/
 *.py[cod]
 .openai-docs-cache/
+
+# IDE 설정 (로컬 전용, DB 접속정보 등 노출 방지)
+.idea/
+
+# 내부 작업 기록 (PR 에 포함하지 않음)
+.agents/worklog/
+
+# 파이프라인 실행 산출물 (추적하는 테스트 픽스처만 예외로 유지)
+data/output/*
+!data/output/timeline-draft.expected.json

@@ -34,7 +34,7 @@ from app.schemas.source_snapshot import (
     ItemType,
     TimelineWindow,
 )
-from app.schemas.task import TaskRecord, TaskStatus, TimelineCallbackPayload
+from app.schemas.task import TaskStatus, TimelineCallbackPayload
 from app.schemas.timeline import (
     TimelineDraft,
     TimelineDraftEvent,
@@ -74,7 +74,6 @@ __all__ = [
     "SourceFragment",
     "SourceRef",
     "StayItem",
-    "TaskRecord",
     "TaskStatus",
     "TimeWindow",
     "TimelineCallbackPayload",

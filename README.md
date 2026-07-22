@@ -53,6 +53,8 @@ app/
 │
 └── services/
     ├── source_repository.py   # taskId로 수집 스냅샷 조회
+    ├── timeline_repository.py # 최종 timeline_events/timeline_items 저장
+    ├── timeline_validator.py  # 최종 저장 전 source 소속·시간 검증
     ├── normalizer.py          # 수집 스냅샷 분리·정규화
     ├── draft_repair.py        # draft 확정 repair
     ├── draft_edit.py          # event 수정·삭제 (Repair 계획의 결정론 적용)
@@ -65,9 +67,8 @@ app/
     ├── meal_guard.py          # MEAL 지속시간 강제
     ├── place_resolver.py      # 장소 확정
     ├── place_text.py          # 장소 문자열 정규화·비교
-    ├── task_store.py          # task 상태 저장
     ├── timeline_runner.py     # 백그라운드 파이프라인
-    └── callback.py            # 완료 결과 콜백
+    └── callback.py            # 완료 상태 콜백
 
 tests/
 ├── agents/                    # Event/Repair Agent 테스트 (live 입력 테스트는 opt-in)
@@ -76,7 +77,7 @@ tests/
 └── fixtures/                  # 요청/스냅샷 빌더
 ```
 
-처리 흐름은 `taskId 접수 → 202 즉시 응답 → DB 조회 → normalize → main agent → 상태 갱신/콜백` 순서입니다.
+처리 흐름은 `taskId 접수 → 202 즉시 응답 → DB 조회 → normalize → main agent → timeline_events/timeline_items 저장 → 완료 상태 콜백` 순서입니다.
 
 Main Agent 그래프는 `run_event_agents → merge_results → run_timeline_agent → run_repair_agent` 순서로 실행됩니다.
 

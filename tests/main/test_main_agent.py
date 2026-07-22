@@ -95,7 +95,7 @@ def _timeline_agent_returning_one_event() -> TimelineAgent:
 def _timeline_agent_returning_unsorted_events() -> TimelineAgent:
     """시간 순서가 뒤집힌 draft 를 돌려주는 Timeline Agent."""
 
-    def event(title, start, end):
+    def event(title, start, end, source_id):
         return {
             "eventType": "REST",
             "title": title,
@@ -104,7 +104,7 @@ def _timeline_agent_returning_unsorted_events() -> TimelineAgent:
             "endTime": f"2026-06-20T{end}:00+09:00",
             "confidence": 0.8,
             "inferenceLevel": "EVIDENCE_BASED",
-            "sourceRefs": [{"sourceType": "STAY", "rawId": "s-1"}],
+            "sourceRefs": [{"sourceType": "STAY", "rawId": source_id}],
         }
 
     draft_json = json.dumps(
@@ -112,7 +112,10 @@ def _timeline_agent_returning_unsorted_events() -> TimelineAgent:
             "userId": "u",
             "date": "2026-06-20",
             "timezone": "Asia/Seoul",
-            "events": [event("오후", "15:00", "16:00"), event("오전", "09:00", "10:00")],
+            "events": [
+                event("오후", "15:00", "16:00", "s-1"),
+                event("오전", "09:00", "10:00", "s-2"),
+            ],
         },
         ensure_ascii=False,
     )

@@ -42,13 +42,15 @@ app/
 ├── server.py                  # FastAPI 앱 생성 + 라우터 등록만 (얇게)
 │
 ├── core/                      # 공통 인프라
-│   ├── config.py              # 설정 (pydantic-settings, LLM_PROVIDER/API 키 등)
+│   ├── config.py              # 설정 (pydantic-settings, LLM_PROVIDER/API 키, DB_* 등)
 │   ├── logging.py             # 관찰 로그 설정            ← 체크7
-│   └── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini 등, 확장형)
+│   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini 등, 확장형)
+│   ├── db.py                  # staging MySQL async engine/session (aiomysql, host/port 직결)
+│   └── db_models.py           # staging 테이블 ORM 매핑 (draft source / daily record / timeline event·item / event↔item N:M 조인)
 │
 ├── api/v1/
 │   ├── router.py              # v1 라우터 취합
-│   └── timeline.py            # POST /v1/timeline (taskId 접수 → 202), GET /{taskId}
+│   └── timeline.py            # POST /v1/timeline (taskId+callbackToken+dailyRecordId+window 접수 → 202). 상태 조회 없음(상태는 App Server 소유)
 │
 ├── schemas/                   # Pydantic 계약(contract)
 │   ├── source_snapshot.py     # 수집 원본(taskId/sourceItems) 입력 계약
@@ -66,7 +68,9 @@ app/
 │   └── main/main_agent.py     # events → timeline → repair 조율(LangGraph)
 │
 └── services/
-    ├── source_repository.py   # taskId로 수집 스냅샷 조회 (DB 추상화, 인메모리 스텁)
+    ├── source_repository.py   # taskId로 수집 스냅샷 조회 (MySQL: timeline_draft_source_items / 인메모리 스텁)
+    ├── timeline_repository.py # 결과 저장: timeline_events(요청 dailyRecordId 로 FK) + timeline_items(저장 시 raw_id 디듀프, daily record 소속은 event 만) + timeline_event_items(event↔item N:M). AI 생성분만 교체하는 트랜잭션
+    ├── timeline_validator.py  # 저장 전 자체검증 (task source 소속/시간 등)
     ├── normalizer.py          # 수집 스냅샷을 itemType별로 분리·정규화
     ├── draft_repair.py        # draft 확정 repair (아래 순서대로 조립)
     ├── validator.py           # 요청 시간 범위(window) 강제: 범위 밖 event 제거/경고
@@ -79,11 +83,17 @@ app/
     ├── meal_guard.py           # MEAL event 지속시간 20~60분 강제 (긴 체류 전체를 식사로 잡지 않음)
     ├── place_resolver.py       # placeLabel을 근거 place로 확정, 근거 없는 address 제거
     ├── place_text.py           # 장소 문자열 정규화·비교 (calendar_location/place_resolver/stay_merge 공용)
-    ├── task_store.py          # 처리 task 상태 저장 (PROCESSING/SUCCESS/FAILED)
-    ├── timeline_runner.py     # 백그라운드: 조회→정규화→main agent→상태/콜백
-    └── callback.py            # 완료 결과 App Server 콜백
+    ├── timeline_runner.py     # 백그라운드(무상태): 조회→정규화→main agent→staging 저장→콜백. 최종 상태 반환
+    └── callback.py            # 완료 통보(SUCCESS/FAILED + callbackToken) App Server 콜백
 
-# 처리 흐름: taskId 접수 → 202 즉시응답 → (백그라운드) DB 조회 → normalize → main agent → 상태 갱신/콜백
+# 처리 흐름: taskId+callbackToken+dailyRecordId+window 접수 → 202 즉시응답 →
+#   (백그라운드) DB 조회 → 요청 window 를 정본으로 덮어쓰기 → normalize → main agent
+#   → timeline_events(dailyRecordId FK)/timeline_items(저장 시 디듀프)/timeline_event_items(N:M) 저장
+#   → 콜백(SUCCESS/FAILED 통보만; 실제 결과는 App Server 가 staging DB 에서 읽음)
+# AI 서버는 무상태다. task 상태는 App Server 가 소유하며(AI 는 상태 저장/조회 없음),
+#   AI 는 상태를 콜백으로만 통보한다. daily_records 도 직접 조회/생성하지 않고 dailyRecordId 로 FK 만 건다.
+# 저장/조회는 항상 실제 staging DB. DB 는 필수이며(없으면 실패), 인메모리 스텁은 단위 테스트 전용.
+# 접속 스모크: scripts/db_smoke.py (SSH 터널 열고 .env 채운 뒤 실행)
 # main agent 그래프: run_event_agents → merge_results → run_timeline_agent → repair_draft
 #   앞 3개는 LLM 이 의미를 판단하는 확률적 단계, repair_draft 는 코드가 확정하는 결정론적 단계다.
 # repair_draft 순서: sourceType 정정 → 캘린더 복원 → duration → 근거 구간 정렬 → MEAL
@@ -93,6 +103,6 @@ app/
 tests/
 ├── agents/                    # Event Agent live 입력 테스트(opt-in)
 ├── api/ · services/ · main/   # 엔드포인트·정규화·저장소·파이프라인 단위 테스트
-├── integration/               # 실제 LLM 통합 테스트(opt-in)
+├── integration/               # 실제 LLM·staging MySQL 통합 테스트(opt-in)
 └── fixtures/                  # 요청/스냅샷 빌더
 ```

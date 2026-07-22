@@ -2,8 +2,8 @@
 
 파이프라인 처리가 끝나면(성공/실패 모두) 결과를 App Server 의 콜백 URL 로
 POST 한다. 콜백 전송 자체의 실패(네트워크 오류, 4xx/5xx 등)는 서버를 중단시키지
-않고 로그로만 남긴다. 상태는 이미 `TaskStore` 에 저장돼 있어 App Server 가
-콜백을 놓쳐도 상태 조회로 결과를 확인할 수 있다.
+않고 로그로만 남긴다. task 상태는 App Server 가 소유하며(AI 서버는 보관하지 않음),
+실제 결과는 App Server 가 staging DB 에서 읽는다.
 """
 
 import httpx
