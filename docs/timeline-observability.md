@@ -65,6 +65,24 @@ REQUEST → MAIN_AGENT → EVENT_AGENT → TIMELINE_AGENT → REPAIR_AGENT
 
 ## Kibana 조회와 모니터링 항목
 
+Kibana에서는 다음 Saved Object를 기준으로 조회한다.
+
+- Data View: `AI Timeline Task` (`ai-timeline-task-*`, 시간 필드 `@timestamp`)
+- Saved Discover: `AI Timeline Task 이벤트`
+- 주요 컬럼: `taskId`, `sequence`, `stage`, `eventType`, `status`, `agentName`,
+  `modelProvider`, `modelId`, `durationMs`, `taskDurationMs`, `tokenUsage.total`
+
+로컬 `15601` 포트로 Kibana 터널을 열었다면 아래 주소에서 저장된 Discover 화면을
+바로 열 수 있다.
+
+```text
+http://127.0.0.1:15601/kibana/app/discover#/view/ai-timeline-task-events
+```
+
+특정 실행은 KQL 검색창에 `taskId : "<taskId>"`를 입력하고 시간 범위를 해당 실행
+시각이 포함되도록 설정해서 확인한다. 이벤트 실행 순서를 볼 때는 `sequence`를
+오름차순으로 정렬한다.
+
 task 전체 흐름은 다음처럼 조회한다.
 
 ```json
@@ -109,6 +127,66 @@ curl -X PUT "$ES_URL/_index_template/ai-timeline-task" \
 | `LOG_FORMAT` | `rich` | 운영은 `json`으로 설정해 stdout을 CloudWatch에서 수집 |
 
 `OBS_ENABLED=false`이고 `OBS_LOCAL_DIR`도 비어 있으면 Observer는 버퍼를 만들지 않는 no-op으로 동작한다.
+
+## 실제 Elasticsearch smoke 테스트
+
+private subnet의 Elasticsearch는 외부에 직접 공개하지 않는다. 로컬에서는 public
+subnet의 WAS를 경유하는 SSH 또는 SSM 포트 포워딩을 열고, 애플리케이션에는 로컬
+포워딩 주소를 설정한다.
+
+SSM을 사용한다면 WAS 인스턴스를 대상으로 원격 호스트 포트 포워딩 세션을 연다.
+
+```powershell
+aws ssm start-session `
+  --target <WAS_INSTANCE_ID> `
+  --document-name AWS-StartPortForwardingSessionToRemoteHost `
+  --parameters '{"host":["<ES_PRIVATE_HOST>"],"portNumber":["9200"],"localPortNumber":["19200"]}' `
+  --profile <AWS_PROFILE> `
+  --region ap-northeast-2
+```
+
+Kibana도 같은 방식으로 별도 터널을 열 수 있다.
+
+```powershell
+aws ssm start-session `
+  --target <WAS_INSTANCE_ID> `
+  --document-name AWS-StartPortForwardingSessionToRemoteHost `
+  --parameters '{"host":["<KIBANA_PRIVATE_HOST>"],"portNumber":["5601"],"localPortNumber":["15601"]}' `
+  --profile <AWS_PROFILE> `
+  --region ap-northeast-2
+```
+
+SSH를 사용한다면 다음처럼 Elasticsearch 포트를 전달한다.
+
+```powershell
+ssh -i "<WAS_PEM_PATH>" -N `
+  -L 19200:<ES_PRIVATE_HOST>:9200 `
+  ec2-user@<WAS_PUBLIC_HOST>
+```
+
+터널을 연 터미널은 그대로 두고 `.env`를 설정한다.
+
+```dotenv
+OBS_ENABLED=true
+ES_URL=http://127.0.0.1:19200
+ES_API_KEY=
+ES_EVENT_INDEX=ai-timeline-task
+```
+
+인증이 활성화된 서버는 `ES_API_KEY`를 채운다. 현재 exporter는 API key 인증을
+지원하며, HTTPS를 사용하면 서버 인증서가 로컬에서도 신뢰되어야 한다.
+
+다른 터미널에서 opt-in live 테스트를 실행한다.
+
+```powershell
+$env:UV_CACHE_DIR=".uv-cache"
+$env:LAIMORY_LIVE_ES="1"
+uv run pytest tests/integration/test_elasticsearch_live.py -q -s
+```
+
+테스트는 연결 확인, `ai-timeline-task` 템플릿 설치, 본문 비저장 이벤트 전송,
+refresh, `taskId` 재조회를 수행한다. 출력한 `taskId`의 smoke 문서는 Kibana 확인을
+위해 삭제하지 않는다.
 
 ## 운영 정책
 
