@@ -42,11 +42,20 @@ app/
 ├── server.py                  # FastAPI 앱 생성 + 라우터 등록만 (얇게)
 │
 ├── core/                      # 공통 인프라
-│   ├── config.py              # 설정 (pydantic-settings, LLM_PROVIDER/API 키, DB_* 등)
-│   ├── logging.py             # 관찰 로그 설정            ← 체크7
-│   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형)
+│   ├── config.py              # 설정 (pydantic-settings, LLM_PROVIDER/API 키, DB_*, OBS_*/ES_* 등)
+│   ├── logging.py             # 운영 로그 설정 (rich | stdout JSON→CloudWatch, LOG_FORMAT)
+│   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형) + LLM 관측/토큰 emit
 │   ├── db.py                  # staging MySQL async engine/session (aiomysql, host/port 직결)
-│   └── db_models.py           # staging 테이블 ORM 매핑 (draft source / daily record / timeline event·item / event↔item N:M 조인)
+│   ├── db_models.py           # staging 테이블 ORM 매핑 (draft source / daily record / timeline event·item / event↔item N:M 조인)
+│   └── observability/         # Timeline 실행 관측 (#28). taskId 단일 키, 본문 비저장·메타데이터 제한
+│       ├── models.py          #   ObservationEvent 계약 (taskId/sequence/stage/token/version)
+│       ├── context.py         #   contextvars 로 to_thread 까지 taskId 전파, emit_observation
+│       ├── observer.py        #   요청별 Observer: sequence 부여·마스킹·sink 실패 격리
+│       ├── redaction.py       #   본문 비저장·payload 메타데이터 마스킹/크기 제한
+│       ├── sinks.py           #   Null/InMemory(버퍼)/JsonLines/Composite (제품 독립)
+│       ├── documents.py       #   이벤트 버퍼 → event 문서 N건(FINAL에 task 집계 포함)
+│       ├── elasticsearch.py   #   httpx NDJSON _bulk 전송 (재시도/부분실패/완전격리)
+│       └── runtime.py         #   요청별 Observer/buffer 생성 + flush(로컬 + ES)
 │
 ├── api/v1/
 │   ├── router.py              # v1 라우터 취합

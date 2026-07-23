@@ -13,17 +13,41 @@ provider 종류와 무관하게 동일한 방식으로 호출한다.
 """
 
 import base64
+import importlib.metadata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
+from time import perf_counter
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.observability import (
+    ObservationEventType,
+    ObservationStage,
+    emit_observation,
+    summarize_content,
+)
 
 logger = get_logger(__name__)
 
 # provider 이름 -> provider 클래스 레지스트리
 _PROVIDERS: dict[str, type["LLMProvider"]] = {}
+
+
+@lru_cache
+def _sdk_version(package: str) -> str | None:
+    """설치된 provider SDK 패키지 버전(providerVersion)을 반환한다.
+
+    관측 로그에 "이 호출이 어떤 SDK 버전으로 나갔는지" 를 남기기 위한 것으로,
+    패키지를 찾지 못하면 ``None`` 이다.
+    """
+
+    if not package:
+        return None
+    try:
+        return importlib.metadata.version(package)
+    except importlib.metadata.PackageNotFoundError:
+        return None
 
 
 @dataclass(frozen=True)
@@ -58,6 +82,10 @@ class LLMProvider(ABC):
     # 이미지(vision) 입력 지원 여부. 지원하는 provider 는 True 로 명시하고
     # `complete_with_images` 를 override 한다.
     supports_vision: bool = False
+
+    # providerVersion(관측용) 을 읽어올 설치 SDK 패키지 이름. 예: "openai",
+    # "google-genai", "boto3". 지정하지 않으면 providerVersion 은 None 이다.
+    sdk_package: str = ""
 
     def __init__(self, model: str | None = None) -> None:
         self.api_key: str = getattr(settings, f"{self.name}_api_key", "")
@@ -125,6 +153,74 @@ class LLMProvider(ABC):
             output_tokens,
         )
 
+    def _provider_version(self) -> str | None:
+        """이 호출을 낸 provider SDK 패키지 버전(providerVersion)."""
+
+        return _sdk_version(self.sdk_package)
+
+    @staticmethod
+    def _usage_detail(response) -> dict[str, int]:
+        """provider 응답에서 정규화된 토큰 상세를 뽑는다(있는 값만 담는다).
+
+        키는 input/output/total/cached/reasoning/tool 중 provider 가 실제로 준 것만
+        넣는다. 추정하지 않고(예: tokenizer 로 세지 않음) provider 응답값만 쓴다.
+        하위 provider 가 override 한다.
+        """
+
+        return {}
+
+    def _emit_llm_prompt(
+        self, prompt: str, *, system: str | None = None, image_count: int = 0
+    ) -> None:
+        """LLM 호출 직전 PROMPT 관측 이벤트를 남긴다(컨텍스트 없으면 no-op)."""
+
+        payload: dict = {"promptMetadata": summarize_content(prompt)}
+        if system is not None:
+            payload["systemPromptMetadata"] = summarize_content(system)
+        if image_count:
+            payload["imageCount"] = image_count
+        emit_observation(
+            ObservationEventType.PROMPT,
+            stage=ObservationStage.LLM,
+            provider=self.name,
+            model=self.model,
+            provider_version=self._provider_version(),
+            payload=payload,
+        )
+
+    def _emit_llm_response(self, started: float, response, text: str) -> None:
+        """LLM 응답 후 RESPONSE 관측 이벤트를 남긴다(duration·provider 토큰 포함)."""
+
+        usage = self._usage_detail(response)
+        emit_observation(
+            ObservationEventType.RESPONSE,
+            stage=ObservationStage.LLM,
+            provider=self.name,
+            model=self.model,
+            provider_version=self._provider_version(),
+            duration_ms=(perf_counter() - started) * 1000,
+            input_tokens=usage.get("input"),
+            output_tokens=usage.get("output"),
+            total_tokens=usage.get("total"),
+            cached_tokens=usage.get("cached"),
+            reasoning_tokens=usage.get("reasoning"),
+            tool_tokens=usage.get("tool"),
+            payload={"responseMetadata": summarize_content(text)},
+        )
+
+    def _emit_llm_failure(self, started: float, exc: Exception) -> None:
+        """LLM 호출 실패 시 FAILED 관측 이벤트를 남긴다."""
+
+        emit_observation(
+            ObservationEventType.FAILED,
+            stage=ObservationStage.LLM,
+            provider=self.name,
+            model=self.model,
+            provider_version=self._provider_version(),
+            duration_ms=(perf_counter() - started) * 1000,
+            payload={"errorType": type(exc).__name__},
+        )
+
 
 @register_provider
 class OpenAIProvider(LLMProvider):
@@ -132,6 +228,7 @@ class OpenAIProvider(LLMProvider):
 
     name = "openai"
     supports_vision = True
+    sdk_package = "openai"
 
     def _build_client(self):
         from openai import OpenAI
@@ -148,6 +245,32 @@ class OpenAIProvider(LLMProvider):
             getattr(usage, "completion_tokens", None),
         )
 
+    @staticmethod
+    def _usage_detail(response) -> dict[str, int]:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return {}
+        detail: dict[str, int] = {}
+        for key, attr in (
+            ("input", "prompt_tokens"),
+            ("output", "completion_tokens"),
+            ("total", "total_tokens"),
+        ):
+            value = getattr(usage, attr, None)
+            if value is not None:
+                detail[key] = value
+        cached = getattr(
+            getattr(usage, "prompt_tokens_details", None), "cached_tokens", None
+        )
+        if cached is not None:
+            detail["cached"] = cached
+        reasoning = getattr(
+            getattr(usage, "completion_tokens_details", None), "reasoning_tokens", None
+        )
+        if reasoning is not None:
+            detail["reasoning"] = reasoning
+        return detail
+
     def complete(
         self,
         prompt: str,
@@ -161,14 +284,22 @@ class OpenAIProvider(LLMProvider):
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=temperature,
-            **kwargs,
-        )
-        self._log_usage(*self._usage(response))
-        return response.choices[0].message.content or ""
+        self._emit_llm_prompt(prompt, system=system)
+        started = perf_counter()
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                **kwargs,
+            )
+            self._log_usage(*self._usage(response))
+            text = response.choices[0].message.content or ""
+            self._emit_llm_response(started, response, text)
+            return text
+        except Exception as exc:
+            self._emit_llm_failure(started, exc)
+            raise
 
     def complete_with_images(
         self,
@@ -193,14 +324,22 @@ class OpenAIProvider(LLMProvider):
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": content})
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=temperature,
-            **kwargs,
-        )
-        self._log_usage(*self._usage(response))
-        return response.choices[0].message.content or ""
+        self._emit_llm_prompt(prompt, system=system, image_count=len(images))
+        started = perf_counter()
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                **kwargs,
+            )
+            self._log_usage(*self._usage(response))
+            text = response.choices[0].message.content or ""
+            self._emit_llm_response(started, response, text)
+            return text
+        except Exception as exc:
+            self._emit_llm_failure(started, exc)
+            raise
 
 
 @register_provider
@@ -209,6 +348,7 @@ class GeminiProvider(LLMProvider):
 
     name = "gemini"
     supports_vision = True
+    sdk_package = "google-genai"
 
     def _build_client(self):
         from google import genai
@@ -225,6 +365,24 @@ class GeminiProvider(LLMProvider):
             getattr(usage, "candidates_token_count", None),
         )
 
+    @staticmethod
+    def _usage_detail(response) -> dict[str, int]:
+        usage = getattr(response, "usage_metadata", None)
+        if usage is None:
+            return {}
+        detail: dict[str, int] = {}
+        for key, attr in (
+            ("input", "prompt_token_count"),
+            ("output", "candidates_token_count"),
+            ("total", "total_token_count"),
+            ("cached", "cached_content_token_count"),
+            ("reasoning", "thoughts_token_count"),
+        ):
+            value = getattr(usage, attr, None)
+            if value is not None:
+                detail[key] = value
+        return detail
+
     def complete(
         self,
         prompt: str,
@@ -240,13 +398,21 @@ class GeminiProvider(LLMProvider):
             temperature=temperature,
             **kwargs,
         )
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=prompt,
-            config=config,
-        )
-        self._log_usage(*self._usage(response))
-        return response.text or ""
+        self._emit_llm_prompt(prompt, system=system)
+        started = perf_counter()
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=config,
+            )
+            self._log_usage(*self._usage(response))
+            text = response.text or ""
+            self._emit_llm_response(started, response, text)
+            return text
+        except Exception as exc:
+            self._emit_llm_failure(started, exc)
+            raise
 
     def complete_with_images(
         self,
@@ -269,13 +435,21 @@ class GeminiProvider(LLMProvider):
             parts.append(
                 types.Part.from_bytes(data=image.data, mime_type=image.mime_type)
             )
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=parts,
-            config=config,
-        )
-        self._log_usage(*self._usage(response))
-        return response.text or ""
+        self._emit_llm_prompt(prompt, system=system, image_count=len(images))
+        started = perf_counter()
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=parts,
+                config=config,
+            )
+            self._log_usage(*self._usage(response))
+            text = response.text or ""
+            self._emit_llm_response(started, response, text)
+            return text
+        except Exception as exc:
+            self._emit_llm_failure(started, exc)
+            raise
 
 
 @register_provider
@@ -296,6 +470,7 @@ class BedrockProvider(LLMProvider):
     name = "bedrock"
     requires_api_key = False
     supports_vision = True
+    sdk_package = "boto3"
     _INFERENCE_CONFIG_KEYS = frozenset({"maxTokens", "stopSequences", "topP"})
 
     def _build_client(self):
@@ -320,14 +495,22 @@ class BedrockProvider(LLMProvider):
         temperature: float = 0.7,
         **kwargs,
     ) -> str:
-        response = self._converse(
-            [{"text": prompt}],
-            system=system,
-            temperature=temperature,
-            **kwargs,
-        )
-        self._log_usage(*self._usage(response))
-        return self._extract_text(response)
+        self._emit_llm_prompt(prompt, system=system)
+        started = perf_counter()
+        try:
+            response = self._converse(
+                [{"text": prompt}],
+                system=system,
+                temperature=temperature,
+                **kwargs,
+            )
+            self._log_usage(*self._usage(response))
+            text = self._extract_text(response)
+            self._emit_llm_response(started, response, text)
+            return text
+        except Exception as exc:
+            self._emit_llm_failure(started, exc)
+            raise
 
     def complete_with_images(
         self,
@@ -348,14 +531,22 @@ class BedrockProvider(LLMProvider):
                     }
                 }
             )
-        response = self._converse(
-            content,
-            system=system,
-            temperature=temperature,
-            **kwargs,
-        )
-        self._log_usage(*self._usage(response))
-        return self._extract_text(response)
+        self._emit_llm_prompt(prompt, system=system, image_count=len(images))
+        started = perf_counter()
+        try:
+            response = self._converse(
+                content,
+                system=system,
+                temperature=temperature,
+                **kwargs,
+            )
+            self._log_usage(*self._usage(response))
+            text = self._extract_text(response)
+            self._emit_llm_response(started, response, text)
+            return text
+        except Exception as exc:
+            self._emit_llm_failure(started, exc)
+            raise
 
     def _converse(
         self,
@@ -402,6 +593,24 @@ class BedrockProvider(LLMProvider):
 
         usage = response.get("usage") or {}
         return usage.get("inputTokens"), usage.get("outputTokens")
+
+    @staticmethod
+    def _usage_detail(response: dict) -> dict[str, int]:
+        usage = response.get("usage") or {}
+        detail: dict[str, int] = {}
+        for key, attr in (
+            ("input", "inputTokens"),
+            ("output", "outputTokens"),
+            ("total", "totalTokens"),
+        ):
+            value = usage.get(attr)
+            if value is not None:
+                detail[key] = value
+        cache_read = usage.get("cacheReadInputTokens")
+        cache_write = usage.get("cacheWriteInputTokens")
+        if cache_read is not None or cache_write is not None:
+            detail["cached"] = (cache_read or 0) + (cache_write or 0)
+        return detail
 
     @staticmethod
     def _image_format(mime_type: str) -> str:

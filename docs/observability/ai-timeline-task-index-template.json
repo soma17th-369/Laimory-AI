@@ -1,0 +1,38 @@
+{
+  "index_patterns": ["ai-timeline-task-*"],
+  "template": {
+    "mappings": {
+      "dynamic": false,
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "schemaVersion": { "type": "keyword" },
+        "taskId": { "type": "keyword" },
+        "sequence": { "type": "long" },
+        "stage": { "type": "keyword" },
+        "eventType": { "type": "keyword" },
+        "status": { "type": "keyword" },
+        "agentName": { "type": "keyword" },
+        "iteration": { "type": "integer" },
+        "modelProvider": { "type": "keyword" },
+        "modelId": { "type": "keyword" },
+        "providerVersion": { "type": "keyword" },
+        "agentVersion": { "type": "keyword" },
+        "durationMs": { "type": "double" },
+        "taskDurationMs": { "type": "double" },
+        "eventCount": { "type": "integer" },
+        "droppedEventCount": { "type": "integer" },
+        "tokenUsage": {
+          "properties": {
+            "input": { "type": "long" },
+            "output": { "type": "long" },
+            "total": { "type": "long" },
+            "cached": { "type": "long" },
+            "reasoning": { "type": "long" },
+            "tool": { "type": "long" }
+          }
+        },
+        "payload": { "type": "object", "enabled": false }
+      }
+    }
+  }
+}

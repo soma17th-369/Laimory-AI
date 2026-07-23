@@ -41,6 +41,7 @@ from app.agents.repair.tools import (
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.observability import ObservationEventType, emit_observation
 from app.schemas import (
     AgentEventResult,
     RepairPlan,
@@ -191,6 +192,13 @@ class RepairAgent(Agent):
             self._run_graph(ctx, last_good)
         except Exception as exc:  # noqa: BLE001 - 개선 실패가 draft 를 잃게 하지 않는다
             logger.warning("Repair Agent 실행 실패: error=%s", exc, exc_info=True)
+            emit_observation(
+                ObservationEventType.FAILED,
+                payload={
+                    "errorType": type(exc).__name__,
+                    "fallback": "last_good_draft",
+                },
+            )
             restored = last_good[0]
             restored.warnings.append(
                 TimelineWarning(
@@ -234,12 +242,52 @@ class RepairAgent(Agent):
                 len(plan.tool_calls),
                 plan.done,
             )
+            emit_observation(
+                ObservationEventType.PLAN,
+                iteration=iteration,
+                payload={
+                    "remainingIterations": remaining,
+                    "issueCount": len(plan.issues),
+                    "toolCallCount": len(plan.tool_calls),
+                    "toolNames": [call.tool for call in plan.tool_calls],
+                    "done": plan.done,
+                },
+            )
             return {"iteration": iteration, "plan": plan}
 
         def execute_node(state: _State) -> _State:
-            execute_tool_calls(ctx, state["plan"].tool_calls)
+            for call in state["plan"].tool_calls:
+                emit_observation(
+                    ObservationEventType.TOOL_CALL,
+                    iteration=state["iteration"],
+                    payload={
+                        "tool": call.tool,
+                        "argumentNames": sorted(call.args),
+                    },
+                )
+            results = execute_tool_calls(ctx, state["plan"].tool_calls)
+            for result in results:
+                emit_observation(
+                    ObservationEventType.TOOL_RESULT
+                    if result.ok
+                    else ObservationEventType.FAILED,
+                    iteration=state["iteration"],
+                    payload={
+                        "tool": result.tool,
+                        "ok": result.ok,
+                    },
+                )
             _confirm(ctx)
             last_good[0] = ctx.draft.model_copy(deep=True)
+            emit_observation(
+                ObservationEventType.DRAFT_UPDATED,
+                iteration=state["iteration"],
+                payload={
+                    "eventCount": len(ctx.draft.events),
+                    "questionCount": len(ctx.draft.questions),
+                    "warningCount": len(ctx.draft.warnings),
+                },
+            )
             return {}
 
         def after_analyze(state: _State) -> str:

@@ -3,13 +3,28 @@
 `.env` 파일과 환경 변수에서 값을 읽어 pydantic-settings 로 관리한다.
 """
 
+import tomllib
 from functools import lru_cache
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _default_agent_version() -> str:
+    try:
+        return version("laimory-ai")
+    except PackageNotFoundError:
+        try:
+            pyproject = tomllib.loads(
+                (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+            )
+            return str(pyproject["project"]["version"])
+        except (OSError, KeyError, TypeError, tomllib.TOMLDecodeError):
+            return "unknown"
 
 
 class Settings(BaseSettings):
@@ -97,6 +112,29 @@ class Settings(BaseSettings):
     db_echo: bool = False
     # DB 작업(조회/저장) 요청 timeout(초).
     db_timeout_sec: float = 10.0
+
+    # --- 관측(observability) export 설정 (이슈 #28) ---
+    # Timeline 실행 로그를 taskId 단위 JSON 문서로 Elasticsearch 에 보낸다. 마스터
+    # 스위치가 꺼져 있고 로컬 출력도 없으면 수집 자체를 하지 않는다. 관측은 부가
+    # 기능이라 꺼져도, 전송에 실패해도 Timeline 처리에는 영향을 주지 않는다.
+    obs_enabled: bool = False
+    # 배포/빌드 버전. 관측 이벤트/문서에 agentVersion 으로 실어 버전별 품질 비교에 쓴다.
+    agent_version: str = _default_agent_version()
+    # Elasticsearch 접속. es_url 이 비어 있으면 ES 전송을 건너뛴다.
+    es_url: str = ""
+    es_api_key: str = ""
+    es_event_index: str = "ai-timeline-task"
+    es_timeout_sec: float = 5.0
+    es_max_retries: int = 3
+    # payload 는 실행 메타데이터만 저장한다. 입력·프롬프트·응답·draft 본문은 길이와
+    # 해시로만 요약하고, 메타데이터에도 이벤트당 크기 제한을 적용한다.
+    obs_max_payload_bytes: int = 16 * 1024
+    obs_max_events_per_task: int = 1000
+    # dev 검사용: 값이 있으면 조립한 event 문서를 로컬에도 저장한다.
+    obs_local_dir: str | None = None
+
+    # 운영 로그 포맷: "rich"(로컬 콘솔) | "json"(stdout JSON, CloudWatch Logs Insights).
+    log_format: str = "rich"
 
 
 @lru_cache
