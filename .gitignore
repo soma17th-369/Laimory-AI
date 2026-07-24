@@ -1,5 +1,8 @@
 .env
 .env.local
+
+# AgentCore Runtime 환경 변수 파일 (DB 접속정보 포함, 최초 생성 때만 로컬에서 사용)
+runtime-env.json
 .venv/
 .uv-cache/
 __pycache__/

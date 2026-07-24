@@ -27,6 +27,7 @@ import asyncio
 
 from app.agents.main import run_main_agent
 from app.core.config import settings
+from app.core.inflight import track_inflight
 from app.core.logging import get_logger
 from app.core.observability import (
     ObservationEventType,
@@ -60,35 +61,41 @@ async def process_timeline_task(
     AI 서버는 상태를 보관하지 않으므로(App Server 소유), 결과는 콜백으로만 통보하고
     최종 상태를 반환값으로 돌려준다(호출부/테스트 관찰용). 저장/검증 실패는 예외로
     잡혀 FAILED 가 되며, partial 저장은 트랜잭션 롤백으로 남지 않는다.
+
+    전체를 `track_inflight` 로 감싼다. HTTP 응답(202)은 이미 나간 뒤이므로,
+    AgentCore Runtime 이 `GET /ping` 으로 유휴 여부를 물었을 때 여기가 아직 돌고
+    있다는 사실을 알려야 컨테이너가 회수되지 않는다.
     """
 
-    observer, buffer = build_task_observer()
-    if observer is None:
-        status = await _process_observed(
-            task_id,
-            repo,
-            timeline_repo,
-            daily_record_id,
-            window_start,
-            window_end,
-            callback_token,
-        )
-    else:
-        try:
-            with observation_context(task_id, observer):
-                status = await _process_observed(
-                    task_id,
-                    repo,
-                    timeline_repo,
-                    daily_record_id,
-                    window_start,
-                    window_end,
-                    callback_token,
-                )
-        finally:
-            # 콜백까지 끝난 뒤 관측을 내보낸다. flush 는 내부에서 모든 실패를 흡수하므로
-            # Timeline status·RDB 저장·콜백에 절대 영향을 주지 않는다(완전 격리).
-            await flush_task_observations(buffer, task_id=task_id)
+    with track_inflight():
+        observer, buffer = build_task_observer()
+        if observer is None:
+            status = await _process_observed(
+                task_id,
+                repo,
+                timeline_repo,
+                daily_record_id,
+                window_start,
+                window_end,
+                callback_token,
+            )
+        else:
+            try:
+                with observation_context(task_id, observer):
+                    status = await _process_observed(
+                        task_id,
+                        repo,
+                        timeline_repo,
+                        daily_record_id,
+                        window_start,
+                        window_end,
+                        callback_token,
+                    )
+            finally:
+                # 콜백까지 끝난 뒤 관측을 내보낸다. flush 는 내부에서 모든 실패를
+                # 흡수하므로 Timeline status·RDB 저장·콜백에 절대 영향을 주지
+                # 않는다(완전 격리).
+                await flush_task_observations(buffer, task_id=task_id)
 
     return status
 

@@ -1,0 +1,16 @@
+# 빌드 컨텍스트를 deny-all 로 두고 필요한 것만 허용한다.
+# 이래야 나중에 무엇이 추가되든 `.env` 같은 비밀이나 로컬 산출물(.venv, .idea,
+# 테스트 캐시)이 빌드 컨텍스트에 딸려 들어가지 않는다.
+*
+
+# 런타임에 실제로 필요한 것만 허용한다.
+#   app/           애플리케이션 코드
+#   pyproject.toml 의존성 정의 + agent_version 조회원(config.py)
+#   uv.lock        재현 설치용 lock
+!app
+!pyproject.toml
+!uv.lock
+
+# 허용한 경로 안에 남는 파이썬 부산물은 다시 제외한다.
+**/__pycache__
+**/*.py[cod]

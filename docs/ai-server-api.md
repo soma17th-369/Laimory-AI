@@ -33,6 +33,8 @@ http://{AI_SERVER_HOST}:8000
 http://127.0.0.1:8000
 ```
 
+AgentCore Runtime에 배포한 컨테이너는 `8080` 포트를 사용하며, App Server는 HTTP로 직접 호출하지 않고 `InvokeAgentRuntime`으로 호출합니다. 자세한 내용은 [AgentCore Runtime 배포 가이드](deploy-agentcore.md)를 참고합니다.
+
 ### Content-Type
 
 ```http
@@ -57,6 +59,10 @@ Content-Type: application/json
 |---|---|---|
 | `POST` | `/v1/timeline` | 타임라인 생성 작업 접수 |
 | `GET` | `/health` | AI 서버 상태 확인 |
+| `POST` | `/invocations` | AgentCore Runtime 호출 진입점. `/v1/timeline`과 동일하게 처리 |
+| `GET` | `/ping` | AgentCore Runtime 헬스체크 |
+
+`/invocations`와 `/ping`은 AgentCore Runtime이 컨테이너에 요구하는 고정 경로입니다.
 
 ## 4. 타임라인 생성 요청
 
@@ -65,6 +71,8 @@ Content-Type: application/json
 타임라인 생성 작업을 접수합니다. 실제 처리는 백그라운드에서 진행됩니다.
 
 `202 Accepted`는 타임라인 생성 완료가 아니라 요청 접수 완료를 의미합니다.
+
+AgentCore Runtime에 배포한 환경에서는 `POST /invocations`가 동일한 요청 본문을 받아 같은 방식으로 처리합니다. 요청·응답 형식이 같으므로 아래 명세를 그대로 사용합니다.
 
 ### 사전 조건
 
@@ -234,6 +242,27 @@ AI 서버 프로세스가 실행 중인지 확인합니다.
 ```
 
 이 API는 DB, LLM Provider 또는 콜백 서버의 연결 상태까지 확인하지는 않습니다.
+
+### `GET /ping`
+
+AgentCore Runtime이 컨테이너를 계속 살려둘지 판단하기 위해 호출하는 헬스체크입니다.
+
+#### `200 OK`
+
+```json
+{
+  "status": "Healthy"
+}
+```
+
+| 값 | 의미 |
+|---|---|
+| `Healthy` | 진행 중인 백그라운드 처리가 없습니다. |
+| `HealthyBusy` | 접수한 작업을 아직 처리하고 있습니다. |
+
+AI 서버는 요청을 `202`로 접수한 뒤 백그라운드에서 처리를 이어갑니다. 응답을 이미 반환한 뒤에도 처리가 남아 있으면 `HealthyBusy`를 반환해 컨테이너가 회수되지 않도록 합니다.
+
+이 상태값은 작업 상태가 아닙니다. `taskId`를 담지 않으며 특정 작업의 진행 여부를 조회하는 용도로 사용할 수 없습니다. 작업 상태는 App Server가 소유하고 AI 서버는 콜백으로만 통보합니다.
 
 ## 8. 상태값
 

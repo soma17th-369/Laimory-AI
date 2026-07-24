@@ -25,11 +25,14 @@ app/
 ├── core/                      # 공통 인프라
 │   ├── config.py              # 설정 (pydantic-settings, LLM_PROVIDER/API 키 등)
 │   ├── logging.py             # 관찰 로그 설정
-│   └── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형)
+│   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형)
+│   └── inflight.py            # 진행 중 백그라운드 처리 카운터 (GET /ping 상태 판단용)
 │
-├── api/v1/
-│   ├── router.py              # v1 라우터 취합
-│   └── timeline.py            # POST /v1/timeline (taskId 접수 → 202), GET /{taskId}
+├── api/
+│   ├── agentcore.py           # AgentCore Runtime 계약 (POST /invocations, GET /ping)
+│   └── v1/
+│       ├── router.py          # v1 라우터 취합
+│       └── timeline.py        # POST /v1/timeline (taskId 접수 → 202)
 │
 ├── schemas/                   # Pydantic 계약(contract)
 │   ├── source_snapshot.py     # 수집 원본(taskId/sourceItems) 입력 계약
@@ -75,6 +78,16 @@ tests/
 ├── api/ · services/ · main/   # 단위 테스트
 ├── integration/               # 실제 LLM 통합 테스트(opt-in)
 └── fixtures/                  # 요청/스냅샷 빌더
+
+Dockerfile                     # EC2/AgentCore 공용 배포 이미지 (non-root, 8080)
+.dockerignore                  # 빌드 컨텍스트 허용 목록
+.github/workflows/
+├── deploy-ec2.yml             # dev push → amd64 이미지 → EC2 자동 배포
+├── deploy-agentcore.yml       # arm64 이미지 → AgentCore 수동 복구
+└── rollback-agentcore.yml     # AgentCore 수동 롤백
+scripts/deploy-ec2.sh          # SSM에서 실행하는 EC2 교체·자동 복구 스크립트
+docs/deploy-ec2.md             # EC2 운영 배포 절차
+docs/deploy-agentcore.md       # AgentCore 수동 복구 절차
 ```
 
 처리 흐름은 `taskId 접수 → 202 즉시 응답 → DB 조회 → normalize → main agent → timeline_events/timeline_items 저장 → 완료 상태 콜백` 순서입니다.
@@ -156,11 +169,11 @@ GEMINI_MODEL=gemini-2.5-flash
 
 # Bedrock (Amazon Nova)
 # 로컬 프로필 이름만 .env 에 두고 실제 키는 ~/.aws/credentials 에 저장한다.
-# AgentCore 배포(APP_ENV=prod)에서는 이 값을 무시하고 실행 역할을 자동 사용한다.
+# 배포 환경(APP_ENV=prod)에서는 이 값을 무시하고 AWS 실행 역할을 자동 사용한다.
 BEDROCK_AWS_PROFILE=laimory-bedrock
 # BEDROCK_MODEL 은 Nova 모델 id 또는 크로스리전 추론 프로필 id.
-# Nova 2 Lite 는 서울에서 Global inference profile 로 호출하며,
-# 조직 SCP가 대상 리전을 막으면 호출할 수 없다.
+# Nova 2 Lite 는 서울에서 Global inference profile(global. 접두)로 호출한다.
+# 서울 리전 IAM 사용자로 실제 converse 호출까지 확인했다(2026-07-23).
 BEDROCK_REGION=ap-northeast-2
 BEDROCK_MODEL=global.amazon.nova-2-lite-v1:0
 
@@ -189,7 +202,8 @@ LOG_FORMAT=rich              # 운영은 json (stdout JSON → CloudWatch Logs I
 - **openai / gemini**: 키와 모델을 `.env` 에 넣으면 됩니다.
 - **bedrock**: 로컬에서는 `.env`에 `BEDROCK_AWS_PROFILE`을 지정하고 실제 Access Key와
   Secret은 `aws configure --profile <이름>`으로 `~/.aws/credentials`에 보관합니다.
-  AgentCore(`APP_ENV=prod`)에서는 이 값이 있더라도 무시하고 Runtime 실행 역할을 씁니다.
+  배포 환경(`APP_ENV=prod`)에서는 이 값이 있더라도 무시하고 EC2 Instance Role 또는
+  AgentCore Runtime 실행 역할을 씁니다.
 
 타임라인을 어떤 provider/모델로 만들었는지와 각 LLM 호출의 토큰 사용량은 **로그**로
 남습니다. 비용은 AWS Cost Explorer에서 확인하며, 호출별 토큰 양은 아래 로그로 확인합니다.
@@ -200,7 +214,7 @@ LLM 토큰 사용량: provider=bedrock, model=..., inputTokens=123, outputTokens
 ```
 
 `aws configure --profile laimory-bedrock`으로 로컬 자격증명을 설정하려면 AWS CLI가
-필요합니다. AgentCore에서는 프로필 설정을 제거하면 Runtime 실행 역할로 동작합니다.
+필요합니다. 배포 환경에서는 프로필 설정을 제거하면 AWS 실행 역할로 동작합니다.
 
 ---
 
@@ -261,6 +275,34 @@ GET /health
 {
   "status": "ok"
 }
+```
+
+AgentCore Runtime 배포 환경에서는 `GET /ping`을 함께 제공합니다.
+
+```json
+{ "status": "Healthy" }
+```
+
+접수한 작업을 아직 처리하고 있으면 `HealthyBusy`를 반환해 컨테이너가 회수되지 않도록 합니다.
+
+---
+
+## Deploy
+
+기본 운영 경로는 EC2 단일 컨테이너입니다. `dev` 브랜치에 push하면 GitHub Actions가
+`linux/amd64` 이미지를 Amazon ECR에 올리고, Systems Manager로 EC2 컨테이너를
+교체합니다. AgentCore Runtime 배포는 장애가 해소됐을 때 사용할 수동 복구 경로로
+유지합니다.
+
+- EC2 자동 배포와 초기 준비: [docs/deploy-ec2.md](docs/deploy-ec2.md)
+- AgentCore 수동 배포와 롤백: [docs/deploy-agentcore.md](docs/deploy-agentcore.md)
+
+로컬에서 이미지를 확인하려면:
+
+```bash
+docker build -t laimory-ai:local .
+docker run --rm -p 8080:8080 laimory-ai:local
+curl http://127.0.0.1:8080/ping
 ```
 
 ---
