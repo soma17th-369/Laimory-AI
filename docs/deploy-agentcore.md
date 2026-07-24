@@ -352,10 +352,14 @@ Runtime 의 `environmentVariables` 로 주입한다.
 | `BEDROCK_REGION` | | 기본 `ap-northeast-2` |
 | `BEDROCK_AWS_PROFILE` | | **넣지 않는다.** 비어 있어야 실행 역할 자격증명을 쓴다 |
 | `DB_HOST` `DB_PORT` `DB_NAME` `DB_USER` `DB_PASSWORD` | O | staging MySQL 직결. DB 는 필수라 없으면 처리에 실패한다 |
-| `CALLBACK_URL` | O | App Server 완료 콜백. 비면 콜백을 보내지 않는다 |
+| `APP_SERVER_API_URL` | O | App Server 서버간 API 기본 URL(`/s/api/v1`까지). 비면 콜백을 보내지 않는다 |
 | `PIPELINE_TIMEOUT_SEC` | | 기본 120 |
 | `REPAIR_MAX_ITERATIONS` | | 기본 3 |
 | `OBS_ENABLED` `ES_URL` `ES_API_KEY` `ES_EVENT_INDEX` | | 관측(#28). 끄면 수집 자체를 하지 않는다 |
+
+기존 Runtime에 `CALLBACK_URL`이 있으면 `APP_SERVER_API_URL`로 교체해야 한다.
+값에는 task별 경로를 제외하고 `/s/api/v1`까지 넣는다. 배포 워크플로는 기존
+환경변수를 그대로 보존하므로 이 이름 변경은 Runtime 설정에서 한 번 직접 반영한다.
 
 **환경 변수는 최초 생성 때 한 번만 넣으면 된다.** 이후 배포는 `GetAgentRuntime` 으로
 현재 설정을 읽어 그대로 되돌려 보내고 컨테이너 이미지 URI 만 교체한다. 덕분에 DB

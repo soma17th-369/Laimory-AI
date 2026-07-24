@@ -52,7 +52,7 @@ def fake_main_agent(monkeypatch):
         return draft
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", _run)
-    monkeypatch.setattr(timeline_runner.settings, "callback_url", None)
+    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
     return draft
 
 
