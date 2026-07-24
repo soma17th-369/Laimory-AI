@@ -4,7 +4,7 @@
 대상 시간 창 `window` 를 받아 처리 task 를 만들고(PROCESSING) 즉시 응답을 돌려준다
 (HTTP 종료). 실제 처리는 백그라운드에서 진행되는데, `taskId` 로
 DB(`SourceRepository`)에서 수집 스냅샷을 읽어와 정규화한 뒤 메인 에이전트를
-실행한다. 완료 시 `settings.callback_url` 이 설정돼 있으면 성공/실패를 App Server
+실행한다. 완료 시 `settings.app_server_api_url` 이 설정돼 있으면 성공/실패를 App Server
 로 콜백한다. AI 서버는 task 상태를 보관하지 않으며(상태는 App Server 소유), 별도
 상태 조회 엔드포인트는 두지 않는다.
 """

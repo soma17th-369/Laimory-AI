@@ -222,11 +222,15 @@ DB_NAME=<DB 이름>
 DB_USER=<DB 사용자>
 DB_PASSWORD=<DB 비밀번호>
 
-CALLBACK_URL=<App Server 완료 콜백 URL>
+APP_SERVER_API_URL=<App Server 서버간 API 기본 URL, 예: https://api.example.com/s/api/v1>
 ```
 
 `BEDROCK_AWS_PROFILE`은 비워 둔다. boto3가 EC2 Instance Role의 임시 자격증명을
 사용한다.
+
+기존 `CALLBACK_URL`은 사용하지 않는다. `APP_SERVER_API_URL`에는 task별 경로를
+제외하고 `/s/api/v1`까지 넣는다. AI 서버가
+`/timeline/drafts/{taskId}/callback`을 붙여 호출한다.
 
 ## 9. 배포
 

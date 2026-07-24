@@ -54,7 +54,7 @@ def fake_main_agent(monkeypatch):
         return draft
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", _run)
-    monkeypatch.setattr(timeline_runner.settings, "callback_url", None)
+    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
     return draft
 
 
@@ -125,7 +125,7 @@ def test_background_task_marks_runtime_busy(repo, monkeypatch):
         return TimelineDraft(user_id="u-1", date="2026-06-20", timezone="Asia/Seoul")
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", _run)
-    monkeypatch.setattr(timeline_runner.settings, "callback_url", None)
+    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
 
     # TestClient 는 응답 반환 전에 BackgroundTasks 를 끝까지 실행한다.
     client = TestClient(app)

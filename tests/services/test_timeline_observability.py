@@ -98,13 +98,15 @@ def test_runner_emits_request_storage_callback_final(monkeypatch) -> None:
     async def fake_main_agent(request):
         return TimelineDraft(user_id="u-1", date="2026-06-20", timezone="Asia/Seoul")
 
-    async def fake_send(url, payload):
+    async def fake_send(app_server_api_url, task_id, callback_token, payload):
         return True
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
     monkeypatch.setattr(timeline_runner, "send_callback", fake_send)
     monkeypatch.setattr(
-        timeline_runner.settings, "callback_url", "https://app.example/callback"
+        timeline_runner.settings,
+        "app_server_api_url",
+        "https://app.example/s/api/v1",
     )
     captured = _capture_flush(monkeypatch)
 
@@ -139,7 +141,11 @@ def test_runner_emits_request_storage_callback_final(monkeypatch) -> None:
     assert request_completed.payload["inputMetadata"]["contentCaptured"] is False
     serialized_payload = json.dumps(request_completed.payload, ensure_ascii=False)
     assert "sourceItems" not in serialized_payload
-    assert "callback-token" not in serialized_payload
+    serialized_events = json.dumps(
+        [event.model_dump(mode="json") for event in events],
+        ensure_ascii=False,
+    )
+    assert "callback-token" not in serialized_events
     # sequence 는 발급 순서대로 단조 증가한다.
     assert [e.sequence for e in events] == sorted(e.sequence for e in events)
 
@@ -147,7 +153,7 @@ def test_runner_emits_request_storage_callback_final(monkeypatch) -> None:
 def test_runner_missing_snapshot_emits_request_failed_and_final_failed(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(timeline_runner.settings, "callback_url", None)
+    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
     captured = _capture_flush(monkeypatch)
 
     status = asyncio.run(
@@ -167,7 +173,7 @@ def test_runner_missing_snapshot_emits_request_failed_and_final_failed(
     assert ("REQUEST", "STARTED") in pairs
     assert ("REQUEST", "FAILED") in pairs
     assert ("FINAL", "FAILED") in pairs
-    # 콜백 URL 이 없으면 CALLBACK 이벤트는 없다.
+    # App Server API URL 이 없으면 CALLBACK 이벤트는 없다.
     assert not any(stage == "CALLBACK" for stage, _ in pairs)
 
 
@@ -178,7 +184,7 @@ def test_runner_timeout_emits_main_and_final_failed(monkeypatch) -> None:
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", slow_main_agent)
     monkeypatch.setattr(timeline_runner.settings, "pipeline_timeout_sec", 0.001)
-    monkeypatch.setattr(timeline_runner.settings, "callback_url", None)
+    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
     captured = _capture_flush(monkeypatch)
 
     status = asyncio.run(

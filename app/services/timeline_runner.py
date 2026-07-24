@@ -46,6 +46,8 @@ from app.services.timeline_repository import TimelineRepository
 
 logger = get_logger(__name__)
 
+_AI_FAILURE_ERROR_CODE = "ERROR_1008"
+
 
 async def process_timeline_task(
     task_id: str,
@@ -207,20 +209,27 @@ async def _process_observed(
             payload={"errorType": type(exc).__name__},
         )
 
-    # 설정된 콜백 URL 이 있으면 성공/실패 통보를 App Server 로 전달한다.
+    # 설정된 App Server API URL 이 있으면 성공/실패 통보를 전달한다.
     # (관측 flush 보다 콜백을 먼저 보낸다 — 콜백이 주 결과 통보다.)
-    if settings.callback_url:
+    if settings.app_server_api_url:
         emit_observation(
             ObservationEventType.STARTED,
             stage=ObservationStage.CALLBACK,
             payload={"status": status.value},
         )
         payload = TimelineCallbackPayload(
-            task_id=task_id,
-            callback_token=callback_token,
             status=status,
+            error_code=_AI_FAILURE_ERROR_CODE
+            if status == TaskStatus.FAILED
+            else None,
+            error=error if status == TaskStatus.FAILED else None,
         )
-        sent = await send_callback(settings.callback_url, payload)
+        sent = await send_callback(
+            settings.app_server_api_url,
+            task_id,
+            callback_token,
+            payload,
+        )
         emit_observation(
             ObservationEventType.COMPLETED if sent else ObservationEventType.FAILED,
             stage=ObservationStage.CALLBACK,

@@ -56,8 +56,8 @@ def _run(
 def _patch_callback(monkeypatch) -> list:
     sent = []
 
-    async def fake_send(url, payload):
-        sent.append((url, payload))
+    async def fake_send(app_server_api_url, task_id, callback_token, payload):
+        sent.append((app_server_api_url, task_id, callback_token, payload))
         return True
 
     monkeypatch.setattr(timeline_runner, "send_callback", fake_send)
@@ -70,7 +70,9 @@ def test_success_returns_success_and_sends_callback(monkeypatch):
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
     monkeypatch.setattr(
-        timeline_runner.settings, "callback_url", "https://app.example/callback"
+        timeline_runner.settings,
+        "app_server_api_url",
+        "https://app.example/s/api/v1",
     )
     sent = _patch_callback(monkeypatch)
 
@@ -78,16 +80,20 @@ def test_success_returns_success_and_sends_callback(monkeypatch):
 
     assert status is TaskStatus.SUCCESS
     assert len(sent) == 1
-    assert sent[0][0] == "https://app.example/callback"
-    assert sent[0][1].status is TaskStatus.SUCCESS
+    assert sent[0][0] == "https://app.example/s/api/v1"
+    assert sent[0][1] == _TASK_ID
+    assert sent[0][2] == "callback-token"
+    assert sent[0][3].status is TaskStatus.SUCCESS
+    assert sent[0][3].error_code is None
+    assert sent[0][3].error is None
 
 
-def test_no_callback_url_skips_callback(monkeypatch):
+def test_no_app_server_api_url_skips_callback(monkeypatch):
     async def fake_main_agent(request):
         return _draft()
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
-    monkeypatch.setattr(timeline_runner.settings, "callback_url", None)
+    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
     sent = _patch_callback(monkeypatch)
 
     status = _run(_seeded_repo())
@@ -97,7 +103,7 @@ def test_no_callback_url_skips_callback(monkeypatch):
 
 
 def test_missing_snapshot_returns_failed(monkeypatch):
-    monkeypatch.setattr(timeline_runner.settings, "callback_url", None)
+    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
 
     status = _run(InMemorySourceRepository())
 
@@ -110,30 +116,36 @@ def test_agent_exception_returns_failed_callback(monkeypatch):
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", boom)
     monkeypatch.setattr(
-        timeline_runner.settings, "callback_url", "https://app.example/callback"
+        timeline_runner.settings,
+        "app_server_api_url",
+        "https://app.example/s/api/v1",
     )
     sent = _patch_callback(monkeypatch)
 
     status = _run(_seeded_repo())
 
     assert status is TaskStatus.FAILED
-    assert sent[0][1].status is TaskStatus.FAILED
+    assert sent[0][3].status is TaskStatus.FAILED
+    assert sent[0][3].error_code == "ERROR_1008"
+    assert sent[0][3].error == "메인 에이전트 오류"
 
 
-def test_callback_echoes_callback_token(monkeypatch):
+def test_callback_passes_callback_token_as_transport_argument(monkeypatch):
     async def fake_main_agent(request):
         return _draft()
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
     monkeypatch.setattr(
-        timeline_runner.settings, "callback_url", "https://app.example/callback"
+        timeline_runner.settings,
+        "app_server_api_url",
+        "https://app.example/s/api/v1",
     )
     sent = _patch_callback(monkeypatch)
 
     status = _run(_seeded_repo(), callback_token="tok-123")
 
     assert status is TaskStatus.SUCCESS
-    assert sent[0][1].callback_token == "tok-123"
+    assert sent[0][2] == "tok-123"
 
 
 def test_db_save_failure_returns_failed_callback(monkeypatch):
@@ -142,7 +154,9 @@ def test_db_save_failure_returns_failed_callback(monkeypatch):
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
     monkeypatch.setattr(
-        timeline_runner.settings, "callback_url", "https://app.example/callback"
+        timeline_runner.settings,
+        "app_server_api_url",
+        "https://app.example/s/api/v1",
     )
     sent = _patch_callback(monkeypatch)
     failing_repo = _RaisingTimelineRepo(RuntimeError("DB 저장 실패"))
@@ -150,7 +164,9 @@ def test_db_save_failure_returns_failed_callback(monkeypatch):
     status = _run(_seeded_repo(), timeline_repo=failing_repo)
 
     assert status is TaskStatus.FAILED
-    assert sent[0][1].status is TaskStatus.FAILED
+    assert sent[0][3].status is TaskStatus.FAILED
+    assert sent[0][3].error_code == "ERROR_1008"
+    assert sent[0][3].error == "DB 저장 실패"
 
 
 def test_timeout_returns_failed(monkeypatch):
@@ -160,7 +176,7 @@ def test_timeout_returns_failed(monkeypatch):
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", slow)
     monkeypatch.setattr(timeline_runner.settings, "pipeline_timeout_sec", 0.05)
-    monkeypatch.setattr(timeline_runner.settings, "callback_url", None)
+    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
 
     status = _run(_seeded_repo())
 

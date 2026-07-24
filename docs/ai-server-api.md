@@ -86,7 +86,7 @@ AgentCore Runtime에 배포한 환경에서는 `POST /invocations`가 동일한 
 | 필드 | 타입 | 필수 | 설명 |
 |---|---|---:|---|
 | `taskId` | `string` | O | 작업 식별자. `timeline_draft_source_items.task_id`와 일치해야 합니다. |
-| `callbackToken` | `string` | O | 완료 콜백을 대조하기 위한 토큰입니다. 콜백에 그대로 반환됩니다. |
+| `callbackToken` | `string` | O | 완료 콜백 인증 토큰입니다. 콜백의 `Callback-Token` 헤더로 반환됩니다. |
 | `dailyRecordId` | `integer` | O | 생성된 타임라인 이벤트를 연결할 Daily Record ID입니다. |
 | `window` | `object` | O | 타임라인 생성 범위입니다. |
 | `window.startAt` | `datetime` | O | 생성 범위 시작 시각입니다. |
@@ -146,14 +146,23 @@ AgentCore Runtime에 배포한 환경에서는 `POST /invocations`가 동일한 
 
 ## 5. 완료 콜백
 
-AI 서버는 처리가 끝나면 서버에 설정된 `CALLBACK_URL`로 결과 상태를 전송합니다.
+AI 서버는 처리가 끝나면 서버에 설정된 `APP_SERVER_API_URL`에 task별 콜백
+경로를 붙여 결과 상태를 전송합니다.
+
+```env
+APP_SERVER_API_URL=https://api.example.com/s/api/v1
+```
 
 ### Request
 
 ```http
-POST {CALLBACK_URL}
+POST {APP_SERVER_API_URL}/timeline/drafts/{taskId}/callback
+Callback-Token: {callbackToken}
 Content-Type: application/json
 ```
+
+`taskId`는 URL path에 안전하게 인코딩하며, `callbackToken`은 body나 로그에
+포함하지 않고 인증 헤더로만 전달합니다.
 
 ### 성공 콜백
 
@@ -161,9 +170,9 @@ Content-Type: application/json
 
 ```json
 {
-  "taskId": "task-20260722-001",
-  "callbackToken": "callback-token-001",
-  "status": "SUCCESS"
+  "status": "SUCCESS",
+  "errorCode": null,
+  "error": null
 }
 ```
 
@@ -173,9 +182,9 @@ Content-Type: application/json
 
 ```json
 {
-  "taskId": "task-20260722-001",
-  "callbackToken": "callback-token-001",
-  "status": "FAILED"
+  "status": "FAILED",
+  "errorCode": "ERROR_1008",
+  "error": "메인 에이전트 timeout (120.0s) 초과"
 }
 ```
 
@@ -183,13 +192,14 @@ Content-Type: application/json
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
-| `taskId` | `string` | 최초 요청의 작업 ID입니다. |
-| `callbackToken` | `string` | 최초 요청에서 받은 토큰을 그대로 반환합니다. |
 | `status` | `string` | 최종 상태인 `SUCCESS` 또는 `FAILED`입니다. |
+| `errorCode` | `string \| null` | 실패 분류 코드입니다. AI 처리 실패는 `ERROR_1008`, 성공은 `null`입니다. |
+| `error` | `string \| null` | 실패 진단 문자열입니다. 성공은 `null`입니다. |
 
 ### App Server 응답
 
-- App Server가 HTTP `2xx`를 반환하면 콜백 성공으로 처리합니다.
+- App Server의 정상 응답은 HTTP `200 OK`이며, AI 서버는 HTTP `2xx`를 콜백
+  전송 성공으로 처리합니다.
 - 응답 Body는 사용하지 않습니다.
 
 ### 유의사항

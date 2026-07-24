@@ -3,11 +3,14 @@
 `.env` 파일과 환경 변수에서 값을 읽어 pydantic-settings 로 관리한다.
 """
 
+import re
 import tomllib
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from urllib.parse import urlsplit
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -91,13 +94,35 @@ class Settings(BaseSettings):
     # 0 이면 LLM 개선 없이 결정론 확정(draft_repair)만 수행한다.
     repair_max_iterations: int = 3
 
-    # 처리 완료 시 결과를 POST 로 되돌려줄 App Server 콜백 URL.
-    # 새 입력 계약에는 요청 단위 callbackUrl 이 없어, 설정으로 고정한다.
-    # 비어 있으면 완료 콜백을 보내지 않는다.
-    callback_url: str | None = None
+    # App Server 서버간 API 기본 URL. `/s/api/{version}` 까지를 넣고, task별
+    # Timeline callback 리소스 경로는 코드에서 조립한다. 요청 계약에는 callback URL이
+    # 없으므로 환경별로 고정하며, 비어 있으면 완료 콜백을 보내지 않는다.
+    app_server_api_url: str | None = None
 
     # App Server 콜백 POST 요청 timeout(초).
     callback_timeout_sec: float = 10.0
+
+    @field_validator("app_server_api_url", mode="before")
+    @classmethod
+    def validate_app_server_api_url(cls, value: object) -> str | None:
+        """App Server API 기본 URL을 정규화하고 절대 HTTP(S) URL인지 검증한다."""
+
+        if value is None:
+            return None
+
+        normalized = str(value).strip()
+        if not normalized:
+            return None
+
+        parsed = urlsplit(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("APP_SERVER_API_URL은 절대 HTTP(S) URL이어야 합니다.")
+        if parsed.query or parsed.fragment:
+            raise ValueError("APP_SERVER_API_URL에는 query 또는 fragment를 넣을 수 없습니다.")
+        if re.search(r"/s/api/v\d+/?$", parsed.path) is None:
+            raise ValueError("APP_SERVER_API_URL은 /s/api/v{숫자} 경로로 끝나야 합니다.")
+
+        return normalized.rstrip("/")
 
     # --- staging RDB(MySQL) 설정 (이슈 #25) ---
     # AI 서버는 App Server 가 적재한 timeline_draft_source_items 를 taskId 로 읽고,
