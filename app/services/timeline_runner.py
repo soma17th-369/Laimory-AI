@@ -71,18 +71,27 @@ async def process_timeline_task(
 
     with track_inflight():
         observer, buffer = build_task_observer()
-        if observer is None:
-            status = await _process_observed(
-                task_id,
-                repo,
-                timeline_repo,
-                daily_record_id,
-                window_start,
-                window_end,
-                callback_token,
-            )
-        else:
-            try:
+        logger.info(
+            "관측 task 초기화: taskId=%s, collectionEnabled=%s, "
+            "obsEnabled=%s, esUrlConfigured=%s, localOutputConfigured=%s",
+            task_id,
+            observer is not None,
+            settings.obs_enabled,
+            bool(settings.es_url),
+            bool(settings.obs_local_dir),
+        )
+        try:
+            if observer is None:
+                status = await _process_observed(
+                    task_id,
+                    repo,
+                    timeline_repo,
+                    daily_record_id,
+                    window_start,
+                    window_end,
+                    callback_token,
+                )
+            else:
                 with observation_context(task_id, observer):
                     status = await _process_observed(
                         task_id,
@@ -93,11 +102,11 @@ async def process_timeline_task(
                         window_end,
                         callback_token,
                     )
-            finally:
-                # 콜백까지 끝난 뒤 관측을 내보낸다. flush 는 내부에서 모든 실패를
-                # 흡수하므로 Timeline status·RDB 저장·콜백에 절대 영향을 주지
-                # 않는다(완전 격리).
-                await flush_task_observations(buffer, task_id=task_id)
+        finally:
+            # 콜백까지 끝난 뒤 관측을 내보낸다. 비활성화된 경우에도 그 이유를
+            # 운영 로그에 남긴다. flush 는 내부에서 모든 실패를 흡수하므로 Timeline
+            # status·RDB 저장·콜백에 절대 영향을 주지 않는다(완전 격리).
+            await flush_task_observations(buffer, task_id=task_id)
 
     return status
 

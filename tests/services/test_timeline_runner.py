@@ -1,6 +1,7 @@
 """백그라운드 타임라인 처리와 완료 콜백을 검증한다."""
 
 import asyncio
+import logging
 
 from app.schemas import TaskStatus, TimelineDraft
 from app.services import timeline_runner
@@ -100,6 +101,29 @@ def test_no_app_server_api_url_skips_callback(monkeypatch):
 
     assert status is TaskStatus.SUCCESS
     assert sent == []
+
+
+def test_logs_observation_configuration_when_collection_is_disabled(
+    monkeypatch,
+    caplog,
+):
+    async def fake_main_agent(request):
+        return _draft()
+
+    monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
+    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
+    monkeypatch.setattr(timeline_runner.settings, "obs_enabled", False)
+    monkeypatch.setattr(timeline_runner.settings, "es_url", "")
+    monkeypatch.setattr(timeline_runner.settings, "obs_local_dir", None)
+
+    with caplog.at_level(logging.INFO, logger="app.services.timeline_runner"):
+        status = _run(_seeded_repo())
+
+    assert status is TaskStatus.SUCCESS
+    assert (
+        "관측 task 초기화: taskId=task-1, collectionEnabled=False, "
+        "obsEnabled=False, esUrlConfigured=False, localOutputConfigured=False"
+    ) in caplog.text
 
 
 def test_missing_snapshot_returns_failed(monkeypatch):

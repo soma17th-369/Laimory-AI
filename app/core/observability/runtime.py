@@ -50,6 +50,14 @@ async def flush_task_observations(
     """수집 로그를 event 문서로 조립해 내보낸다. 모든 실패는 격리한다."""
 
     if buffer is None:
+        logger.info(
+            "관측 수집 건너뜀: taskId=%s, obsEnabled=%s, "
+            "esUrlConfigured=%s, localOutputConfigured=%s",
+            task_id,
+            settings.obs_enabled,
+            bool(settings.es_url),
+            bool(settings.obs_local_dir),
+        )
         return
 
     try:
@@ -59,14 +67,34 @@ async def flush_task_observations(
             dropped_event_count=buffer.dropped_count,
         )
         if not event_documents:
+            logger.warning("관측 flush 건너뜀: taskId=%s, reason=no_events", task_id)
             return
 
         if settings.obs_local_dir:
             _write_local(settings.obs_local_dir, task_id, event_documents)
+            logger.info(
+                "관측 로컬 저장 완료: taskId=%s, documents=%d",
+                task_id,
+                len(event_documents),
+            )
 
         if settings.obs_enabled and settings.es_url:
             from app.core.observability.elasticsearch import export
 
-            await export(event_documents)
+            await export(event_documents, task_id=task_id)
+        else:
+            logger.info(
+                "관측 ES 전송 건너뜀: taskId=%s, obsEnabled=%s, "
+                "esUrlConfigured=%s, documents=%d",
+                task_id,
+                settings.obs_enabled,
+                bool(settings.es_url),
+                len(event_documents),
+            )
     except Exception as exc:  # noqa: BLE001 - 관측은 주 처리를 깨지 않는다.
-        logger.warning("관측 flush 실패(격리): taskId=%s, error=%s", task_id, exc)
+        logger.warning(
+            "관측 flush 실패(격리): taskId=%s, errorType=%s, error=%s",
+            task_id,
+            type(exc).__name__,
+            exc,
+        )
