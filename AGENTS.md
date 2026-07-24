@@ -30,6 +30,17 @@ $env:UV_CACHE_DIR=".uv-cache"
 uv run uvicorn app.server:app --reload
 ```
 
+## 배포
+
+기본 운영 경로는 EC2 단일 컨테이너입니다. `dev` 브랜치 push 가 GitHub Actions 를
+돌려 amd64 이미지를 ECR 에 올리고, Systems Manager 로 EC2 컨테이너를 교체합니다.
+AgentCore Runtime 은 장애가 해소됐을 때 사용할 수동 복구 경로로 유지합니다.
+
+- EC2 절차와 AWS 사전 준비는 [docs/deploy-ec2.md](docs/deploy-ec2.md)를 따릅니다.
+- AgentCore 수동 배포·롤백은 [docs/deploy-agentcore.md](docs/deploy-agentcore.md)를 따릅니다.
+- 컨테이너는 8080 포트에서 `POST /v1/timeline`, `POST /invocations`, `GET /ping` 을 제공합니다.
+- uvicorn worker 를 늘리지 않습니다. `app/core/inflight.py` 의 진행 중 처리 카운터가 프로세스 로컬이라 worker 가 여럿이면 `/ping` 이 잘못된 상태를 답합니다.
+
 ## 스킬 공유
 
 - Codex용 프로젝트 스킬 원본은 `.agents/skills/` 아래에 둡니다.
@@ -47,6 +58,7 @@ app/
 │   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형) + LLM 관측/토큰 emit
 │   ├── db.py                  # staging MySQL async engine/session (aiomysql, host/port 직결)
 │   ├── db_models.py           # staging 테이블 ORM 매핑 (draft source / daily record / timeline event·item / event↔item N:M 조인)
+│   ├── inflight.py            # 진행 중 백그라운드 처리 카운터 (GET /ping 의 Healthy/HealthyBusy 판단용, 프로세스 로컬)
 │   └── observability/         # Timeline 실행 관측 (#28). taskId 단일 키, 본문 비저장·메타데이터 제한
 │       ├── models.py          #   ObservationEvent 계약 (taskId/sequence/stage/token/version)
 │       ├── context.py         #   contextvars 로 to_thread 까지 taskId 전파, emit_observation
@@ -57,9 +69,11 @@ app/
 │       ├── elasticsearch.py   #   httpx NDJSON _bulk 전송 (재시도/부분실패/완전격리)
 │       └── runtime.py         #   요청별 Observer/buffer 생성 + flush(로컬 + ES)
 │
-├── api/v1/
-│   ├── router.py              # v1 라우터 취합
-│   └── timeline.py            # POST /v1/timeline (taskId+callbackToken+dailyRecordId+window 접수 → 202). 상태 조회 없음(상태는 App Server 소유)
+├── api/
+│   ├── agentcore.py           # AgentCore Runtime 컨테이너 계약 (POST /invocations, GET /ping). 처리는 v1/timeline 에 위임하는 어댑터
+│   └── v1/
+│       ├── router.py          # v1 라우터 취합
+│       └── timeline.py        # POST /v1/timeline (taskId+callbackToken+dailyRecordId+window 접수 → 202). 상태 조회 없음(상태는 App Server 소유)
 │
 ├── schemas/                   # Pydantic 계약(contract)
 │   ├── source_snapshot.py     # 수집 원본(taskId/sourceItems) 입력 계약
@@ -114,4 +128,15 @@ tests/
 ├── api/ · services/ · main/   # 엔드포인트·정규화·저장소·파이프라인 단위 테스트
 ├── integration/               # 실제 LLM·staging MySQL 통합 테스트(opt-in)
 └── fixtures/                  # 요청/스냅샷 빌더
+
+# 배포 (#29)
+Dockerfile                     # amd64/arm64 공용, uv 멀티스테이지, non-root, 8080
+.dockerignore                  # deny-all 후 app/·pyproject.toml·uv.lock 만 허용 (.env 유입 차단)
+.github/workflows/
+├── deploy-ec2.yml             # dev push → amd64 빌드 → ECR push → SSM 으로 EC2 교체
+├── deploy-agentcore.yml       # 수동 실행. arm64 빌드 → Runtime 새 버전 → 엔드포인트 전환
+└── rollback-agentcore.yml     # 수동 실행. 엔드포인트를 이전 Runtime 버전으로 되돌림(재빌드 없음)
+scripts/deploy-ec2.sh          # EC2 컨테이너 교체·헬스체크·실패 시 직전 이미지 복구
+docs/deploy-ec2.md             # EC2 AWS 준비·배포·운영 절차
+docs/deploy-agentcore.md       # AgentCore 수동 배포·롤백 절차
 ```

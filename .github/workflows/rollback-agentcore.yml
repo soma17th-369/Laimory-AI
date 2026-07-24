@@ -1,0 +1,162 @@
+name: Rollback AgentCore Runtime
+
+# 장애 시 엔드포인트를 검증된 이전 Runtime 버전으로 되돌린다.
+# 이미지를 다시 빌드하지 않는다. AgentCore 의 각 Runtime 버전은 그때 배포된 ECR
+# 이미지를 그대로 물고 있어서, 엔드포인트가 가리키는 버전만 바꾸면 롤백이 끝난다.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "되돌릴 Runtime 버전 (예: 3). 비워 두면 사용 가능한 버전만 출력하고 끝난다."
+        required: false
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+# 배포와 같은 그룹을 쓴다. 배포와 롤백이 동시에 돌면 엔드포인트 상태가 꼬인다.
+concurrency:
+  group: deploy-agentcore
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  AGENTCORE_RUNTIME_ID: ${{ vars.AGENTCORE_RUNTIME_ID }}
+  AGENTCORE_ENDPOINT_NAME: ${{ vars.AGENTCORE_ENDPOINT_NAME }}
+  TARGET_VERSION: ${{ inputs.version }}
+  AWS_PAGER: ""
+
+jobs:
+  rollback:
+    name: 엔드포인트 버전 되돌리기
+    runs-on: ubuntu-latest
+    steps:
+      - name: 필수 설정 확인
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${AWS_REGION}" ] || missing+=(AWS_REGION)
+          [ -n "${AGENTCORE_RUNTIME_ID}" ] || missing+=(AGENTCORE_RUNTIME_ID)
+          [ -n "${AGENTCORE_ENDPOINT_NAME}" ] || missing+=(AGENTCORE_ENDPOINT_NAME)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::저장소 변수가 비어 있다: ${missing[*]}. docs/deploy-agentcore.md 참고."
+            exit 1
+          fi
+
+      - name: AWS 인증 (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: AWS CLI AgentCore 지원 확인
+        run: |
+          set -euo pipefail
+          if aws bedrock-agentcore-control get-agent-runtime --generate-cli-skeleton >/dev/null 2>&1; then
+            echo "지원함: $(aws --version)"
+          else
+            echo "AgentCore 미지원($(aws --version)) — AWS CLI v2 를 최신으로 갱신한다."
+            curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp
+            sudo /tmp/aws/install --update
+            aws --version
+          fi
+
+      - name: 현재 상태와 사용 가능한 버전 확인
+        id: state
+        run: |
+          set -euo pipefail
+          live=$(aws bedrock-agentcore-control get-agent-runtime-endpoint \
+            --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+            --endpoint-name "$AGENTCORE_ENDPOINT_NAME" \
+            --region "$AWS_REGION" --query 'liveVersion' --output text)
+          echo "live-version=${live}" >> "$GITHUB_OUTPUT"
+
+          versions=$(aws bedrock-agentcore-control list-agent-runtime-versions \
+            --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+            --region "$AWS_REGION" \
+            --query 'agentRuntimes[].[agentRuntimeVersion,status,lastUpdatedAt]' --output text)
+
+          {
+            echo "## 롤백 대상 확인"
+            echo ""
+            echo "- 엔드포인트 \`${AGENTCORE_ENDPOINT_NAME}\` 의 현재 서비스 버전: \`${live}\`"
+            echo ""
+            echo "| 버전 | 상태 | 마지막 갱신 |"
+            echo "|---|---|---|"
+            echo "$versions" | awk -F'\t' 'NF{printf("| `%s` | %s | %s |\n", $1, $2, $3)}'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "$versions"
+
+          if [ -z "${TARGET_VERSION}" ]; then
+            echo "::notice::버전을 지정하지 않았다. 위 목록에서 고른 뒤 다시 실행한다."
+            exit 0
+          fi
+
+          # 존재하지 않는 버전으로 전환을 시도하면 엔드포인트가 실패 상태로 빠질 수 있다.
+          if ! grep -qE "^${TARGET_VERSION}\b" <<<"$versions"; then
+            echo "::error::버전 ${TARGET_VERSION} 이 Runtime ${AGENTCORE_RUNTIME_ID} 에 없다."
+            exit 1
+          fi
+          if [ "${TARGET_VERSION}" = "${live}" ]; then
+            echo "::error::버전 ${TARGET_VERSION} 은 이미 서비스 중이다. 되돌릴 것이 없다."
+            exit 1
+          fi
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+      - name: 엔드포인트를 이전 버전으로 전환
+        if: steps.state.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
+          aws bedrock-agentcore-control update-agent-runtime-endpoint \
+            --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+            --endpoint-name "$AGENTCORE_ENDPOINT_NAME" \
+            --agent-runtime-version "$TARGET_VERSION" \
+            --region "$AWS_REGION" \
+            --query '{status:status,target:targetVersion,live:liveVersion}'
+
+      - name: 엔드포인트 READY 대기
+        if: steps.state.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 90); do
+            read -r status live < <(aws bedrock-agentcore-control get-agent-runtime-endpoint \
+              --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+              --endpoint-name "$AGENTCORE_ENDPOINT_NAME" \
+              --region "$AWS_REGION" --query '[status,liveVersion]' --output text)
+            case "$status" in
+              READY)
+                echo "엔드포인트 READY (서비스 버전 ${live})"
+                exit 0
+                ;;
+              CREATE_FAILED|UPDATE_FAILED)
+                reason=$(aws bedrock-agentcore-control get-agent-runtime-endpoint \
+                  --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+                  --endpoint-name "$AGENTCORE_ENDPOINT_NAME" \
+                  --region "$AWS_REGION" --query 'failureReason' --output text)
+                echo "::error::엔드포인트 상태 ${status}: ${reason}"
+                exit 1
+                ;;
+            esac
+            echo "대기 중... (${status})"
+            sleep 10
+          done
+          echo "::error::엔드포인트가 15분 안에 READY 가 되지 않았다."
+          exit 1
+
+      - name: 롤백 요약
+        if: always() && steps.state.outputs.proceed == 'true'
+        run: |
+          {
+            echo ""
+            echo "## 롤백 결과"
+            echo ""
+            echo "| 항목 | 값 |"
+            echo "|---|---|"
+            echo "| Runtime ID | \`${AGENTCORE_RUNTIME_ID}\` |"
+            echo "| 엔드포인트 | \`${AGENTCORE_ENDPOINT_NAME}\` |"
+            echo "| 되돌리기 전 | \`${{ steps.state.outputs.live-version }}\` |"
+            echo "| 되돌린 버전 | \`${TARGET_VERSION}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

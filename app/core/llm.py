@@ -476,8 +476,8 @@ class BedrockProvider(LLMProvider):
     def _build_client(self):
         import boto3
 
-        # 로컬에서만 .env 의 프로필 이름으로 ~/.aws/credentials 를 읽는다. AgentCore
-        # 배포 환경에서는 값이 잘못 들어가도 무시하고 실행 역할의 임시 자격증명을 쓴다.
+        # 로컬에서만 .env 의 프로필 이름으로 ~/.aws/credentials 를 읽는다. 배포
+        # 환경에서는 값이 잘못 들어가도 무시하고 AWS 실행 역할의 임시 자격증명을 쓴다.
         profile = settings.bedrock_aws_profile.strip()
         if settings.app_env.lower() == "local" and profile:
             session = boto3.Session(profile_name=profile)
