@@ -63,6 +63,16 @@ REQUEST → MAIN_AGENT → EVENT_AGENT → TIMELINE_AGENT → REPAIR_AGENT
 - mapping 오류 같은 영구 4xx와 최종 전송 실패는 CloudWatch 운영 로그에 남기고 Timeline 처리와 격리한다.
 - `OBS_MAX_EVENTS_PER_TASK`를 넘으면 새 이벤트를 버리되 FINAL/FAILED 이벤트 공간을 우선 보존하고, 버린 수를 FINAL에 기록한다.
 
+각 task의 전송 여부는 CloudWatch 운영 로그에서 다음 메시지로 확인한다. URL과 API key는
+기록하지 않는다.
+
+- `관측 수집 건너뜀`: Observer가 비활성화된 설정값을 함께 기록한다.
+- `관측 task 초기화`: 처리 시작 시 수집·ES·로컬 출력 활성화 여부를 기록한다.
+- `관측 ES 전송 건너뜀`: `OBS_ENABLED` 또는 `ES_URL` 조건이 충족되지 않은 상태를 기록한다.
+- `관측 ES 전송 시작`: `taskId`, 문서 수, batch 수, index base를 기록한다.
+- `관측 ES 전송 완료`: 최종 `attempted`, `succeeded`, `failed` 문서 수를 기록한다.
+- 연결·HTTP·응답 파싱·item 오류와 재시도 소진은 원인별 warning으로 기록한다.
+
 ## Kibana 조회와 모니터링 항목
 
 Kibana에서는 다음 Saved Object를 기준으로 조회한다.

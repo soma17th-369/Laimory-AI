@@ -1,5 +1,7 @@
 """flush_task_observations 의 로컬 저장·no-op·격리 검증."""
 
+import logging
+
 from app.core.config import settings
 from app.core.observability import (
     InMemoryObservationSink,
@@ -43,12 +45,36 @@ async def test_flush_writes_only_local_events(monkeypatch, tmp_path) -> None:
     assert '"taskId": "t1"' in (out / "events.jsonl").read_text(encoding="utf-8")
 
 
-async def test_flush_noop_when_all_disabled(monkeypatch, tmp_path) -> None:
+async def test_flush_noop_when_all_disabled(monkeypatch, tmp_path, caplog) -> None:
     monkeypatch.setattr(settings, "obs_local_dir", None)
     monkeypatch.setattr(settings, "obs_enabled", False)
+    monkeypatch.setattr(settings, "es_url", "")
 
-    # 아무 것도 하지 않고 예외도 없어야 한다.
-    await flush_task_observations(_buffer(), task_id="t1")
+    with caplog.at_level(logging.INFO, logger="app.core.observability.runtime"):
+        await flush_task_observations(None, task_id="t1")
+
+    assert (
+        "관측 수집 건너뜀: taskId=t1, obsEnabled=False, "
+        "esUrlConfigured=False, localOutputConfigured=False"
+    ) in caplog.text
+
+
+async def test_flush_logs_es_skip_reason(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(settings, "obs_local_dir", "local-observations")
+    monkeypatch.setattr(settings, "obs_enabled", False)
+    monkeypatch.setattr(settings, "es_url", "http://unused")
+    monkeypatch.setattr(
+        "app.core.observability.runtime._write_local",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.core.observability.runtime"):
+        await flush_task_observations(_buffer(), task_id="t1")
+
+    assert (
+        "관측 ES 전송 건너뜀: taskId=t1, obsEnabled=False, "
+        "esUrlConfigured=True, documents=2"
+    ) in caplog.text
 
 
 async def test_flush_empty_buffer_writes_nothing(monkeypatch, tmp_path) -> None:
