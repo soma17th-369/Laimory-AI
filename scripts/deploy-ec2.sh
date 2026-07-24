@@ -140,6 +140,9 @@ main() {
     previous_image="$(docker inspect --format '{{.Config.Image}}' "$CONTAINER_NAME")"
     docker rm -f "$CONTAINER_NAME" >/dev/null
   fi
+  # GitHub Actions가 배포 성공 후 ECR 정리 시 실제 롤백 대상 이미지를 보존하는 데 쓴다.
+  # 이미지 URI에는 인증정보가 없으며, 파싱 가능한 고정 접두어로 한 줄만 출력한다.
+  echo "PREVIOUS_IMAGE_URI=${previous_image}"
 
   if ! start_container "$IMAGE_URI" >/dev/null; then
     rollback "$previous_image"

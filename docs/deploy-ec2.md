@@ -65,7 +65,7 @@ AgentCore용 `AGENTCORE_RUNTIME_ID`, `AGENTCORE_ENDPOINT_NAME`은 남겨도 EC2
 ## 4. GitHub 배포 Role
 
 기존 `laimory-ai-github-deploy` Role의 신뢰 정책과 AgentCore 권한은 유지한다.
-EC2 배포에는 아래 두 문장만 추가한다. `instance/*`는 실제 Instance ID를 받은 뒤
+EC2 배포에는 아래 세 문장을 추가한다. `instance/*`는 실제 Instance ID를 받은 뒤
 해당 인스턴스 ARN 하나로 좁히는 것을 권장한다.
 
 ```json
@@ -83,6 +83,15 @@ EC2 배포에는 아래 두 문장만 추가한다. `instance/*`는 실제 Insta
   "Effect": "Allow",
   "Action": "ssm:GetCommandInvocation",
   "Resource": "*"
+},
+{
+  "Sid": "EcrPruneOldImages",
+  "Effect": "Allow",
+  "Action": [
+    "ecr:DescribeImages",
+    "ecr:BatchDeleteImage"
+  ],
+  "Resource": "arn:aws:ecr:ap-northeast-2:392900063927:repository/laimory-ai"
 }
 ```
 
@@ -240,6 +249,7 @@ APP_SERVER_API_URL=<App Server 서버간 API 기본 URL, 예: https://api.exampl
 - `Dockerfile`, `.dockerignore`
 - `pyproject.toml`, `uv.lock`
 - `scripts/deploy-ec2.sh`
+- `scripts/prune_ecr_images.py`
 - `.github/workflows/deploy-ec2.yml`
 
 수동 배포는 Actions의 **Deploy EC2 → Run workflow**에서 실행한다.
@@ -247,6 +257,13 @@ APP_SERVER_API_URL=<App Server 서버간 API 기본 URL, 예: https://api.exampl
 배포 스크립트는 기존 컨테이너의 `/ping`이 `HealthyBusy`면 최대 20분 동안 기다린다.
 유휴 상태가 된 뒤 이미지를 교체하고 5분 동안 새 컨테이너를 확인한다. 새 컨테이너가
 정상 기동하지 못하면 직전 이미지로 자동 복구한다.
+
+배포 성공 후 workflow는 ECR에서 현재 배포 이미지와 실제로 교체된 직전 이미지의
+태그를 확인하고, 나머지 tagged/untagged 이미지 digest를 삭제한다. 단순 push 시각의
+최신 2개가 아니라 실행 중이던 직전 컨테이너 이미지를 보존하므로, 중간에 배포 실패
+이미지가 push돼 있어도 롤백 후보가 바뀌지 않는다. 현재 또는 직전 태그를 ECR에서
+확인할 수 없으면 안전을 위해 정리를 건너뛰거나 실패 처리하며 기존 이미지를 삭제하지
+않는다. `BatchDeleteImage` 제한에 맞춰 한 번에 최대 100개씩 삭제한다.
 
 ## 10. t3.micro 운영 주의
 
