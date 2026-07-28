@@ -3,7 +3,7 @@
 from app.schemas import AgentEventResult
 from tests.fixtures.fake_llm import candidate
 from tests.fixtures.pipeline import run_timeline_pipeline
-from tests.fixtures.requests import make_request, stay_item
+from tests.fixtures.requests import fixture_raw_id, make_request, stay_item
 
 
 def test_timeline_agent_drops_outside_events_and_clamps_partial_events() -> None:
@@ -42,7 +42,12 @@ def test_timeline_agent_drops_outside_events_and_clamps_partial_events() -> None
                     "endTime": "2026-06-20T10:30:00+09:00",
                     "confidence": 0.7,
                     "inferenceLevel": "EVIDENCE_BASED",
-                    "sourceRefs": [{"sourceType": "STAY", "sourceId": "stay-1"}],
+                    "sourceRefs": [
+                        {
+                            "sourceType": "STAY",
+                            "rawId": fixture_raw_id("stay-1"),
+                        }
+                    ],
                     "uncertainty": [],
                 },
                 {
@@ -53,7 +58,12 @@ def test_timeline_agent_drops_outside_events_and_clamps_partial_events() -> None
                     "endTime": "2026-06-20T14:00:00+09:00",
                     "confidence": 0.7,
                     "inferenceLevel": "EVIDENCE_BASED",
-                    "sourceRefs": [{"sourceType": "STAY", "sourceId": "stay-2"}],
+                    "sourceRefs": [
+                        {
+                            "sourceType": "STAY",
+                            "rawId": fixture_raw_id("stay-2"),
+                        }
+                    ],
                     "uncertainty": [],
                 },
             ],
@@ -70,5 +80,3 @@ def test_timeline_agent_drops_outside_events_and_clamps_partial_events() -> None
     assert draft.events[0].start_time.isoformat() == "2026-06-20T10:00:00+09:00"
     assert draft.events[0].end_time.isoformat() == "2026-06-20T10:30:00+09:00"
     assert any("window" in warning.message for warning in draft.warnings)
-
-

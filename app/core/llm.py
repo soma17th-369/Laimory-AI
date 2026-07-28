@@ -14,6 +14,7 @@ provider 종류와 무관하게 동일한 방식으로 호출한다.
 
 import base64
 import importlib.metadata
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
@@ -27,6 +28,7 @@ from app.core.observability import (
     emit_observation,
     summarize_content,
 )
+from app.core.structured import ModelT, run_structured, to_strict_schema
 
 logger = get_logger(__name__)
 
@@ -133,6 +135,60 @@ class LLMProvider(ABC):
 
         raise NotImplementedError(
             f"{self.name} provider 는 이미지(vision) 입력을 지원하지 않습니다."
+        )
+
+    def complete_json(
+        self,
+        prompt: str,
+        schema: type[ModelT] | None = None,
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> str:
+        """provider 가 유효 JSON 을 강제해 **텍스트**로 돌려준다(검증은 안 함).
+
+        기본 구현은 호출자의 프롬프트(각 agent 의 `prompt.md` 등)가 이미 출력 형식을
+        지시한다고 보고 프롬프트를 건드리지 않는다. provider 네이티브 JSON 강제는
+        하위 클래스가 override 한다: OpenAI ``json_object``, Gemini ``response_mime_type``,
+        Bedrock tool-use(``schema`` 필요). ``schema`` 는 그것이 필요한 provider 만 쓴다.
+
+        검증까지 필요하면 ``complete_structured`` 를 쓴다. 항목별 관용 파싱처럼 부분
+        손상을 살려야 하는 호출자는 이 메서드로 텍스트를 받아 직접 파싱한다(Timeline).
+        """
+
+        return self.complete(
+            prompt,
+            system=system,
+            temperature=temperature,
+            **kwargs,
+        )
+
+    def complete_structured(
+        self,
+        prompt: str,
+        schema: type[ModelT],
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        max_repairs: int = 1,
+        **kwargs,
+    ) -> ModelT:
+        """응답을 ``schema`` 로 강제해 검증된 Pydantic 인스턴스를 반환한다.
+
+        provider 가 형태(JSON·필수·enum)를 잠그고(``complete_json``), 값·교차 규칙은 우리
+        Pydantic 이 최종 검증한다. 검증 실패 시 오류를 붙여 ``max_repairs`` 회 재요청하며,
+        모두 실패하면 ``StructuredOutputError`` 를 던진다(상위 Agent 가 warning 으로 흡수).
+        """
+
+        return run_structured(
+            self.complete_json,
+            prompt,
+            schema,
+            system=system,
+            temperature=temperature,
+            max_repairs=max_repairs,
+            **kwargs,
         )
 
     def _log_usage(
@@ -342,6 +398,51 @@ class OpenAIProvider(LLMProvider):
             raise
 
 
+    def complete_json(
+        self,
+        prompt: str,
+        schema: type[ModelT] | None = None,
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> str:
+        """OpenAI 로 JSON 을 강제한다(형태 잠금).
+
+        ``schema`` 가 오고 strict 로 표현 가능하면 ``response_format=json_schema(strict)``
+        로 **JSON 형식·필수 필드·enum 을 provider 가 강제**한다(값 제약·교차 규칙은 이후
+        우리 Pydantic 이 검증). 자유형 object 가 있어 strict 가 불가하거나 ``schema`` 가
+        없으면 ``json_object`` 모드로 떨어져 **유효 JSON** 만 보장한다(형태는 프롬프트가
+        지시). json_object 모드는 메시지에 "json" 이 있어야 하므로 한 줄 지시를 덧붙인다.
+        """
+
+        strict = to_strict_schema(schema) if schema is not None else None
+        if strict is not None:
+            return self.complete(
+                prompt,
+                system=system,
+                temperature=temperature,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": schema.__name__,
+                        "schema": strict,
+                        "strict": True,
+                    },
+                },
+                **kwargs,
+            )
+
+        json_prompt = f"{prompt}\n\n반드시 유효한 JSON 객체 하나만 출력하세요."
+        return self.complete(
+            json_prompt,
+            system=system,
+            temperature=temperature,
+            response_format={"type": "json_object"},
+            **kwargs,
+        )
+
+
 @register_provider
 class GeminiProvider(LLMProvider):
     """Google Gemini provider (google-genai SDK)."""
@@ -452,6 +553,43 @@ class GeminiProvider(LLMProvider):
             raise
 
 
+    def complete_json(
+        self,
+        prompt: str,
+        schema: type[ModelT] | None = None,
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> str:
+        """Gemini 로 JSON 을 강제한다(형태 잠금).
+
+        ``schema`` 가 오면 ``response_schema`` 로 넘겨 **JSON 형식·필수 필드·enum 을
+        provider 가 강제**한다(google-genai 가 중첩 모델을 inline 처리한다. Gemini 는
+        ``$ref`` 를 안 받으므로 dict 가 아니라 Pydantic 모델을 그대로 준다). 값 제약·교차
+        규칙은 이후 우리 Pydantic 이 검증한다. ``schema`` 가 없으면 mime 만 지정해 **유효
+        JSON** 만 보장한다.
+        """
+
+        if schema is not None:
+            return self.complete(
+                prompt,
+                system=system,
+                temperature=temperature,
+                response_mime_type="application/json",
+                response_schema=schema,
+                **kwargs,
+            )
+
+        return self.complete(
+            prompt,
+            system=system,
+            temperature=temperature,
+            response_mime_type="application/json",
+            **kwargs,
+        )
+
+
 @register_provider
 class BedrockProvider(LLMProvider):
     """Amazon Bedrock provider (Converse API).
@@ -548,6 +686,78 @@ class BedrockProvider(LLMProvider):
             self._emit_llm_failure(started, exc)
             raise
 
+    def complete_json(
+        self,
+        prompt: str,
+        schema: type[ModelT] | None = None,
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> str:
+        """Bedrock 에서 유효 JSON 을 받아온다.
+
+        ``schema`` 가 오면 Converse **tool-use** 로 형태를 강제한다: 스키마를 도구의
+        ``inputSchema`` 로 실은 도구 하나를 정의하고 ``toolChoice`` 로 그 도구 호출을
+        강제한 뒤, ``toolUse.input`` 을 JSON 텍스트로 돌려준다. ``schema`` 가 없으면
+        네이티브 JSON 모드가 없으므로 프롬프트 지시에 맡기는 passthrough 다(soft).
+
+        주의: 강제 ``toolChoice`` 지원은 모델(Nova 등)·버전에 따라 다르므로 실제 모델로
+        검증이 필요하다. 모델이 도구 대신 텍스트를 내면 텍스트를 그대로 돌려주고, 이후
+        검증·재시도가 처리한다.
+        """
+
+        if schema is None:
+            return self.complete(
+                prompt, system=system, temperature=temperature, **kwargs
+            )
+
+        self._emit_llm_prompt(prompt, system=system)
+        started = perf_counter()
+        try:
+            response = self._converse_structured(
+                prompt, schema, system=system, temperature=temperature, **kwargs
+            )
+            self._log_usage(*self._usage(response))
+            text = self._extract_tool_use(response)
+            self._emit_llm_response(started, response, text)
+            return text
+        except Exception as exc:
+            self._emit_llm_failure(started, exc)
+            raise
+
+    def _converse_structured(
+        self,
+        prompt: str,
+        schema: type[ModelT],
+        *,
+        system: str | None,
+        temperature: float,
+        **kwargs,
+    ) -> dict:
+        """스키마를 도구로 실어 Converse tool-use 호출을 강제한다."""
+
+        tool_name = schema.__name__
+        tool_config = {
+            "tools": [
+                {
+                    "toolSpec": {
+                        "name": tool_name,
+                        "description": f"{tool_name} 형식의 결과를 이 도구로 반환한다.",
+                        "inputSchema": {"json": schema.model_json_schema(by_alias=True)},
+                    }
+                }
+            ],
+            "toolChoice": {"tool": {"name": tool_name}},
+        }
+        return self._converse(
+            [{"text": prompt}],
+            system=system,
+            temperature=temperature,
+            toolConfig=tool_config,
+            **kwargs,
+        )
+
     def _converse(
         self,
         content: list[dict],
@@ -585,6 +795,19 @@ class BedrockProvider(LLMProvider):
         """Converse 응답에서 assistant 텍스트 블록을 이어붙여 반환한다."""
 
         blocks = response["output"]["message"]["content"]
+        return "".join(block["text"] for block in blocks if "text" in block)
+
+    @staticmethod
+    def _extract_tool_use(response: dict) -> str:
+        """Converse 응답에서 ``toolUse.input`` 을 JSON 텍스트로 뽑는다.
+
+        모델이 도구 대신 텍스트로 답했으면 텍스트를 그대로 돌려준다(검증·재시도가 처리).
+        """
+
+        blocks = response["output"]["message"]["content"]
+        for block in blocks:
+            if "toolUse" in block:
+                return json.dumps(block["toolUse"]["input"], ensure_ascii=False)
         return "".join(block["text"] for block in blocks if "text" in block)
 
     @staticmethod
@@ -717,5 +940,51 @@ class LLMClient:
             images,
             system=system,
             temperature=temperature,
+            **kwargs,
+        )
+
+    def complete_json(
+        self,
+        prompt: str,
+        schema: type[ModelT] | None = None,
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> str:
+        """provider 가 유효 JSON 을 강제해 텍스트로 돌려준다(검증은 호출자 몫)."""
+
+        return self.provider.complete_json(
+            prompt,
+            schema,
+            system=system,
+            temperature=temperature,
+            **kwargs,
+        )
+
+    def complete_structured(
+        self,
+        prompt: str,
+        schema: type[ModelT],
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        max_repairs: int = 1,
+        **kwargs,
+    ) -> ModelT:
+        """응답을 ``schema`` 로 강제해 검증된 Pydantic 인스턴스를 반환한다."""
+
+        logger.debug(
+            "LLM structured 호출: provider=%s, model=%s, schema=%s",
+            self.provider.name,
+            self.provider.model,
+            schema.__name__,
+        )
+        return self.provider.complete_structured(
+            prompt,
+            schema,
+            system=system,
+            temperature=temperature,
+            max_repairs=max_repairs,
             **kwargs,
         )

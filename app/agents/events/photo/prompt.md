@@ -60,7 +60,7 @@
   "fragments": [
     {
       "sourceType": "PHOTO",
-      "sourceId": "입력 sourceId",
+      "rawId": "입력 rawId",
       "summary": "candidate보다 약하지만 사용자의 일상 event를 암시하는 사진 단서",
       "timeRange": {"startTime": "입력 실제 시간", "endTime": "입력 실제 시간"}
     }
@@ -72,7 +72,7 @@
 
 - 사진 내용을 보지 못했다면 구체 사물을 지어내지 않습니다.
 - 센서/데이터 라벨만 제목으로 쓰지 않습니다.
-- 존재하지 않는 sourceId를 만들지 않습니다.
+- 존재하지 않는 rawId를 만들지 않습니다.
 ## 촬영 사진 및 description 처리 규칙
 
 - 입력 사진에는 `dateTaken`, `recommendedUse`, `photoMeaning`, `timePolicy`가 포함될 수 있습니다.

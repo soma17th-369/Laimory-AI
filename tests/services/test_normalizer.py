@@ -5,7 +5,11 @@
 start/end GeoPlace, 개별 항목 파싱 실패 흡수를 다룬다.
 """
 
-from app.schemas import HealthMetric, ItemType
+import json
+from pathlib import Path
+from uuid import UUID
+
+from app.schemas import HealthMetric, ItemType, TimelineDraftRequest
 from app.services.normalizer import normalize, split_source_items
 from tests.fixtures.requests import (
     default_source_items,
@@ -54,6 +58,11 @@ def test_normalize_maps_every_domain():
     assert len(request.photos) == 1
     assert request.photos[0].client_photo_uri == "content://p"
 
+    # Agent 입력에는 DB 내부 id가 없고 source 식별자는 UUID rawId 하나뿐이다.
+    for item in request.iter_source_items():
+        assert "id" not in type(item).model_fields
+        assert str(UUID(item.raw_id)) == item.raw_id
+
 
 def test_health_metric_branches():
     request = normalize(make_snapshot(source_items=default_source_items()))
@@ -82,3 +91,23 @@ def test_no_window_yields_none():
     request = normalize(make_snapshot(source_items=[], timeline_window=None))
     assert request.window is None
     assert request.iter_source_items() == []
+
+
+def test_documented_timeline_request_sample_matches_current_contract():
+    sample_path = (
+        Path(__file__).resolve().parents[2]
+        / "docs"
+        / "samples"
+        / "timeline-request.sample.json"
+    )
+
+    request = TimelineDraftRequest.model_validate(
+        json.loads(sample_path.read_text(encoding="utf-8"))
+    )
+
+    assert request.task_id == "task-2026-06-30-001"
+    assert len(request.iter_source_items()) == 7
+    assert all(
+        str(UUID(item.raw_id)) == item.raw_id
+        for item in request.iter_source_items()
+    )

@@ -24,14 +24,14 @@
 | `description` | string | ✅ | 후보 근거·판단 설명 |
 | `sourceRefs` | array | ✅(최소 1) | 근거가 된 source 참조 목록 |
 | `sourceRefs[].sourceType` | enum | ✅ | 근거 데이터 도메인 (아래 목록) |
-| `sourceRefs[].sourceId` | string | ✅ | raw/derived 데이터의 안정적 식별자 |
+| `sourceRefs[].rawId` | UUID string | ✅ | 수집 원본의 안정적 식별자 |
 | `confidence` | float(0.0~1.0) | ✅ | 후보 확신도 |
 | `inferenceLevel` | enum | ✅ | 추론 수준 (아래 목록) |
 | `uncertainty` | string[] | 선택 | 불확실 요인 메모 (비면 없음) |
 
-> 입력 Source Item 계약(#7)의 시각은 Unix epoch **milliseconds 정수**지만,
-> AI Event 후보의 `timeRange` 는 AI 출력이라 가독성·timezone 보존을 위해
-> **ISO 8601(timezone 포함)** datetime 문자열을 쓴다.
+> 입력 Source Item과 AI Event 후보의 시각은 모두 ISO 문자열을 사용한다.
+> 후보의 `timeRange`는 Pydantic `AwareDatetime`으로 검증하므로 timezone을 반드시
+> 포함해야 한다.
 
 ## eventType 목록
 
@@ -56,25 +56,29 @@
 이 후보가 어떤 원천/파생 데이터에 근거했는지 나타내는 핵심 필드다.
 
 ```json
-{ "sourceType": "PHOTO", "sourceId": "photo-001" }
+{ "sourceType": "PHOTO", "rawId": "44444444-4444-4444-8444-444444444444" }
 ```
 
 `sourceType` 값(굵은 카테고리): `STAY`, `MOVEMENT`, `CALENDAR`, `PHOTO`, `SLEEP`,
-`ACTIVITY`, `NOTIFICATION`, `USER_MEMORY`
+`ACTIVITY`, `NOTIFICATION`
 
 - 입력 계약(#7)의 세분화된 `SourceType`(예: `stay`)과 다른, **도메인 단위**다.
-- `sourceId` 는 raw 또는 derived 데이터의 안정적 식별자다. Reflection/Repair 단계에서
+- `rawId` 는 수집 원본의 안정적 UUID 식별자다. Reflection/Repair 단계에서
   "이 후보를 다시 봐라"가 아니라 "이 시간대의 이 source 들을 다시 분석하라"로 범위를
   좁히는 핸들이라 중요하다.
 
 ### rawId 는 정식 식별자, sourceType 은 정정 대상
 
-`sourceId`(= `rawId`)는 입력에 실재하는 rawId 여야 한다. 수집 원본이 `rawId` 를 주지
-않은 항목만 예외로 내부 순번(`id`)을 식별자로 인정한다.
+`rawId`는 입력에 실재하는 UUID여야 한다. 내부 DB PK인 `id`는 Agent 입력과 출력 계약에
+포함하지 않으며 `rawId`의 대체값으로도 사용하지 않는다.
 
-**rawId 가 실재하는지는 지금 검증하지 않는다.** LLM 이 지어낸 rawId 는 어느 입력 항목과도
-매칭되지 않아 repair 의 근거 조회에서 조용히 무시될 뿐이다. 근거가 전부 가짜인 event 를
-걷어 내는 일은 repair 를 다시 설계할 때 넣는다.
+Event Agent 출력과 Timeline draft는 입력 rawId allowlist와 대조한다. LLM이 입력에 없는
+rawId를 만들면 해당 참조를 제거하고, 유효한 근거가 하나도 남지 않은 후보·fragment·event는
+결과에서 제외한 뒤 warning을 남긴다.
+
+같은 source가 서로 다른 여러 사건을 실제로 뒷받침하면 동일 rawId를 여러 event가
+공유할 수 있다. 저장 관계도 event↔source N:M이며, event별 `reason`으로 해당 source가
+각 사건의 근거가 되는 이유를 구분한다.
 
 다만 **`sourceType` 라벨은 믿지 않는다.** 실제 출력에서 LLM 은 왕복 이동의 rawId 세 개를
 정확히 인용해 놓고 그중 둘을 `STAY` 라고 적었다. rawId 는 UUID 라 타입을 가로질러
@@ -83,8 +87,9 @@
 버리지 않고 경고도 남기지 않는다. 라벨을 그대로 두면 이후 단계가 그 근거를 영영 찾지 못해,
 산책 event 가 왕복 이동을 근거로 대 놓고도 편도에서 끊긴다.
 
-하나의 `HEALTH` 입력은 `metric` 에 따라 `SLEEP` / `ACTIVITY` 로 나뉜다. `USER_MEMORY` 는
-rawId 체계가 없어 정정 대상이 아니다.
+하나의 `HEALTH` 입력은 `metric` 에 따라 `SLEEP` / `ACTIVITY` 로 나뉜다.
+`userMemory`는 rawId를 가진 source item이 아니라 해석용 보조 context이므로
+`sourceRefs`의 `sourceType`으로 사용하지 않는다.
 
 ## confidence 기준
 
@@ -130,7 +135,7 @@ rawId 체계가 없어 정정 대상이 아니다.
   },
   "title": "경북대학교 체류",
   "description": "위치 기록상 경북대학교 부근에 머문 것으로 보입니다.",
-  "sourceRefs": [{ "sourceType": "STAY", "sourceId": "stay-log-001" }],
+  "sourceRefs": [{ "sourceType": "STAY", "rawId": "11111111-1111-4111-8111-111111111111" }],
   "confidence": 0.82,
   "inferenceLevel": "EVIDENCE_BASED",
   "uncertainty": ["구체적인 활동은 위치 데이터만으로 확정할 수 없습니다."]
@@ -148,7 +153,7 @@ rawId 체계가 없어 정정 대상이 아니다.
   },
   "title": "김종찬 멘토링",
   "description": "캘린더에 등록된 일정입니다.",
-  "sourceRefs": [{ "sourceType": "CALENDAR", "sourceId": "calendar-event-001" }],
+  "sourceRefs": [{ "sourceType": "CALENDAR", "rawId": "55555555-5555-4555-8555-555555555555" }],
   "confidence": 0.95,
   "inferenceLevel": "DIRECT",
   "uncertainty": ["일정이 존재하지만 실제 참석 여부는 다른 근거와 함께 확인해야 합니다."]
@@ -166,7 +171,7 @@ rawId 체계가 없어 정정 대상이 아니다.
   },
   "title": "저녁 사진",
   "description": "음식 사진이 촬영되었습니다.",
-  "sourceRefs": [{ "sourceType": "PHOTO", "sourceId": "photo-001" }],
+  "sourceRefs": [{ "sourceType": "PHOTO", "rawId": "44444444-4444-4444-8444-444444444444" }],
   "confidence": 0.9,
   "inferenceLevel": "DIRECT",
   "uncertainty": ["사진만으로 식사 전체 시간이나 동행자는 확정할 수 없습니다."]
@@ -184,7 +189,7 @@ rawId 체계가 없어 정정 대상이 아니다.
   },
   "title": "집에서 학교로 이동",
   "description": "위치 로그를 바탕으로 집에서 경북대학교까지 이동한 것으로 추정됩니다.",
-  "sourceRefs": [{ "sourceType": "MOVEMENT", "sourceId": "movement-log-001" }],
+  "sourceRefs": [{ "sourceType": "MOVEMENT", "rawId": "22222222-2222-4222-8222-222222222222" }],
   "confidence": 0.86,
   "inferenceLevel": "EVIDENCE_BASED",
   "uncertainty": ["이동 수단은 GPS 속도와 이동 경로를 바탕으로 추정되었습니다."]
@@ -206,7 +211,7 @@ rawId 체계가 없어 정정 대상이 아니다.
 
 - **필수 필드**: `eventType`, `timeRange`, `title`, `description`, `sourceRefs`,
   `confidence`, `inferenceLevel` 이 없으면 거부된다.
-- **sourceRefs**: 최소 1개. 각 항목의 `sourceId` 는 `min_length=1`.
+- **sourceRefs**: 최소 1개. 각 항목의 `rawId` 는 UUID 형식이어야 한다.
 - **confidence**: `0.0 ~ 1.0`.
 - **timeRange**: `endTime >= startTime`, 두 값 모두 timezone 을 포함해야 한다.
 - **uncertainty 강제**: `inferenceLevel` 이 `UNCERTAIN` 이면 `uncertainty` 근거를

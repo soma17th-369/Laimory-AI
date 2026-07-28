@@ -9,6 +9,7 @@ LLM 병합과 파싱까지만 책임지고, 그 뒤의 확정은 전부 여기�
 
 repair 순서와 이유:
 
+   -1. `rawId 검증`     : 입력에 없는 참조를 제거하고 근거 없는 event 를 제외한다.
     0. `sourceType 정정` : LLM 이 붙인 근거 타입 라벨을 입력의 실제 타입으로 맞춘다.
     0.5 `캘린더 복원`    : timeline 에서 통째로 빠진 캘린더 일정을 event 로 되살린다.
     1. `duration repair` : WAKE_UP 은 순간으로 되돌리고, 지속시간이 0 인 구간 event 는
@@ -34,9 +35,8 @@ repair 순서와 이유:
 `endTime < startTime` 은 `TimelineEventDraft` 스키마가 이미 거르므로(파싱 단계에서
 해당 event 만 제외) 여기서 다시 다루지 않는다.
 
-sourceRef 의 rawId 가 실제 입력에 있는지는 **검증하지 않는다.** LLM 이 지어낸 rawId 는
-어느 입력 항목과도 매칭되지 않아 근거 조회에서 조용히 무시될 뿐이다. 근거가 전부
-가짜인 event 를 걷어 내는 일은 repair 를 다시 설계할 때 넣는다.
+sourceRef 의 rawId 는 repair 진입 시 실제 입력 allowlist와 대조한다. LLM 이 지어낸
+rawId 참조는 제거하고, 그 결과 유효한 근거가 하나도 남지 않은 event 는 제외한다.
 
 다만 `sourceType` 라벨은 맨 앞에서 정정한다. 이것은 검증이 아니라 조회다. rawId 는
 맞는데 타입만 틀린 근거(LLM 이 이동을 `STAY` 라고 적는 일이 실제로 일어난다)를 그대로
@@ -51,6 +51,7 @@ sourceRef 의 rawId 가 실제 입력에 있는지는 **검증하지 않는다.*
 from datetime import datetime, tzinfo
 
 from app.core.logging import get_logger
+from app.core.observability import ObservationEventType, emit_observation
 from app.schemas import (
     EventSourceType,
     EventType,
@@ -67,7 +68,8 @@ from app.services.calendar_location import reinforce_calendar_location
 from app.services.meal_guard import enforce_meal_duration
 from app.services.place_resolver import resolve_places
 from app.services.sleep_guard import enforce_sleep_boundary
-from app.services.source_lookup import normalize_source_types, source_identifier
+from app.services.source_lookup import normalize_source_types, raw_id_of
+from app.services.source_integrity import filter_draft_sources
 from app.services.stay_merge import mergeable_stay_groups
 from app.services.validator import (
     parse_datetime,
@@ -169,7 +171,7 @@ def _source_spans(
 
     def collect(source_type: EventSourceType, items) -> None:
         for item in items:
-            identifier = source_identifier(item)
+            identifier = raw_id_of(item)
             if not identifier or not item.end_at:
                 continue
             start = parse_datetime(item.start_at, tz)
@@ -196,10 +198,10 @@ def _referenced_span(
     """event 가 근거로 삼은 원본 항목들이 덮는 시간 구간."""
 
     found = [
-        spans[(ref.source_type, ref.source_id)]
+        spans[(ref.source_type, ref.raw_id)]
         for ref in event.source_refs
         if ref.source_type in source_types
-        and (ref.source_type, ref.source_id) in spans
+        and (ref.source_type, ref.raw_id) in spans
     ]
     if not found:
         return None
@@ -369,7 +371,7 @@ def _dedupe_refs(refs: list[SourceRef]) -> list[SourceRef]:
     seen: set[tuple[EventSourceType, str]] = set()
     unique: list[SourceRef] = []
     for ref in refs:
-        key = (ref.source_type, ref.source_id)
+        key = (ref.source_type, ref.raw_id)
         if key in seen:
             continue
         seen.add(key)
@@ -406,7 +408,7 @@ def _is_pure_stay_event(event: TimelineEventDraft, group: frozenset[str]) -> boo
     """근거가 이 묶음의 STAY 뿐인가. 그런 event 만 "여기 있었다" 자체를 말한다."""
 
     return bool(event.source_refs) and all(
-        ref.source_type is EventSourceType.STAY and ref.source_id in group
+        ref.source_type is EventSourceType.STAY and ref.raw_id in group
         for ref in event.source_refs
     )
 
@@ -575,6 +577,15 @@ def _korean_time_text(value) -> str:
 
 def repair_draft(draft: TimelineDraft, request: TimelineDraftRequest) -> TimelineDraft:
     """LLM 이 만든 draft 를 코드로 확정한다(in-place, 같은 객체를 돌려준다)."""
+
+    # 입력에 없는 rawId는 LLM 환각으로 본다. 잘못된 참조를 먼저 제거하고 유효한
+    # 근거가 하나도 남지 않은 event는 이후 보정 단계로 넘기지 않는다.
+    source_stats = filter_draft_sources(draft, request)
+    if source_stats.changed:
+        emit_observation(
+            ObservationEventType.VALIDATION_REPAIRED,
+            payload=source_stats.observation_payload(item_kind="TIMELINE_EVENT"),
+        )
 
     # 이후 모든 단계가 sourceRef 로 입력을 되짚으므로, LLM 이 붙인 sourceType 라벨을
     # 입력의 실제 타입으로 먼저 맞춘다. 라벨이 틀리면 근거를 영영 찾지 못한다.

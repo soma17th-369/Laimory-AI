@@ -8,13 +8,10 @@ import asyncio
 import difflib
 import json
 import os
-import re
 import sys
 import threading
 import time
 from contextlib import contextmanager
-from datetime import datetime
-from datetime import timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -26,7 +23,6 @@ SNAPSHOT_PATH = DATA_DIR / "input" / "2026-07-08.json"
 EXPECTED_PATH = DATA_DIR / "output" / "timeline-draft.expected.json"
 ACTUAL_PATH = DATA_DIR / "output" / "timeline-draft.live-actual.json"
 DIFF_PATH = DATA_DIR / "output" / "timeline-draft.live-diff.txt"
-KST = timezone(timedelta(hours=9))
 
 
 def _load_repo_env() -> None:
@@ -44,117 +40,6 @@ def _write_json(path: Path, payload: dict) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-
-
-def _summary_number(text: str) -> float | None:
-    match = re.search(r"-?\d+(?:\.\d+)?", text)
-    return float(match.group()) if match else None
-
-
-def _time_text_to_ms(raw: str, year: int) -> int:
-    """`06-30 04:00` 형식의 KST 시각을 epoch milliseconds 로 바꾼다."""
-
-    dt = datetime.strptime(f"{year}-{raw}", "%Y-%m-%d %H:%M").replace(tzinfo=KST)
-    return int(dt.timestamp() * 1000)
-
-
-def _range_text_to_ms(raw: str, year: int) -> tuple[int, int]:
-    start_text, end_text = [part.strip() for part in raw.split("~", maxsplit=1)]
-    return _time_text_to_ms(start_text, year), _time_text_to_ms(end_text, year)
-
-
-def _health_item(items: list[dict], label: str) -> dict | None:
-    for item in items:
-        if item.get("label") == label:
-            rows = item.get("rows") or []
-            return rows[0] if rows else None
-    return None
-
-
-def _normalize_request_payload(raw: dict) -> dict:
-    """raw dump fixture 를 현재 `TimelineDraftRequest` 계약에 맞춘다."""
-
-    year = int(raw["date"][:4])
-    payload = {
-        "transactionId": f"tx-{raw['date']}",
-        "date": raw["date"],
-        "mode": raw["mode"],
-        "window": raw["window"],
-        "generatedAt": raw["generatedAt"],
-        "location": {"stays": [], "routes": []},
-        "notifications": {"active": [], "collected": []},
-        "photos": [],
-        "calendar": {"events": []},
-        "health": {},
-    }
-
-    for index, stay in enumerate(raw.get("location", {}).get("stays", []), start=1):
-        payload["location"]["stays"].append(
-            {**stay, "sourceId": f"location-stay-{index:03d}"}
-        )
-    for index, route in enumerate(raw.get("location", {}).get("routes", []), start=1):
-        payload["location"]["routes"].append(
-            {**route, "sourceId": f"location-route-{index:03d}"}
-        )
-
-    for group in ("active", "collected"):
-        for index, item in enumerate(raw.get("notifications", {}).get(group, []), start=1):
-            payload["notifications"][group].append(
-                {**item, "sourceId": f"notification-{group}-{index:04d}"}
-            )
-
-    for photo in raw.get("photos", []):
-        source_id = f"photo-{photo['id']}"
-        normalized = {
-            **photo,
-            "sourceId": source_id,
-            "id": str(photo["id"]),
-            "lat": photo.get("lat", photo.get("latitude")),
-            "lon": photo.get("lon", photo.get("longitude")),
-        }
-        payload["photos"].append(normalized)
-
-    for event in raw.get("calendar", []):
-        payload["calendar"]["events"].append(
-            {**event, "sourceId": f"calendar-{event['id']}"}
-        )
-
-    health = raw.get("health", [])
-    if row := _health_item(health, "걸음 수"):
-        payload["health"]["steps"] = {
-            "sourceId": "health-steps-001",
-            "count": int(_summary_number(row.get("summary", "")) or 0),
-        }
-    if row := _health_item(health, "이동 거리"):
-        payload["health"]["distance"] = {
-            "sourceId": "health-distance-001",
-            "meters": _summary_number(row.get("summary", "")) or 0.0,
-        }
-    if row := _health_item(health, "소모 칼로리(활동)"):
-        payload["health"]["activeCaloriesBurned"] = {
-            "sourceId": "health-active-calories-001",
-            "kcal": _summary_number(row.get("summary", "")) or 0.0,
-        }
-    if row := _health_item(health, "소모 칼로리(총)"):
-        payload["health"]["totalCaloriesBurned"] = {
-            "sourceId": "health-total-calories-001",
-            "kcal": _summary_number(row.get("summary", "")) or 0.0,
-        }
-    if row := _health_item(health, "수면"):
-        start, end = _range_text_to_ms(row["time"], year)
-        payload["health"]["sleep"] = {
-            "sourceId": "health-sleep-001",
-            "startTime": start,
-            "endTime": end,
-            "durationMinutes": int(_summary_number(row.get("summary", "")) or 0),
-        }
-    if _health_item(health, "심박수"):
-        payload["health"]["heartRate"] = {
-            "sourceId": "health-heart-rate-001",
-            "samples": [],
-        }
-
-    return payload
 
 
 def _dump_for_compare(payload: dict) -> list[str]:

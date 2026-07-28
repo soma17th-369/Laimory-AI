@@ -25,27 +25,18 @@ _HEALTH_SOURCE_TYPES = {
 }
 
 
-def source_identifier(item) -> str | None:
-    """항목의 정식 식별자. rawId 가 원칙이고, 없을 때만 내부 `id` 로 대체한다.
+def raw_id_of(item) -> str | None:
+    """항목의 유일한 source 식별자인 rawId를 반환한다."""
 
-    수집 원본이 rawId 를 주지 않는 항목은 참조할 방법이 아예 없어지므로, 그때만
-    `id` 를 식별자로 인정한다. rawId 가 있는 항목의 `id` 는 식별자가 아니다
-    (LLM 이 프롬프트에 함께 실려 나간 내부 순번 `id` 를 `rawId` 로 착각하는 일이
-    실제로 있으나, 그런 참조는 어느 항목과도 매칭되지 않아 조용히 무시된다).
-    """
-
-    raw_id = getattr(item, "raw_id", None)
-    if raw_id:
-        return raw_id
-    item_id = getattr(item, "id", None)
-    return str(item_id) if item_id is not None else None
+    return getattr(item, "raw_id", None)
 
 
 def build_owner_index(request: TimelineDraftRequest) -> dict[str, set[EventSourceType]]:
     """식별자 → 그 식별자를 가진 입력의 sourceType 들.
 
-    rawId 는 보통 UUID 라 소유 타입이 하나뿐이다. rawId 가 없어 내부 `id` 로 대체한
-    항목끼리는 같은 식별자를 가질 수 있어 집합으로 둔다.
+    rawId 는 항상 UUID이고 source item의 유일한 식별자다. 내부 DB `id`는 이 인덱스나
+    Agent 계약에 들어오지 않는다. 잘못된 중복 입력도 안전하게 다루도록 sourceType은
+    집합으로 유지한다.
     """
 
     owners: dict[str, set[EventSourceType]] = defaultdict(set)
@@ -59,11 +50,11 @@ def build_owner_index(request: TimelineDraftRequest) -> dict[str, set[EventSourc
     ]
     for source_type, items in grouped:
         for item in items:
-            if identifier := source_identifier(item):
+            if identifier := raw_id_of(item):
                 owners[identifier].add(source_type)
 
     for item in request.healths:
-        identifier = source_identifier(item)
+        identifier = raw_id_of(item)
         source_type = _HEALTH_SOURCE_TYPES.get(item.metric)
         if identifier and source_type is not None:
             owners[identifier].add(source_type)
@@ -77,8 +68,8 @@ def normalize_source_types(draft: TimelineDraft, request: TimelineDraftRequest) 
     LLM 이 이동을 `STAY` 라고 적어 놓으면 이후 repair 는 그 이동을 영영 찾지 못한다.
     산책 event 가 왕복 이동을 근거로 대 놓고도 편도에서 끊기는 이유가 그것이다.
 
-    rawId 를 찾을 수 없으면(환각) 그대로 둔다. 근거 조회에서 조용히 무시될 뿐이다.
-    소유 타입이 둘 이상이라 모호하면 역시 손대지 않는다.
+    이 함수보다 먼저 source integrity 단계가 입력에 없는 rawId 참조를 제거한다.
+    소유 타입이 둘 이상이라 모호한 잘못된 입력은 타입을 임의로 고치지 않는다.
     """
 
     owners = build_owner_index(request)
@@ -86,7 +77,7 @@ def normalize_source_types(draft: TimelineDraft, request: TimelineDraftRequest) 
 
     for event in draft.events:
         for ref in event.source_refs:
-            candidates = owners.get(ref.source_id)
+            candidates = owners.get(ref.raw_id)
             if not candidates or len(candidates) != 1:
                 continue
             (actual,) = candidates

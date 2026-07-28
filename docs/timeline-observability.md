@@ -50,7 +50,14 @@ REQUEST → MAIN_AGENT → EVENT_AGENT → TIMELINE_AGENT → REPAIR_AGENT
 | LLM | 프롬프트·응답의 길이/해시, 이미지 개수, provider/model, 소요 시간, 실제 응답 토큰 |
 | REPAIR | 반복 횟수, 문제·도구 호출 개수, 도구 이름, 인자 이름, 성공 여부 |
 | STORAGE/CALLBACK | 시작·완료·실패 상태와 소요 시간 |
-| FAILED | 오류 메시지나 입력값이 아닌 `errorType`과 안전한 실패 분류 |
+| VALIDATION_REPAIRED | rawId 원문 없이 `validationCode`, 대상 종류, 제거 참조 수, 제외 항목 수 |
+| FAILED | 오류 메시지나 입력값이 아닌 `errorType`, `validationCode`, 위반 코드·건수 |
+
+rawId allowlist 위반을 복구한 경우 `validationCode=SOURCE_RAW_ID_NOT_IN_REQUEST`와
+`removedRefCount`, `droppedItemCount`를 남긴다. 저장 계약을 끝내 충족하지 못한 경우에는
+`validationCode=TIMELINE_STORAGE_CONTRACT_VIOLATION`, `violationCodes`,
+`violationCount`를 남긴다. rawId, event 제목, 입력 본문과 검증 오류 문자열은 payload에
+저장하지 않는다.
 
 `payload`는 `_source`에는 보관하지만 Elasticsearch에서 색인하지 않는다. 본문 키는 중앙 정책에서 길이/해시로 치환하고, 남은 메타데이터의 API key, Bearer token, 이메일, 전화번호 같은 값은 마스킹한다. 메타데이터 자체가 `OBS_MAX_PAYLOAD_BYTES`를 넘으면 전체를 길이/해시로 축약한다.
 
@@ -111,6 +118,7 @@ GET ai-timeline-task-*/_search
 - Agent/단계별 오류율과 병목 구간
 - provider/model별 LLM 지연 시간과 토큰 사용량
 - repair 반복·도구 실패·fallback 발생
+- rawId 참조 복구 건수와 저장 계약 위반 코드
 - 버퍼 상한으로 누락된 이벤트 발생 여부
 
 ## 인덱스 템플릿

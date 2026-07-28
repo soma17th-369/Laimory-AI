@@ -7,9 +7,9 @@
 
 from enum import Enum
 
-from pydantic import AliasChoices, AwareDatetime, Field, model_validator
+from pydantic import AwareDatetime, ConfigDict, Field, model_validator
 
-from app.schemas.common import CamelModel
+from app.schemas.common import CamelModel, RawId
 
 
 class EventType(str, Enum):
@@ -40,7 +40,6 @@ class EventSourceType(str, Enum):
     SLEEP = "SLEEP"
     ACTIVITY = "ACTIVITY"
     NOTIFICATION = "NOTIFICATION"
-    USER_MEMORY = "USER_MEMORY"
 
 
 class InferenceLevel(str, Enum):
@@ -68,12 +67,10 @@ class CandidateTimeRange(CamelModel):
 class SourceRef(CamelModel):
     """후보 또는 draft event의 근거 source 참조."""
 
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
     source_type: EventSourceType = Field(alias="sourceType")
-    source_id: str = Field(
-        alias="rawId",
-        validation_alias=AliasChoices("rawId", "sourceId"),
-        min_length=1,
-    )
+    raw_id: RawId = Field(alias="rawId")
     reason: str | None = Field(
         default=None,
         description="이 source가 후보 또는 draft event의 근거가 되는 이유",
@@ -131,16 +128,14 @@ class SourceFragment(CamelModel):
 
     SourceFragment는 원본 데이터를 그대로 요약하는 필드가 아니다. 데이터별 Event Agent가
     자기 도메인에서 "event일 수 있지만 아직 후보로 확정하기에는 근거가 약한" 단서를
-    ``sourceId``와 짧은 해석으로 남긴다. Timeline Agent는 이 단서를 다른 후보와 함께
+    ``rawId``와 짧은 해석으로 남긴다. Timeline Agent는 이 단서를 다른 후보와 함께
     비교해 question, warning, 낮은 confidence event, 또는 보강 근거로 활용한다.
     """
 
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
     source_type: EventSourceType = Field(alias="sourceType")
-    source_id: str = Field(
-        alias="sourceId",
-        validation_alias=AliasChoices("sourceId", "rawId"),
-        min_length=1,
-    )
+    raw_id: RawId = Field(alias="rawId")
     summary: str = Field(
         min_length=1,
         description="candidate보다 불확실한 하루 event 단서에 대한 짧은 해석",

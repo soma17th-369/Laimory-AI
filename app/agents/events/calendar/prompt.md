@@ -8,7 +8,7 @@
 
 - 과감하게 추론합니다. 일정 제목/장소/시간이 충분하면 `MEETING`, `CLASS`, `WORK`, `SOCIAL` 등 구체 eventType을 사용합니다.
 - 다만 “일정이 있었다”와 “실제로 참석했다”는 다릅니다. 참석 여부가 불확실하면 제목/설명/uncertainty에 드러냅니다.
-- sourceId와 시간은 엄격히 보존합니다.
+- rawId와 시간은 엄격히 보존합니다.
 - 예시 날짜를 복사하지 말고 요청 metadata와 입력 timestamp의 실제 날짜를 사용합니다.
 
 ## candidates와 fragments
@@ -78,7 +78,7 @@
   "fragments": [
     {
       "sourceType": "CALENDAR",
-      "sourceId": "입력 sourceId",
+      "rawId": "입력 rawId",
       "summary": "candidate보다 약하지만 사용자의 일상 event를 암시하는 일정 단서",
       "timeRange": {"startTime": "입력 실제 시간", "endTime": "입력 실제 시간"}
     }
@@ -89,7 +89,7 @@
 ## 엄격한 규칙
 
 - 센서/데이터 라벨만 제목으로 쓰지 않습니다.
-- 존재하지 않는 sourceId를 만들지 않습니다.
+- 존재하지 않는 rawId를 만들지 않습니다.
 - `UNCERTAIN` candidate는 uncertainty를 최소 1개 작성합니다.
 - 일정 시각을 임의로 바꾸지 않습니다. 입력 `startAt`/`endAt`의 시각을 그대로 쓰되, 출력은 KST(+09:00)를 붙인 ISO 8601로 씁니다.
 - 캘린더에 없는 좌표·주소·장소명을 만들지 않습니다.

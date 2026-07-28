@@ -6,11 +6,12 @@
 """
 
 import json
+from pathlib import Path
 
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.schemas import AgentEventResult
 from tests.fixtures.fake_llm import FakeLLM, candidate
-from tests.fixtures.requests import make_request, stay_item
+from tests.fixtures.requests import fixture_raw_id, make_request, stay_item
 
 
 def _request():
@@ -27,7 +28,9 @@ _VALID_EVENT = {
     "endTime": "2026-06-20T10:00:00+09:00",
     "confidence": 0.7,
     "inferenceLevel": "EVIDENCE_BASED",
-    "sourceRefs": [{"sourceType": "STAY", "sourceId": "stay-1"}],
+    "sourceRefs": [
+        {"sourceType": "STAY", "rawId": fixture_raw_id("stay-1")}
+    ],
     "uncertainty": [],
 }
 
@@ -62,6 +65,19 @@ def _response(events) -> str:
     )
 
 
+def test_timeline_prompt_allows_one_source_to_support_multiple_events():
+    prompt = (
+        Path(__file__).resolve().parents[2]
+        / "app"
+        / "agents"
+        / "timeline"
+        / "timeline.md"
+    ).read_text(encoding="utf-8")
+
+    assert "각 event가 그 source를 함께 참조할 수 있습니다" in prompt
+    assert "하나의 `rawId`는 오직 하나의 event" not in prompt
+
+
 def test_invalid_event_is_dropped_others_survive():
     # 두 번째 event 는 end < start 라 스키마 검증에 실패한다.
     bad_order = {**_VALID_EVENT, "title": "시간 역전", "startTime": "2026-06-20T11:00:00+09:00", "endTime": "2026-06-20T10:00:00+09:00"}
@@ -94,5 +110,3 @@ def test_invalid_json_falls_back_to_empty_draft():
     assert draft.events == []
     assert draft.date == "2026-06-20"
     assert any("실행 실패" in w.message for w in draft.warnings)
-
-

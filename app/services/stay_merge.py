@@ -32,7 +32,7 @@ from app.core.logging import get_logger
 from app.schemas import TimelineDraftRequest
 from app.services.place_text import normalize_place_text
 from app.services.sleep_guard import sleep_spans
-from app.services.source_lookup import source_identifier
+from app.services.source_lookup import raw_id_of
 from app.services.validator import parse_datetime
 
 logger = get_logger(__name__)
@@ -89,7 +89,7 @@ def _stays(request: TimelineDraftRequest, tz: tzinfo) -> list[_Stay]:
 
     stays: list[_Stay] = []
     for item in request.stays:
-        identifier = source_identifier(item)
+        identifier = raw_id_of(item)
         start = parse_datetime(item.start_at, tz)
         if not identifier or start is None:
             continue

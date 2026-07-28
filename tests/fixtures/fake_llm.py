@@ -7,6 +7,9 @@
 import json
 from types import SimpleNamespace
 
+from app.core.structured import run_structured
+from tests.fixtures.requests import fixture_raw_id
+
 
 class FakeLLM:
     """`complete()` 를 흉내내는 가짜 LLM.
@@ -44,6 +47,52 @@ class FakeLLM:
         )
         return self._next()
 
+    def complete_json(
+        self,
+        prompt: str,
+        schema=None,
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        **kwargs,
+    ) -> str:
+        """canned 응답을 그대로 돌려준다(실 provider 의 JSON 모드 자리).
+
+        가짜 LLM 은 형태를 강제할 실 provider 가 없으므로 `complete` 와 같이 미리
+        정한 응답을 순서대로 돌려준다. 호출도 함께 기록한다.
+        """
+
+        self.calls.append(
+            SimpleNamespace(prompt=prompt, system=system, images=None, kwargs=kwargs)
+        )
+        return self._next()
+
+    def complete_structured(
+        self,
+        prompt: str,
+        schema,
+        *,
+        system: str | None = None,
+        temperature: float = 0.7,
+        max_repairs: int = 1,
+        **kwargs,
+    ):
+        """실제 `LLMClient.complete_structured` 와 같은 검증·재시도 경로를 태운다.
+
+        canned 응답(JSON 문자열)을 `complete_json` 으로 돌려주고, 공통 `run_structured`
+        가 스키마 검증과 교정 재시도를 처리한다. 실 클라이언트와 동일하게 동작하도록
+        `run_structured` 를 그대로 재사용한다.
+        """
+
+        return run_structured(
+            self.complete_json,
+            prompt,
+            schema,
+            system=system,
+            temperature=temperature,
+            max_repairs=max_repairs,
+        )
+
 
 def result_json(candidates: list | None = None, fragments: list | None = None) -> str:
     """AgentEventResult 형태의 JSON 문자열을 만든다."""
@@ -70,7 +119,8 @@ def candidate(
         "title": "제목",
         "description": "설명",
         "sourceRefs": [
-            {"sourceType": st, "sourceId": sid} for st, sid in source_refs
+            {"sourceType": st, "rawId": fixture_raw_id(raw_id)}
+            for st, raw_id in source_refs
         ],
         "confidence": confidence,
         "inferenceLevel": inference_level,
@@ -78,8 +128,12 @@ def candidate(
     }
 
 
-def fragment(source_type, source_id, summary="요약", *, time_range=None) -> dict:
-    payload = {"sourceType": source_type, "sourceId": source_id, "summary": summary}
+def fragment(source_type, raw_id, summary="요약", *, time_range=None) -> dict:
+    payload = {
+        "sourceType": source_type,
+        "rawId": fixture_raw_id(raw_id),
+        "summary": summary,
+    }
     if time_range is not None:
         payload["timeRange"] = time_range
     return payload

@@ -11,7 +11,12 @@ import pytest
 from app.schemas import AgentEventResult
 from tests.fixtures.fake_llm import candidate
 from tests.fixtures.pipeline import run_timeline_pipeline
-from tests.fixtures.requests import calendar_item, make_request, stay_item
+from tests.fixtures.requests import (
+    calendar_item,
+    fixture_raw_id,
+    make_request,
+    stay_item,
+)
 
 START = "2026-06-20T09:00:00+09:00"
 END = "2026-06-20T10:00:00+09:00"
@@ -64,7 +69,8 @@ def _merged_draft_response(refs, confidence=0.7) -> str:
                     "confidence": confidence,
                     "inferenceLevel": "EVIDENCE_BASED",
                     "sourceRefs": [
-                        {"sourceType": st, "rawId": rid} for st, rid in refs
+                        {"sourceType": st, "rawId": fixture_raw_id(raw_id)}
+                        for st, raw_id in refs
                     ],
                     "uncertainty": [],
                 }

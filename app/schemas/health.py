@@ -7,7 +7,7 @@
 
 from pydantic import Field
 
-from app.schemas.common import CamelModel
+from app.schemas.common import CamelModel, RawId
 from app.schemas.source_snapshot import HealthMetric
 
 
@@ -18,8 +18,7 @@ class HealthItem(CamelModel):
     - SLEEP: `duration_minutes` 에 수면 시간(분), `startAt`/`endAt` 로 구간.
     """
 
-    id: int
-    raw_id: str | None = Field(default=None, alias="rawId")
+    raw_id: RawId = Field(alias="rawId")
     metric: HealthMetric
     start_at: str = Field(alias="startAt")
     end_at: str | None = Field(default=None, alias="endAt")

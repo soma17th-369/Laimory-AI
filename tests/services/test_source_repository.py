@@ -16,7 +16,7 @@ from app.services.source_repository import (
     _rows_to_snapshot,
     load_snapshot_from_file,
 )
-from tests.fixtures.requests import default_source_items, make_snapshot
+from tests.fixtures.requests import default_source_items, fixture_raw_id, make_snapshot
 
 _SAMPLE = Path(__file__).resolve().parents[2] / "data" / "input" / "2026-07-08.json"
 
@@ -49,9 +49,11 @@ def _row(pk, item_type, raw_id, start, end, payload, *, user_id=7, task_id="t-1"
 
 
 def test_rows_to_snapshot_assembles_and_derives():
+    stay_raw_id = fixture_raw_id("row-stay")
+    notification_raw_id = fixture_raw_id("row-notification")
     rows = [
-        _row(101, "STAY", "raw-a", datetime(2026, 7, 8, 9, 0), datetime(2026, 7, 8, 10, 0), {"place": "집"}),
-        _row(102, "NOTIFICATION", "raw-b", datetime(2026, 7, 8, 8, 0), None, {"appName": "카카오톡"}),
+        _row(101, "STAY", stay_raw_id, datetime(2026, 7, 8, 9, 0), datetime(2026, 7, 8, 10, 0), {"place": "집"}),
+        _row(102, "NOTIFICATION", notification_raw_id, datetime(2026, 7, 8, 8, 0), None, {"appName": "카카오톡"}),
     ]
 
     snap = _rows_to_snapshot("t-1", rows)
@@ -61,9 +63,8 @@ def test_rows_to_snapshot_assembles_and_derives():
     assert snap.record_date == "2026-07-08"
     assert snap.record_time_zone == "Asia/Seoul"
     assert snap.user_memory is None
-    assert {item.id for item in snap.source_items} == {101, 102}
-    stay = next(item for item in snap.source_items if item.id == 101)
-    assert stay.raw_id == "raw-a"
+    assert all("id" not in type(item).model_fields for item in snap.source_items)
+    stay = next(item for item in snap.source_items if item.raw_id == stay_raw_id)
     assert stay.item_type.value == "STAY"
     assert stay.start_at == "2026-07-08T09:00:00"
     # window: start=min(start_at)=08:00, end=max(end_at,start_at)=10:00
@@ -76,7 +77,7 @@ def test_rows_to_snapshot_rejects_missing_start_at():
         _row(
             101,
             "HEALTH",
-            "raw-a",
+            fixture_raw_id("missing-start"),
             None,
             None,
             {"metric": "STEPS", "value": 100},
@@ -92,7 +93,7 @@ def test_rows_to_snapshot_rejects_mixed_users():
         _row(
             101,
             "PHOTO",
-            "raw-a",
+            fixture_raw_id("mixed-user-a"),
             datetime(2026, 7, 8, 9, 0),
             None,
             {},
@@ -101,7 +102,7 @@ def test_rows_to_snapshot_rejects_mixed_users():
         _row(
             102,
             "PHOTO",
-            "raw-b",
+            fixture_raw_id("mixed-user-b"),
             datetime(2026, 7, 8, 10, 0),
             None,
             {},
@@ -114,9 +115,10 @@ def test_rows_to_snapshot_rejects_mixed_users():
 
 
 def test_rows_to_snapshot_rejects_duplicate_raw_ids():
+    duplicate_raw_id = fixture_raw_id("duplicate")
     rows = [
-        _row(101, "PHOTO", "raw-a", datetime(2026, 7, 8, 9, 0), None, {}),
-        _row(102, "PHOTO", "raw-a", datetime(2026, 7, 8, 10, 0), None, {}),
+        _row(101, "PHOTO", duplicate_raw_id, datetime(2026, 7, 8, 9, 0), None, {}),
+        _row(102, "PHOTO", duplicate_raw_id, datetime(2026, 7, 8, 10, 0), None, {}),
     ]
 
     with pytest.raises(SourceBatchError, match="중복 raw_id"):
@@ -127,6 +129,6 @@ def test_load_snapshot_from_file():
     snapshot = load_snapshot_from_file(_SAMPLE)
     assert snapshot.task_id == "2026-07-08"
     assert len(snapshot.source_items) == 35
-    assert snapshot.source_items[0].id == 1
     assert snapshot.source_items[0].raw_id == "02ecc2e5-bd40-45ae-b179-896a77bb3d16"
+    assert "id" not in type(snapshot.source_items[0]).model_fields
     assert snapshot.timeline_window.start_time == "2026-07-08T00:00"

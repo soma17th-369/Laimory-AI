@@ -37,7 +37,6 @@ def split_source_items(
 
 def _base_payload(item: CollectedSourceItem) -> dict:
     return {
-        "id": item.id,
         "rawId": item.raw_id,
         "startAt": item.start_at,
         "endAt": item.end_at,
@@ -89,7 +88,6 @@ def _health(item: CollectedSourceItem) -> HealthItem:
 def _notification(item: CollectedSourceItem) -> NotificationItem:
     return NotificationItem.model_validate(
         {
-            "id": item.id,
             "rawId": item.raw_id,
             "postedAt": item.start_at,
             **item.payload,
@@ -102,7 +100,7 @@ def _photo(item: CollectedSourceItem) -> PhotoItem:
     if "clientPhotoUri" not in payload and "photoFile" in payload:
         payload["clientPhotoUri"] = payload["photoFile"]
     return PhotoItem.model_validate(
-        {"id": item.id, "rawId": item.raw_id, "takenAt": item.start_at, **payload}
+        {"rawId": item.raw_id, "takenAt": item.start_at, **payload}
     )
 
 
@@ -133,9 +131,8 @@ def normalize(snapshot: CollectedSnapshot) -> TimelineDraftRequest:
                 domains[field].append(parser(item))
             except Exception as exc:  # noqa: BLE001 - 개별 항목 실패는 건너뛴다.
                 logger.warning(
-                    "수집 항목 정규화 실패: itemType=%s, id=%s, rawId=%s, error=%s",
+                    "수집 항목 정규화 실패: itemType=%s, rawId=%s, error=%s",
                     item_type.value,
-                    item.id,
                     item.raw_id,
                     exc,
                 )

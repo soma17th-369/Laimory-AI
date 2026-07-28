@@ -22,31 +22,34 @@ from app.agents.events.photo.image_source import (
 from app.core.llm import ImageInput
 from app.schemas import PhotoItem
 from tests.fixtures.fake_llm import FakeLLM, candidate, result_json
-from tests.fixtures.requests import make_request
+from tests.fixtures.requests import fixture_raw_id, make_request
 
 IMAGES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "images"
 # data/input 에 실제 촬영 이미지가 들어와 있어, 실제 바이너리 로딩을 이 파일로 검증한다.
 DATA_INPUT_DIR = Path(__file__).resolve().parents[2] / "data" / "input"
 REAL_PHOTO_FILE = "000_20260708_172720.jpg"  # = 입력 JSON 의 photoFile(=clientPhotoUri)
 _JPEG_SIGNATURE = b"\xff\xd8\xff"
+PHOTO_1 = fixture_raw_id("photo-1")
+PHOTO_2 = fixture_raw_id("photo-2")
+PHOTO_9 = fixture_raw_id("photo-9")
 
 _VISION_RESPONSE = json.dumps(
-    {"descriptions": [{"id": 1, "description": "빨간 배경의 단색 이미지."}]},
+    {"descriptions": [{"rawId": PHOTO_1, "description": "빨간 배경의 단색 이미지."}]},
     ensure_ascii=False,
 )
 _REAL_VISION_RESPONSE = json.dumps(
-    {"descriptions": [{"id": 1, "description": "실제 촬영 사진에서 읽은 설명."}]},
+    {"descriptions": [{"rawId": PHOTO_1, "description": "실제 촬영 사진에서 읽은 설명."}]},
     ensure_ascii=False,
 )
 _META_RESPONSE = json.dumps(
-    {"descriptions": [{"id": 2, "description": "메타데이터로 추정한 사진."}]},
+    {"descriptions": [{"rawId": PHOTO_2, "description": "메타데이터로 추정한 사진."}]},
     ensure_ascii=False,
 )
 
 
 def test_local_file_image_source_reads_real_file():
     source = LocalFilePhotoImageSource(IMAGES_DIR)
-    photo = PhotoItem(id=1, takenAt="2026-06-20T18:00:00", filename="sample.png")
+    photo = PhotoItem(rawId=PHOTO_1, takenAt="2026-06-20T18:00:00", filename="sample.png")
 
     image = source.load(photo)
 
@@ -57,7 +60,7 @@ def test_local_file_image_source_reads_real_file():
 
 def test_local_file_image_source_missing_returns_none():
     source = LocalFilePhotoImageSource(IMAGES_DIR)
-    photo = PhotoItem(id=9, takenAt="2026-06-20T18:00:00", filename="does-not-exist.png")
+    photo = PhotoItem(rawId=PHOTO_9, takenAt="2026-06-20T18:00:00", filename="does-not-exist.png")
 
     assert source.load(photo) is None
 
@@ -67,7 +70,7 @@ def test_local_file_image_source_reads_real_input_by_client_photo_uri():
     # 없어 디스크에 없으므로, clientPhotoUri 로 실제 파일을 찾아야 한다.
     source = LocalFilePhotoImageSource(DATA_INPUT_DIR)
     photo = PhotoItem(
-        id=1,
+        rawId=PHOTO_1,
         takenAt="2026-07-08T17:27:20.309",
         clientPhotoUri=REAL_PHOTO_FILE,
         filename="20260708_172720.jpg",  # 접두어 없어 디스크에 없음 → clientPhotoUri 우선
@@ -83,11 +86,11 @@ def test_local_file_image_source_reads_real_input_by_client_photo_uri():
 def test_vision_describer_sends_real_image_and_parses():
     source = LocalFilePhotoImageSource(IMAGES_DIR)
     llm = FakeLLM([_VISION_RESPONSE])
-    photo = PhotoItem(id=1, takenAt="2026-06-20T18:00:00", filename="sample.png")
+    photo = PhotoItem(rawId=PHOTO_1, takenAt="2026-06-20T18:00:00", filename="sample.png")
 
     out = VisionPhotoDescriber(image_source=source, llm=llm).describe([photo])
 
-    assert out == {1: "빨간 배경의 단색 이미지."}
+    assert out == {PHOTO_1: "빨간 배경의 단색 이미지."}
     # 실제 이미지 bytes 가 vision 호출에 실렸다.
     assert len(llm.calls) == 1
     assert llm.calls[0].images and isinstance(llm.calls[0].images[0], ImageInput)
@@ -99,7 +102,7 @@ def test_vision_describer_sends_real_input_image():
     source = LocalFilePhotoImageSource(DATA_INPUT_DIR)
     llm = FakeLLM([_REAL_VISION_RESPONSE])
     photo = PhotoItem(
-        id=1,
+        rawId=PHOTO_1,
         takenAt="2026-07-08T17:27:20.309",
         clientPhotoUri=REAL_PHOTO_FILE,
         filename="20260708_172720.jpg",
@@ -107,7 +110,7 @@ def test_vision_describer_sends_real_input_image():
 
     out = VisionPhotoDescriber(image_source=source, llm=llm).describe([photo])
 
-    assert out == {1: "실제 촬영 사진에서 읽은 설명."}
+    assert out == {PHOTO_1: "실제 촬영 사진에서 읽은 설명."}
     assert len(llm.calls) == 1
     sent = llm.calls[0].images
     assert sent and isinstance(sent[0], ImageInput)
@@ -118,7 +121,7 @@ def test_vision_describer_sends_real_input_image():
 def test_vision_describer_falls_back_to_metadata_without_image():
     # 이미지 소스가 항상 None → 메타데이터 fallback 으로 채운다.
     llm = FakeLLM([_META_RESPONSE])
-    photo = PhotoItem(id=2, takenAt="2026-06-20T18:00:00", filename="nope.png")
+    photo = PhotoItem(rawId=PHOTO_2, takenAt="2026-06-20T18:00:00", filename="nope.png")
 
     out = VisionPhotoDescriber(
         image_source=NullPhotoImageSource(),
@@ -126,7 +129,7 @@ def test_vision_describer_falls_back_to_metadata_without_image():
         fallback=LLMPhotoDescriber(llm),
     ).describe([photo])
 
-    assert out == {2: "메타데이터로 추정한 사진."}
+    assert out == {PHOTO_2: "메타데이터로 추정한 사진."}
     # vision 호출이 아니라 텍스트(complete) 호출로 처리됐다.
     assert len(llm.calls) == 1
     assert llm.calls[0].images is None
@@ -142,7 +145,7 @@ def test_default_photo_image_source_uses_config_dir(monkeypatch):
 
     assert isinstance(source, LocalFilePhotoImageSource)
     image = source.load(
-        PhotoItem(id=1, takenAt="2026-07-08T17:27:20.309", clientPhotoUri=REAL_PHOTO_FILE)
+        PhotoItem(rawId=PHOTO_1, takenAt="2026-07-08T17:27:20.309", clientPhotoUri=REAL_PHOTO_FILE)
     )
     assert image is not None and image.data[:3] == _JPEG_SIGNATURE
 
@@ -161,13 +164,13 @@ def test_photo_agent_default_describer_loads_real_image_via_config(monkeypatch):
         image_source_module.settings, "photo_image_dir", str(DATA_INPUT_DIR)
     )
     infer_response = result_json(
-        candidates=[candidate("PHOTO_MOMENT", [("PHOTO", "1")])]
+        candidates=[candidate("PHOTO_MOMENT", [("PHOTO", PHOTO_1)])]
     )
     llm = FakeLLM([_REAL_VISION_RESPONSE, infer_response])
     request = make_request(
         photos=[
             PhotoItem(
-                id=1,
+                rawId=PHOTO_1,
                 takenAt="2026-07-08T17:27:20.309",
                 clientPhotoUri=REAL_PHOTO_FILE,
                 filename="20260708_172720.jpg",
@@ -185,7 +188,7 @@ def test_photo_agent_default_describer_loads_real_image_via_config(monkeypatch):
 
 
 def test_s3_image_source_is_skeleton_not_connected():
-    photo = PhotoItem(id=1, takenAt="2026-06-20T18:00:00", filename="sample.png")
+    photo = PhotoItem(rawId=PHOTO_1, takenAt="2026-06-20T18:00:00", filename="sample.png")
     try:
         S3PhotoImageSource(bucket="b").load(photo)
         raised = False

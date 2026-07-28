@@ -22,7 +22,7 @@ from app.services.validator import (
     resolve_window_bounds,
     validate_draft_to_window,
 )
-from tests.fixtures.requests import make_request
+from tests.fixtures.requests import fixture_raw_id, make_request
 
 # make_request 기본 window: 2026-06-20T00:00:00 ~ 2026-06-21T00:00:00 (KST)
 INSIDE = ("2026-06-20T09:00:00+09:00", "2026-06-20T10:00:00+09:00")
@@ -42,7 +42,12 @@ def _candidate(start, end) -> AiEventCandidate:
         time_range=CandidateTimeRange(start_time=start, end_time=end),
         title="t",
         description="d",
-        source_refs=[SourceRef(source_type=EventSourceType.STAY, source_id="s1")],
+        source_refs=[
+            SourceRef(
+                source_type=EventSourceType.STAY,
+                raw_id=fixture_raw_id("s1"),
+            )
+        ],
         confidence=0.5,
         inference_level=InferenceLevel.EVIDENCE_BASED,
         uncertainty=[],
@@ -58,7 +63,12 @@ def _event(cid, start, end) -> TimelineEventDraft:
         end_time=end,
         confidence=0.5,
         inference_level=InferenceLevel.EVIDENCE_BASED,
-        source_refs=[SourceRef(source_type=EventSourceType.STAY, source_id="s1")],
+        source_refs=[
+            SourceRef(
+                source_type=EventSourceType.STAY,
+                raw_id=fixture_raw_id("s1"),
+            )
+        ],
     )
 
 

@@ -6,14 +6,13 @@
 
 from pydantic import Field
 
-from app.schemas.common import CamelModel
+from app.schemas.common import CamelModel, RawId
 
 
 class CalendarItem(CamelModel):
     """캘린더 일정 한 건 (CALENDAR)."""
 
-    id: int
-    raw_id: str | None = Field(default=None, alias="rawId")
+    raw_id: RawId = Field(alias="rawId")
     start_at: str = Field(alias="startAt")
     end_at: str | None = Field(default=None, alias="endAt")
     title: str

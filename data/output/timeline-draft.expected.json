@@ -81,17 +81,17 @@
         },
         {
           "sourceType": "STAY",
-          "rawId": "29",
+          "rawId": "34258893-8c56-43ce-9e9a-d2605ad31ce8",
           "reason": "저녁에 집 인근에 잠깐 머문 기록이 있어 집 중심의 하루 흐름을 보강한다."
         },
         {
           "sourceType": "STAY",
-          "rawId": "31",
+          "rawId": "0a1057be-b779-42b0-955c-06fccc063b4e",
           "reason": "밤늦게 집에 길게 머문 기록이 개발 일정의 후반부와 맞물린다."
         },
         {
           "sourceType": "STAY",
-          "rawId": "34",
+          "rawId": "4157d626-6ba5-4cca-8d5d-41c506b11771",
           "reason": "자정 직전까지 집에 머문 기록이 이어진다."
         }
       ],
@@ -253,7 +253,7 @@
         },
         {
           "sourceType": "STAY",
-          "rawId": "29",
+          "rawId": "34258893-8c56-43ce-9e9a-d2605ad31ce8",
           "reason": "중간에 집 인근에 잠깐 머문 기록이 있어 왕복 산책 흐름을 보강한다."
         }
       ],
@@ -289,12 +289,12 @@
         },
         {
           "sourceType": "STAY",
-          "rawId": "31",
+          "rawId": "0a1057be-b779-42b0-955c-06fccc063b4e",
           "reason": "이동 전후로 집에 머문 기록이 이어져 밤늦은 짧은 활동으로 읽힌다."
         },
         {
           "sourceType": "STAY",
-          "rawId": "34",
+          "rawId": "4157d626-6ba5-4cca-8d5d-41c506b11771",
           "reason": "자정 직전까지 집에 머문 기록이 이어진다."
         }
       ],

@@ -30,8 +30,8 @@
         "inferenceLevel": "DIRECT|EVIDENCE_BASED|INFERRED|UNCERTAIN",
         "sourceRefs": [
           {
-            "sourceType": "STAY|MOVEMENT|CALENDAR|PHOTO|SLEEP|ACTIVITY|NOTIFICATION|USER_MEMORY",
-            "sourceId": "입력 sourceId"
+            "sourceType": "STAY|MOVEMENT|CALENDAR|PHOTO|SLEEP|ACTIVITY|NOTIFICATION",
+            "rawId": "입력 rawId(UUID)"
           }
         ],
         "uncertainty": []

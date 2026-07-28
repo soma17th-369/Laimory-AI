@@ -16,7 +16,7 @@ from app.schemas import (
 )
 from app.services.sleep_guard import enforce_sleep_boundary, sleep_spans, wake_time
 from app.services.validator import resolve_timezone
-from tests.fixtures.requests import make_request, sleep_item
+from tests.fixtures.requests import fixture_raw_id, make_request, sleep_item
 
 DAY = "2026-06-20"
 
@@ -55,7 +55,10 @@ def _event(
         end_time=_t(end),
         confidence=0.7,
         inference_level=InferenceLevel.EVIDENCE_BASED,
-        source_refs=[SourceRef(source_type=st, source_id=sid) for st, sid in used],
+        source_refs=[
+            SourceRef(source_type=st, raw_id=fixture_raw_id(raw_id))
+            for st, raw_id in used
+        ],
     )
 
 

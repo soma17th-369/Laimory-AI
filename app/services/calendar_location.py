@@ -22,7 +22,7 @@ from app.schemas import (
     TimelineEventDraft,
 )
 from app.services.place_text import places_match
-from app.services.source_lookup import source_identifier
+from app.services.source_lookup import raw_id_of
 
 logger = get_logger(__name__)
 
@@ -50,9 +50,9 @@ def _referenced(event: TimelineEventDraft, source_type: EventSourceType, lookup:
     """event 가 근거로 삼은 입력 항목들을 sourceRefs 로 되짚는다."""
 
     return [
-        lookup[ref.source_id]
+        lookup[ref.raw_id]
         for ref in event.source_refs
-        if ref.source_type is source_type and ref.source_id in lookup
+        if ref.source_type is source_type and ref.raw_id in lookup
     ]
 
 
@@ -87,12 +87,12 @@ def reinforce_calendar_location(
     calendars = {
         identifier: item
         for item in request.calendars
-        if (identifier := source_identifier(item))
+        if (identifier := raw_id_of(item))
     }
     stays = {
         identifier: item
         for item in request.stays
-        if (identifier := source_identifier(item))
+        if (identifier := raw_id_of(item))
     }
     if not calendars or not stays:
         return

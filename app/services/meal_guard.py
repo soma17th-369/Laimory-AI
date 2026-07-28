@@ -31,7 +31,7 @@ from app.schemas import (
     TimelineWarning,
     TimelineWarningSeverity,
 )
-from app.services.source_lookup import source_identifier
+from app.services.source_lookup import raw_id_of
 from app.services.validator import parse_datetime, resolve_timezone
 
 logger = get_logger(__name__)
@@ -68,12 +68,12 @@ def _anchor_times(request: TimelineDraftRequest) -> dict[EventSourceType, dict[s
         EventSourceType.PHOTO: {
             identifier: photo.taken_at
             for photo in request.photos
-            if (identifier := source_identifier(photo))
+            if (identifier := raw_id_of(photo))
         },
         EventSourceType.NOTIFICATION: {
             identifier: notification.posted_at
             for notification in request.notifications
-            if (identifier := source_identifier(notification))
+            if (identifier := raw_id_of(notification))
         },
     }
 
@@ -87,7 +87,7 @@ def _event_anchors(
 
     moments: list[datetime] = []
     for ref in event.source_refs:
-        raw = anchors.get(ref.source_type, {}).get(ref.source_id)
+        raw = anchors.get(ref.source_type, {}).get(ref.raw_id)
         if raw is None:
             continue
         moment = parse_datetime(raw, tz)

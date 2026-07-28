@@ -1,136 +1,102 @@
 {
-  "transactionId": "txn_2026-06-30_hs_001",
+  "taskId": "task-2026-06-30-001",
   "date": "2026-06-30",
-  "mode": "FULL_DAY",
+  "timezone": "Asia/Seoul",
   "window": {
-    "start": 1782745200000,
-    "end": 1782831600000
+    "start": "2026-06-30T00:00:00+09:00",
+    "end": "2026-07-01T00:00:00+09:00"
   },
-  "generatedAt": 1782913996259,
-  "location": {
-    "stays": [
-      {
-        "sourceId": "loc_stay_001",
-        "sourceType": "stay",
-        "source": "live",
-        "lat": 37.1538856,
-        "lon": 127.0781832,
-        "startTime": 1782771955976,
-        "endTime": 1782784620150,
-        "durationSec": 12664
-      }
-    ],
-    "routes": [
-      {
-        "sourceId": "loc_route_001",
-        "sourceType": "movement",
-        "source": "live",
-        "startTime": 1782784620150,
-        "endTime": 1782790357503,
-        "durationSec": 5737,
-        "distanceMeters": 58137.19626077128,
-        "points": [
-          {
-            "lat": 37.1538856,
-            "lon": 127.0781832
-          },
-          {
-            "lat": 37.1516441,
-            "lon": 127.0765969
-          }
-        ]
-      }
-    ]
-  },
-  "notifications": {
-    "active": [],
-    "collected": [
-      {
-        "sourceId": "noti_001",
-        "sourceType": "notification",
-        "packageName": "com.kakao.talk",
-        "appName": "카카오톡",
-        "title": "권용하",
-        "text": "쉐에에엣",
-        "postTime": 1782831527081,
-        "collectedAt": 1782831527402
-      }
-    ]
-  },
-  "photos": [
+  "stays": [
     {
-      "sourceId": "photo_001",
-      "sourceType": "photo",
-      "id": "photo_id",
-      "uri": "content://media/external/images/media/12345",
-      "dateTaken": 1782790550000,
-      "lat": 37.5321,
-      "lon": 126.9624,
-      "width": 4032,
-      "height": 3024,
-      "mimeType": "image/jpeg"
+      "rawId": "11111111-1111-4111-8111-111111111111",
+      "startAt": "2026-06-30T09:00:00+09:00",
+      "endAt": "2026-06-30T11:00:00+09:00",
+      "latitude": 37.1538856,
+      "longitude": 127.0781832,
+      "place": "집",
+      "address": "경기도 오산시",
+      "places": ["집"],
+      "durationText": "2시간"
     }
   ],
-  "calendar": {
-    "events": [
-      {
-        "sourceId": "cal_001",
-        "sourceType": "calendar_event",
-        "title": "ASM 발대식",
-        "startTime": 1782786600000,
-        "endTime": 1782806400000,
-        "location": "용산 서울드래곤시티",
-        "description": "일정 설명"
-      }
-    ]
-  },
-  "health": {
-    "steps": {
-      "sourceId": "health_steps_001",
-      "sourceType": "health_steps",
-      "count": 10145
-    },
-    "sleep": {
-      "sourceId": "health_sleep_001",
-      "sourceType": "health_sleep",
-      "startTime": 1782759600000,
-      "endTime": 1782772200000,
-      "durationMinutes": 210
-    },
-    "totalCaloriesBurned": {
-      "sourceId": "health_total_cal_001",
-      "sourceType": "health_total_calories",
-      "kcal": 1564.5
-    },
-    "activeCaloriesBurned": {
-      "sourceId": "health_active_cal_001",
-      "sourceType": "health_active_calories",
-      "kcal": 0.0
-    },
-    "distance": {
-      "sourceId": "health_distance_001",
-      "sourceType": "health_distance",
-      "meters": 0.0
-    },
-    "heartRate": {
-      "sourceId": "health_heart_rate_001",
-      "sourceType": "health_heart_rate",
-      "samples": [
-        {
-          "time": 1782790000000,
-          "bpm": 80
-        }
-      ]
+  "movements": [
+    {
+      "rawId": "22222222-2222-4222-8222-222222222222",
+      "startAt": "2026-06-30T11:00:00+09:00",
+      "endAt": "2026-06-30T11:40:00+09:00",
+      "start": {
+        "latitude": 37.1538856,
+        "longitude": 127.0781832,
+        "place": "집",
+        "address": "경기도 오산시",
+        "places": ["집"]
+      },
+      "end": {
+        "latitude": 37.5321,
+        "longitude": 126.9624,
+        "place": "서울드래곤시티",
+        "address": "서울특별시 용산구",
+        "places": ["서울드래곤시티"]
+      },
+      "durationText": "40분",
+      "distanceMeters": 58137.2,
+      "transports": ["대중교통"]
     }
-  },
+  ],
+  "calendars": [
+    {
+      "rawId": "55555555-5555-4555-8555-555555555555",
+      "startAt": "2026-06-30T12:30:00+09:00",
+      "endAt": "2026-06-30T13:30:00+09:00",
+      "title": "ASM 멘토링",
+      "description": "프로젝트 진행 상황 점검",
+      "locationText": "서울드래곤시티",
+      "allDay": false
+    }
+  ],
+  "healths": [
+    {
+      "rawId": "66666666-6666-4666-8666-666666666666",
+      "metric": "STEPS",
+      "startAt": "2026-06-30T00:00:00+09:00",
+      "endAt": "2026-07-01T00:00:00+09:00",
+      "value": 10145
+    },
+    {
+      "rawId": "77777777-7777-4777-8777-777777777777",
+      "metric": "SLEEP",
+      "startAt": "2026-06-30T01:10:00+09:00",
+      "endAt": "2026-06-30T06:50:00+09:00",
+      "durationMinutes": 340
+    }
+  ],
+  "notifications": [
+    {
+      "rawId": "33333333-3333-4333-8333-333333333333",
+      "postedAt": "2026-06-30T11:55:00+09:00",
+      "appName": "카카오톡",
+      "title": "프로젝트 팀",
+      "text": "12시 30분에 멘토링 장소에서 만나요."
+    }
+  ],
+  "photos": [
+    {
+      "rawId": "44444444-4444-4444-8444-444444444444",
+      "takenAt": "2026-06-30T13:40:00+09:00",
+      "dateTaken": 1782794400000,
+      "fileName": "IMG_20260630_134000.jpg",
+      "clientPhotoUri": "content://media/external/images/media/12345",
+      "latitude": 37.5321,
+      "longitude": 126.9624,
+      "description": "회의실 책상과 노트북이 보이는 사진"
+    }
+  ],
   "userMemory": {
-    "선호": {
-      "카페": "조용한 곳 선호",
-      "운동": "저녁 러닝"
+    "장소": {
+      "집": "경기도 오산시"
     },
     "관계": {
-      "권용하": "친구"
+      "프로젝트 팀": "ASM 프로젝트 구성원"
     }
   }
 }
-

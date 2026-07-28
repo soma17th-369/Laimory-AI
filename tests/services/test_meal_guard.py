@@ -22,7 +22,13 @@ from app.services.meal_guard import (
     MEAL_MIN_DURATION,
     enforce_meal_duration,
 )
-from tests.fixtures.requests import make_request, notification_item, photo_item, stay_item
+from tests.fixtures.requests import (
+    fixture_raw_id,
+    make_request,
+    notification_item,
+    photo_item,
+    stay_item,
+)
 
 # 12:00~15:00 카페 체류 안에 13:20 음식 사진 한 장.
 STAY_START = "2026-06-20T12:00:00"
@@ -57,7 +63,10 @@ def _event(*refs, start=STAY_START, end=STAY_END, event_type=EventType.MEAL, con
         end_time=f"{end}+09:00",
         confidence=confidence,
         inference_level=InferenceLevel.EVIDENCE_BASED,
-        source_refs=[SourceRef(source_type=st, source_id=sid) for st, sid in refs],
+        source_refs=[
+            SourceRef(source_type=st, raw_id=fixture_raw_id(raw_id))
+            for st, raw_id in refs
+        ],
     )
 
 

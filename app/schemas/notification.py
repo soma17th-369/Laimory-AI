@@ -6,14 +6,13 @@
 
 from pydantic import Field
 
-from app.schemas.common import CamelModel
+from app.schemas.common import CamelModel, RawId
 
 
 class NotificationItem(CamelModel):
     """알림 한 건 (NOTIFICATION)."""
 
-    id: int
-    raw_id: str | None = Field(default=None, alias="rawId")
+    raw_id: RawId = Field(alias="rawId")
     posted_at: str = Field(alias="postedAt")
     app_name: str = Field(alias="appName")
     title: str

@@ -218,7 +218,9 @@ class TimelineAgent(Agent):
             items_to_text(agent_result.candidates),
             items_to_text(agent_result.fragments),
         )
-        text = self.llm.complete(prompt, system=_SYSTEM_PROMPT, temperature=0.2)
+        text = self.llm.complete_json(
+            prompt, TimelineDraft, system=_SYSTEM_PROMPT, temperature=0.2
+        )
         draft = parse_timeline_draft(text, request)
         draft.warnings = [*carried_warnings, *draft.warnings]
         return draft

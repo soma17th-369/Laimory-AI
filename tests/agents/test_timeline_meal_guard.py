@@ -10,7 +10,7 @@ from datetime import timedelta
 from app.schemas import AgentEventResult
 from tests.fixtures.fake_llm import candidate
 from tests.fixtures.pipeline import run_timeline_pipeline
-from tests.fixtures.requests import make_request, photo_item, stay_item
+from tests.fixtures.requests import fixture_raw_id, make_request, photo_item, stay_item
 
 STAY_START = "2026-06-20T12:00:00"
 STAY_END = "2026-06-20T15:00:00"
@@ -58,8 +58,14 @@ def _response(event_type: str) -> str:
                     "confidence": 0.85,
                     "inferenceLevel": "EVIDENCE_BASED",
                     "sourceRefs": [
-                        {"sourceType": "STAY", "rawId": "stay-1"},
-                        {"sourceType": "PHOTO", "rawId": "photo-1"},
+                        {
+                            "sourceType": "STAY",
+                            "rawId": fixture_raw_id("stay-1"),
+                        },
+                        {
+                            "sourceType": "PHOTO",
+                            "rawId": fixture_raw_id("photo-1"),
+                        },
                     ],
                     "uncertainty": [],
                 }

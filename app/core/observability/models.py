@@ -43,6 +43,7 @@ class ObservationEventType(StrEnum):
     TOOL_CALL = "TOOL_CALL"
     TOOL_RESULT = "TOOL_RESULT"
     DRAFT_UPDATED = "DRAFT_UPDATED"
+    VALIDATION_REPAIRED = "VALIDATION_REPAIRED"
 
 
 def _now_utc() -> datetime:

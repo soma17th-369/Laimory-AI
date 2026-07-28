@@ -15,7 +15,7 @@ from app.schemas import (
 )
 from app.services.calendar_guard import ensure_calendar_events
 from app.services.draft_repair import repair_draft
-from tests.fixtures.requests import calendar_item, make_request, stay_item
+from tests.fixtures.requests import calendar_item, fixture_raw_id, make_request, stay_item
 
 DAY = "2026-06-20"
 
@@ -54,7 +54,10 @@ def _event(client_event_id, start, end, *refs, title="이벤트") -> TimelineEve
         end_time=_t(end),
         confidence=0.7,
         inference_level=InferenceLevel.EVIDENCE_BASED,
-        source_refs=[SourceRef(source_type=st, source_id=sid) for st, sid in refs],
+        source_refs=[
+            SourceRef(source_type=st, raw_id=fixture_raw_id(raw_id))
+            for st, raw_id in refs
+        ],
     )
 
 
@@ -85,7 +88,7 @@ def test_a_calendar_event_dropped_by_the_llm_is_restored():
     assert restored.inference_level is InferenceLevel.DIRECT
     assert restored.confidence == 0.6  # 일정이 있었다 ≠ 그 일을 했다
     assert restored.uncertainty  # 한계를 남긴다
-    assert [ref.source_id for ref in restored.source_refs] == ["cal-1"]
+    assert [ref.raw_id for ref in restored.source_refs] == [fixture_raw_id("cal-1")]
 
     warning = next(w for w in draft.warnings if "되살렸습니다" in w.message)
     assert warning.severity is TimelineWarningSeverity.MEDIUM

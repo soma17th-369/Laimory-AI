@@ -15,7 +15,7 @@ from app.schemas import (
     TimelineEventDraft,
 )
 from app.services.calendar_location import places_match, reinforce_calendar_location
-from tests.fixtures.requests import calendar_item, make_request, stay_item
+from tests.fixtures.requests import calendar_item, fixture_raw_id, make_request, stay_item
 
 START = "2026-06-20T09:00:00+09:00"
 END = "2026-06-20T10:00:00+09:00"
@@ -42,7 +42,10 @@ def _event(*refs, confidence=0.7) -> TimelineEventDraft:
         end_time=END,
         confidence=confidence,
         inference_level=InferenceLevel.EVIDENCE_BASED,
-        source_refs=[SourceRef(source_type=st, source_id=sid) for st, sid in refs],
+        source_refs=[
+            SourceRef(source_type=st, raw_id=fixture_raw_id(raw_id))
+            for st, raw_id in refs
+        ],
     )
 
 

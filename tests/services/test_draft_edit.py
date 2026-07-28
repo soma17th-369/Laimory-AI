@@ -17,6 +17,7 @@ from app.schemas import (
     TimelineQuestion,
 )
 from app.services.draft_edit import DraftEditError, delete_event, find_event, update_event
+from tests.fixtures.requests import fixture_raw_id
 
 
 def _event(client_event_id: str, title: str = "체류", start: str = "09:00", end: str = "10:00"):
@@ -31,7 +32,12 @@ def _event(client_event_id: str, title: str = "체류", start: str = "09:00", en
         end_time=f"2026-06-20T{end}:00+09:00",
         confidence=0.8,
         inference_level=InferenceLevel.EVIDENCE_BASED,
-        source_refs=[SourceRef(source_type=EventSourceType.STAY, source_id="s-1")],
+        source_refs=[
+            SourceRef(
+                source_type=EventSourceType.STAY,
+                raw_id=fixture_raw_id("s-1"),
+            )
+        ],
     )
 
 
@@ -68,7 +74,7 @@ def test_update_event_touches_only_given_fields():
     assert updated.title == "체류"
     assert updated.place_label == "카페"
     assert updated.tags == ["휴식"]
-    assert [ref.source_id for ref in updated.source_refs] == ["s-1"]
+    assert [ref.raw_id for ref in updated.source_refs] == [fixture_raw_id("s-1")]
 
 
 def test_update_event_keeps_client_event_id():

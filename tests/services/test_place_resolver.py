@@ -25,6 +25,7 @@ from app.services.place_resolver import (
 )
 from tests.fixtures.requests import (
     calendar_item,
+    fixture_raw_id,
     make_request,
     movement_item,
     photo_item,
@@ -64,7 +65,10 @@ def _event(*refs, place_label=None, address=None, title="이벤트") -> Timeline
         inference_level=InferenceLevel.EVIDENCE_BASED,
         place_label=place_label,
         address=address,
-        source_refs=[SourceRef(source_type=st, source_id=sid) for st, sid in refs],
+        source_refs=[
+            SourceRef(source_type=st, raw_id=fixture_raw_id(raw_id))
+            for st, raw_id in refs
+        ],
     )
 
 

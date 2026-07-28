@@ -3,7 +3,7 @@
 from app.schemas import AgentEventResult
 from tests.fixtures.fake_llm import candidate
 from tests.fixtures.pipeline import run_timeline_pipeline
-from tests.fixtures.requests import make_request, stay_item
+from tests.fixtures.requests import fixture_raw_id, make_request, stay_item
 
 
 def test_timeline_question_is_rewritten_to_event_specific_sentence() -> None:
@@ -52,7 +52,7 @@ def test_timeline_question_is_rewritten_to_event_specific_sentence() -> None:
                     "sourceRefs": [
                         {
                             "sourceType": "STAY",
-                            "rawId": "stay-1",
+                                "rawId": fixture_raw_id("stay-1"),
                             "reason": "같은 시간대에 강남역 근처 위치 기록이 있음",
                         }
                     ],
@@ -81,5 +81,4 @@ def test_timeline_question_is_rewritten_to_event_specific_sentence() -> None:
     assert draft.events[0].place_label == "강남역"
     assert draft.events[0].tags == ["#이동", "#일정"]
     assert draft.questions[0].question == "오후 3시쯤 강남역 일정 활동이 맞나요?"
-
 

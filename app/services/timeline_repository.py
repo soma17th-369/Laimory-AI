@@ -125,13 +125,13 @@ async def _persist_timeline(
 
         linked: set[str] = set()
         for ref in event.source_refs:
-            if ref.source_id in linked:
+            if ref.raw_id in linked:
                 continue
-            linked.add(ref.source_id)
+            linked.add(ref.raw_id)
             session.add(
                 TimelineEventItem(
                     timeline_event_id=timeline_event.timeline_event_id,
-                    timeline_item_id=item_id_by_raw[ref.source_id],
+                    timeline_item_id=item_id_by_raw[ref.raw_id],
                 )
             )
 
@@ -201,9 +201,9 @@ async def _persist_items(
     seen: set[str] = set()
     for event in draft.events:
         for ref in event.source_refs:
-            if ref.source_id not in seen:
-                seen.add(ref.source_id)
-                used_raw_ids.append(ref.source_id)
+            if ref.raw_id not in seen:
+                seen.add(ref.raw_id)
+                used_raw_ids.append(ref.raw_id)
 
     item_id_by_raw: dict[str, int] = {}
     for raw_id in used_raw_ids:
