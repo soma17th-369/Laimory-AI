@@ -11,6 +11,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Protocol, TextIO
 
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import AppError
 from app.core.observability.models import ObservationEvent
 
 
@@ -70,8 +72,14 @@ class JsonLinesObservationSink:
                 stream.write(line)
 
 
-class CompositeObservationError(RuntimeError):
-    """일부 sink 기록 실패를 모두 실행한 뒤 Observer 에 전달한다."""
+class CompositeObservationError(AppError, RuntimeError):
+    """일부 sink 기록 실패를 모두 실행한 뒤 Observer 에 전달한다.
+
+    ``RuntimeError`` 도 함께 상속해 기존에 이 예외를 ``RuntimeError`` 로 잡던
+    호출부가 그대로 동작하게 둔다.
+    """
+
+    default_code = ErrorCode.OBSERVATION_EMIT_FAILED
 
     def __init__(self, errors: list[Exception]) -> None:
         super().__init__(f"관측 sink {len(errors)}개 기록 실패")

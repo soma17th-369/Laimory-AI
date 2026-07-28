@@ -8,6 +8,7 @@ import tomllib
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import field_validator
@@ -153,9 +154,11 @@ class Settings(BaseSettings):
     es_event_index: str = "ai-timeline-task"
     es_timeout_sec: float = 5.0
     es_max_retries: int = 3
-    # payload 는 실행 메타데이터만 저장한다. 입력·프롬프트·응답·draft 본문은 길이와
-    # 해시로만 요약하고, 메타데이터에도 이벤트당 크기 제한을 적용한다.
-    obs_max_payload_bytes: int = 16 * 1024
+    # SANITIZED 는 입력·프롬프트·응답·draft 등 실행 본문을 마스킹한 뒤 저장하고,
+    # NONE 은 본문 대신 길이와 해시만 남긴다. 어느 정책이든 이벤트당 크기 제한을
+    # 적용하며 마스킹하지 않은 원문 저장 모드는 제공하지 않는다.
+    obs_content_capture: Literal["NONE", "SANITIZED"] = "SANITIZED"
+    obs_max_payload_bytes: int = 256 * 1024
     obs_max_events_per_task: int = 1000
     # dev 검사용: 값이 있으면 조립한 event 문서를 로컬에도 저장한다.
     obs_local_dir: str | None = None

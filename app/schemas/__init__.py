@@ -6,6 +6,7 @@
 
 from app.schemas.calendar import CalendarItem
 from app.schemas.common import CamelModel, GeoPlace, Latitude, Longitude
+from app.schemas.error import ErrorResponse
 from app.schemas.event_candidate import (
     AgentEventResult,
     AgentWarning,
@@ -55,6 +56,7 @@ __all__ = [
     "CandidateTimeRange",
     "CollectedSnapshot",
     "CollectedSourceItem",
+    "ErrorResponse",
     "EventSourceType",
     "EventType",
     "GeoPlace",

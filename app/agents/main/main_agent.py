@@ -33,6 +33,7 @@ from app.agents.events.base_event_agent import EventAgent
 from app.agents.repair.repair_agent import RepairAgent
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.core.config import settings
+from app.core.exceptions import code_of, report_error
 from app.core.logging import get_logger
 from app.core.observability import (
     ObservationEventType,
@@ -95,11 +96,30 @@ def _build_graph():
             len(merged.fragments),
             len(merged.warnings),
         )
+        emit_observation(
+            ObservationEventType.COMPLETED,
+            payload={
+                "phase": "merge_results",
+                "mergedResult": merged.model_dump(by_alias=True, mode="json"),
+            },
+        )
         return {"merged_result": merged}
 
     async def run_timeline_agent_node(state: _MainAgentState) -> _MainAgentState:
         with observation_scope(ObservationStage.TIMELINE_AGENT, agent="timeline"):
-            emit_observation(ObservationEventType.STARTED)
+            emit_observation(
+                ObservationEventType.STARTED,
+                payload={
+                    "request": state["request"].model_dump(
+                        by_alias=True,
+                        mode="json",
+                    ),
+                    "agentResult": state["merged_result"].model_dump(
+                        by_alias=True,
+                        mode="json",
+                    ),
+                },
+            )
             try:
                 draft = await asyncio.to_thread(
                     state["timeline_agent"].generate,
@@ -107,9 +127,13 @@ def _build_graph():
                     state["merged_result"],
                 )
             except Exception as exc:
-                emit_observation(
-                    ObservationEventType.FAILED,
-                    payload={"errorType": type(exc).__name__},
+                # 여기서 흡수하지 않고 다시 던진다. 최종 처리(콜백·상태)는
+                # timeline_runner 가 같은 코드로 이어서 기록한다.
+                report_error(
+                    logger,
+                    code_of(exc),
+                    "Timeline Agent 노드 실패",
+                    exc=exc,
                 )
                 raise
             emit_observation(
@@ -118,6 +142,7 @@ def _build_graph():
                     "eventCount": len(draft.events),
                     "questionCount": len(draft.questions),
                     "warningCount": len(draft.warnings),
+                    "timeline": draft.model_dump(by_alias=True, mode="json"),
                 },
             )
         logger.info(
@@ -131,7 +156,19 @@ def _build_graph():
     async def run_repair_agent_node(state: _MainAgentState) -> _MainAgentState:
         # Repair Agent 는 LLM 을 여러 번 부르는 블로킹 호출이라 스레드에 올린다.
         with observation_scope(ObservationStage.REPAIR_AGENT, agent="repair"):
-            emit_observation(ObservationEventType.STARTED)
+            emit_observation(
+                ObservationEventType.STARTED,
+                payload={
+                    "request": state["request"].model_dump(
+                        by_alias=True,
+                        mode="json",
+                    ),
+                    "timeline": state["draft"].model_dump(
+                        by_alias=True,
+                        mode="json",
+                    ),
+                },
+            )
             try:
                 draft = await asyncio.to_thread(
                     lambda: state["repair_agent"].generate(
@@ -143,9 +180,12 @@ def _build_graph():
                     )
                 )
             except Exception as exc:
-                emit_observation(
-                    ObservationEventType.FAILED,
-                    payload={"errorType": type(exc).__name__},
+                # Timeline Agent 노드와 같은 이유로 흡수하지 않는다.
+                report_error(
+                    logger,
+                    code_of(exc),
+                    "Repair Agent 노드 실패",
+                    exc=exc,
                 )
                 raise
             emit_observation(
@@ -154,6 +194,7 @@ def _build_graph():
                     "eventCount": len(draft.events),
                     "questionCount": len(draft.questions),
                     "warningCount": len(draft.warnings),
+                    "timeline": draft.model_dump(by_alias=True, mode="json"),
                 },
             )
         logger.info(
@@ -223,6 +264,7 @@ async def run_main_agent(
                 "agents": list(agents),
                 "inputItemCounts": request.source_item_counts(),
                 "hasUserMemory": request.user_memory is not None,
+                "request": request.model_dump(by_alias=True, mode="json"),
             },
         )
         final_state = await _build_graph().ainvoke(
@@ -240,6 +282,7 @@ async def run_main_agent(
                 "eventCount": len(draft.events),
                 "questionCount": len(draft.questions),
                 "warningCount": len(draft.warnings),
+                "timeline": draft.model_dump(by_alias=True, mode="json"),
             },
         )
     return draft

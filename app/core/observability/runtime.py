@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import report_error
 from app.core.logging import get_logger
-from app.core.observability import InMemoryObservationSink, Observer
+from app.core.observability import ContentCapture, InMemoryObservationSink, Observer
 from app.core.observability.documents import build_documents
 
 logger = get_logger(__name__)
@@ -24,7 +26,11 @@ def build_task_observer() -> tuple[Observer | None, InMemoryObservationSink | No
         return None, None
 
     buffer = InMemoryObservationSink(max_events=settings.obs_max_events_per_task)
-    observer = Observer(buffer, max_payload_bytes=settings.obs_max_payload_bytes)
+    observer = Observer(
+        buffer,
+        content_capture=ContentCapture(settings.obs_content_capture),
+        max_payload_bytes=settings.obs_max_payload_bytes,
+    )
     return observer, buffer
 
 
@@ -92,9 +98,13 @@ async def flush_task_observations(
                 len(event_documents),
             )
     except Exception as exc:  # noqa: BLE001 - 관측은 주 처리를 깨지 않는다.
-        logger.warning(
-            "관측 flush 실패(격리): taskId=%s, errorType=%s, error=%s",
-            task_id,
-            type(exc).__name__,
-            exc,
+        # emit=False 다. 관측 flush 가 실패한 뒤라 관측으로는 아무것도 내보낼 수
+        # 없다(버퍼는 이미 이 시점에 소비됐다). 로그가 유일한 통로다.
+        report_error(
+            logger,
+            ErrorCode.OBSERVATION_EXPORT_FAILED,
+            "관측 flush 실패(격리)",
+            exc=exc,
+            context={"taskId": task_id},
+            emit=False,
         )

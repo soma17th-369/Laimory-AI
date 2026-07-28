@@ -3,12 +3,16 @@
 import asyncio
 import logging
 
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.core.error_codes import ErrorCode, message_for
 from app.core.observability import (
     InMemoryObservationSink,
     ObservationEventType,
     ObservationStage,
     Observer,
 )
+from app.core.structured import StructuredOutputError
 from app.schemas import TaskStatus, TimelineDraft
 from app.services import timeline_runner
 from app.services.source_repository import InMemorySourceRepository
@@ -161,8 +165,31 @@ def test_agent_exception_returns_failed_callback(monkeypatch):
 
     assert status is TaskStatus.FAILED
     assert sent[0][3].status is TaskStatus.FAILED
-    assert sent[0][3].error_code == "ERROR_1008"
-    assert sent[0][3].error == "메인 에이전트 오류"
+    # 분류되지 않은 예외라 INTERNAL_ERROR 다. 원본 메시지("메인 에이전트 오류")는
+    # 로그에만 남고 콜백에는 카탈로그 안전 메시지가 나간다.
+    assert sent[0][3].error_code == int(ErrorCode.INTERNAL_ERROR)
+    assert sent[0][3].error == message_for(ErrorCode.INTERNAL_ERROR)
+    assert "메인 에이전트 오류" not in (sent[0][3].error or "")
+
+
+def test_structured_output_failure_keeps_specific_callback_code(monkeypatch):
+    async def boom(request):
+        raise StructuredOutputError("rawId=내부값이 잘못됐습니다")
+
+    monkeypatch.setattr(timeline_runner, "run_main_agent", boom)
+    monkeypatch.setattr(
+        timeline_runner.settings,
+        "app_server_api_url",
+        "https://app.example/s/api/v1",
+    )
+    sent = _patch_callback(monkeypatch)
+
+    status = _run(_seeded_repo())
+
+    assert status is TaskStatus.FAILED
+    assert sent[0][3].error_code == int(ErrorCode.STRUCTURED_OUTPUT_INVALID)
+    assert sent[0][3].error == message_for(ErrorCode.STRUCTURED_OUTPUT_INVALID)
+    assert "rawId" not in (sent[0][3].error or "")
 
 
 def test_callback_passes_callback_token_as_transport_argument(monkeypatch):
@@ -194,14 +221,15 @@ def test_db_save_failure_returns_failed_callback(monkeypatch):
         "https://app.example/s/api/v1",
     )
     sent = _patch_callback(monkeypatch)
-    failing_repo = _RaisingTimelineRepo(RuntimeError("DB 저장 실패"))
+    failing_repo = _RaisingTimelineRepo(SQLAlchemyError("DB 저장 실패"))
 
     status = _run(_seeded_repo(), timeline_repo=failing_repo)
 
     assert status is TaskStatus.FAILED
     assert sent[0][3].status is TaskStatus.FAILED
-    assert sent[0][3].error_code == "ERROR_1008"
-    assert sent[0][3].error == "DB 저장 실패"
+    assert sent[0][3].error_code == int(ErrorCode.DATABASE_ERROR)
+    assert sent[0][3].error == message_for(ErrorCode.DATABASE_ERROR)
+    assert "DB 저장 실패" not in (sent[0][3].error or "")
 
 
 def test_storage_validation_failure_observes_safe_codes_without_raw_id(monkeypatch):
@@ -243,8 +271,8 @@ def test_storage_validation_failure_observes_safe_codes_without_raw_id(monkeypat
         and event.event_type is ObservationEventType.FAILED
     )
     assert failed.payload == {
+        "errorCode": int(ErrorCode.TIMELINE_STORAGE_VALIDATION_FAILED),
         "errorType": "TimelineValidationError",
-        "validationCode": "TIMELINE_STORAGE_CONTRACT_VIOLATION",
         "violationCodes": ["SOURCE_RAW_ID_NOT_IN_TASK"],
         "violationCount": 1,
     }

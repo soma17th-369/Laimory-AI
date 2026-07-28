@@ -67,6 +67,26 @@ def test_full_pipeline_emits_agent_stages_under_task_id() -> None:
     # Observer 가 붙인 sequence 는 task 안에서 유일하다.
     seqs = [e.sequence for e in sink.events]
     assert len(seqs) == len(set(seqs))
+    main_started = next(
+        event
+        for event in sink.events
+        if event.stage.value == "MAIN_AGENT" and event.event_type.value == "STARTED"
+    )
+    assert main_started.payload["request"]["taskId"] == request.task_id
+    event_completed = next(
+        event
+        for event in sink.events
+        if event.stage.value == "EVENT_AGENT"
+        and event.event_type.value == "COMPLETED"
+    )
+    assert "result" in event_completed.payload
+    timeline_completed = next(
+        event
+        for event in sink.events
+        if event.stage.value == "TIMELINE_AGENT"
+        and event.event_type.value == "COMPLETED"
+    )
+    assert "timeline" in timeline_completed.payload
 
 
 def _seeded_repo() -> InMemorySourceRepository:
@@ -138,9 +158,10 @@ def test_runner_emits_request_storage_callback_final(monkeypatch) -> None:
         for event in events
         if event.stage.value == "REQUEST" and event.event_type.value == "COMPLETED"
     )
-    assert request_completed.payload["inputMetadata"]["contentCaptured"] is False
+    assert request_completed.payload["request"]["taskId"] == _TASK_ID
     serialized_payload = json.dumps(request_completed.payload, ensure_ascii=False)
-    assert "sourceItems" not in serialized_payload
+    assert '"stays"' in serialized_payload
+    assert '"rawId"' in serialized_payload
     serialized_events = json.dumps(
         [event.model_dump(mode="json") for event in events],
         ensure_ascii=False,

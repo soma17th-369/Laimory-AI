@@ -8,6 +8,8 @@ source 소속을 확인한다. 같은 source가 여러 이벤트의 근거가 �
 from dataclasses import dataclass
 from enum import StrEnum
 
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import AppError
 from app.schemas.timeline import TimelineDraft
 
 
@@ -27,8 +29,10 @@ class TimelineViolation:
     message: str
 
 
-class TimelineValidationError(Exception):
+class TimelineValidationError(AppError):
     """최종 타임라인 저장 계약 위반."""
+
+    default_code = ErrorCode.TIMELINE_STORAGE_VALIDATION_FAILED
 
     def __init__(self, violations: list[TimelineViolation]) -> None:
         self.details = violations

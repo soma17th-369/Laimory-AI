@@ -11,6 +11,8 @@ from urllib.parse import quote
 import httpx
 
 from app.core.config import settings
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import report_error
 from app.core.logging import get_logger
 from app.schemas import TimelineCallbackPayload
 
@@ -50,11 +52,16 @@ async def send_callback(
             )
             response.raise_for_status()
     except httpx.HTTPError as exc:
-        logger.warning(
-            "콜백 전송 실패: taskId=%s, url=%s, error=%s",
-            task_id,
-            url,
-            exc,
+        # 전송 실패 자체는 여기서 코드와 함께 로그로만 남긴다. 관측 이벤트는
+        # 호출부(timeline_runner)가 CALLBACK 단계에서 한 번만 낸다 — 같은 실패를
+        # 두 번 emit 하면 관측에서 실패 건수가 부풀려진다.
+        report_error(
+            logger,
+            ErrorCode.CALLBACK_SEND_FAILED,
+            "콜백 전송 실패",
+            exc=exc,
+            context={"taskId": task_id, "url": url},
+            emit=False,
         )
         return False
 

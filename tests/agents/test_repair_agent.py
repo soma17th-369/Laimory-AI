@@ -288,6 +288,7 @@ def test_llm_failure_keeps_improvements_from_earlier_iterations():
     # 1차 개선은 남고, 2차 실패는 warning 으로만 남는다.
     assert result.events[0].title == "고침"
     assert any("개선 실패" in warning.message for warning in result.warnings)
+    assert all("LLM 장애" not in warning.message for warning in result.warnings)
 
 
 # --- 상류 Agent 재실행 ---------------------------------------------------------

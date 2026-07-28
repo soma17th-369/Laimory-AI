@@ -18,7 +18,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
 from zoneinfo import ZoneInfo
 
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import report_error
 from app.core.logging import get_logger
+from app.core.observability import ObservationStage
 from app.schemas import (
     AgentEventResult,
     TimelineDraft,
@@ -51,9 +54,19 @@ def resolve_timezone(name: str | None) -> tzinfo:
     key = name or _DEFAULT_TZ
     try:
         return ZoneInfo(key)
-    except Exception:  # noqa: BLE001 - tzdata 미설치/알 수 없는 timezone 방어
+    except Exception as exc:  # noqa: BLE001 - tzdata 미설치/알 수 없는 timezone 방어
         if key != _DEFAULT_TZ:
-            logger.warning("timezone 로드 실패로 KST(+09:00)를 사용합니다: timezone=%s", key)
+            # 기본값(Asia/Seoul)이 tzdata 미설치로 실패하는 건 이 환경의 상수라
+            # 매번 남길 필요가 없다. 요청이 준 다른 timezone 이 깨졌을 때만 남긴다.
+            report_error(
+                logger,
+                ErrorCode.TIMEZONE_RESOLUTION_FAILED,
+                "timezone 로드 실패로 KST(+09:00)를 사용합니다",
+                exc=exc,
+                context={"timezone": key},
+                stage=ObservationStage.REQUEST,
+                payload={"timezone": key, "fallback": _DEFAULT_TZ},
+            )
         return timezone(timedelta(hours=9), _DEFAULT_TZ)
 
 

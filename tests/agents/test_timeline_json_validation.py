@@ -110,3 +110,4 @@ def test_invalid_json_falls_back_to_empty_draft():
     assert draft.events == []
     assert draft.date == "2026-06-20"
     assert any("실행 실패" in w.message for w in draft.warnings)
+    assert all("Expecting" not in w.message for w in draft.warnings)

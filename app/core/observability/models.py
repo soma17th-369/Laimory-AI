@@ -46,6 +46,18 @@ class ObservationEventType(StrEnum):
     VALIDATION_REPAIRED = "VALIDATION_REPAIRED"
 
 
+class ContentCapture(StrEnum):
+    """payload 본문을 관측 sink로 전달하는 수준.
+
+    ``NONE``은 본문 대신 길이와 해시만 남긴다. ``SANITIZED``는 Secret과 식별
+    가능한 패턴을 마스킹하고 크기 제한을 적용한 본문을 남긴다. 마스킹하지 않은
+    원문 저장 모드는 제공하지 않는다.
+    """
+
+    NONE = "NONE"
+    SANITIZED = "SANITIZED"
+
+
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 

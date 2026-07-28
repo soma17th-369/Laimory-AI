@@ -5,6 +5,7 @@ import json
 
 from app.core.observability import (
     CompositeObservationSink,
+    ContentCapture,
     InMemoryObservationSink,
     JsonLinesObservationSink,
     ObservationEvent,
@@ -30,14 +31,14 @@ class _FailingSink:
         raise RuntimeError("의도된 관측 장애")
 
 
-def test_observer_suppresses_content_before_writing_to_sink() -> None:
+def test_observer_sanitizes_content_before_writing_to_sink() -> None:
     sink = InMemoryObservationSink()
     observer = Observer(sink)
 
     assert observer.emit(_event()) is True
 
     stored = sink.events[0]
-    assert stored.payload["prompt"]["contentCaptured"] is False
+    assert stored.payload["prompt"] == REDACTED
     assert stored.payload["apiKey"] == REDACTED
     assert "user@example.com" not in str(stored.payload)
     assert observer.stats().attempted == 1
@@ -45,10 +46,19 @@ def test_observer_suppresses_content_before_writing_to_sink() -> None:
     assert observer.stats().failed == 0
 
 
-def test_observer_hides_content_by_default() -> None:
+def test_observer_keeps_sanitized_content_by_default() -> None:
     sink = InMemoryObservationSink()
 
     Observer(sink).emit(_event())
+
+    assert sink.events[0].payload["prompt"] == REDACTED
+    assert "user@example.com" not in str(sink.events[0].payload)
+
+
+def test_observer_none_policy_hides_content() -> None:
+    sink = InMemoryObservationSink()
+
+    Observer(sink, content_capture=ContentCapture.NONE).emit(_event())
 
     assert sink.events[0].payload["prompt"]["contentCaptured"] is False
     assert "user@example.com" not in str(sink.events[0].payload)
