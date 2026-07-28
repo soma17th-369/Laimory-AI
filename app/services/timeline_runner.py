@@ -16,6 +16,20 @@
 전체 메인 에이전트는 `pipeline_timeout_sec` 로 감싼다. timeout 이나 예기치 못한
 오류가 나면 FAILED 로 콜백하고, partial 결과는 저장하지 않는다.
 
+실패는 **원인별 정수 코드**(`app.core.error_codes`)로 식별한다. 콜백·관측 이벤트·
+운영 로그가 모두 같은 코드 하나를 쓴다.
+
+    스냅샷 없음        → 1101  SOURCE_SNAPSHOT_NOT_FOUND
+    원본 계약 위반     → 1102  SOURCE_CONTRACT_VIOLATION   (SourceBatchError)
+    파이프라인 timeout → 1201  PIPELINE_TIMEOUT
+    구조화 출력 실패   → 1202  STRUCTURED_OUTPUT_INVALID   (StructuredOutputError)
+    저장 검증 실패     → 1301  TIMELINE_STORAGE_VALIDATION_FAILED
+    DB 오류            → 1302  DATABASE_ERROR
+    그 밖              → 1901  INTERNAL_ERROR
+
+콜백 `error` 에는 코드에 묶인 안전 메시지만 싣는다. 원본 예외 메시지는 로그에만
+남는다 — 콜백 본문은 AI 서버 밖으로 나가므로 내부 식별자·경로가 실리면 안 된다.
+
 처리 전 구간은 task 단위 관측 컨텍스트(`observation_context`)로 감싼다. 상관키는
 `taskId` 하나이며, `contextvars` 로 열려 있어 `asyncio.to_thread` 로 도는 Event/
 Timeline/Repair Agent 와 그 안의 LLM 호출까지 같은 taskId 로 이어진다. 관측 이벤트는
@@ -27,6 +41,8 @@ import asyncio
 
 from app.agents.main import run_main_agent
 from app.core.config import settings
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import code_of, report_error
 from app.core.inflight import track_inflight
 from app.core.logging import get_logger
 from app.core.observability import (
@@ -34,7 +50,6 @@ from app.core.observability import (
     ObservationStage,
     emit_observation,
     observation_context,
-    summarize_content,
 )
 from app.core.observability.runtime import build_task_observer, flush_task_observations
 from app.schemas import TaskStatus, TimelineCallbackPayload
@@ -46,8 +61,6 @@ from app.services.timeline_repository import TimelineRepository
 from app.services.timeline_validator import TimelineValidationError
 
 logger = get_logger(__name__)
-
-_AI_FAILURE_ERROR_CODE = "ERROR_1008"
 
 
 async def process_timeline_task(
@@ -128,7 +141,9 @@ async def _process_observed(
     """
 
     status = TaskStatus.SUCCESS
-    error: str | None = None
+    # 실패 원인을 식별하는 카탈로그 코드. 성공이면 None 이다. 콜백·관측·로그가
+    # 모두 이 하나를 쓰므로 세 곳이 다른 값을 말할 수 없다.
+    failure_code: ErrorCode | None = None
     active_stage = ObservationStage.REQUEST
 
     try:
@@ -143,14 +158,15 @@ async def _process_observed(
         )
         snapshot = await repo.get(task_id)
         if snapshot is None:
-            logger.warning("수집 스냅샷을 찾지 못함: taskId=%s", task_id)
-            emit_observation(
-                ObservationEventType.FAILED,
+            status = TaskStatus.FAILED
+            failure_code = report_error(
+                logger,
+                ErrorCode.SOURCE_SNAPSHOT_NOT_FOUND,
+                "수집 스냅샷을 찾지 못함",
+                context={"taskId": task_id},
                 stage=ObservationStage.REQUEST,
                 payload={"reason": "snapshot_not_found"},
             )
-            status = TaskStatus.FAILED
-            error = "수집 데이터를 찾지 못했습니다."
         else:
             # 요청이 준 window 를 정본으로 덮어쓴다. 원본 스냅샷 객체(인메모리 스텁이
             # 공유할 수 있음)를 건드리지 않도록 copy 후 교체한다.
@@ -168,9 +184,7 @@ async def _process_observed(
                 payload={
                     "inputItemCounts": request.source_item_counts(),
                     "hasUserMemory": request.user_memory is not None,
-                    "inputMetadata": summarize_content(
-                        request.model_dump(by_alias=True, mode="json")
-                    ),
+                    "request": request.model_dump(by_alias=True, mode="json"),
                 },
             )
             active_stage = ObservationStage.MAIN_AGENT
@@ -193,39 +207,43 @@ async def _process_observed(
                 payload={
                     "dailyRecordId": daily_record_id,
                     "eventCount": len(draft.events),
+                    "timeline": draft.model_dump(by_alias=True, mode="json"),
                 },
             )
-    except asyncio.TimeoutError:
-        logger.warning("타임라인 처리 timeout: taskId=%s", task_id)
+    except asyncio.TimeoutError as exc:
         status = TaskStatus.FAILED
-        error = f"메인 에이전트 timeout ({settings.pipeline_timeout_sec}s) 초과"
-        emit_observation(
-            ObservationEventType.FAILED,
-            stage=ObservationStage.MAIN_AGENT,
-            payload={
-                "errorType": "TimeoutError",
+        failure_code = report_error(
+            logger,
+            ErrorCode.PIPELINE_TIMEOUT,
+            "타임라인 처리 timeout",
+            exc=exc,
+            context={
+                "taskId": task_id,
                 "timeoutSec": settings.pipeline_timeout_sec,
             },
+            stage=ObservationStage.MAIN_AGENT,
+            payload={"timeoutSec": settings.pipeline_timeout_sec},
         )
     except Exception as exc:  # noqa: BLE001 - 백그라운드 최종 방어선
-        logger.warning(
-            "타임라인 처리 실패: taskId=%s, error=%s", task_id, exc, exc_info=True
-        )
         status = TaskStatus.FAILED
-        error = str(exc)
-        failure_payload = {"errorType": type(exc).__name__}
+        # 도메인 예외는 자기 코드를 갖고 있고(SourceBatchError 1102,
+        # TimelineValidationError 1301, StructuredOutputError 1202 …), 분류되지
+        # 않은 예외만 INTERNAL_ERROR 로 떨어진다.
+        failure_payload: dict[str, object] = {}
         if isinstance(exc, TimelineValidationError):
-            failure_payload.update(
-                {
-                    "validationCode": "TIMELINE_STORAGE_CONTRACT_VIOLATION",
-                    "violationCodes": exc.violation_codes,
-                    "violationCount": len(exc.details),
-                }
-            )
-        emit_observation(
-            ObservationEventType.FAILED,
+            failure_payload = {
+                "violationCodes": exc.violation_codes,
+                "violationCount": len(exc.details),
+            }
+        failure_code = report_error(
+            logger,
+            code_of(exc),
+            "타임라인 처리 실패",
+            exc=exc,
+            context={"taskId": task_id},
             stage=active_stage,
             payload=failure_payload,
+            exc_info=True,
         )
 
     # 설정된 App Server API URL 이 있으면 성공/실패 통보를 전달한다.
@@ -236,12 +254,19 @@ async def _process_observed(
             stage=ObservationStage.CALLBACK,
             payload={"status": status.value},
         )
-        payload = TimelineCallbackPayload(
-            status=status,
-            error_code=_AI_FAILURE_ERROR_CODE
-            if status == TaskStatus.FAILED
-            else None,
-            error=error if status == TaskStatus.FAILED else None,
+        # 실패면 원인별 코드와 그 코드에 묶인 안전 메시지가 나간다. 원본 예외
+        # 메시지는 위에서 로그에만 남겼다.
+        #
+        # 분기 기준은 `status` 다(`failure_code` 가 아니다). 실패 경로는 모두 코드를
+        # 채우지만, 누군가 status 만 FAILED 로 두고 코드를 빠뜨리면 코드 기준 분기는
+        # 성공 콜백을 보내 버린다. 실패를 성공으로 통보하는 것보다 코드가 뭉개지는
+        # 편이 낫다.
+        payload = (
+            TimelineCallbackPayload.success()
+            if status is TaskStatus.SUCCESS
+            else TimelineCallbackPayload.failure(
+                failure_code or ErrorCode.INTERNAL_ERROR
+            )
         )
         sent = await send_callback(
             settings.app_server_api_url,
@@ -249,11 +274,23 @@ async def _process_observed(
             callback_token,
             payload,
         )
-        emit_observation(
-            ObservationEventType.COMPLETED if sent else ObservationEventType.FAILED,
-            stage=ObservationStage.CALLBACK,
-            payload={"sent": sent, "status": status.value},
-        )
+        if sent:
+            emit_observation(
+                ObservationEventType.COMPLETED,
+                stage=ObservationStage.CALLBACK,
+                payload={"sent": True, "status": status.value},
+            )
+        else:
+            # 콜백 전송 실패는 Timeline 결과를 바꾸지 않는다(이미 저장은 끝났다).
+            # 다만 App Server 가 결과를 못 받은 상태이므로 코드로 남겨 추적한다.
+            report_error(
+                logger,
+                ErrorCode.CALLBACK_SEND_FAILED,
+                "완료 콜백 전송 실패",
+                context={"taskId": task_id, "status": status.value},
+                stage=ObservationStage.CALLBACK,
+                payload={"sent": False, "status": status.value},
+            )
 
     emit_observation(
         ObservationEventType.COMPLETED
@@ -262,7 +299,7 @@ async def _process_observed(
         stage=ObservationStage.FINAL,
         payload={
             "status": status.value,
-            **({"failureReason": "processing_failed"} if error else {}),
+            **({"errorCode": int(failure_code)} if failure_code is not None else {}),
         },
     )
     return status

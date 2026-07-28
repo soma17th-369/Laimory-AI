@@ -49,6 +49,8 @@ from app.services.draft_repair import (
     sort_events,
 )
 from app.services.meal_guard import enforce_meal_duration
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import AppError, code_of, report_error
 from app.services.place_resolver import resolve_places
 from app.services.sleep_guard import enforce_sleep_boundary
 from app.services.source_lookup import raw_id_of
@@ -56,8 +58,10 @@ from app.services.source_lookup import raw_id_of
 logger = get_logger(__name__)
 
 
-class RepairToolError(Exception):
+class RepairToolError(AppError):
     """도구를 실행할 수 없을 때(인자 오류·없는 대상 등)."""
+
+    default_code = ErrorCode.REPAIR_TOOL_FAILED
 
 
 @dataclass
@@ -391,12 +395,16 @@ def execute_tool_calls(
             message = tool.run(ctx, call.args)
             results.append(RepairToolResult(tool=call.tool, ok=True, message=message))
         except Exception as exc:  # noqa: BLE001 - 도구 실패가 repair 전체를 멈추지 않는다
-            logger.warning(
-                "Repair 도구 실행 실패: tool=%s, args=%s, error=%s",
-                call.tool,
-                call.args,
-                exc,
+            report_error(
+                logger,
+                code_of(exc),
+                "Repair 도구 실행 실패",
+                exc=exc,
+                context={"tool": call.tool, "args": call.args},
+                payload={"tool": call.tool},
             )
+            # message 는 LLM(Repair Agent)에게 되돌려 주는 값이라 원문을 유지한다.
+            # 외부(API·콜백)로 나가지 않으므로 안전 메시지로 바꾸지 않는다.
             results.append(RepairToolResult(tool=call.tool, ok=False, message=str(exc)))
 
     ctx.log.extend(results)

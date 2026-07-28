@@ -95,3 +95,24 @@ def test_build_observer_is_true_noop_when_outputs_disabled(monkeypatch) -> None:
 
     assert observer is None
     assert buffer is None
+
+
+def test_build_observer_applies_configured_none_capture(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "obs_local_dir", "local-observations")
+    monkeypatch.setattr(settings, "obs_enabled", False)
+    monkeypatch.setattr(settings, "obs_content_capture", "NONE")
+
+    observer, buffer = build_task_observer()
+    assert observer is not None
+    assert buffer is not None
+
+    observer.emit(
+        ObservationEvent(
+            task_id="t1",
+            stage=ObservationStage.LLM,
+            event_type=ObservationEventType.PROMPT,
+            payload={"prompt": "본문"},
+        )
+    )
+
+    assert buffer.events[0].payload["prompt"]["contentCaptured"] is False

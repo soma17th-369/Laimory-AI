@@ -6,8 +6,10 @@ from dataclasses import dataclass
 from itertools import count
 from threading import Lock
 
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import report_error
 from app.core.logging import get_logger
-from app.core.observability.models import ObservationEvent
+from app.core.observability.models import ContentCapture, ObservationEvent
 from app.core.observability.redaction import capture_payload
 from app.core.observability.sinks import NullObservationSink, ObservationSink
 
@@ -35,9 +37,11 @@ class Observer:
         self,
         sink: ObservationSink | None = None,
         *,
-        max_payload_bytes: int = 16 * 1024,
+        content_capture: ContentCapture = ContentCapture.SANITIZED,
+        max_payload_bytes: int = 256 * 1024,
     ) -> None:
         self._sink = sink or NullObservationSink()
+        self._content_capture = content_capture
         self._max_payload_bytes = max_payload_bytes
         self._sequence = count()
         self._sequence_lock = Lock()
@@ -61,6 +65,7 @@ class Observer:
                     "sequence": self._next_sequence(),
                     "payload": capture_payload(
                         event.payload,
+                        self._content_capture,
                         max_bytes=self._max_payload_bytes,
                     ),
                 }
@@ -69,12 +74,19 @@ class Observer:
         except Exception as exc:  # noqa: BLE001 - 관측은 주 처리의 실패 원인이 될 수 없다.
             with self._lock:
                 self._failed += 1
-            logger.warning(
-                "관측 이벤트 기록 실패: taskId=%s, stage=%s, eventType=%s, error=%s",
-                event.task_id,
-                event.stage,
-                event.event_type,
-                exc,
+            # emit=False 다. 관측 기록이 깨진 상황에서 그 사실을 관측으로 알리려
+            # 하면 같은 경로를 다시 타 무한 재귀한다. 로그가 유일한 통로다.
+            report_error(
+                logger,
+                ErrorCode.OBSERVATION_EMIT_FAILED,
+                "관측 이벤트 기록 실패",
+                exc=exc,
+                context={
+                    "taskId": event.task_id,
+                    "stage": event.stage,
+                    "eventType": event.event_type,
+                },
+                emit=False,
             )
             return False
 

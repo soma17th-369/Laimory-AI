@@ -24,8 +24,11 @@ from app.agents.events.photo.image_source import (
     PhotoImageSource,
 )
 from app.agents.parsing import SupportsComplete, default_llm
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import report_error
 from app.core.llm import ImageInput
 from app.core.logging import get_logger
+from app.core.observability import ObservationStage
 from app.schemas import PhotoItem
 
 logger = get_logger(__name__)
@@ -58,12 +61,25 @@ def parse_descriptions(text: str, valid_raw_ids: set[str]) -> dict[str, str]:
     start = text.find("{")
     end = text.rfind("}")
     if start == -1 or end == -1 or end < start:
-        logger.warning("사진 description 응답에서 JSON 객체를 찾지 못했습니다.")
+        report_error(
+            logger,
+            ErrorCode.STRUCTURED_OUTPUT_INVALID,
+            "사진 description 응답에서 JSON 객체를 찾지 못했습니다",
+            stage=ObservationStage.EVENT_AGENT,
+            payload={"parser": "photo_description"},
+        )
         return {}
     try:
         payload = json.loads(text[start : end + 1])
-    except json.JSONDecodeError:
-        logger.warning("사진 description JSON 파싱에 실패했습니다.")
+    except json.JSONDecodeError as exc:
+        report_error(
+            logger,
+            ErrorCode.STRUCTURED_OUTPUT_INVALID,
+            "사진 description JSON 파싱에 실패했습니다",
+            exc=exc,
+            stage=ObservationStage.EVENT_AGENT,
+            payload={"parser": "photo_description"},
+        )
         return {}
 
     result: dict[str, str] = {}

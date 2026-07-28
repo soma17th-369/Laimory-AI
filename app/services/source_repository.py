@@ -24,14 +24,22 @@ from sqlalchemy import select
 
 from app.core.db import session_scope
 from app.core.db_models import DraftSourceItem
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import AppError
 from app.schemas import CollectedSnapshot, CollectedSourceItem
 from app.schemas.source_snapshot import TimelineWindow
 
 _DEFAULT_TIMEZONE = "Asia/Seoul"
 
 
-class SourceBatchError(ValueError):
-    """한 task의 staging source 묶음이 파이프라인 입력 계약을 위반함."""
+class SourceBatchError(AppError, ValueError):
+    """한 task의 staging source 묶음이 파이프라인 입력 계약을 위반함.
+
+    ``ValueError`` 도 함께 상속해 기존에 이 예외를 ``ValueError`` 로 잡던 호출부가
+    그대로 동작하게 둔다.
+    """
+
+    default_code = ErrorCode.SOURCE_CONTRACT_VIOLATION
 
 
 def validate_source_rows(task_id: str, rows: list[DraftSourceItem]) -> int:

@@ -40,8 +40,11 @@ from app.agents.repair.tools import (
 )
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.core.config import settings
+from app.core.error_codes import ErrorCode, message_for
+from app.core.exceptions import code_of_or, report_error
 from app.core.logging import get_logger
 from app.core.observability import ObservationEventType, emit_observation
+from app.core.structured import StructuredOutputError
 from app.schemas import (
     AgentEventResult,
     RepairPlan,
@@ -68,7 +71,7 @@ def parse_repair_plan(text: str) -> RepairPlan:
     start = text.find("{")
     end = text.rfind("}")
     if start == -1 or end == -1 or end < start:
-        raise ValueError("Repair Agent 응답에서 JSON 객체를 찾지 못했습니다.")
+        raise StructuredOutputError("Repair Agent 응답에서 JSON 객체를 찾지 못했습니다.")
 
     payload = json.loads(text[start : end + 1])
     return RepairPlan.model_validate(payload)
@@ -191,20 +194,25 @@ class RepairAgent(Agent):
         try:
             self._run_graph(ctx, last_good)
         except Exception as exc:  # noqa: BLE001 - 개선 실패가 draft 를 잃게 하지 않는다
-            logger.warning("Repair Agent 실행 실패: error=%s", exc, exc_info=True)
-            emit_observation(
-                ObservationEventType.FAILED,
-                payload={
-                    "errorType": type(exc).__name__,
-                    "fallback": "last_good_draft",
-                },
+            failure_code = code_of_or(exc, ErrorCode.REPAIR_AGENT_FAILED)
+            report_error(
+                logger,
+                failure_code,
+                "Repair Agent 실행 실패",
+                exc=exc,
+                context={"fallback": "last_good_draft"},
+                payload={"fallback": "last_good_draft"},
+                exc_info=True,
             )
             restored = last_good[0]
             restored.warnings.append(
                 TimelineWarning(
                     warning_id=f"warning-repair-agent-{len(restored.warnings) + 1:03d}",
                     severity=TimelineWarningSeverity.MEDIUM,
-                    message=f"{self.name} agent 개선 실패로 직전 draft 를 유지했습니다: {exc}",
+                    message=(
+                        f"{self.name} agent 개선 실패로 직전 draft 를 유지했습니다: "
+                        f"{message_for(failure_code)}"
+                    ),
                 )
             )
             return restored
@@ -251,6 +259,7 @@ class RepairAgent(Agent):
                     "toolCallCount": len(plan.tool_calls),
                     "toolNames": [call.tool for call in plan.tool_calls],
                     "done": plan.done,
+                    "plan": plan.model_dump(by_alias=True, mode="json"),
                 },
             )
             return {"iteration": iteration, "plan": plan}
@@ -263,6 +272,7 @@ class RepairAgent(Agent):
                     payload={
                         "tool": call.tool,
                         "argumentNames": sorted(call.args),
+                        "call": call.model_dump(by_alias=True, mode="json"),
                     },
                 )
             results = execute_tool_calls(ctx, state["plan"].tool_calls)
@@ -275,6 +285,11 @@ class RepairAgent(Agent):
                     payload={
                         "tool": result.tool,
                         "ok": result.ok,
+                        "result": result.model_dump(by_alias=True, mode="json"),
+                        "timeline": ctx.draft.model_dump(
+                            by_alias=True,
+                            mode="json",
+                        ),
                     },
                 )
             _confirm(ctx)
@@ -286,6 +301,7 @@ class RepairAgent(Agent):
                     "eventCount": len(ctx.draft.events),
                     "questionCount": len(ctx.draft.questions),
                     "warningCount": len(ctx.draft.warnings),
+                    "timeline": ctx.draft.model_dump(by_alias=True, mode="json"),
                 },
             )
             return {}

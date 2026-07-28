@@ -28,6 +28,18 @@ def test_blank_app_server_api_url_disables_callback() -> None:
     assert _settings(app_server_api_url=" ").app_server_api_url is None
 
 
+def test_observation_content_capture_defaults_to_sanitized() -> None:
+    configured = _settings()
+
+    assert configured.obs_content_capture == "SANITIZED"
+    assert configured.obs_max_payload_bytes == 256 * 1024
+
+
+def test_observation_content_capture_rejects_unknown_policy() -> None:
+    with pytest.raises(ValidationError):
+        _settings(obs_content_capture="RAW")
+
+
 @pytest.mark.parametrize(
     "value",
     [

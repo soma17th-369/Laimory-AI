@@ -3,6 +3,8 @@
 from abc import abstractmethod
 
 from app.agents.base import Agent
+from app.core.error_codes import ErrorCode, message_for
+from app.core.exceptions import code_of_or, report_error
 from app.core.logging import get_logger
 from app.core.observability import (
     ObservationEventType,
@@ -34,26 +36,33 @@ class EventAgent(Agent):
         with observation_scope(
             ObservationStage.EVENT_AGENT, agent=self._agent_name()
         ):
-            emit_observation(ObservationEventType.STARTED)
+            emit_observation(
+                ObservationEventType.STARTED,
+                payload={
+                    "request": request.model_dump(by_alias=True, mode="json"),
+                },
+            )
             try:
                 result = self._generate(request)
             except Exception as exc:
-                logger.warning(
-                    "Event Agent 실행 실패: agent=%s, error=%s",
-                    self.name,
-                    exc,
+                failure_code = code_of_or(exc, ErrorCode.EVENT_AGENT_FAILED)
+                report_error(
+                    logger,
+                    failure_code,
+                    "Event Agent 실행 실패",
+                    exc=exc,
+                    context={"agent": self.name},
                     exc_info=True,
-                )
-                emit_observation(
-                    ObservationEventType.FAILED,
-                    payload={"errorType": type(exc).__name__},
                 )
                 agent_name = self.name or self.__class__.__name__
                 return AgentEventResult(
                     warnings=[
                         {
                             "agentName": agent_name,
-                            "message": f"{agent_name} agent 실행 실패: {exc}",
+                            "message": (
+                                f"{agent_name} agent 실행 실패: "
+                                f"{message_for(failure_code)}"
+                            ),
                         }
                     ]
                 )
@@ -84,6 +93,7 @@ class EventAgent(Agent):
                     "candidateCount": len(filtered.candidates),
                     "fragmentCount": len(filtered.fragments),
                     "warningCount": len(filtered.warnings),
+                    "result": filtered.model_dump(by_alias=True, mode="json"),
                 },
             )
             return filtered

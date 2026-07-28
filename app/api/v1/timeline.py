@@ -12,6 +12,7 @@ DB(`SourceRepository`)에서 수집 스냅샷을 읽어와 정규화한 뒤 메�
 from fastapi import APIRouter, BackgroundTasks, Depends, status
 from pydantic import AwareDatetime, Field
 
+from app.api.error_handlers import ERROR_RESPONSES
 from app.schemas import TaskStatus
 from app.schemas.common import CamelModel
 from app.services.source_repository import SourceRepository, get_source_repository
@@ -52,6 +53,7 @@ class TimelineDispatchResponse(CamelModel):
     "",
     response_model=TimelineDispatchResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    responses=ERROR_RESPONSES,
 )
 async def create_timeline_draft(
     request: TimelineTriggerRequest,

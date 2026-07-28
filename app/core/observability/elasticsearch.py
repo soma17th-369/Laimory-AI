@@ -17,6 +17,8 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import report_error
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -102,36 +104,48 @@ async def _send_once(client: httpx.AsyncClient, items: list[_Item]) -> _SendResu
             content=_ndjson(items),
             headers=headers,
         )
+    # 아래 실패들은 모두 emit=False 다. 관측 전송이 깨진 마당에 관측 이벤트를 더
+    # 만들어 봐야 같은 경로로 다시 흘러간다. 로그가 유일한 통로다.
     except httpx.RequestError as exc:
-        logger.warning(
-            "관측 ES bulk 연결 실패(재시도 대상): documents=%d, error=%s",
-            len(items),
-            exc,
+        report_error(
+            logger,
+            ErrorCode.OBSERVATION_EXPORT_FAILED,
+            "관측 ES bulk 연결 실패(재시도 대상)",
+            exc=exc,
+            context={"documents": len(items)},
+            emit=False,
         )
         return _SendResult(retryable=items)
 
     if response.status_code in _RETRYABLE_STATUS:
-        logger.warning(
-            "관측 ES bulk 일시 실패(재시도 대상): status=%s, documents=%d",
-            response.status_code,
-            len(items),
+        report_error(
+            logger,
+            ErrorCode.OBSERVATION_EXPORT_FAILED,
+            "관측 ES bulk 일시 실패(재시도 대상)",
+            context={"httpStatus": response.status_code, "documents": len(items)},
+            emit=False,
         )
         return _SendResult(retryable=items)
     if response.status_code >= 400:
-        logger.warning(
-            "관측 ES bulk 영구 실패(비재시도): status=%s, documents=%d",
-            response.status_code,
-            len(items),
+        report_error(
+            logger,
+            ErrorCode.OBSERVATION_EXPORT_FAILED,
+            "관측 ES bulk 영구 실패(비재시도)",
+            context={"httpStatus": response.status_code, "documents": len(items)},
+            emit=False,
         )
         return _SendResult(retryable=[], failed=len(items))
 
     try:
         data = response.json()
     except ValueError as exc:
-        logger.warning(
-            "관측 ES bulk 응답 JSON 파싱 실패(재시도 대상): documents=%d, error=%s",
-            len(items),
-            exc,
+        report_error(
+            logger,
+            ErrorCode.OBSERVATION_EXPORT_FAILED,
+            "관측 ES bulk 응답 JSON 파싱 실패(재시도 대상)",
+            exc=exc,
+            context={"documents": len(items)},
+            emit=False,
         )
         return _SendResult(retryable=items)
 
@@ -143,9 +157,12 @@ async def _send_once(client: httpx.AsyncClient, items: list[_Item]) -> _SendResu
     failed = 0
     result_items = data.get("items")
     if not isinstance(result_items, list):
-        logger.warning(
-            "관측 ES bulk 응답에 items가 없음(재시도 대상): documents=%d",
-            len(items),
+        report_error(
+            logger,
+            ErrorCode.OBSERVATION_EXPORT_FAILED,
+            "관측 ES bulk 응답에 items가 없음(재시도 대상)",
+            context={"documents": len(items)},
+            emit=False,
         )
         return _SendResult(retryable=items)
 
@@ -172,10 +189,12 @@ async def _send_once(client: httpx.AsyncClient, items: list[_Item]) -> _SendResu
             failed += 1
             error = result.get("error")
             error_type = error.get("type") if isinstance(error, dict) else None
-            logger.warning(
-                "관측 ES item 영구 실패(비재시도): status=%s, errorType=%s",
-                status,
-                error_type,
+            report_error(
+                logger,
+                ErrorCode.OBSERVATION_EXPORT_FAILED,
+                "관측 ES item 영구 실패(비재시도)",
+                context={"httpStatus": status, "providerErrorType": error_type},
+                emit=False,
             )
     return _SendResult(
         retryable=retryable,
@@ -203,7 +222,13 @@ async def _send_with_retry(
                 failed=failed,
             )
         if attempt >= settings.es_max_retries:
-            logger.warning("관측 ES 재시도 소진: %d건 미전송", len(pending))
+            report_error(
+                logger,
+                ErrorCode.OBSERVATION_EXPORT_FAILED,
+                "관측 ES 재시도 소진",
+                context={"documents": len(pending)},
+                emit=False,
+            )
             failed += len(pending)
             return ExportResult(
                 attempted=len(batch),
@@ -270,11 +295,13 @@ async def export(
     except Exception as exc:  # noqa: BLE001 - 관측 전송은 주 처리를 깨지 않는다.
         unclassified = len(items) - succeeded - failed
         failed += max(unclassified, 0)
-        logger.warning(
-            "관측 ES 전송 예외(격리): taskId=%s, errorType=%s, error=%s",
-            task_label,
-            type(exc).__name__,
-            exc,
+        report_error(
+            logger,
+            ErrorCode.OBSERVATION_EXPORT_FAILED,
+            "관측 ES 전송 예외(격리)",
+            exc=exc,
+            context={"taskId": task_label},
+            emit=False,
         )
 
     result = ExportResult(

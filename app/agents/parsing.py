@@ -3,6 +3,7 @@
 import json
 from typing import Protocol
 
+from app.core.structured import StructuredOutputError
 from app.schemas import AgentEventResult, UserMemory
 
 
@@ -106,6 +107,6 @@ def parse_agent_result(text: str) -> AgentEventResult:
     start = text.find("{")
     end = text.rfind("}")
     if start == -1 or end == -1 or end < start:
-        raise ValueError("LLM 응답에서 JSON 객체를 찾지 못했습니다.")
+        raise StructuredOutputError("LLM 응답에서 JSON 객체를 찾지 못했습니다.")
     payload = json.loads(text[start : end + 1])
     return AgentEventResult.model_validate(payload)

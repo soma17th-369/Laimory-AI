@@ -7,9 +7,12 @@ Timeline 요청 하나가 입력 조회부터 Agent 처리, LLM 호출, RDB 저�
 | 저장소 | 기록 내용 | 처리 방식 |
 |---|---|---|
 | CloudWatch | FastAPI·uvicorn 운영 로그, DB·콜백·ES 전송 오류, provider/model/token 사용량 요약 | 애플리케이션이 stdout에 JSON을 출력하고 CloudWatch가 수집 |
-| Elasticsearch | 단계·상태·소요 시간·토큰·모델·안전한 개수/유형 같은 Agent 실행 메타데이터 | 요청 중 메모리 버퍼에 모은 뒤 콜백 처리 후 `_bulk`로 일괄 전송 |
+| Elasticsearch | 입력·프롬프트·응답·중간 결과와 단계·상태·소요 시간·토큰·모델 같은 Agent 실행 데이터 | 요청 중 메모리 버퍼에 모은 뒤 콜백 처리 후 `_bulk`로 일괄 전송 |
 
-입력 원문, 사용자 메모리, 프롬프트와 시스템 프롬프트, LLM 응답 본문, timeline draft, repair plan, 도구 인자와 결과 본문은 어느 저장소에도 관측 데이터로 남기지 않는다. 필요한 경우 본문 대신 byte 길이와 SHA-256만 기록해 같은 내용인지 비교할 수 있게 한다.
+기본 `SANITIZED` 정책은 입력, 사용자 메모리, 프롬프트와 시스템 프롬프트, LLM 응답,
+Event Agent 결과, timeline draft, repair plan, 도구 인자·결과를 payload에 남긴다.
+저장 전 Secret과 이메일·전화번호 같은 식별 가능한 패턴을 마스킹하고 이벤트별 크기
+제한을 적용한다. `NONE` 정책을 선택하면 본문 대신 byte 길이와 SHA-256만 기록한다.
 
 ## 처리 흐름
 
@@ -33,7 +36,7 @@ REQUEST → MAIN_AGENT → EVENT_AGENT → TIMELINE_AGENT → REPAIR_AGENT
 - `stage`, `eventType`, `status`, `agent`, `iteration`
 - `provider`, `model`, `agentVersion`, `providerVersion`
 - `durationMs`, `inputTokens`, `outputTokens`, `totalTokens`, `cachedTokens`, `reasoningTokens`
-- 안전한 개수·불리언·오류 유형과 본문 길이/해시를 담는 `payload`
+- 마스킹된 실행 본문과 안전한 개수·불리언·오류 유형을 담는 `payload`
 
 마지막 `FINAL` 이벤트에는 별도 요약 인덱스 대신 다음 집계를 붙인다.
 
@@ -45,21 +48,25 @@ REQUEST → MAIN_AGENT → EVENT_AGENT → TIMELINE_AGENT → REPAIR_AGENT
 
 | 단계 | 기록하는 값 |
 |---|---|
-| REQUEST | 입력 타입별 개수, 사용자 메모리 존재 여부, 입력 전체의 길이/해시 |
-| MAIN/EVENT/TIMELINE | Agent 수, 후보·이벤트·질문·경고 개수 |
-| LLM | 프롬프트·응답의 길이/해시, 이미지 개수, provider/model, 소요 시간, 실제 응답 토큰 |
-| REPAIR | 반복 횟수, 문제·도구 호출 개수, 도구 이름, 인자 이름, 성공 여부 |
+| REQUEST | 정규화된 입력 전체, 입력 타입별 개수, 사용자 메모리 존재 여부 |
+| MAIN/EVENT/TIMELINE | Agent 입력·결과·timeline과 후보·이벤트·질문·경고 개수 |
+| LLM | 프롬프트·시스템 프롬프트·응답·옵션, 이미지 개수, provider/model, 소요 시간, 실제 응답 토큰 |
+| REPAIR | 초기/수정 draft, repair plan, 도구 호출·결과와 반복·성공 여부 |
 | STORAGE/CALLBACK | 시작·완료·실패 상태와 소요 시간 |
 | VALIDATION_REPAIRED | rawId 원문 없이 `validationCode`, 대상 종류, 제거 참조 수, 제외 항목 수 |
 | FAILED | 오류 메시지나 입력값이 아닌 `errorType`, `validationCode`, 위반 코드·건수 |
 
 rawId allowlist 위반을 복구한 경우 `validationCode=SOURCE_RAW_ID_NOT_IN_REQUEST`와
-`removedRefCount`, `droppedItemCount`를 남긴다. 저장 계약을 끝내 충족하지 못한 경우에는
+`removedRefCount`, `droppedItemCount`를 남긴다. `SANITIZED` 정책에서는 함께 기록되는
+입력·결과 본문에 rawId가 포함될 수 있다. 저장 계약을 끝내 충족하지 못한 경우에는
 `validationCode=TIMELINE_STORAGE_CONTRACT_VIOLATION`, `violationCodes`,
-`violationCount`를 남긴다. rawId, event 제목, 입력 본문과 검증 오류 문자열은 payload에
-저장하지 않는다.
+`violationCount`를 남긴다. 검증 오류 원문은 외부 안전 메시지 정책에 따라 저장하지 않는다.
 
-`payload`는 `_source`에는 보관하지만 Elasticsearch에서 색인하지 않는다. 본문 키는 중앙 정책에서 길이/해시로 치환하고, 남은 메타데이터의 API key, Bearer token, 이메일, 전화번호 같은 값은 마스킹한다. 메타데이터 자체가 `OBS_MAX_PAYLOAD_BYTES`를 넘으면 전체를 길이/해시로 축약한다.
+`payload`는 `_source`에는 보관하지만 Elasticsearch에서 색인하지 않는다. `SANITIZED`
+정책은 API key, Bearer token, 이메일, 전화번호 및 민감 키 값을 마스킹한다. 마스킹된
+payload가 `OBS_MAX_PAYLOAD_BYTES`를 넘으면 앞부분을 `contentPreview`로 저장하고 원래
+길이와 SHA-256을 함께 남긴다. 패턴 마스킹만으로 위치·일정·건강 정보 같은 의미 기반
+개인정보를 완전히 제거할 수 없으므로 인덱스 접근 권한과 보존 기간을 제한해야 한다.
 
 ## 전송과 실패 처리
 
@@ -135,7 +142,8 @@ curl -X PUT "$ES_URL/_index_template/ai-timeline-task" \
 |---|---:|---|
 | `OBS_ENABLED` | `false` | Elasticsearch 전송 스위치 |
 | `OBS_LOCAL_DIR` | 없음 | 로컬 검증용 `events.jsonl` 저장 경로 |
-| `OBS_MAX_PAYLOAD_BYTES` | `16384` | 이벤트 payload 메타데이터 최대 byte |
+| `OBS_CONTENT_CAPTURE` | `SANITIZED` | `SANITIZED`(마스킹 본문) 또는 `NONE`(길이/해시) |
+| `OBS_MAX_PAYLOAD_BYTES` | `262144` | 이벤트별 마스킹 payload 최대 byte |
 | `OBS_MAX_EVENTS_PER_TASK` | `1000` | task별 메모리 버퍼 이벤트 상한 |
 | `ES_URL`, `ES_API_KEY` | 없음 | Elasticsearch 접속 정보 |
 | `ES_EVENT_INDEX` | `ai-timeline-task` | 이벤트 인덱스 base |
@@ -202,7 +210,7 @@ $env:LAIMORY_LIVE_ES="1"
 uv run pytest tests/integration/test_elasticsearch_live.py -q -s
 ```
 
-테스트는 연결 확인, `ai-timeline-task` 템플릿 설치, 본문 비저장 이벤트 전송,
+테스트는 연결 확인, `ai-timeline-task` 템플릿 설치, 마스킹 본문 이벤트 전송,
 refresh, `taskId` 재조회를 수행한다. 출력한 `taskId`의 smoke 문서는 Kibana 확인을
 위해 삭제하지 않는다.
 
@@ -210,5 +218,6 @@ refresh, `taskId` 재조회를 수행한다. 출력한 `taskId`의 smoke 문서�
 
 - `taskId`는 App Server가 발급한 상관키만 사용하고 재사용하지 않는다.
 - `ai-timeline-task-*`에 접근 권한과 ILM 보존 정책을 적용한다.
+- `SANITIZED`도 의미 기반 개인정보를 포함할 수 있으므로 운영 ES/Kibana 접근자를 제한한다.
 - 운영 환경의 `AGENT_VERSION`에는 이미지 tag 또는 commit SHA를 넣는다.
-- 프롬프트나 응답 본문이 필요해지는 경우에도 이 관측 파이프라인에 임의로 추가하지 않고 별도 보안·보존 정책을 먼저 결정한다.
+- 본문 보존 기간과 삭제 절차를 운영 정책으로 명시한다.

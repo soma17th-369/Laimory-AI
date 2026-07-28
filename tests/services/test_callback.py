@@ -7,6 +7,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from app.core.error_codes import ErrorCode, message_for
 from app.schemas import TaskStatus, TimelineCallbackPayload
 from app.services import callback
 
@@ -14,7 +15,7 @@ from app.services import callback
 def _payload(
     *,
     status: TaskStatus = TaskStatus.SUCCESS,
-    error_code: str | None = None,
+    error_code: int | None = None,
     error: str | None = None,
 ) -> TimelineCallbackPayload:
     return TimelineCallbackPayload(
@@ -83,19 +84,16 @@ def test_failed_callback_posts_error_details(monkeypatch):
             "https://app.example/s/api/v1",
             "task-1",
             "callback-secret",
-            _payload(
-                status=TaskStatus.FAILED,
-                error_code="ERROR_1008",
-                error="DB 저장 실패",
-            ),
+            TimelineCallbackPayload.failure(ErrorCode.DATABASE_ERROR),
         )
     )
 
     assert sent is True
+    # errorCode 는 정수로 직렬화된다(구 계약의 "ERROR_1008" 문자열이 아니다).
     assert captured["body"] == {
         "status": "FAILED",
-        "errorCode": "ERROR_1008",
-        "error": "DB 저장 실패",
+        "errorCode": 1302,
+        "error": message_for(ErrorCode.DATABASE_ERROR),
     }
 
 
@@ -151,3 +149,53 @@ def test_callback_http_error_response_returns_false(monkeypatch):
 def test_callback_payload_rejects_processing_status() -> None:
     with pytest.raises(ValidationError):
         _payload(status=TaskStatus.PROCESSING)
+
+
+def test_success_payload_has_no_error_fields() -> None:
+    payload = TimelineCallbackPayload.success()
+
+    assert payload.model_dump(by_alias=True, mode="json") == {
+        "status": "SUCCESS",
+        "errorCode": None,
+        "error": None,
+    }
+
+
+def test_success_callback_rejects_error_fields() -> None:
+    """성공인데 오류가 실리면 App Server 가 상태를 잘못 읽는다."""
+
+    with pytest.raises(ValidationError):
+        _payload(status=TaskStatus.SUCCESS, error_code=1901, error="왜 여기 있나")
+
+
+def test_failed_callback_requires_code_and_message() -> None:
+    """실패인데 코드나 메시지가 비면 App Server 가 원인을 알 수 없다."""
+
+    with pytest.raises(ValidationError):
+        _payload(status=TaskStatus.FAILED)
+    with pytest.raises(ValidationError):
+        _payload(status=TaskStatus.FAILED, error_code=1901, error="   ")
+
+
+def test_failure_payload_uses_catalog_message() -> None:
+    payload = TimelineCallbackPayload.failure(ErrorCode.PIPELINE_TIMEOUT)
+
+    assert payload.error_code == 1201
+    assert payload.error == message_for(ErrorCode.PIPELINE_TIMEOUT)
+
+
+def test_failed_callback_rejects_unknown_reserved_or_custom_message() -> None:
+    with pytest.raises(ValidationError):
+        _payload(status=TaskStatus.FAILED, error_code=9999, error="임의 오류")
+    with pytest.raises(ValidationError):
+        _payload(
+            status=TaskStatus.FAILED,
+            error_code=int(ErrorCode.LEGACY_TIMELINE_GENERATION_FAILED),
+            error=message_for(ErrorCode.LEGACY_TIMELINE_GENERATION_FAILED),
+        )
+    with pytest.raises(ValidationError):
+        _payload(
+            status=TaskStatus.FAILED,
+            error_code=int(ErrorCode.INTERNAL_ERROR),
+            error="원본 예외 메시지",
+        )

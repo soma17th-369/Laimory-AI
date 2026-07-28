@@ -157,5 +157,5 @@ async def test_export_isolates_connection_error(monkeypatch, caplog) -> None:
     assert result.attempted == 1
     assert result.succeeded == 0
     assert result.failed == 1
-    assert "관측 ES 재시도 소진: 1건 미전송" in caplog.text
+    assert "관측 ES 재시도 소진: errorCode=1402, documents=1" in caplog.text
     assert "attempted=1, succeeded=0, failed=1" in caplog.text

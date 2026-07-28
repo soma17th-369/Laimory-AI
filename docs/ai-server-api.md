@@ -122,23 +122,36 @@ AgentCore Runtime에 배포한 환경에서는 `POST /invocations`가 동일한 
 | `taskId` | `string` | 접수된 작업 ID입니다. |
 | `status` | `string` | 접수 응답에서는 항상 `PROCESSING`입니다. |
 
-### Validation Error
+### Error Response
 
-#### `422 Unprocessable Entity`
-
-필수 필드가 없거나 날짜 형식이 올바르지 않은 경우 반환됩니다.
+오류 응답은 경로와 상태 코드를 가리지 않고 항상 같은 형식입니다.
 
 ```json
 {
-  "detail": [
-    {
-      "type": "missing",
-      "loc": ["body", "dailyRecordId"],
-      "msg": "Field required"
-    }
-  ]
+  "errorCode": 1001,
+  "error": "요청 형식이 올바르지 않습니다."
 }
 ```
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `errorCode` | `int` | 오류 종류를 식별하는 정수입니다. |
+| `error` | `string` | 해당 오류를 설명하는 비어 있지 않은 문자열입니다. |
+
+| 상태 | `errorCode` | 발생 조건 |
+|---|---|---|
+| `422 Unprocessable Entity` | `1001` | 필수 필드가 없거나 날짜 형식이 올바르지 않습니다. |
+| `404 Not Found` | `1003` | 없는 경로입니다. |
+| `405 Method Not Allowed` | `1004` | 허용되지 않은 HTTP 메서드입니다. |
+| `500 Internal Server Error` | `1901` | 분류되지 않은 서버 내부 오류입니다. |
+
+`error`에는 사전에 정의된 안전한 메시지만 담깁니다. 어느 필드가 왜 틀렸는지, 어떤
+값을 보냈는지는 응답에 포함되지 않고 AI 서버 로그에만 남습니다. 전체 코드 표는
+[docs/error-codes.md](error-codes.md)를 참고하세요.
+
+> **계약 변경 (이슈 #42)**
+> 이전에는 FastAPI 기본 검증 오류가 `{"detail": [...]}` 형태로 위반 필드와 입력값을
+> 그대로 반환했습니다. 지금은 위 공통 형식으로 통일됐습니다.
 
 ### 처리 실패
 
@@ -183,8 +196,8 @@ Content-Type: application/json
 ```json
 {
   "status": "FAILED",
-  "errorCode": "ERROR_1008",
-  "error": "메인 에이전트 timeout (120.0s) 초과"
+  "errorCode": 1201,
+  "error": "타임라인 생성이 제한 시간을 초과했습니다."
 }
 ```
 
@@ -193,8 +206,30 @@ Content-Type: application/json
 | 필드 | 타입 | 설명 |
 |---|---|---|
 | `status` | `string` | 최종 상태인 `SUCCESS` 또는 `FAILED`입니다. |
-| `errorCode` | `string \| null` | 실패 분류 코드입니다. AI 처리 실패는 `ERROR_1008`, 성공은 `null`입니다. |
-| `error` | `string \| null` | 실패 진단 문자열입니다. 성공은 `null`입니다. |
+| `errorCode` | `int \| null` | 실패 원인을 식별하는 정수입니다. 성공은 `null`입니다. |
+| `error` | `string \| null` | 실패를 설명하는 비어 있지 않은 문자열입니다. 성공은 `null`입니다. |
+
+실패 원인별 `errorCode`는 다음과 같습니다. 전체 표와 재시도 판단 기준은
+[docs/error-codes.md](error-codes.md)에 있습니다.
+
+| 실패 원인 | `errorCode` |
+|---|---|
+| 수집 원본을 찾지 못함 | `1101` |
+| 수집 원본이 입력 계약 위반 | `1102` |
+| 메인 에이전트 제한 시간 초과 | `1201` |
+| AI 응답 스키마 검증 실패 | `1202` |
+| 저장 전 자체검증 실패 | `1301` |
+| DB 접근/트랜잭션 실패 | `1302` |
+| 분류되지 않은 내부 오류 | `1901` |
+
+> **계약 변경 (이슈 #42)**
+> 이전에는 모든 실패가 문자열 `"ERROR_1008"` 하나로 전달됐고 `error`에는 원본 예외
+> 메시지가 그대로 실렸습니다. 지금은 `errorCode`가 **정수**이며 원인별로 다릅니다.
+> `error`에는 사전에 정의된 안전한 메시지만 나가고, 원본 예외 메시지는 AI 서버
+> 로그에만 남습니다.
+>
+> App Server는 `errorCode`를 정수로 읽어야 하며, **모르는 코드는 총괄 실패로**
+> 처리하면 됩니다. 원인이 새로 분류될 때마다 코드가 추가됩니다.
 
 ### App Server 응답
 

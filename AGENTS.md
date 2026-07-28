@@ -55,15 +55,17 @@ app/
 ├── core/                      # 공통 인프라
 │   ├── config.py              # 설정 (pydantic-settings, LLM_PROVIDER/API 키, DB_*, OBS_*/ES_* 등)
 │   ├── logging.py             # 운영 로그 설정 (rich | stdout JSON→CloudWatch, LOG_FORMAT)
+│   ├── error_codes.py         # 오류 코드 카탈로그 (#42). 정수 코드·외부 안전 메시지·HTTP 상태의 유일한 정본. 값 중복은 import 시점에 차단
+│   ├── exceptions.py          # AppError 예외 계층(자기 ErrorCode 보유) + report_error: 로그와 관측을 같은 코드로 남기는 유일한 통로
 │   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형) + LLM 관측/토큰 emit
 │   ├── db.py                  # staging MySQL async engine/session (aiomysql, host/port 직결)
 │   ├── db_models.py           # staging 테이블 ORM 매핑 (draft source / daily record / timeline event·item / event↔item N:M 조인)
 │   ├── inflight.py            # 진행 중 백그라운드 처리 카운터 (GET /ping 의 Healthy/HealthyBusy 판단용, 프로세스 로컬)
-│   └── observability/         # Timeline 실행 관측 (#28). taskId 단일 키, 본문 비저장·메타데이터 제한
+│   └── observability/         # Timeline 실행 관측 (#28). taskId 단일 키, SANITIZED 본문·메타데이터
 │       ├── models.py          #   ObservationEvent 계약 (taskId/sequence/stage/token/version)
 │       ├── context.py         #   contextvars 로 to_thread 까지 taskId 전파, emit_observation
 │       ├── observer.py        #   요청별 Observer: sequence 부여·마스킹·sink 실패 격리
-│       ├── redaction.py       #   본문 비저장·payload 메타데이터 마스킹/크기 제한
+│       ├── redaction.py       #   SANITIZED/NONE 콘텐츠 정책·마스킹·payload 크기 제한
 │       ├── sinks.py           #   Null/InMemory(버퍼)/JsonLines/Composite (제품 독립)
 │       ├── documents.py       #   이벤트 버퍼 → event 문서 N건(FINAL에 task 집계 포함)
 │       ├── elasticsearch.py   #   httpx NDJSON _bulk 전송 (재시도/부분실패/완전격리)
@@ -71,11 +73,14 @@ app/
 │
 ├── api/
 │   ├── agentcore.py           # AgentCore Runtime 컨테이너 계약 (POST /invocations, GET /ping). 처리는 v1/timeline 에 위임하는 어댑터
+│   ├── error_handlers.py      # 전역 예외 처리기 (#42). 검증오류/HTTPException/AppError/미처리 4종을 ErrorResponse 로 통일 + OpenAPI ERROR_RESPONSES
 │   └── v1/
 │       ├── router.py          # v1 라우터 취합
 │       └── timeline.py        # POST /v1/timeline (taskId+callbackToken+dailyRecordId+window 접수 → 202). 상태 조회 없음(상태는 App Server 소유)
 │
 ├── schemas/                   # Pydantic 계약(contract)
+│   ├── error.py               # 공통 오류 응답 ErrorResponse(errorCode:int, error:str)
+│   ├── task.py                # TaskStatus + 완료 콜백 payload(errorCode:int|None, 성공/실패 필드 짝 강제)
 │   ├── source_snapshot.py     # 수집 원본(taskId/sourceItems) 입력 계약
 │   ├── location.py/calendar.py/health.py/notification.py/photo.py  # 분리된 도메인 항목
 │   ├── event_candidate.py     # AI 이벤트 후보 모델
@@ -113,6 +118,11 @@ app/
 #   (백그라운드) DB 조회 → 요청 window 를 정본으로 덮어쓰기 → normalize → main agent
 #   → timeline_events(dailyRecordId FK)/timeline_items(저장 시 디듀프)/timeline_event_items(N:M) 저장
 #   → 콜백(SUCCESS/FAILED 통보만; 실제 결과는 App Server 가 staging DB 에서 읽음)
+# 오류 계약(#42): 모든 실패는 정수 errorCode 하나로 식별한다. API 응답·콜백·운영 로그·
+#   관측 이벤트가 같은 코드를 쓴다. 코드 정본은 app/core/error_codes.py, 표와 연동 방법은
+#   docs/error-codes.md. except 블록은 report_error 만 호출한다(로그+관측 동시 기록).
+#   error 문자열에는 카탈로그의 안전 메시지만 나가고 원본 예외 메시지는 로그에만 남는다.
+#   관측 모듈 자신의 실패는 emit=False (관측으로 알리면 같은 경로를 다시 타 재귀한다).
 # AI 서버는 무상태다. task 상태는 App Server 가 소유하며(AI 는 상태 저장/조회 없음),
 #   AI 는 상태를 콜백으로만 통보한다. daily_records 도 직접 조회/생성하지 않고 dailyRecordId 로 FK 만 건다.
 # 저장/조회는 항상 실제 staging DB. DB 는 필수이며(없으면 실패), 인메모리 스텁은 단위 테스트 전용.

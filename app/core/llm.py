@@ -21,12 +21,13 @@ from functools import lru_cache
 from time import perf_counter
 
 from app.core.config import settings
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import report_error
 from app.core.logging import get_logger
 from app.core.observability import (
     ObservationEventType,
     ObservationStage,
     emit_observation,
-    summarize_content,
 )
 from app.core.structured import ModelT, run_structured, to_strict_schema
 
@@ -226,13 +227,24 @@ class LLMProvider(ABC):
         return {}
 
     def _emit_llm_prompt(
-        self, prompt: str, *, system: str | None = None, image_count: int = 0
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        temperature: float | None = None,
+        image_count: int = 0,
+        options: dict | None = None,
     ) -> None:
         """LLM 호출 직전 PROMPT 관측 이벤트를 남긴다(컨텍스트 없으면 no-op)."""
 
-        payload: dict = {"promptMetadata": summarize_content(prompt)}
+        payload: dict = {"prompt": prompt}
         if system is not None:
-            payload["systemPromptMetadata"] = summarize_content(system)
+            payload["system"] = system
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if options:
+            # Provider 옵션은 SDK 객체가 섞일 수 있어 ES 직렬화 가능한 형태로 고정한다.
+            payload["options"] = json.loads(json.dumps(options, default=str))
         if image_count:
             payload["imageCount"] = image_count
         emit_observation(
@@ -261,20 +273,27 @@ class LLMProvider(ABC):
             cached_tokens=usage.get("cached"),
             reasoning_tokens=usage.get("reasoning"),
             tool_tokens=usage.get("tool"),
-            payload={"responseMetadata": summarize_content(text)},
+            payload={"response": text},
         )
 
     def _emit_llm_failure(self, started: float, exc: Exception) -> None:
-        """LLM 호출 실패 시 FAILED 관측 이벤트를 남긴다."""
+        """LLM 호출 실패를 로그와 FAILED 관측 이벤트에 같은 코드로 남긴다.
 
-        emit_observation(
-            ObservationEventType.FAILED,
+        provider 별 호출 지점이 여럿이지만 실패는 모두 여기로 모인다. 코드 부여를
+        한 곳에서만 하려고 그렇게 뒀다.
+        """
+
+        report_error(
+            logger,
+            ErrorCode.LLM_CALL_FAILED,
+            "LLM 호출 실패",
+            exc=exc,
+            context={"provider": self.name, "model": self.model},
             stage=ObservationStage.LLM,
             provider=self.name,
             model=self.model,
             provider_version=self._provider_version(),
             duration_ms=(perf_counter() - started) * 1000,
-            payload={"errorType": type(exc).__name__},
         )
 
 
@@ -340,7 +359,12 @@ class OpenAIProvider(LLMProvider):
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        self._emit_llm_prompt(prompt, system=system)
+        self._emit_llm_prompt(
+            prompt,
+            system=system,
+            temperature=temperature,
+            options=kwargs,
+        )
         started = perf_counter()
         try:
             response = self.client.chat.completions.create(
@@ -380,7 +404,13 @@ class OpenAIProvider(LLMProvider):
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": content})
 
-        self._emit_llm_prompt(prompt, system=system, image_count=len(images))
+        self._emit_llm_prompt(
+            prompt,
+            system=system,
+            temperature=temperature,
+            image_count=len(images),
+            options=kwargs,
+        )
         started = perf_counter()
         try:
             response = self.client.chat.completions.create(
@@ -499,7 +529,12 @@ class GeminiProvider(LLMProvider):
             temperature=temperature,
             **kwargs,
         )
-        self._emit_llm_prompt(prompt, system=system)
+        self._emit_llm_prompt(
+            prompt,
+            system=system,
+            temperature=temperature,
+            options=kwargs,
+        )
         started = perf_counter()
         try:
             response = self.client.models.generate_content(
@@ -536,7 +571,13 @@ class GeminiProvider(LLMProvider):
             parts.append(
                 types.Part.from_bytes(data=image.data, mime_type=image.mime_type)
             )
-        self._emit_llm_prompt(prompt, system=system, image_count=len(images))
+        self._emit_llm_prompt(
+            prompt,
+            system=system,
+            temperature=temperature,
+            image_count=len(images),
+            options=kwargs,
+        )
         started = perf_counter()
         try:
             response = self.client.models.generate_content(
@@ -633,7 +674,12 @@ class BedrockProvider(LLMProvider):
         temperature: float = 0.7,
         **kwargs,
     ) -> str:
-        self._emit_llm_prompt(prompt, system=system)
+        self._emit_llm_prompt(
+            prompt,
+            system=system,
+            temperature=temperature,
+            options=kwargs,
+        )
         started = perf_counter()
         try:
             response = self._converse(
@@ -669,7 +715,13 @@ class BedrockProvider(LLMProvider):
                     }
                 }
             )
-        self._emit_llm_prompt(prompt, system=system, image_count=len(images))
+        self._emit_llm_prompt(
+            prompt,
+            system=system,
+            temperature=temperature,
+            image_count=len(images),
+            options=kwargs,
+        )
         started = perf_counter()
         try:
             response = self._converse(
@@ -712,7 +764,15 @@ class BedrockProvider(LLMProvider):
                 prompt, system=system, temperature=temperature, **kwargs
             )
 
-        self._emit_llm_prompt(prompt, system=system)
+        self._emit_llm_prompt(
+            prompt,
+            system=system,
+            temperature=temperature,
+            options={
+                **kwargs,
+                "structuredSchema": schema.model_json_schema(),
+            },
+        )
         started = perf_counter()
         try:
             response = self._converse_structured(

@@ -23,8 +23,10 @@ from app.agents.parsing import (
     items_to_text,
     user_memory_to_text,
 )
+from app.core.error_codes import ErrorCode, message_for
+from app.core.exceptions import code_of_or, report_error
 from app.core.logging import get_logger
-from app.core.observability import ObservationEventType, emit_observation
+from app.core.structured import StructuredOutputError
 from app.schemas import (
     AgentEventResult,
     TimelineDraft,
@@ -88,6 +90,24 @@ def _invalid_item_warning(kind: str, index: int) -> TimelineWarning:
     )
 
 
+def _report_skipped_item(kind: str, index: int, exc: Exception) -> None:
+    """스키마 검증에 실패해 제외한 항목을 코드와 함께 남긴다.
+
+    항목 하나가 깨져도 draft 전체는 살린다. 대신 어느 종류의 몇 번째 항목이 왜
+    빠졌는지는 로그·관측에서 추적할 수 있어야 한다 — 그러지 않으면 LLM 이 특정
+    필드를 계속 틀리고 있어도 결과만 조용히 빈약해진다.
+    """
+
+    report_error(
+        logger,
+        ErrorCode.STRUCTURED_OUTPUT_INVALID,
+        "Timeline 응답 항목 검증 실패로 제외",
+        exc=exc,
+        context={"kind": kind, "index": index},
+        payload={"kind": kind, "index": index, "action": "skipped"},
+    )
+
+
 def parse_timeline_draft(text: str, request: TimelineDraftRequest) -> TimelineDraft:
     """LLM 응답을 ``TimelineDraft`` 로 파싱한다(부분 손상에 강하게).
 
@@ -103,7 +123,7 @@ def parse_timeline_draft(text: str, request: TimelineDraftRequest) -> TimelineDr
     start = text.find("{")
     end = text.rfind("}")
     if start == -1 or end == -1 or end < start:
-        raise ValueError("LLM response did not contain a JSON object")
+        raise StructuredOutputError("LLM 응답에서 JSON 객체를 찾지 못했습니다.")
 
     payload = json.loads(text[start : end + 1])
 
@@ -119,7 +139,8 @@ def parse_timeline_draft(text: str, request: TimelineDraftRequest) -> TimelineDr
         item["clientEventId"] = f"event-{len(events) + 1:03d}"
         try:
             events.append(TimelineEventDraft.model_validate(item))
-        except ValidationError:
+        except ValidationError as exc:
+            _report_skipped_item("event", index, exc)
             skipped.append(_invalid_item_warning("event", index))
 
     questions: list[TimelineQuestion] = []
@@ -130,7 +151,8 @@ def parse_timeline_draft(text: str, request: TimelineDraftRequest) -> TimelineDr
         item.setdefault("questionId", f"question-{len(questions) + 1:03d}")
         try:
             questions.append(TimelineQuestion.model_validate(item))
-        except ValidationError:
+        except ValidationError as exc:
+            _report_skipped_item("question", index, exc)
             skipped.append(_invalid_item_warning("question", index))
 
     warnings: list[TimelineWarning] = []
@@ -142,8 +164,10 @@ def parse_timeline_draft(text: str, request: TimelineDraftRequest) -> TimelineDr
         item.setdefault("severity", TimelineWarningSeverity.MEDIUM.value)
         try:
             warnings.append(TimelineWarning.model_validate(item))
-        except ValidationError:
-            continue  # 경고 자체가 깨지면 조용히 버린다
+        except ValidationError as exc:
+            # 경고 자체가 깨지면 draft 에는 싣지 않는다(경고를 위한 경고는 소음이다).
+            # 다만 어느 코드로 무엇이 버려졌는지는 추적할 수 있어야 한다.
+            _report_skipped_item("warning", index, exc)
 
     return TimelineDraft(
         user_id=_DEFAULT_USER_ID,
@@ -183,13 +207,15 @@ class TimelineAgent(Agent):
         try:
             return self._generate(request, agent_result, carried)
         except Exception as exc:
-            logger.warning("Timeline Agent failed: error=%s", exc, exc_info=True)
-            emit_observation(
-                ObservationEventType.FAILED,
-                payload={
-                    "errorType": type(exc).__name__,
-                    "fallback": "empty_draft",
-                },
+            failure_code = code_of_or(exc, ErrorCode.TIMELINE_AGENT_FAILED)
+            report_error(
+                logger,
+                failure_code,
+                "Timeline Agent 실행 실패",
+                exc=exc,
+                context={"fallback": "empty_draft"},
+                payload={"fallback": "empty_draft"},
+                exc_info=True,
             )
             return _empty_draft(
                 request,
@@ -198,7 +224,10 @@ class TimelineAgent(Agent):
                     TimelineWarning(
                         warning_id="warning-timeline-001",
                         severity=TimelineWarningSeverity.HIGH,
-                        message=f"{self.name} agent 실행 실패: {exc}",
+                        message=(
+                            f"{self.name} agent 실행 실패: "
+                            f"{message_for(failure_code)}"
+                        ),
                     ),
                 ],
             )

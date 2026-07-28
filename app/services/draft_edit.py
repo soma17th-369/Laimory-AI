@@ -20,6 +20,8 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import AppError
 from app.core.logging import get_logger
 from app.schemas import TimelineDraft, TimelineEventDraft
 
@@ -44,8 +46,10 @@ _EDITABLE_FIELDS = frozenset(
 )
 
 
-class DraftEditError(Exception):
+class DraftEditError(AppError):
     """수정·삭제를 적용할 수 없을 때. 도구 계층이 잡아 실패 결과로 돌려준다."""
+
+    default_code = ErrorCode.DRAFT_EDIT_FAILED
 
 
 def find_event(draft: TimelineDraft, client_event_id: str) -> TimelineEventDraft:

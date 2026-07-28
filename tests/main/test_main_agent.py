@@ -229,4 +229,5 @@ def test_main_agent_isolates_failing_event_agent():
     assert len(draft.events) == 1
     # 실패는 upstream warning 으로 draft 에 남는다.
     assert any("boom" in w.message for w in draft.warnings)
+    assert all("의도된 실패" not in w.message for w in draft.warnings)
 

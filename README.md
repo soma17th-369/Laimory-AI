@@ -177,13 +177,14 @@ BEDROCK_AWS_PROFILE=laimory-bedrock
 BEDROCK_REGION=ap-northeast-2
 BEDROCK_MODEL=global.amazon.nova-2-lite-v1:0
 
-# 관측(Observability) — 본문을 제외한 Timeline 실행 메타데이터를 ES로 보낸다(#28).
+# 관측(Observability) — 마스킹한 Agent 실행 본문과 메타데이터를 ES로 보낸다(#28).
 # OBS_ENABLED=false이고 OBS_LOCAL_DIR도 비어 있으면 수집 자체가 no-op이다.
 OBS_ENABLED=false            # ES 전송 마스터 스위치
 ES_URL=                      # 예: https://es.internal:9200 (비면 전송 안 함)
 ES_API_KEY=                  # Elasticsearch ApiKey (선택)
 AGENT_VERSION=               # 선택: 이미지 tag/commit SHA. 기본은 패키지 버전
-OBS_MAX_PAYLOAD_BYTES=16384  # 이벤트별 payload 최대 byte
+OBS_CONTENT_CAPTURE=SANITIZED # SANITIZED(마스킹 본문) | NONE(길이/해시)
+OBS_MAX_PAYLOAD_BYTES=262144 # 이벤트별 payload 최대 byte
 OBS_MAX_EVENTS_PER_TASK=1000 # task별 메모리 버퍼 이벤트 상한
 OBS_LOCAL_DIR=               # dev 검사용 events.jsonl 저장 경로
 ES_EVENT_INDEX=ai-timeline-task # 단계별 실행 이벤트 인덱스 base
@@ -220,11 +221,12 @@ LLM 토큰 사용량: provider=bedrock, model=..., inputTokens=123, outputTokens
 
 ## 관측 (Observability)
 
-Timeline 요청(`taskId`) 하나의 Agent·LLM·저장·콜백 실행 메타데이터를 구조화 로그로 모아
-**Elasticsearch → Kibana** 에서 `taskId` 로 조회한다. 입력·사용자 메모리·프롬프트·LLM 응답·
-draft·도구 인자/결과 본문은 저장하지 않고 필요한 경우 길이와 해시만 남긴다. 운영 로그(FastAPI 등)는
-`LOG_FORMAT=json` 으로 stdout JSON 을 남겨 **CloudWatch** 가 수집한다. 관측 전송은
-실패해도 Timeline 처리에 영향을 주지 않는다.
+Timeline 요청(`taskId`) 하나의 입력·Agent·LLM·저장·콜백 실행 흐름을 구조화 로그로 모아
+**Elasticsearch → Kibana** 에서 조회한다. 기본 `SANITIZED` 정책은 입력·사용자 메모리·
+프롬프트·LLM 응답·draft·repair plan·도구 인자/결과를 Secret과 식별 가능한 개인정보
+패턴을 마스킹한 뒤 저장한다. `NONE` 정책은 본문 대신 길이와 해시만 남긴다. 운영 로그
+(FastAPI 등)는 `LOG_FORMAT=json` 으로 stdout JSON 을 남겨 **CloudWatch** 가 수집한다.
+관측 전송은 실패해도 Timeline 처리에 영향을 주지 않는다.
 
 - 전체 설계·이벤트 계약·Kibana 조회·설정: [docs/timeline-observability.md](docs/timeline-observability.md)
 - ES 인덱스 매핑: [ai-timeline-task](docs/observability/ai-timeline-task-index-template.json)

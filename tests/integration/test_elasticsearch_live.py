@@ -75,7 +75,7 @@ async def test_elasticsearch_live_template_export_and_search() -> None:
     template = json.loads(_TEMPLATE_PATH.read_text(encoding="utf-8"))
 
     task_id = f"es-smoke-{uuid4().hex[:12]}"
-    marker = f"DO_NOT_STORE-{uuid4().hex}"
+    marker = f"STORE-SANITIZED-{uuid4().hex}"
     now = datetime.now(timezone.utc)
 
     sink = InMemoryObservationSink()
@@ -136,8 +136,8 @@ async def test_elasticsearch_live_template_export_and_search() -> None:
     assert len(hits) == 2
     assert [hit["_source"]["sequence"] for hit in hits] == [0, 1]
     serialized_hits = json.dumps(hits, ensure_ascii=False)
-    assert marker not in serialized_hits
-    assert hits[0]["_source"]["payload"]["prompt"]["contentCaptured"] is False
+    assert marker in serialized_hits
+    assert hits[0]["_source"]["payload"]["prompt"] == marker
     assert hits[-1]["_source"]["taskDurationMs"] >= 0
 
     print(f"[live-es] index={index_name} taskId={task_id}")

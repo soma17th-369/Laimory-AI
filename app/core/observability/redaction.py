@@ -1,8 +1,9 @@
-"""관측 payload의 민감정보 제거와 본문 비저장 정책.
+"""관측 payload의 민감정보 제거와 콘텐츠 캡처 정책.
 
-Elasticsearch에는 실행 메타데이터만 저장한다. 입력·프롬프트·응답·draft·도구 인자
-같은 본문 키가 실수로 payload에 들어와도 이 모듈이 길이와 SHA-256으로 치환한다.
-메타데이터 문자열의 API key/Bearer/이메일/전화번호도 방어적으로 마스킹한다.
+``SANITIZED`` 정책에서는 입력·프롬프트·응답·draft·도구 인자 같은 실행 본문을
+Secret과 식별 가능한 개인정보 패턴을 마스킹한 뒤 저장한다. ``NONE`` 정책에서는
+본문 키를 길이와 SHA-256으로 치환한다. 어느 정책이든 이벤트당 크기 제한을 적용하며,
+마스킹하지 않은 원문 저장 모드는 제공하지 않는다.
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
+
+from app.core.observability.models import ContentCapture
 
 REDACTED = "[REDACTED]"
 _SENSITIVE_KEYS = {
@@ -139,18 +142,32 @@ def _suppress_content(value: Any) -> Any:
 
 def capture_payload(
     payload: Mapping[str, Any],
+    policy: ContentCapture = ContentCapture.SANITIZED,
     *,
     max_bytes: int,
 ) -> dict[str, Any]:
-    """본문을 제거하고 마스킹한 실행 메타데이터만 반환한다."""
+    """정책에 따라 마스킹한 본문 또는 본문 요약을 반환한다."""
 
     if max_bytes <= 0:
         raise ValueError("max_bytes 는 1 이상이어야 합니다.")
 
-    safe = redact_value(_suppress_content(payload))
+    safe = redact_value(
+        payload if policy is ContentCapture.SANITIZED else _suppress_content(payload)
+    )
     serialized = _canonical_bytes(safe)
     if len(serialized) <= max_bytes:
         return dict(safe)
+
+    if policy is ContentCapture.SANITIZED:
+        preview = serialized[:max_bytes].decode("utf-8", errors="ignore")
+        return {
+            "contentCaptured": True,
+            "truncated": True,
+            "byteLength": len(serialized),
+            "storedByteLength": len(preview.encode("utf-8")),
+            "contentPreview": preview,
+            "sha256": hashlib.sha256(serialized).hexdigest(),
+        }
 
     return {
         "metadataCaptured": False,

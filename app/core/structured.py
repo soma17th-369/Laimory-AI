@@ -19,6 +19,9 @@ from typing import Callable, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import AppError
+
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 #: ``structured_fn`` 시그니처: (prompt, schema, *, system, temperature, **kwargs) -> str.
@@ -26,8 +29,10 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 StructuredFn = Callable[..., str]
 
 
-class StructuredOutputError(Exception):
+class StructuredOutputError(AppError):
     """구조화 출력이 스키마 검증을 통과하지 못했다(재시도 소진 포함)."""
+
+    default_code = ErrorCode.STRUCTURED_OUTPUT_INVALID
 
     def __init__(self, message: str, *, errors: str | None = None) -> None:
         self.errors = errors

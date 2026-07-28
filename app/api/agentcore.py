@@ -18,6 +18,7 @@ from enum import StrEnum
 
 from fastapi import APIRouter, BackgroundTasks, Depends, status
 
+from app.api.error_handlers import ERROR_RESPONSES
 from app.api.v1.timeline import (
     TimelineDispatchResponse,
     TimelineTriggerRequest,
@@ -63,6 +64,7 @@ def ping() -> PingResponse:
     "/invocations",
     response_model=TimelineDispatchResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    responses=ERROR_RESPONSES,
     tags=["agentcore"],
 )
 async def invocations(

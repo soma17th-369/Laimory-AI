@@ -7,6 +7,7 @@
 """
 
 from app.core.observability.models import (
+    ContentCapture,
     ObservationEvent,
     ObservationEventType,
     ObservationStage,
@@ -37,6 +38,7 @@ from app.core.observability.sinks import (
 __all__ = [
     "CompositeObservationError",
     "CompositeObservationSink",
+    "ContentCapture",
     "InMemoryObservationSink",
     "JsonLinesObservationSink",
     "NullObservationSink",

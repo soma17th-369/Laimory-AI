@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import re
 
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import report_error
 from app.core.logging import get_logger
+from app.core.observability import ObservationStage
 from app.schemas import (
     CalendarItem,
     CollectedSnapshot,
@@ -130,11 +133,14 @@ def normalize(snapshot: CollectedSnapshot) -> TimelineDraftRequest:
             try:
                 domains[field].append(parser(item))
             except Exception as exc:  # noqa: BLE001 - 개별 항목 실패는 건너뛴다.
-                logger.warning(
-                    "수집 항목 정규화 실패: itemType=%s, rawId=%s, error=%s",
-                    item_type.value,
-                    item.raw_id,
-                    exc,
+                report_error(
+                    logger,
+                    ErrorCode.SOURCE_ITEM_NORMALIZE_FAILED,
+                    "수집 항목 정규화 실패",
+                    exc=exc,
+                    context={"itemType": item_type.value, "rawId": item.raw_id},
+                    stage=ObservationStage.REQUEST,
+                    payload={"itemType": item_type.value},
                 )
 
     window = None
