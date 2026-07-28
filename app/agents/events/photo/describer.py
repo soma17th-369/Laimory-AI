@@ -49,8 +49,8 @@ def needs_description(photo: PhotoItem) -> bool:
     return not (photo.description or "").strip()
 
 
-def parse_descriptions(text: str, valid_ids: set[int]) -> dict[int, str]:
-    """`{"descriptions": [{"id", "description"}]}` 응답을 {id: description} 로 파싱한다.
+def parse_descriptions(text: str, valid_raw_ids: set[str]) -> dict[str, str]:
+    """사진 설명 응답을 ``{rawId: description}``으로 파싱한다.
 
     JSON 을 찾지 못하거나 파싱에 실패하면 빈 dict 를 반환한다(예외를 던지지 않는다).
     """
@@ -66,17 +66,16 @@ def parse_descriptions(text: str, valid_ids: set[int]) -> dict[int, str]:
         logger.warning("사진 description JSON 파싱에 실패했습니다.")
         return {}
 
-    result: dict[int, str] = {}
+    result: dict[str, str] = {}
     for item in payload.get("descriptions") or []:
         if not isinstance(item, dict):
             continue
-        try:
-            photo_id = int(item.get("id"))
-        except (TypeError, ValueError):
+        raw_id = item.get("rawId")
+        if not isinstance(raw_id, str):
             continue
         description = (item.get("description") or "").strip()
-        if photo_id in valid_ids and description:
-            result[photo_id] = description
+        if raw_id in valid_raw_ids and description:
+            result[raw_id] = description
     return result
 
 
@@ -84,8 +83,8 @@ class PhotoDescriber(ABC):
     """description 이 없는 사진에 설명을 채우는 생성기 인터페이스."""
 
     @abstractmethod
-    def describe(self, photos: list[PhotoItem]) -> dict[int, str]:
-        """description 이 필요한 사진들에 대해 ``{photo.id: description}`` 을 반환한다.
+    def describe(self, photos: list[PhotoItem]) -> dict[str, str]:
+        """description 이 필요한 사진의 ``{rawId: description}``을 반환한다.
 
         이미 description 이 있는 사진은 포함하지 않는다. 생성 실패 시 해당 사진을
         결과에서 빼면 되고, 예외를 던지지 않는다.
@@ -109,14 +108,14 @@ class LLMPhotoDescriber(PhotoDescriber):
             self._llm = default_llm()
         return self._llm
 
-    def describe(self, photos: list[PhotoItem]) -> dict[int, str]:
+    def describe(self, photos: list[PhotoItem]) -> dict[str, str]:
         targets = [photo for photo in photos if needs_description(photo)]
         if not targets:
             return {}  # 채울 사진이 없으면 LLM 을 호출하지 않는다.
 
         prompt = _metadata_prompt(targets)
         text = self.llm.complete(prompt, system=_DESCRIBE_PROMPT, temperature=0.2)
-        return parse_descriptions(text, {photo.id for photo in targets})
+        return parse_descriptions(text, {photo.raw_id for photo in targets})
 
 
 def _metadata_prompt(photos: list[PhotoItem]) -> str:
@@ -124,7 +123,7 @@ def _metadata_prompt(photos: list[PhotoItem]) -> str:
 
     rows = [
         {
-            "id": photo.id,
+            "rawId": photo.raw_id,
             "filename": photo.filename,
             "takenAt": photo.taken_at,
             "lat": photo.latitude,
@@ -137,7 +136,7 @@ def _metadata_prompt(photos: list[PhotoItem]) -> str:
         "메타데이터로만 신중히 추정하고, 보이지 않는 구체 사물을 지어내지 말며 "
         "확실하지 않으면 일반적으로 표현하세요.\n\n"
         f"{json.dumps(rows, ensure_ascii=False, indent=2)}\n\n"
-        '반드시 {"descriptions": [{"id": <id>, "description": "..."}]} 형식의 '
+        '반드시 {"descriptions": [{"rawId": "<입력 rawId>", "description": "..."}]} 형식의 '
         "JSON 만 출력하세요."
     )
 
@@ -175,7 +174,7 @@ class VisionPhotoDescriber(PhotoDescriber):
             self._fallback = LLMPhotoDescriber(self._llm)
         return self._fallback
 
-    def describe(self, photos: list[PhotoItem]) -> dict[int, str]:
+    def describe(self, photos: list[PhotoItem]) -> dict[str, str]:
         targets = [photo for photo in photos if needs_description(photo)]
         if not targets:
             return {}
@@ -191,7 +190,7 @@ class VisionPhotoDescriber(PhotoDescriber):
                 with_image.append(photo)
                 images.append(image)
 
-        result: dict[int, str] = {}
+        result: dict[str, str] = {}
         if with_image:
             result.update(self._describe_with_vision(with_image, images))
         if without_image:
@@ -201,25 +200,25 @@ class VisionPhotoDescriber(PhotoDescriber):
 
     def _describe_with_vision(
         self, photos: list[PhotoItem], images: list[ImageInput]
-    ) -> dict[int, str]:
+    ) -> dict[str, str]:
         prompt = _vision_prompt(photos)
         text = self.llm.complete_with_images(
             prompt, images, system=_DESCRIBE_PROMPT, temperature=0.2
         )
-        return parse_descriptions(text, {photo.id for photo in photos})
+        return parse_descriptions(text, {photo.raw_id for photo in photos})
 
 
 def _vision_prompt(photos: list[PhotoItem]) -> str:
-    """첨부 이미지 순서와 id 를 함께 알려 vision 설명을 요청하는 프롬프트."""
+    """첨부 이미지 순서와 rawId를 함께 알려 vision 설명을 요청하는 프롬프트."""
 
     rows = [
-        {"id": photo.id, "filename": photo.filename, "takenAt": photo.taken_at}
+        {"rawId": photo.raw_id, "filename": photo.filename, "takenAt": photo.taken_at}
         for photo in photos
     ]
     return (
-        "아래 목록의 순서대로 사진 이미지가 첨부됩니다. 각 이미지를 보고 해당 id 의 "
+        "아래 목록의 순서대로 사진 이미지가 첨부됩니다. 각 이미지를 보고 해당 rawId의 "
         "description 을 생성하세요.\n\n"
         f"{json.dumps(rows, ensure_ascii=False, indent=2)}\n\n"
-        '반드시 {"descriptions": [{"id": <id>, "description": "..."}]} 형식의 '
+        '반드시 {"descriptions": [{"rawId": "<입력 rawId>", "description": "..."}]} 형식의 '
         "JSON 만 출력하세요."
     )

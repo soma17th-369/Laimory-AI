@@ -172,7 +172,6 @@ def _rows_to_snapshot(
         try:
             items.append(
                 CollectedSourceItem(
-                    id=row.timeline_draft_source_item_id,
                     raw_id=row.raw_id,
                     item_type=row.item_type,
                     start_at=row.start_at.isoformat(),

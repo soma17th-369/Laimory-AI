@@ -8,6 +8,8 @@
 시각은 새 계약대로 ISO 문자열을 사용한다.
 """
 
+from uuid import NAMESPACE_URL, UUID, uuid5
+
 from app.schemas import (
     CalendarItem,
     CollectedSnapshot,
@@ -27,6 +29,16 @@ from app.schemas import (
 DATE = "2026-06-20"
 WINDOW_START = "2026-06-20T00:00:00"
 WINDOW_END = "2026-06-21T00:00:00"
+
+
+def fixture_raw_id(label: str) -> str:
+    """테스트 라벨에서 재현 가능한 UUID rawId를 만든다."""
+
+    try:
+        return str(UUID(label))
+    except ValueError:
+        pass
+    return str(uuid5(NAMESPACE_URL, f"laimory-test:{label}"))
 
 
 # --- 정규화된 요청(TimelineDraftRequest) 빌더 ---------------------------------
@@ -57,8 +69,7 @@ def stay_item(
     places=None,
 ) -> StayItem:
     return StayItem(
-        id=item_id,
-        raw_id=raw_id,
+        raw_id=fixture_raw_id(raw_id or f"stay-{item_id}"),
         start_at=start,
         end_at=end,
         latitude=lat,
@@ -74,8 +85,7 @@ def movement_item(
     item_id, start=WINDOW_START, end=WINDOW_END, distance=1000.0, raw_id=None
 ) -> MovementItem:
     return MovementItem(
-        id=item_id,
-        raw_id=raw_id,
+        raw_id=fixture_raw_id(raw_id or f"movement-{item_id}"),
         start_at=start,
         end_at=end,
         distance_meters=distance,
@@ -87,8 +97,7 @@ def calendar_item(
     item_id, title, start=WINDOW_START, end=WINDOW_END, raw_id=None, location_text=None
 ) -> CalendarItem:
     return CalendarItem(
-        id=item_id,
-        raw_id=raw_id,
+        raw_id=fixture_raw_id(raw_id or f"calendar-{item_id}"),
         start_at=start,
         end_at=end,
         title=title,
@@ -98,8 +107,7 @@ def calendar_item(
 
 def notification_item(item_id, app_name, title, posted=WINDOW_START, raw_id=None) -> NotificationItem:
     return NotificationItem(
-        id=item_id,
-        raw_id=raw_id,
+        raw_id=fixture_raw_id(raw_id or f"notification-{item_id}"),
         posted_at=posted,
         app_name=app_name,
         title=title,
@@ -109,8 +117,7 @@ def notification_item(item_id, app_name, title, posted=WINDOW_START, raw_id=None
 
 def photo_item(item_id, taken=WINDOW_START, lat=None, lon=None, raw_id=None) -> PhotoItem:
     return PhotoItem(
-        id=item_id,
-        raw_id=raw_id,
+        raw_id=fixture_raw_id(raw_id or f"photo-{item_id}"),
         taken_at=taken,
         filename=f"{item_id}.jpg",
         client_photo_uri=f"content://{item_id}",
@@ -122,8 +129,7 @@ def photo_item(item_id, taken=WINDOW_START, lat=None, lon=None, raw_id=None) -> 
 
 def steps_item(item_id, count, start=WINDOW_START, end=WINDOW_END, raw_id=None) -> HealthItem:
     return HealthItem(
-        id=item_id,
-        raw_id=raw_id,
+        raw_id=fixture_raw_id(raw_id or f"steps-{item_id}"),
         metric=HealthMetric.STEPS,
         start_at=start,
         end_at=end,
@@ -133,8 +139,7 @@ def steps_item(item_id, count, start=WINDOW_START, end=WINDOW_END, raw_id=None) 
 
 def sleep_item(item_id, start, end, minutes, raw_id=None) -> HealthItem:
     return HealthItem(
-        id=item_id,
-        raw_id=raw_id,
+        raw_id=fixture_raw_id(raw_id or f"sleep-{item_id}"),
         metric=HealthMetric.SLEEP,
         start_at=start,
         end_at=end,
@@ -145,9 +150,11 @@ def sleep_item(item_id, start, end, minutes, raw_id=None) -> HealthItem:
 # --- 수집 원본(CollectedSnapshot) 빌더 ----------------------------------------
 
 
-def source_item(item_id, item_type, payload, start=WINDOW_START, end=None) -> CollectedSourceItem:
+def source_item(
+    item_id, item_type, payload, start=WINDOW_START, end=None, raw_id=None
+) -> CollectedSourceItem:
     return CollectedSourceItem(
-        id=item_id,
+        raw_id=fixture_raw_id(raw_id or f"source-{item_id}"),
         item_type=item_type,
         start_at=start,
         end_at=end,

@@ -173,9 +173,9 @@ confidence 규칙:
 
 - 모든 event에는 최소 1개 이상의 `sourceRefs`가 있어야 합니다.
 - 여러 후보가 같은 활동을 가리키면 하나의 event로 병합하고, 모든 근거를 `sourceRefs`에 보존합니다.
-- 최종 결과에서 하나의 `rawId`는 오직 하나의 event에만 들어갑니다. 같은 source가 여러 event를 뒷받침하면 사건을 하나로 병합하거나, 그 source가 가장 직접적으로 뒷받침하는 event 하나에만 배정합니다.
+- 같은 `rawId`를 가진 source가 서로 다른 여러 event를 실제로 뒷받침하면 각 event가 그 source를 함께 참조할 수 있습니다. 단순히 시간대가 가깝다는 이유로 복제하지 말고, 각 event의 `reason`에 해당 source가 그 event의 근거가 되는 이유를 구체적으로 적습니다.
 - 각 `sourceRefs`에는 가능하면 `reason`을 함께 작성합니다. `reason`은 해당 raw가 왜 이 event의 근거인지 설명하는 짧은 문장입니다.
-- 예: `{"sourceType": "PHOTO", "rawId": "photo-123", "reason": "같은 시간대에 해당 장소에서 촬영된 사진이며 음식 사진 설명이 포함됨"}`
+- 예: `{"sourceType": "PHOTO", "rawId": "44444444-4444-4444-8444-444444444444", "reason": "같은 시간대에 해당 장소에서 촬영된 사진이며 음식 사진 설명이 포함됨"}`
 - 서로 다른 활동이면 시간이 가까워도 억지로 병합하지 않습니다.
 - fragment는 후보보다 약한 event 단서입니다. 단독으로 확정적인 event를 만들지 말고, 낮은 confidence event, question, warning, 또는 후보 보강 근거로 신중하게 사용합니다.
 
@@ -207,7 +207,7 @@ confidence 규칙:
 
 다음 경우에는 `warnings`를 만듭니다.
 
-- sourceId가 없거나 sourceRefs 신뢰도가 낮습니다.
+- rawId가 없거나 sourceRefs 신뢰도가 낮습니다.
 - 데이터가 너무 많거나 일부 source agent가 실패했습니다.
 - 건강/위치/사진/캘린더가 서로 충돌합니다.
 - 모델이 판단하기 어려운 데이터 품질 문제가 있습니다.
@@ -235,7 +235,7 @@ confidence 규칙:
       "inferenceLevel": "DIRECT|EVIDENCE_BASED|INFERRED|UNCERTAIN",
       "sourceRefs": [
         {
-          "sourceType": "STAY|MOVEMENT|CALENDAR|PHOTO|SLEEP|ACTIVITY|NOTIFICATION|USER_MEMORY",
+          "sourceType": "STAY|MOVEMENT|CALENDAR|PHOTO|SLEEP|ACTIVITY|NOTIFICATION",
           "rawId": "입력 rawId",
           "reason": "이 source가 해당 event의 근거인 이유"
         }
@@ -271,7 +271,7 @@ confidence 규칙:
 - 단, `questions.relatedEventIds`는 최종 events 배열 순서 기준으로 `event-001` 형식을 사용할 수 있습니다.
 - 각 event의 `sourceRefs`는 최소 1개 이상이어야 합니다.
 - **입력의 모든 캘린더 일정은 timeline에 나타나야 합니다.** 어떤 캘린더 `rawId`도 빠짐없이 어딘가의 event `sourceRefs`에 있어야 합니다. 근거가 약하면 confidence를 낮추되, 누락시키지 않습니다.
-- 존재하지 않는 sourceId를 만들지 않습니다.
+- 존재하지 않는 rawId를 만들지 않습니다.
 - 입력 근거 없이 제목, 장소, 사람, 활동을 창작하지 않습니다.
 - 날짜는 예시를 복사하지 말고 입력 metadata와 후보 시간을 따릅니다.
 - 불확실한 내용을 확정적인 문장으로 쓰지 않습니다.

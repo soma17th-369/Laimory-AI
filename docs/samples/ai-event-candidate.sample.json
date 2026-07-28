@@ -7,7 +7,7 @@
     },
     "title": "집에서 학교로 이동",
     "description": "위치 로그를 바탕으로 집에서 경북대학교까지 이동한 것으로 추정됩니다.",
-    "sourceRefs": [{ "sourceType": "MOVEMENT", "sourceId": "movement-log-001" }],
+    "sourceRefs": [{ "sourceType": "MOVEMENT", "rawId": "22222222-2222-4222-8222-222222222222" }],
     "confidence": 0.86,
     "inferenceLevel": "EVIDENCE_BASED",
     "uncertainty": ["이동 수단은 GPS 속도와 이동 경로를 바탕으로 추정되었습니다."]
@@ -20,7 +20,7 @@
     },
     "title": "경북대학교 체류",
     "description": "위치 기록상 경북대학교 부근에 머문 것으로 보입니다.",
-    "sourceRefs": [{ "sourceType": "STAY", "sourceId": "stay-log-001" }],
+    "sourceRefs": [{ "sourceType": "STAY", "rawId": "11111111-1111-4111-8111-111111111111" }],
     "confidence": 0.82,
     "inferenceLevel": "EVIDENCE_BASED",
     "uncertainty": ["구체적인 활동은 위치 데이터만으로 확정할 수 없습니다."]
@@ -33,7 +33,7 @@
     },
     "title": "김종찬 멘토링",
     "description": "캘린더에 등록된 일정입니다.",
-    "sourceRefs": [{ "sourceType": "CALENDAR", "sourceId": "calendar-event-001" }],
+    "sourceRefs": [{ "sourceType": "CALENDAR", "rawId": "55555555-5555-4555-8555-555555555555" }],
     "confidence": 0.95,
     "inferenceLevel": "DIRECT",
     "uncertainty": ["일정이 존재하지만 실제 참석 여부는 다른 근거와 함께 확인해야 합니다."]
@@ -46,7 +46,7 @@
     },
     "title": "저녁 사진",
     "description": "음식 사진이 촬영되었습니다.",
-    "sourceRefs": [{ "sourceType": "PHOTO", "sourceId": "photo-001" }],
+    "sourceRefs": [{ "sourceType": "PHOTO", "rawId": "44444444-4444-4444-8444-444444444444" }],
     "confidence": 0.9,
     "inferenceLevel": "DIRECT",
     "uncertainty": ["사진만으로 식사 전체 시간이나 동행자는 확정할 수 없습니다."]
@@ -60,8 +60,8 @@
     "title": "저녁 식사(추정)",
     "description": "음식점 부근 체류와 음식 사진을 근거로 저녁 식사 후보로 둡니다. 동행자·메뉴는 단정하지 않습니다.",
     "sourceRefs": [
-      { "sourceType": "STAY", "sourceId": "stay-log-001" },
-      { "sourceType": "PHOTO", "sourceId": "photo-001" }
+      { "sourceType": "STAY", "rawId": "11111111-1111-4111-8111-111111111111" },
+      { "sourceType": "PHOTO", "rawId": "44444444-4444-4444-8444-444444444444" }
     ],
     "confidence": 0.58,
     "inferenceLevel": "UNCERTAIN",
@@ -71,5 +71,4 @@
     ]
   }
 ]
-
 

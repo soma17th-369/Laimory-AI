@@ -288,8 +288,8 @@ async def test_read_and_save_roundtrip(require_db):
                     end_time=datetime(2026, 7, 8, 10, 0, tzinfo=_KST),
                     confidence=0.8, inference_level=InferenceLevel.EVIDENCE_BASED,
                     source_refs=[
-                        SourceRef(source_type="STAY", source_id=_RAW_IDS["stay"]),
-                        SourceRef(source_type="PHOTO", source_id=_RAW_IDS["photo"]),
+                        SourceRef(source_type="STAY", raw_id=_RAW_IDS["stay"]),
+                        SourceRef(source_type="PHOTO", raw_id=_RAW_IDS["photo"]),
                     ],
                 )
             ],

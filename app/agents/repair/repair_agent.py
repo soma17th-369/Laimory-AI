@@ -228,12 +228,12 @@ class RepairAgent(Agent):
         def analyze_node(state: _State) -> _State:
             iteration = state["iteration"] + 1
             remaining = max_iterations - iteration + 1
-            text = self.llm.complete(
+            plan = self.llm.complete_structured(
                 build_repair_prompt(ctx, remaining),
+                RepairPlan,
                 system=_SYSTEM_PROMPT,
                 temperature=0.0,
             )
-            plan = parse_repair_plan(text)
             logger.info(
                 "Repair 분석 %d/%d: issues=%d, toolCalls=%d, done=%s",
                 iteration,

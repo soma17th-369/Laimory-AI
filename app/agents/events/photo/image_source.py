@@ -95,7 +95,7 @@ class S3PhotoImageSource(PhotoImageSource):
         self._prefix = prefix
 
     def _key_for(self, photo: PhotoItem) -> str:
-        return f"{self._prefix}{photo.filename or photo.id}"
+        return f"{self._prefix}{photo.filename or photo.raw_id}"
 
     def load(self, photo: PhotoItem) -> ImageInput | None:
         # TODO: boto3 로 self._bucket/self._key_for(photo) 객체를 받아 ImageInput 반환.

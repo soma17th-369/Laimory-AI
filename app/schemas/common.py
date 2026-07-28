@@ -9,8 +9,9 @@ epoch milliseconds 대신 문자열을 그대로 사용한다. 각 도메인 항
 """
 
 from typing import Annotated
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 
 class CamelModel(BaseModel):
@@ -27,6 +28,18 @@ class CamelModel(BaseModel):
 # 위경도 좌표. WGS84 유효 범위로 제한한다.
 Latitude = Annotated[float, Field(ge=-90, le=90)]
 Longitude = Annotated[float, Field(ge=-180, le=180)]
+
+
+def _normalize_raw_id(value: str) -> str:
+    """rawId를 표준 UUID 문자열로 검증·정규화한다."""
+
+    try:
+        return str(UUID(value))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("rawId must be a valid UUID") from exc
+
+
+RawId = Annotated[str, AfterValidator(_normalize_raw_id)]
 
 
 class GeoPlace(CamelModel):

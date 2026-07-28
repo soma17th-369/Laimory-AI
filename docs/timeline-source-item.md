@@ -1,104 +1,117 @@
 ﻿# AI 하루 타임라인 입력 Source Item 계약
 
-이슈 #7 — AI 하루 타임라인 Agent 가 입력으로 받는 **Source Item 계약**을 정의한다.
-요청 DTO 는 `app/schemas/timeline_request.py` 의 `TimelineDraftRequest` 이며,
-샘플 요청은 [`samples/timeline-request.sample.json`](samples/timeline-request.sample.json) 에 있다.
+이 문서는 현재 프로덕션 코드의 두 입력 경계를 정의한다.
 
-## 전체 구조
+1. `app/schemas/source_snapshot.py`의 `CollectedSnapshot`: DB에서 읽은 평평한 수집 원본.
+2. `app/schemas/timeline_request.py`의 `TimelineDraftRequest`: normalizer가 도메인별로
+   분리해 Main/Event/Timeline Agent에 전달하는 요청.
 
-하루 단위 라이프로그 raw snapshot 을 다음으로 표현한다.
+샘플은 Agent가 실제 소비하는 두 번째 계약을 표현한다:
+[`samples/timeline-request.sample.json`](samples/timeline-request.sample.json).
 
+## 처리 경계
+
+```text
+timeline_draft_source_items
+→ CollectedSnapshot(sourceItems[])
+→ normalize()
+→ TimelineDraftRequest(stays/movements/...)
+→ Main Agent
 ```
-기본 메타데이터
-+ 위치 체류/이동 기록
-+ 알림 수집 기록
-+ 사진 메타데이터
-+ 캘린더 일정
-+ 건강 데이터
-+ 사용자 메모리(보조 context)
-```
 
-- `transactionId` 는 이 스냅샷 **세트 전체**를 식별한다.
-- 모든 source item 은 수집 주체가 전달한 안정적인 `sourceId` 를 가진다.
-  `sourceId` 는 AI 결과 검증과 이후 선택적 재처리의 기준 키가 된다.
-- 시각은 모두 Unix epoch **milliseconds** 정수다.
+- 모든 source item의 유일한 식별자는 UUID `rawId`다.
+- DB PK는 repository 내부 행 식별·진단에만 사용하며 snapshot과 Agent 요청에는 넣지 않는다.
+- 시각은 epoch 숫자로 변환하지 않고 수집 원본의 ISO 문자열을 유지한다.
+- `userMemory`는 rawId를 가진 source item이 아니라 해석용 보조 context다.
 
-## 공통 필드 (모든 source item)
+## 1. CollectedSnapshot
 
 | 필드 | 타입 | 필수 | 설명 |
 | --- | --- | --- | --- |
-| `sourceId` | string | ✅ | 수집 주체가 전달하는 안정적 식별자 |
-| `sourceType` | enum | ✅ | item 종류 (아래 표 참고) |
+| `taskId` | string | ✅ | 처리 작업 식별자 |
+| `recordDate` | string | ✅ | 수집 기준 날짜/시각 |
+| `recordTimeZone` | string | 선택 | 기본값 `Asia/Seoul` |
+| `timelineWindow.startTime` / `endTime` | string | 선택 | 처리 대상 ISO 시간 경계 |
+| `sourceItems` | array | 선택 | 평평한 수집 항목 목록 |
+| `userMemory` | object | 선택 | 비정형 보조 context |
 
-`sourceType` 값: `stay`, `movement`, `notification`, `photo`,
-`calendar_event`, `health_steps`, `health_sleep`, `health_total_calories`,
-`health_active_calories`, `health_distance`, `health_heart_rate`.
-
-## 봉투(envelope) 필드
+### CollectedSourceItem 공통 필드
 
 | 필드 | 타입 | 필수 | 설명 |
 | --- | --- | --- | --- |
-| `transactionId` | string | ✅ | 스냅샷 세트 전체 식별자 |
-| `date` | string(`YYYY-MM-DD`) | ✅ | 수집 대상 날짜 |
-| `mode` | enum(`FULL_DAY`) | ✅ | 수집 모드 |
-| `window.start` / `window.end` | int(ms) | ✅ | 하루 수집 범위 |
-| `generatedAt` | int(ms) | ✅ | JSON 생성 시각 |
-| `sourceItems` | array | 선택 | STAY/MOVEMENT 등 수집 항목 목록 |
-| `notifications` | object | 선택 | 알림 데이터 (기본 빈 active/collected) |
-| `photos` | array | 선택 | 사진 목록 |
-| `calendar` | object | 선택 | 캘린더 데이터 (기본 빈 events) |
-| `health` | object | 선택 | 건강 데이터 |
-| `userMemory` | object(비정형) | 선택 | 사용자 메모리 입력 |
+| `rawId` | UUID string | ✅ | 원본 source 식별자 |
+| `itemType` | enum | ✅ | `STAY`, `MOVEMENT`, `CALENDAR`, `HEALTH`, `NOTIFICATION`, `PHOTO` |
+| `startAt` | string | ✅ | ISO 시각 문자열 |
+| `endAt` | string/null | 선택 | 구간 종료 시각 |
+| `payload` | object | 선택 | itemType별 원본 필드 |
 
-## source type 별 payload
+repository는 한 task의 행들이 동일 user에 속하는지, `start_at`과 `raw_id`가 존재하는지,
+rawId가 task 안에서 중복되지 않는지 확인한다. normalizer는 itemType에 따라 아래 도메인
+모델로 변환하며, 개별 항목이 해당 모델 검증에 실패하면 그 항목만 제외하고 로그를 남긴다.
 
-### 체류 — `sourceItems[]` (`STAY`)
-`source`(str), `lat`, `lon`, `startTime`, `endTime`, `durationSec`
+## 2. TimelineDraftRequest
 
-### 이동 — `sourceItems[]` (`MOVEMENT`)
-`source`(str), `startTime`, `endTime`, `durationSec`, `distanceMeters`, `points[]`(`{lat, lon}`)
+| 필드 | 타입 | 필수 | 설명 |
+| --- | --- | --- | --- |
+| `taskId` | string | ✅ | snapshot과 동일한 작업 식별자 |
+| `date` | string | ✅ | `recordDate` 앞 10자리 |
+| `timezone` | string | 선택 | 기본값 `Asia/Seoul` |
+| `window.start` / `window.end` | string | 선택 | snapshot window를 옮긴 ISO 문자열 |
+| `stays` | `StayItem[]` | 선택 | 기본 빈 배열 |
+| `movements` | `MovementItem[]` | 선택 | 기본 빈 배열 |
+| `calendars` | `CalendarItem[]` | 선택 | 기본 빈 배열 |
+| `healths` | `HealthItem[]` | 선택 | 기본 빈 배열 |
+| `notifications` | `NotificationItem[]` | 선택 | 기본 빈 배열 |
+| `photos` | `PhotoItem[]` | 선택 | 기본 빈 배열 |
+| `userMemory` | object | 선택 | 비정형 보조 context |
 
-### 알림 — `notifications.active[]` / `notifications.collected[]` (`notification`)
-`packageName`, `appName`, `title`, `text`, `postTime`, `collectedAt`
+## 도메인 항목
 
-### 사진 — `photos[]` (`photo`)
-`id`, `uri`, `dateTaken`, `lat`(선택), `lon`(선택), `width`, `height`, `mimeType`
+모든 도메인 항목은 UUID `rawId`를 필수로 가진다.
 
-### 캘린더 — `calendar.events[]` (`calendar_event`)
-`title`, `startTime`, `endTime`, `location`(선택), `description`(선택)
+### StayItem
 
-### 건강 — `health.*`
-- `steps` (`health_steps`): `count`
-- `sleep` (`health_sleep`): `startTime`, `endTime`, `durationMinutes`
-- `totalCaloriesBurned` (`health_total_calories`): `kcal`
-- `activeCaloriesBurned` (`health_active_calories`): `kcal`
-- `distance` (`health_distance`): `meters`
-- `heartRate` (`health_heart_rate`): `samples[]`(`{time, bpm}`)
+`rawId`, `startAt`, `endAt?`, `latitude?`, `longitude?`, `place?`, `address?`,
+`places[]`, `durationText?`
 
-### 사용자 메모리 — `userMemory`
-사용자가 확정한 기록을 바탕으로 새롭게 정의되는 **비정형 JSON**. key/value 는 AI 가
-자동으로 분석해 채운다. 고정 스키마 없이 임의 key/value 를 허용하며, 타임라인 생성 요청에
-함께 전달한다.
+### MovementItem
 
-## validation 기준
+`rawId`, `startAt`, `endAt?`, `start?`, `end?`, `durationText?`,
+`distanceMeters?`, `transports[]`
 
-DTO(`pydantic`) 에서 강제하는 규칙이다.
+`start`와 `end`는 `latitude?`, `longitude?`, `place?`, `address?`, `places[]`를 갖는
+`GeoPlace`다.
 
-- **필수 필드**: 위 표의 필수 필드가 없으면 요청은 거부된다(422).
-- **sourceId**
-  - 모든 source item 에 필수, `min_length=1`.
-  - 서버 DTO 에서는 sourceId 중복 여부를 검증하지 않는다.
-  - `userMemory` 는 request 로 받지만 `sourceId`/`sourceType` 을 갖는 Source Item 이 아니다.
-- **transactionId**: 필수, `min_length=1`.
-- **date**: `YYYY-MM-DD` 형식.
-- **mode**: `FULL_DAY` 등 정의된 값만 허용.
-- **시각(ms)**: 모든 timestamp 는 `>= 0` 정수.
-- **구간 시각**: `endTime >= startTime`(체류·이동·수면·일정), `window.end >= window.start`.
-- **좌표**: `lat` 은 `-90 ~ 90`, `lon` 은 `-180 ~ 180`.
-- **수치 범위**: `durationSec`, `distanceMeters`, `meters`, `kcal`, `count`, `durationMinutes`, `bpm` 은 `>= 0`; 이미지 `width`/`height` 는 `> 0`.
+### CalendarItem
 
-## 참고
+`rawId`, `startAt`, `endAt?`, `title`, `description?`, `locationText?`, `allDay`
 
-- `sourceId` 는 AI 결과 검증과 이후 선택적 재처리에 필요하다.
-- 사용자 메모리 데이터는 request 로 함께 받되, Source Item 계약 대상은 아니다.
+### HealthItem
+
+`rawId`, `metric`, `startAt`, `endAt?`, `value?`, `durationMinutes?`
+
+현재 metric 허용값은 `STEPS`, `SLEEP`이다. 수집 payload의 숫자가 문자열이면 normalizer가
+숫자 부분을 추출하며, SLEEP 문자열 값은 `durationMinutes`로 옮긴다.
+
+### NotificationItem
+
+`rawId`, `postedAt`, `appName`, `title`, `text`
+
+### PhotoItem
+
+`rawId`, `takenAt`, `dateTaken?`, `fileName?`, `clientPhotoUri?`, `latitude?`,
+`longitude?`, `description?`
+
+수집 payload에 `photoFile`만 있으면 normalizer가 이를 `clientPhotoUri`로 옮긴다.
+
+## 검증 책임
+
+- repository: task 소속, 단일 user, `start_at`·`raw_id` 존재, task 내 rawId 중복 금지.
+- Pydantic 도메인 모델: rawId UUID, 필수 필드, enum, 좌표와 음수가 될 수 없는 수치 범위.
+- Event Agent 경계: 출력 rawId를 현재 요청 allowlist와 대조해 잘못된 참조를 제거한다.
+- Repair 경계: Timeline draft를 같은 allowlist로 다시 검증하고 근거 없는 event를 제외한다.
+- 저장 직전: 모든 sourceRefs.rawId가 해당 task의 실제 source row에 속하는지 다시 확인한다.
+- 같은 실제 source는 여러 event의 근거가 될 수 있다. event↔source 관계는 N:M이다.
+- `sourceType`은 rawId로 찾은 실제 입력 타입으로 정정한다.
+- `userMemory`는 보조 context이며 `sourceRefs`에 넣지 않는다.
 

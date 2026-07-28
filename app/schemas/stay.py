@@ -7,14 +7,13 @@
 
 from pydantic import Field
 
-from app.schemas.common import CamelModel, GeoPlace, Latitude, Longitude
+from app.schemas.common import CamelModel, GeoPlace, Latitude, Longitude, RawId
 
 
 class StayItem(CamelModel):
     """특정 장소에 머문 기록 (STAY)."""
 
-    id: int
-    raw_id: str | None = Field(default=None, alias="rawId")
+    raw_id: RawId = Field(alias="rawId")
     start_at: str = Field(alias="startAt")
     end_at: str | None = Field(default=None, alias="endAt")
     latitude: Latitude | None = None
@@ -28,8 +27,7 @@ class StayItem(CamelModel):
 class MovementItem(CamelModel):
     """장소 간 이동 기록 (MOVEMENT)."""
 
-    id: int
-    raw_id: str | None = Field(default=None, alias="rawId")
+    raw_id: RawId = Field(alias="rawId")
     start_at: str = Field(alias="startAt")
     end_at: str | None = Field(default=None, alias="endAt")
     start: GeoPlace | None = None

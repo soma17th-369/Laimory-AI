@@ -1,27 +1,29 @@
 import json
 
+import pytest
+from pydantic import ValidationError
+
 from app.agents.events.photo.agent import PhotoEventAgent, _photo_items_to_text
-from app.schemas import PhotoItem
+from app.schemas import PhotoItem, SourceRef
 from tests.fixtures.fake_llm import FakeLLM
-from tests.fixtures.requests import make_request
+from tests.fixtures.requests import fixture_raw_id, make_request
 
 
-def test_source_ref_accepts_legacy_source_id_and_serializes_raw_id() -> None:
-    from app.schemas import SourceRef
+def test_source_ref_rejects_legacy_source_id() -> None:
+    with pytest.raises(ValidationError):
+        SourceRef.model_validate(
+            {"sourceType": "PHOTO", "sourceId": fixture_raw_id("photo-123")}
+        )
 
-    ref = SourceRef.model_validate({"sourceType": "PHOTO", "sourceId": "photo-123"})
 
-    assert ref.source_id == "photo-123"
-    assert ref.model_dump(by_alias=True, mode="json") == {
-        "sourceType": "PHOTO",
-        "rawId": "photo-123",
-        "reason": None,
-    }
+def test_source_ref_rejects_non_uuid_raw_id() -> None:
+    with pytest.raises(ValidationError, match="valid UUID"):
+        SourceRef.model_validate({"sourceType": "PHOTO", "rawId": "photo-123"})
 
 
 def test_photo_payload_treats_taken_at_as_shooting_time() -> None:
     photo = PhotoItem(
-        id=1,
+        rawId=fixture_raw_id("photo-1"),
         takenAt="2026-06-20T12:00:00",
         dateTaken=None,
         filename="shot.jpg",
@@ -30,6 +32,8 @@ def test_photo_payload_treats_taken_at_as_shooting_time() -> None:
 
     payload = json.loads(_photo_items_to_text([photo]))
 
+    assert "id" not in payload[0]
+    assert payload[0]["rawId"] == fixture_raw_id("photo-1")
     assert payload[0]["dateTaken"] is None
     assert "isDownloaded" not in payload[0]
     assert "timelineTimeUsable" not in payload[0]
@@ -56,7 +60,7 @@ def test_photo_description_semantics_are_accepted_in_candidate_contract() -> Non
                     "sourceRefs": [
                         {
                             "sourceType": "PHOTO",
-                            "rawId": "1",
+                            "rawId": fixture_raw_id("photo-1"),
                             "reason": "같은 시간대에 해당 장소에서 촬영된 사진이며 음식 사진 설명이 포함됨",
                         }
                     ],
@@ -73,7 +77,7 @@ def test_photo_description_semantics_are_accepted_in_candidate_contract() -> Non
     request = make_request(
         photos=[
             PhotoItem(
-                id=1,
+                rawId=fixture_raw_id("photo-1"),
                 takenAt="2026-06-20T12:00:00",
                 dateTaken=None,
                 description="음식이 놓인 식탁 사진이다.",
@@ -90,7 +94,7 @@ def test_photo_description_semantics_are_accepted_in_candidate_contract() -> Non
         == "같은 시간대에 해당 장소에서 촬영된 사진이며 음식 사진 설명이 포함됨"
     )
     dumped_ref = result.candidates[0].source_refs[0].model_dump(by_alias=True)
-    assert dumped_ref["rawId"] == "1"
+    assert dumped_ref["rawId"] == fixture_raw_id("photo-1")
     assert "sourceId" not in dumped_ref
     assert '"timelineTimeUsable"' not in llm.calls[0].prompt
     assert '"isDownloaded"' not in llm.calls[0].prompt

@@ -25,7 +25,7 @@ from app.schemas import (
 )
 from tests.fixtures.fake_llm import FakeLLM
 from tests.fixtures.pipeline import confirm_only_repair_agent
-from tests.fixtures.requests import make_request, stay_item
+from tests.fixtures.requests import fixture_raw_id, make_request, stay_item
 
 
 def _request():
@@ -36,7 +36,7 @@ def _request():
     )
 
 
-def _candidate(source_id: str) -> AiEventCandidate:
+def _candidate(raw_id: str) -> AiEventCandidate:
     return AiEventCandidate(
         event_type=EventType.REST,
         time_range=CandidateTimeRange(
@@ -45,7 +45,12 @@ def _candidate(source_id: str) -> AiEventCandidate:
         ),
         title="체류",
         description="설명",
-        source_refs=[SourceRef(source_type=EventSourceType.STAY, source_id=source_id)],
+        source_refs=[
+            SourceRef(
+                source_type=EventSourceType.STAY,
+                raw_id=fixture_raw_id(raw_id),
+            )
+        ],
         confidence=0.8,
         inference_level=InferenceLevel.EVIDENCE_BASED,
         uncertainty=["x"],
@@ -83,7 +88,12 @@ def _timeline_agent_returning_one_event() -> TimelineAgent:
                     "endTime": "2026-06-20T10:00:00+09:00",
                     "confidence": 0.8,
                     "inferenceLevel": "EVIDENCE_BASED",
-                    "sourceRefs": [{"sourceType": "STAY", "sourceId": "s-1"}],
+                    "sourceRefs": [
+                        {
+                            "sourceType": "STAY",
+                            "rawId": fixture_raw_id("s-1"),
+                        }
+                    ],
                 }
             ],
         },
@@ -95,7 +105,7 @@ def _timeline_agent_returning_one_event() -> TimelineAgent:
 def _timeline_agent_returning_unsorted_events() -> TimelineAgent:
     """시간 순서가 뒤집힌 draft 를 돌려주는 Timeline Agent."""
 
-    def event(title, start, end, source_id):
+    def event(title, start, end, raw_id):
         return {
             "eventType": "REST",
             "title": title,
@@ -104,7 +114,12 @@ def _timeline_agent_returning_unsorted_events() -> TimelineAgent:
             "endTime": f"2026-06-20T{end}:00+09:00",
             "confidence": 0.8,
             "inferenceLevel": "EVIDENCE_BASED",
-            "sourceRefs": [{"sourceType": "STAY", "rawId": source_id}],
+            "sourceRefs": [
+                {
+                    "sourceType": "STAY",
+                    "rawId": fixture_raw_id(raw_id),
+                }
+            ],
         }
 
     draft_json = json.dumps(
@@ -191,7 +206,7 @@ def test_repair_agent_receives_draft_sources_and_reruns():
     # Timeline Agent 가 만든 draft 와, 다시 돌릴 수 있는 Event Agent 이름이 실려야 한다.
     prompt = repair_llm.calls[0].prompt
     assert "[draft]" in prompt
-    assert "rawId=s-1" in prompt
+    assert f"rawId={fixture_raw_id('s-1')}" in prompt
     assert "rerun_event_agent" in prompt and "a" in prompt
 
 

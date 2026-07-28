@@ -14,7 +14,7 @@ from typing import Any
 
 from pydantic import Field
 
-from app.schemas.common import CamelModel
+from app.schemas.common import CamelModel, RawId
 from app.schemas.user_memory import UserMemory
 
 
@@ -51,8 +51,7 @@ class CollectedSourceItem(CamelModel):
     모델 검증은 normalizer 에서 수행한다.
     """
 
-    id: int
-    raw_id: str | None = Field(default=None, alias="rawId")
+    raw_id: RawId = Field(alias="rawId")
     item_type: ItemType = Field(alias="itemType")
     start_at: str = Field(alias="startAt")
     end_at: str | None = Field(default=None, alias="endAt")

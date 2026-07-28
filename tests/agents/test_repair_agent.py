@@ -27,7 +27,7 @@ from app.schemas import (
 )
 from tests.fixtures.fake_llm import FakeLLM
 from tests.fixtures.pipeline import StubEventAgent
-from tests.fixtures.requests import make_request, stay_item
+from tests.fixtures.requests import fixture_raw_id, make_request, stay_item
 
 
 def _request():
@@ -73,7 +73,12 @@ def _event(title: str, start: str, end: str, raw_id: str = "s-1", client_event_i
         end_time=f"2026-06-20T{end}:00+09:00",
         confidence=0.8,
         inference_level=InferenceLevel.EVIDENCE_BASED,
-        source_refs=[SourceRef(source_type=EventSourceType.STAY, source_id=raw_id)],
+        source_refs=[
+            SourceRef(
+                source_type=EventSourceType.STAY,
+                raw_id=fixture_raw_id(raw_id),
+            )
+        ],
     )
 
 
@@ -297,7 +302,12 @@ def _candidate(title: str, raw_id: str = "s-1") -> AiEventCandidate:
         ),
         title=title,
         description="설명",
-        source_refs=[SourceRef(source_type=EventSourceType.STAY, source_id=raw_id)],
+        source_refs=[
+            SourceRef(
+                source_type=EventSourceType.STAY,
+                raw_id=fixture_raw_id(raw_id),
+            )
+        ],
         confidence=0.8,
         inference_level=InferenceLevel.EVIDENCE_BASED,
     )
@@ -318,7 +328,12 @@ def _timeline_draft_json(title: str) -> str:
                     "endTime": "2026-06-20T10:00:00+09:00",
                     "confidence": 0.8,
                     "inferenceLevel": "EVIDENCE_BASED",
-                    "sourceRefs": [{"sourceType": "STAY", "rawId": "s-1"}],
+                    "sourceRefs": [
+                        {
+                            "sourceType": "STAY",
+                            "rawId": fixture_raw_id("s-1"),
+                        }
+                    ],
                 }
             ],
         },
@@ -391,7 +406,7 @@ def test_prompt_carries_draft_sources_and_tools():
 
     prompt = llm.calls[0].prompt
     assert "[draft]" in prompt
-    assert "rawId=s-1" in prompt  # 근거 원본 목록
+    assert f"rawId={fixture_raw_id('s-1')}" in prompt  # 근거 원본 목록
     assert "update_event" in prompt  # 도구 카탈로그
     assert "location" in prompt  # 다시 돌릴 수 있는 Event Agent
     assert llm.calls[0].system is not None

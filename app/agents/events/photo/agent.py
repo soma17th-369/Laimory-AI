@@ -30,7 +30,6 @@ from app.agents.parsing import (
     SupportsComplete,
     build_infer_prompt,
     default_llm,
-    parse_agent_result,
     user_memory_to_text,
 )
 from app.schemas import AgentEventResult, TimelineDraftRequest
@@ -92,8 +91,8 @@ class PhotoEventAgent(EventAgent):
                 return {"photos": photos}
             # description 이 비어 있던 사진에만 생성된 설명을 채워 넣는다(원본 불변).
             enriched = [
-                photo.model_copy(update={"description": descriptions[photo.id]})
-                if needs_description(photo) and photo.id in descriptions
+                photo.model_copy(update={"description": descriptions[photo.raw_id]})
+                if needs_description(photo) and photo.raw_id in descriptions
                 else photo
                 for photo in photos
             ]
@@ -108,8 +107,10 @@ class PhotoEventAgent(EventAgent):
                 window_start=request.window.start if request.window else None,
                 window_end=request.window.end if request.window else None,
             )
-            text = llm.complete(infer_prompt, system=_SYSTEM_PROMPT, temperature=0.2)
-            return {"result": parse_agent_result(text)}
+            result = llm.complete_structured(
+                infer_prompt, AgentEventResult, system=_SYSTEM_PROMPT, temperature=0.2
+            )
+            return {"result": result}
 
         graph = StateGraph(_State)
         graph.add_node("describe", describe_node)

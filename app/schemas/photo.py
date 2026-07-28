@@ -7,14 +7,13 @@
 
 from pydantic import Field
 
-from app.schemas.common import CamelModel, Latitude, Longitude
+from app.schemas.common import CamelModel, Latitude, Longitude, RawId
 
 
 class PhotoItem(CamelModel):
     """사진 한 장의 메타데이터 (PHOTO)."""
 
-    id: int
-    raw_id: str | None = Field(default=None, alias="rawId")
+    raw_id: RawId = Field(alias="rawId")
     taken_at: str = Field(alias="takenAt")
     date_taken: int | None = Field(default=None, alias="dateTaken")
     filename: str | None = Field(default=None, alias="fileName")

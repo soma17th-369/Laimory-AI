@@ -12,7 +12,6 @@ from app.agents.parsing import (
     build_infer_prompt,
     default_llm,
     items_to_text,
-    parse_agent_result,
     user_memory_to_text,
 )
 from app.schemas import AgentEventResult, TimelineDraftRequest
@@ -46,5 +45,6 @@ class CalendarEventAgent(EventAgent):
             window_start=request.window.start if request.window else None,
             window_end=request.window.end if request.window else None,
         )
-        text = self.llm.complete(infer_prompt, system=_SYSTEM_PROMPT, temperature=0.2)
-        return parse_agent_result(text)
+        return self.llm.complete_structured(
+            infer_prompt, AgentEventResult, system=_SYSTEM_PROMPT, temperature=0.2
+        )

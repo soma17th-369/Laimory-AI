@@ -51,7 +51,7 @@ from app.services.draft_repair import (
 from app.services.meal_guard import enforce_meal_duration
 from app.services.place_resolver import resolve_places
 from app.services.sleep_guard import enforce_sleep_boundary
-from app.services.source_lookup import source_identifier
+from app.services.source_lookup import raw_id_of
 
 logger = get_logger(__name__)
 
@@ -111,11 +111,11 @@ def _source_index(request: TimelineDraftRequest) -> dict[str, tuple[EventSourceT
     ]
     for source_type, items in grouped:
         for item in items:
-            if identifier := source_identifier(item):
+            if identifier := raw_id_of(item):
                 index[identifier] = (source_type, item)
 
     for item in request.healths:
-        identifier = source_identifier(item)
+        identifier = raw_id_of(item)
         source_type = _HEALTH_SOURCE_TYPES.get(item.metric)
         if identifier and source_type is not None:
             index[identifier] = (source_type, item)
@@ -151,7 +151,7 @@ def source_index_text(request: TimelineDraftRequest) -> str:
 
 
 def _lookup_source(ctx: RepairContext, args: dict) -> str:
-    raw_id = args.get("rawId") or args.get("sourceId")
+    raw_id = args.get("rawId")
     if not raw_id:
         raise RepairToolError("rawId 인자가 필요합니다.")
 

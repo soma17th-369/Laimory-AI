@@ -6,7 +6,13 @@
 
 from app.services.stay_merge import mergeable_stay_groups
 from app.services.validator import resolve_timezone
-from tests.fixtures.requests import make_request, movement_item, sleep_item, stay_item
+from tests.fixtures.requests import (
+    fixture_raw_id,
+    make_request,
+    movement_item,
+    sleep_item,
+    stay_item,
+)
 
 DAY = "2026-06-20"
 TZ = resolve_timezone("Asia/Seoul")
@@ -31,6 +37,10 @@ def _groups(**overrides) -> list[frozenset[str]]:
     return mergeable_stay_groups(make_request(**overrides), TZ)
 
 
+def _raw_group(*labels: str) -> frozenset[str]:
+    return frozenset(fixture_raw_id(label) for label in labels)
+
+
 # --- 병합 ---------------------------------------------------------------------
 
 
@@ -43,7 +53,7 @@ def test_same_place_stays_with_no_movement_between_are_merged():
         ]
     )
 
-    assert groups == [frozenset({"stay-a", "stay-b"})]
+    assert groups == [_raw_group("stay-a", "stay-b")]
 
 
 def test_a_three_hour_gap_is_no_obstacle_when_there_was_no_movement():
@@ -56,7 +66,7 @@ def test_a_three_hour_gap_is_no_obstacle_when_there_was_no_movement():
         ]
     )
 
-    assert groups == [frozenset({"stay-a", "stay-b", "stay-c"})]
+    assert groups == [_raw_group("stay-a", "stay-b", "stay-c")]
 
 
 def test_touching_stays_are_merged():
@@ -67,7 +77,7 @@ def test_touching_stays_are_merged():
         ]
     )
 
-    assert groups == [frozenset({"stay-a", "stay-b"})]
+    assert groups == [_raw_group("stay-a", "stay-b")]
 
 
 def test_address_decides_when_neither_stay_has_a_place_name():
@@ -78,7 +88,7 @@ def test_address_decides_when_neither_stay_has_a_place_name():
         ]
     )
 
-    assert groups == [frozenset({"stay-a", "stay-b"})]
+    assert groups == [_raw_group("stay-a", "stay-b")]
 
 
 # --- 병합하지 않음 -------------------------------------------------------------
@@ -170,4 +180,4 @@ def test_the_chain_breaks_and_resumes_around_an_outing():
     )
 
     # 귀가 후의 두 체류만 이어진다. 그 사이에는 이동이 없다.
-    assert groups == [frozenset({"home-b", "home-c"})]
+    assert groups == [_raw_group("home-b", "home-c")]

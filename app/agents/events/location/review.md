@@ -8,7 +8,7 @@
 - 위치 근거가 충분한데도 너무 소극적으로 raw 요약만 했다면 candidate 또는 더 구체적인 fragment로 바꿉니다.
 - 근거가 약한 구체 활동은 candidate로 확정하지 말고 fragment나 낮은 confidence로 둡니다.
 - `UNCERTAIN` candidate인데 `uncertainty`가 비어 있으면 반드시 채웁니다.
-- 입력에 없는 sourceId를 참조하는 항목은 제거합니다.
+- 입력에 없는 rawId를 참조하는 항목은 제거합니다.
 - 예시 날짜를 사용한 항목은 제거하거나 입력 실제 시간으로 고칩니다.
 
 system 프롬프트에 정의된 동일한 JSON 형식으로만 다시 출력하세요.

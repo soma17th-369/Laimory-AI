@@ -11,6 +11,27 @@ class SupportsComplete(Protocol):
 
     def complete(self, prompt: str, *, system: str | None = ..., **kwargs) -> str: ...
 
+    def complete_json(
+        self,
+        prompt: str,
+        schema=...,
+        *,
+        system: str | None = ...,
+        temperature: float = ...,
+        **kwargs,
+    ) -> str: ...
+
+    def complete_structured(
+        self,
+        prompt: str,
+        schema,
+        *,
+        system: str | None = ...,
+        temperature: float = ...,
+        max_repairs: int = ...,
+        **kwargs,
+    ): ...
+
 
 def default_llm() -> SupportsComplete:
     """설정된 provider로 기본 LLM 클라이언트를 만든다.

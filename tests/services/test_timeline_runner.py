@@ -3,11 +3,22 @@
 import asyncio
 import logging
 
+from app.core.observability import (
+    InMemoryObservationSink,
+    ObservationEventType,
+    ObservationStage,
+    Observer,
+)
 from app.schemas import TaskStatus, TimelineDraft
 from app.services import timeline_runner
 from app.services.source_repository import InMemorySourceRepository
 from app.services.timeline_repository import NoopTimelineRepository
-from tests.fixtures.requests import default_source_items, make_snapshot
+from app.services.timeline_validator import (
+    TimelineValidationError,
+    TimelineViolation,
+    TimelineViolationCode,
+)
+from tests.fixtures.requests import default_source_items, fixture_raw_id, make_snapshot
 
 _TASK_ID = "task-1"
 _DAILY_RECORD_ID = 42
@@ -191,6 +202,53 @@ def test_db_save_failure_returns_failed_callback(monkeypatch):
     assert sent[0][3].status is TaskStatus.FAILED
     assert sent[0][3].error_code == "ERROR_1008"
     assert sent[0][3].error == "DB 저장 실패"
+
+
+def test_storage_validation_failure_observes_safe_codes_without_raw_id(monkeypatch):
+    async def fake_main_agent(request):
+        return _draft()
+
+    sink = InMemoryObservationSink()
+    observer = Observer(sink)
+
+    async def fake_flush(buffer, *, task_id):
+        return None
+
+    unknown_raw_id = fixture_raw_id("runner-unknown")
+    validation_error = TimelineValidationError(
+        [
+            TimelineViolation(
+                TimelineViolationCode.SOURCE_RAW_ID_NOT_IN_TASK,
+                f"source rawId={unknown_raw_id} 가 현재 task 입력에 없습니다",
+            )
+        ]
+    )
+    monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
+    monkeypatch.setattr(
+        timeline_runner, "build_task_observer", lambda: (observer, sink)
+    )
+    monkeypatch.setattr(timeline_runner, "flush_task_observations", fake_flush)
+    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
+
+    status = _run(
+        _seeded_repo(),
+        timeline_repo=_RaisingTimelineRepo(validation_error),
+    )
+
+    assert status is TaskStatus.FAILED
+    failed = next(
+        event
+        for event in sink.events
+        if event.stage is ObservationStage.STORAGE
+        and event.event_type is ObservationEventType.FAILED
+    )
+    assert failed.payload == {
+        "errorType": "TimelineValidationError",
+        "validationCode": "TIMELINE_STORAGE_CONTRACT_VIOLATION",
+        "violationCodes": ["SOURCE_RAW_ID_NOT_IN_TASK"],
+        "violationCount": 1,
+    }
+    assert unknown_raw_id not in str(failed.payload)
 
 
 def test_timeout_returns_failed(monkeypatch):

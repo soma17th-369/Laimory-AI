@@ -43,6 +43,7 @@ from app.services.callback import send_callback
 from app.services.normalizer import normalize
 from app.services.source_repository import SourceRepository
 from app.services.timeline_repository import TimelineRepository
+from app.services.timeline_validator import TimelineValidationError
 
 logger = get_logger(__name__)
 
@@ -212,10 +213,19 @@ async def _process_observed(
         )
         status = TaskStatus.FAILED
         error = str(exc)
+        failure_payload = {"errorType": type(exc).__name__}
+        if isinstance(exc, TimelineValidationError):
+            failure_payload.update(
+                {
+                    "validationCode": "TIMELINE_STORAGE_CONTRACT_VIOLATION",
+                    "violationCodes": exc.violation_codes,
+                    "violationCount": len(exc.details),
+                }
+            )
         emit_observation(
             ObservationEventType.FAILED,
             stage=active_stage,
-            payload={"errorType": type(exc).__name__},
+            payload=failure_payload,
         )
 
     # 설정된 App Server API URL 이 있으면 성공/실패 통보를 전달한다.

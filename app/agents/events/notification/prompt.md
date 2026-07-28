@@ -60,7 +60,7 @@
   "fragments": [
     {
       "sourceType": "NOTIFICATION",
-      "sourceId": "입력 sourceId",
+      "rawId": "입력 rawId",
       "summary": "candidate보다 약하지만 사용자의 일상 event를 암시하는 알림 단서",
       "timeRange": {"startTime": "입력 실제 시간", "endTime": "입력 실제 시간"}
     }
@@ -72,7 +72,7 @@
 
 - 개별 알림을 그대로 줄줄이 나열하지 않습니다.
 - 센서/데이터 라벨만 제목으로 쓰지 않습니다.
-- 존재하지 않는 sourceId를 만들지 않습니다.
+- 존재하지 않는 rawId를 만들지 않습니다.
 ## 앱 사전 사용 규칙
 
 - 입력 데이터에는 `appDictionary`와 각 알림의 `appPolicy`가 함께 제공됩니다. 알림 해석은 반드시 이 사전을 우선 참고합니다.

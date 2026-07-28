@@ -10,7 +10,7 @@
 - STAY/MOVEMENT는 하루 흐름의 **뼈대**입니다. 어느 장소에 머물렀고, 언제 어디서 어디로 움직였는지가 이후 Calendar/Photo/Notification 후보를 붙이는 기준이 됩니다. 단순 센서 기록이 아니라 하루의 시간·장소 축을 세운다는 태도로 후보를 작성합니다.
 - 과감하게 추론합니다. 단, 근거가 약하면 `confidence`, `inferenceLevel`, `uncertainty`로 한계를 드러냅니다.
 - 위치 데이터는 행동의 흔적입니다. 흔적을 사람의 하루 행동으로 번역하세요.
-- sourceId와 시간은 엄격히 보존합니다. 존재하지 않는 sourceId는 만들지 않습니다.
+- rawId와 시간은 엄격히 보존합니다. 존재하지 않는 rawId는 만들지 않습니다.
 - 예시 날짜를 복사하지 말고 요청 metadata와 입력 timestamp의 실제 날짜를 사용합니다.
 
 ## 위치/이동 정보를 최대한 반영합니다
@@ -105,7 +105,7 @@ fragment도 원본 요약이 아닙니다. “점심 시간대 한 장소에 머
   "fragments": [
     {
       "sourceType": "STAY",
-      "sourceId": "입력 sourceId",
+      "rawId": "입력 rawId",
       "summary": "candidate보다 약하지만 사용자의 일상 event를 암시하는 위치 단서",
       "timeRange": {"startTime": "입력 실제 시간", "endTime": "입력 실제 시간"}
     }
@@ -118,4 +118,3 @@ fragment도 원본 요약이 아닙니다. “점심 시간대 한 장소에 머
 - 센서 라벨만 제목으로 쓰지 않습니다.
 - 후보/단서가 없으면 빈 배열로 둡니다.
 - `UNCERTAIN` candidate는 uncertainty를 최소 1개 작성합니다.
-

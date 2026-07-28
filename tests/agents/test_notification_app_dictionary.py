@@ -10,7 +10,7 @@ from app.agents.events.notification.app_dictionary import (
 )
 from app.schemas import NotificationItem
 from tests.fixtures.fake_llm import FakeLLM
-from tests.fixtures.requests import make_request
+from tests.fixtures.requests import fixture_raw_id, make_request
 
 
 def test_notification_app_dictionary_is_loaded_from_json() -> None:
@@ -24,7 +24,7 @@ def test_notification_app_dictionary_is_loaded_from_json() -> None:
 
 def test_notification_app_policy_uses_text_when_app_name_is_in_text() -> None:
     item = NotificationItem(
-        id=1,
+        rawId=fixture_raw_id("notification-1"),
         postedAt="2026-06-20T09:00:00",
         appName="알 수 없음",
         title="새 메시지",
@@ -48,7 +48,7 @@ def test_notification_agent_prompt_contains_app_dictionary_and_policy() -> None:
     request = make_request(
         notifications=[
             NotificationItem(
-                id=1,
+                rawId=fixture_raw_id("notification-1"),
                 postedAt="2026-06-20T09:00:00",
                 appName="알 수 없음",
                 title="새 메시지",
@@ -70,7 +70,7 @@ def test_notification_agent_prompt_contains_app_dictionary_and_policy() -> None:
 
 def test_notification_items_to_text_has_unknown_fallback_policy() -> None:
     item = NotificationItem(
-        id=2,
+        rawId=fixture_raw_id("notification-2"),
         postedAt="2026-06-20T10:00:00",
         appName="처음보는앱",
         title="알림",
@@ -86,8 +86,7 @@ def test_notification_items_to_text_has_unknown_fallback_policy() -> None:
 
 def test_single_kakao_message_is_sparse_fragment_signal() -> None:
     item = NotificationItem(
-        id=3,
-        rawId="kakao-single-1",
+        rawId=fixture_raw_id("kakao-single-1"),
         postedAt="2026-06-20T11:00:00",
         appName="카카오톡",
         title="김민수",
@@ -108,8 +107,7 @@ def test_single_kakao_message_is_sparse_fragment_signal() -> None:
 def test_repeated_kakao_messages_are_conversation_flow_not_schedule() -> None:
     items = [
         NotificationItem(
-            id=index,
-            rawId=f"kakao-repeat-{index}",
+            rawId=fixture_raw_id(f"kakao-repeat-{index}"),
             postedAt=f"2026-06-20T11:0{index}:00",
             appName="카카오톡",
             title="김민수",
@@ -133,8 +131,7 @@ def test_repeated_kakao_messages_are_conversation_flow_not_schedule() -> None:
 def test_kakao_direct_meeting_mention_is_appointment_signal() -> None:
     items = [
         NotificationItem(
-            id=1,
-            rawId="kakao-meeting-1",
+            rawId=fixture_raw_id("kakao-meeting-1"),
             postedAt="2026-06-20T18:00:00",
             appName="카카오톡",
             title="박지현",
@@ -155,8 +152,7 @@ def test_kakao_direct_meeting_mention_is_appointment_signal() -> None:
 
 def test_kakao_topic_without_meeting_does_not_allow_place_label() -> None:
     item = NotificationItem(
-        id=4,
-        rawId="kakao-ssafy-topic-1",
+        rawId=fixture_raw_id("kakao-ssafy-topic-1"),
         postedAt="2026-06-20T13:00:00",
         appName="카카오톡",
         title="김민수",
@@ -174,8 +170,7 @@ def test_kakao_topic_without_meeting_does_not_allow_place_label() -> None:
 
 def test_kakao_direct_place_meeting_allows_place_label_signal() -> None:
     item = NotificationItem(
-        id=5,
-        rawId="kakao-place-meeting-1",
+        rawId=fixture_raw_id("kakao-place-meeting-1"),
         postedAt="2026-06-20T18:00:00",
         appName="카카오톡",
         title="박지현",
@@ -193,8 +188,7 @@ def test_kakao_direct_place_meeting_allows_place_label_signal() -> None:
 
 def test_youtube_news_promotion_is_low_priority_fragment_only() -> None:
     item = NotificationItem(
-        id=6,
-        rawId="youtube-1",
+        rawId=fixture_raw_id("youtube-1"),
         postedAt="2026-06-20T21:00:00",
         appName="YouTube",
         title="추천 영상",
@@ -212,8 +206,7 @@ def test_youtube_news_promotion_is_low_priority_fragment_only() -> None:
 
 def test_unknown_notification_requires_other_sources_for_schedule() -> None:
     item = NotificationItem(
-        id=7,
-        rawId="unknown-1",
+        rawId=fixture_raw_id("unknown-1"),
         postedAt="2026-06-20T22:00:00",
         appName="알수없는앱",
         title="알림",

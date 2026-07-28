@@ -26,10 +26,16 @@ from app.schemas.event_candidate import EventType, InferenceLevel, SourceRef
 from app.schemas.timeline import TimelineDraft, TimelineEventDraft
 from app.services.timeline_repository import _persist_timeline
 from app.services.timeline_validator import TimelineValidationError
+from tests.fixtures.requests import fixture_raw_id
 
 # tzdata 없이도 도는 고정 +09:00(프로젝트의 KST 폴백과 동일 오프셋).
 _KST = timezone(timedelta(hours=9))
 _TASK = "t-1"
+_RAW_A = fixture_raw_id("raw-a")
+_RAW_B = fixture_raw_id("raw-b")
+_RAW_C = fixture_raw_id("raw-c")
+_RAW_OTHER_USER = fixture_raw_id("raw-other-user")
+_RAW_NOT_IN_TASK = fixture_raw_id("not-in-task")
 
 
 @pytest.fixture
@@ -60,16 +66,16 @@ async def _seed_sources(session, user_id: int = 7) -> int:
         [
             daily_record,
             DraftSourceItem(
-                task_id=_TASK, user_id=user_id, item_type="STAY", raw_id="raw-a",
+                task_id=_TASK, user_id=user_id, item_type="STAY", raw_id=_RAW_A,
                 start_at=datetime(2026, 7, 8, 9, 0), end_at=datetime(2026, 7, 8, 10, 0),
                 payload={"place": "카페"},
             ),
             DraftSourceItem(
-                task_id=_TASK, user_id=user_id, item_type="PHOTO", raw_id="raw-b",
+                task_id=_TASK, user_id=user_id, item_type="PHOTO", raw_id=_RAW_B,
                 start_at=datetime(2026, 7, 8, 9, 30), end_at=None, payload={},
             ),
             DraftSourceItem(
-                task_id=_TASK, user_id=user_id, item_type="NOTIFICATION", raw_id="raw-c",
+                task_id=_TASK, user_id=user_id, item_type="NOTIFICATION", raw_id=_RAW_C,
                 start_at=datetime(2026, 7, 8, 12, 0), end_at=None, payload={},
             ),
         ]
@@ -89,8 +95,8 @@ def _event(**kw) -> TimelineEventDraft:
         confidence=0.8,
         inference_level=InferenceLevel.EVIDENCE_BASED,
         source_refs=[
-            SourceRef(source_type="STAY", source_id="raw-a"),
-            SourceRef(source_type="PHOTO", source_id="raw-b"),
+            SourceRef(source_type="STAY", raw_id=_RAW_A),
+            SourceRef(source_type="PHOTO", raw_id=_RAW_B),
         ],
     )
     defaults.update(kw)
@@ -126,8 +132,8 @@ async def test_insert_event_and_copy_used_sources(session):
     assert event.end_at == datetime(2026, 7, 8, 10, 0)
 
     items = await _all(session, TimelineItem)
-    assert {item.raw_id for item in items} == {"raw-a", "raw-b"}
-    stay_item = next(item for item in items if item.raw_id == "raw-a")
+    assert {item.raw_id for item in items} == {_RAW_A, _RAW_B}
+    stay_item = next(item for item in items if item.raw_id == _RAW_A)
     assert stay_item.item_type == "STAY"
     assert stay_item.payload == {"place": "카페"}
 
@@ -167,7 +173,7 @@ async def test_mixed_source_users_are_rejected(session):
             task_id=_TASK,
             user_id=8,
             item_type="PHOTO",
-            raw_id="raw-other-user",
+            raw_id=_RAW_OTHER_USER,
             start_at=datetime(2026, 7, 8, 11, 0),
             payload={},
         )
@@ -182,7 +188,7 @@ async def test_validation_failure_writes_nothing(session):
     drid = await _seed_sources(session)
 
     invalid = _event(
-        source_refs=[SourceRef(source_type="STAY", source_id="not-in-task")]
+        source_refs=[SourceRef(source_type="STAY", raw_id=_RAW_NOT_IN_TASK)]
     )
     with pytest.raises(TimelineValidationError):
         await _persist_timeline(session, _TASK, _draft([invalid]), drid)
@@ -200,7 +206,7 @@ async def test_same_source_shared_by_multiple_events(session):
     second = _event(
         client_event_id="e2",
         title="후속 이벤트",
-        source_refs=[SourceRef(source_type="STAY", source_id="raw-a")],
+        source_refs=[SourceRef(source_type="STAY", raw_id=_RAW_A)],
     )
 
     await _persist_timeline(session, _TASK, _draft([first, second]), drid)
@@ -210,7 +216,9 @@ async def test_same_source_shared_by_multiple_events(session):
     assert len(events) == 2
 
     # raw-a 는 하루 1행으로 디듀프되고, 두 이벤트가 같은 item 을 공유한다(N:M).
-    raw_a_items = [item for item in await _all(session, TimelineItem) if item.raw_id == "raw-a"]
+    raw_a_items = [
+        item for item in await _all(session, TimelineItem) if item.raw_id == _RAW_A
+    ]
     assert len(raw_a_items) == 1
     raw_a_id = raw_a_items[0].timeline_item_id
 

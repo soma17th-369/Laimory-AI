@@ -26,6 +26,7 @@ from app.services.draft_repair import (
 )
 from tests.fixtures.requests import (
     calendar_item,
+    fixture_raw_id,
     make_request,
     movement_item,
     notification_item,
@@ -63,7 +64,10 @@ def _event(
         confidence=confidence,
         inference_level=InferenceLevel.EVIDENCE_BASED,
         place_label=place_label,
-        source_refs=[SourceRef(source_type=st, source_id=sid) for st, sid in used],
+        source_refs=[
+            SourceRef(source_type=st, raw_id=fixture_raw_id(raw_id))
+            for st, raw_id in used
+        ],
     )
 
 
@@ -318,18 +322,27 @@ def test_touching_boundaries_are_not_an_overlap():
 # --- 전체 repair 파이프라인 ----------------------------------------------------
 
 
-def test_a_fake_raw_id_is_ignored_rather_than_dropping_the_event():
-    # rawId allowlist 검증은 지금 없다. 되짚을 수 없는 근거는 조용히 무시될 뿐,
-    # event 를 버리지 않는다. 시간도 근거가 없으니 LLM 이 준 그대로 둔다.
+def test_an_unknown_raw_id_drops_the_unsupported_event():
+    # 입력에 없는 UUID rawId는 환각으로 보고, 유효한 근거가 남지 않은 event를 제외한다.
     draft = _draft(
-        _event("event-001", "09:00", "10:00", (EventSourceType.STAY, "없는-rawid"), title="환각"),
+        _event(
+            "event-001",
+            "09:00",
+            "10:00",
+            (
+                EventSourceType.STAY,
+                "f0472779-54a0-49c8-8386-f391ba7ac789",
+            ),
+            title="환각",
+        ),
         _event("event-002", "11:00", "12:00", STAY_REF, title="정상"),
     )
 
     repair_draft(draft, _request())
 
-    assert _titles(draft) == ["환각", "정상"]
-    assert _ids(draft) == ["event-001", "event-002"]
+    assert _titles(draft) == ["정상"]
+    assert _ids(draft) == ["event-001"]
+    assert any("입력에 없는 rawId 참조" in warning.message for warning in draft.warnings)
 
 
 def test_repair_fills_place_label_and_drops_an_unsupported_address():

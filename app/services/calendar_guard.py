@@ -29,7 +29,7 @@ from app.schemas import (
     TimelineWarningSeverity,
 )
 from app.services.place_resolver import calendar_place_label
-from app.services.source_lookup import source_identifier
+from app.services.source_lookup import raw_id_of
 from app.services.validator import parse_datetime, resolve_timezone
 
 logger = get_logger(__name__)
@@ -50,7 +50,7 @@ def referenced_calendar_ids(draft: TimelineDraft) -> set[str]:
     """draft 의 event 들이 근거로 삼은 캘린더 rawId 집합."""
 
     return {
-        ref.source_id
+        ref.raw_id
         for event in draft.events
         for ref in event.source_refs
         if ref.source_type is EventSourceType.CALENDAR
@@ -75,7 +75,7 @@ def ensure_calendar_events(draft: TimelineDraft, request: TimelineDraftRequest) 
     restored: list[str] = []
 
     for index, item in enumerate(request.calendars, start=1):
-        identifier = source_identifier(item)
+        identifier = raw_id_of(item)
         if not identifier or identifier in referenced:
             continue
 
@@ -99,7 +99,7 @@ def ensure_calendar_events(draft: TimelineDraft, request: TimelineDraftRequest) 
                 confidence=_RESTORED_CONFIDENCE,
                 inference_level=InferenceLevel.DIRECT,
                 source_refs=[
-                    SourceRef(source_type=EventSourceType.CALENDAR, source_id=identifier)
+                    SourceRef(source_type=EventSourceType.CALENDAR, raw_id=identifier)
                 ],
                 uncertainty=[_RESTORED_NOTE],
             )

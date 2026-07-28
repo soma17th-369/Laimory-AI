@@ -11,6 +11,7 @@ from app.core.observability import (
     observation_scope,
 )
 from app.schemas import AgentEventResult, AgentWarning, TimelineDraftRequest
+from app.services.source_integrity import filter_agent_result_sources
 from app.services.validator import filter_result_to_window, resolve_window_bounds
 
 logger = get_logger(__name__)
@@ -57,7 +58,26 @@ class EventAgent(Agent):
                     ]
                 )
 
-            filtered = self._enforce_window(request, result)
+            filtered, source_stats = filter_agent_result_sources(result, request)
+            if source_stats.changed:
+                emit_observation(
+                    ObservationEventType.VALIDATION_REPAIRED,
+                    payload=source_stats.observation_payload(
+                        item_kind="CANDIDATE_OR_FRAGMENT"
+                    ),
+                )
+                filtered.warnings.append(
+                    AgentWarning(
+                        agent_name=self._agent_name(),
+                        message=(
+                            "입력에 없는 rawId 참조 "
+                            f"{source_stats.removed_refs}건을 제거하고, 유효한 근거가 "
+                            f"남지 않은 후보/단서 {source_stats.dropped_items}건을 "
+                            "제외했습니다."
+                        ),
+                    )
+                )
+            filtered = self._enforce_window(request, filtered)
             emit_observation(
                 ObservationEventType.COMPLETED,
                 payload={

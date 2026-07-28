@@ -16,7 +16,6 @@ from app.agents.parsing import (
     build_infer_prompt,
     default_llm,
     items_to_text,
-    parse_agent_result,
     user_memory_to_text,
 )
 from app.schemas import AgentEventResult, TimelineDraftRequest
@@ -28,7 +27,7 @@ _REVIEW_PROMPT = (_DIR / "review.md").read_text(encoding="utf-8")
 
 class _State(TypedDict, total=False):
     draft: str
-    final: str
+    result: AgentEventResult
 
 
 class SleepActivityEventAgent(EventAgent):
@@ -57,10 +56,9 @@ class SleepActivityEventAgent(EventAgent):
             window_start=request.window.start if request.window else None,
             window_end=request.window.end if request.window else None,
         )
-        final = self._run_graph(infer_prompt)
-        return parse_agent_result(final)
+        return self._run_graph(infer_prompt)
 
-    def _run_graph(self, infer_prompt: str) -> str:
+    def _run_graph(self, infer_prompt: str) -> AgentEventResult:
         llm = self.llm
 
         def infer_node(state: _State) -> _State:
@@ -69,8 +67,10 @@ class SleepActivityEventAgent(EventAgent):
 
         def review_node(state: _State) -> _State:
             prompt = _REVIEW_PROMPT.replace("{{DRAFT}}", state["draft"])
-            final = llm.complete(prompt, system=_SYSTEM_PROMPT, temperature=0.0)
-            return {"final": final}
+            result = llm.complete_structured(
+                prompt, AgentEventResult, system=_SYSTEM_PROMPT, temperature=0.0
+            )
+            return {"result": result}
 
         graph = StateGraph(_State)
         graph.add_node("infer", infer_node)
@@ -78,4 +78,4 @@ class SleepActivityEventAgent(EventAgent):
         graph.add_edge(START, "infer")
         graph.add_edge("infer", "review")
         graph.add_edge("review", END)
-        return graph.compile().invoke({})["final"]
+        return graph.compile().invoke({})["result"]
