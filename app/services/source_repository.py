@@ -216,15 +216,14 @@ def load_snapshot_from_file(path: str | Path) -> CollectedSnapshot:
 
 
 def _adapt_snapshot_payload(payload: dict, path: Path) -> dict:
+    """JSON 파일 payload 를 CollectedSnapshot 입력으로 맞춘다.
+
+    파일명(stem)을 기본 taskId 로 채운다. source item 의 rawId 는 파일에 이미
+    있어야 한다(내부 id fallback 은 제거됐다).
+    """
+
     adapted = dict(payload)
     adapted.setdefault("taskId", path.stem)
-
-    source_items = []
-    for index, item in enumerate(adapted.get("sourceItems", []), start=1):
-        source_item = dict(item)
-        source_item.setdefault("id", index)
-        source_items.append(source_item)
-    adapted["sourceItems"] = source_items
     return adapted
 
 
