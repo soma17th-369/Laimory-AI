@@ -24,7 +24,7 @@ from app.core.observability import (
 from app.core.observability.sinks import CompositeObservationError
 from app.core.structured import StructuredOutputError
 from app.services.draft_edit import DraftEditError
-from app.services.source_repository import SourceBatchError
+from app.services.source_contract import SourceBatchError
 from app.services.timeline_validator import (
     TimelineValidationError,
     TimelineViolation,
@@ -93,10 +93,10 @@ def test_code_of_or_preserves_specific_code_and_uses_stage_fallback() -> None:
 
 
 def test_app_error_message_is_catalog_message_not_detail():
-    exc = AppError("내부 경로 /srv/secret 접근 실패", code=ErrorCode.DATABASE_ERROR)
+    exc = AppError("내부 경로 /srv/secret 접근 실패", code=ErrorCode.TIMELINE_RESULT_SUBMIT_FAILED)
 
     assert exc.detail == "내부 경로 /srv/secret 접근 실패"
-    assert exc.message == message_for(ErrorCode.DATABASE_ERROR)
+    assert exc.message == message_for(ErrorCode.TIMELINE_RESULT_SUBMIT_FAILED)
     assert "/srv/secret" not in exc.message
 
 
@@ -126,7 +126,7 @@ def test_report_error_keeps_original_message_in_logs(caplog):
     with caplog.at_level(logging.WARNING, logger=logger.name):
         report_error(
             logger,
-            ErrorCode.DATABASE_ERROR,
+            ErrorCode.TIMELINE_RESULT_SUBMIT_FAILED,
             "저장 실패",
             exc=RuntimeError("connection to 10.0.0.5:3306 refused"),
             emit=False,
@@ -171,13 +171,13 @@ def test_report_error_payload_cannot_override_common_error_fields():
     with observation_context("task-1", observer):
         report_error(
             logger,
-            ErrorCode.DATABASE_ERROR,
+            ErrorCode.TIMELINE_RESULT_SUBMIT_FAILED,
             "저장 실패",
             exc=RuntimeError("boom"),
             payload={"errorCode": 9999, "errorType": "FakeError"},
         )
 
-    assert sink.events[0].payload["errorCode"] == int(ErrorCode.DATABASE_ERROR)
+    assert sink.events[0].payload["errorCode"] == int(ErrorCode.TIMELINE_RESULT_SUBMIT_FAILED)
     assert sink.events[0].payload["errorType"] == "RuntimeError"
 
 

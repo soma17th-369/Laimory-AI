@@ -17,8 +17,7 @@ from app.core.observability import (
 )
 from app.schemas import AgentEventResult, TaskStatus, TimelineDraft
 from app.services import timeline_runner
-from app.services.source_repository import InMemorySourceRepository
-from app.services.timeline_repository import NoopTimelineRepository
+from tests.fixtures.app_server import FakeAppServerClient
 from tests.fixtures.fake_llm import FakeLLM
 from tests.fixtures.pipeline import StubEventAgent, confirm_only_repair_agent
 from tests.fixtures.requests import default_source_items, make_request, make_snapshot
@@ -89,10 +88,12 @@ def test_full_pipeline_emits_agent_stages_under_task_id() -> None:
     assert "timeline" in timeline_completed.payload
 
 
-def _seeded_repo() -> InMemorySourceRepository:
-    repo = InMemorySourceRepository()
-    repo.put(make_snapshot(task_id=_TASK_ID, source_items=default_source_items()))
-    return repo
+def _seeded_client(**overrides) -> FakeAppServerClient:
+    defaults = dict(
+        snapshot=make_snapshot(task_id=_TASK_ID, source_items=default_source_items())
+    )
+    defaults.update(overrides)
+    return FakeAppServerClient(**defaults)
 
 
 def _capture_flush(monkeypatch) -> dict:
@@ -118,27 +119,17 @@ def test_runner_emits_request_storage_callback_final(monkeypatch) -> None:
     async def fake_main_agent(request):
         return TimelineDraft(user_id="u-1", date="2026-06-20", timezone="Asia/Seoul")
 
-    async def fake_send(app_server_api_url, task_id, callback_token, payload):
-        return True
-
     monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
-    monkeypatch.setattr(timeline_runner, "send_callback", fake_send)
-    monkeypatch.setattr(
-        timeline_runner.settings,
-        "app_server_api_url",
-        "https://app.example/s/api/v1",
-    )
     captured = _capture_flush(monkeypatch)
 
     status = asyncio.run(
         timeline_runner.process_timeline_task(
             _TASK_ID,
-            _seeded_repo(),
-            NoopTimelineRepository(),
+            _seeded_client(),
             _DAILY_RECORD_ID,
             _WINDOW_START,
             _WINDOW_END,
-            "callback-token",
+            "task-token",
         )
     )
 
@@ -166,26 +157,24 @@ def test_runner_emits_request_storage_callback_final(monkeypatch) -> None:
         [event.model_dump(mode="json") for event in events],
         ensure_ascii=False,
     )
-    assert "callback-token" not in serialized_events
+    assert "task-token" not in serialized_events
     # sequence 는 발급 순서대로 단조 증가한다.
     assert [e.sequence for e in events] == sorted(e.sequence for e in events)
 
 
-def test_runner_missing_snapshot_emits_request_failed_and_final_failed(
+def test_runner_missing_input_emits_request_failed_and_final_failed(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
     captured = _capture_flush(monkeypatch)
 
     status = asyncio.run(
         timeline_runner.process_timeline_task(
             _TASK_ID,
-            InMemorySourceRepository(),  # 비어 있어 스냅샷 없음
-            NoopTimelineRepository(),
+            FakeAppServerClient(snapshot=None),  # 입력 조회 404
             _DAILY_RECORD_ID,
             _WINDOW_START,
             _WINDOW_END,
-            "callback-token",
+            "task-token",
         )
     )
 
@@ -194,7 +183,7 @@ def test_runner_missing_snapshot_emits_request_failed_and_final_failed(
     assert ("REQUEST", "STARTED") in pairs
     assert ("REQUEST", "FAILED") in pairs
     assert ("FINAL", "FAILED") in pairs
-    # App Server API URL 이 없으면 CALLBACK 이벤트는 없다.
+    # 404 는 콜백도 거절되므로 CALLBACK 단계 자체가 없다.
     assert not any(stage == "CALLBACK" for stage, _ in pairs)
 
 
@@ -205,18 +194,16 @@ def test_runner_timeout_emits_main_and_final_failed(monkeypatch) -> None:
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", slow_main_agent)
     monkeypatch.setattr(timeline_runner.settings, "pipeline_timeout_sec", 0.001)
-    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
     captured = _capture_flush(monkeypatch)
 
     status = asyncio.run(
         timeline_runner.process_timeline_task(
             _TASK_ID,
-            _seeded_repo(),
-            NoopTimelineRepository(),
+            _seeded_client(),
             _DAILY_RECORD_ID,
             _WINDOW_START,
             _WINDOW_END,
-            "callback-token",
+            "task-token",
         )
     )
 

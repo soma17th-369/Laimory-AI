@@ -1,31 +1,43 @@
 """타임라인 초안 처리 실행부.
 
-`POST /v1/timeline` 이 `taskId`, `callbackToken`, `dailyRecordId`, `window` 를 받아
+`POST /v1/timeline` 이 `taskId`, `taskToken`, `dailyRecordId`, `window` 를 받아
 즉시 응답을 돌려준 뒤, 백그라운드에서
 
-    1. 저장소(`SourceRepository`)에서 `taskId` 로 수집 스냅샷을 읽어오고,
+    1. App Server 입력 조회 API 로 `taskId` 의 수집 원본을 읽어오고,
     2. 요청이 준 `window` 를 스냅샷에 정본으로 덮어쓴 뒤 `normalize` 로 도메인별로
        분리·정규화하고,
     3. 메인 에이전트를 실행한 다음,
-    4. 확정 결과를 요청의 `dailyRecordId` 에 연결해 저장
+    4. 확정 결과를 App Server 결과 저장 API 로 보내고,
+    5. **저장 200 을 확인한 뒤에만** SUCCESS 를 콜백한다.
 
-하고, 성공/실패를 App Server 콜백으로 통보한다. AI 서버는 task 상태를 직접
-보관하지 않는다(상태는 App Server 가 소유). 콜백은 SUCCESS/FAILED 통보만 하고,
-실제 결과는 App Server 가 staging DB 에서 읽는다.
+AI 서버는 task 상태도, 서비스 데이터도 직접 보관하지 않는다(이슈 #40). staging DB
+접근은 전부 App Server API 로 대체됐고, 콜백은 SUCCESS/FAILED 통보만 한다.
+
+토큰은 작업 하나에 하나다. 최초 값은 접수 요청 body 로 들어오고 그 뒤 응답 body 로
+갱신되며(`TaskToken`), 모든 요청이 같은 홀더의 최신 값을 `Task-Token` 헤더로
+보낸다. 토큰 값은 로그·관측 어디에도 남기지 않는다 — 갱신 횟수만 남긴다.
 
 전체 메인 에이전트는 `pipeline_timeout_sec` 로 감싼다. timeout 이나 예기치 못한
-오류가 나면 FAILED 로 콜백하고, partial 결과는 저장하지 않는다.
+오류가 나면 FAILED 로 콜백하고, 결과는 저장하지 않는다.
 
 실패는 **원인별 정수 코드**(`app.core.error_codes`)로 식별한다. 콜백·관측 이벤트·
 운영 로그가 모두 같은 코드 하나를 쓴다.
 
-    스냅샷 없음        → 1101  SOURCE_SNAPSHOT_NOT_FOUND
+    입력 없음          → 1101  SOURCE_SNAPSHOT_NOT_FOUND   (입력 조회 404)
     원본 계약 위반     → 1102  SOURCE_CONTRACT_VIOLATION   (SourceBatchError)
+    입력 조회 실패     → 1105  SOURCE_FETCH_FAILED         (5xx/timeout 소진)
     파이프라인 timeout → 1201  PIPELINE_TIMEOUT
     구조화 출력 실패   → 1202  STRUCTURED_OUTPUT_INVALID   (StructuredOutputError)
     저장 검증 실패     → 1301  TIMELINE_STORAGE_VALIDATION_FAILED
-    DB 오류            → 1302  DATABASE_ERROR
+    결과 저장 실패     → 1303  TIMELINE_RESULT_SUBMIT_FAILED
+    토큰 거절(401)     → 1404  APP_SERVER_UNAUTHORIZED     (콜백 없이 중단)
+    task 없음(404)     → 1405  APP_SERVER_TASK_NOT_FOUND   (콜백 없이 중단)
+    순서 충돌(409)     → 1406  APP_SERVER_CONFLICT         (콜백 없이 중단)
     그 밖              → 1901  INTERNAL_ERROR
+
+401/404/409 는 콜백도 같은 이유로 거절되므로 통보하지 않고 멈춘다. 그 밖의 실패는
+FAILED 콜백을 보낸다 — 결과 저장이 재시도까지 실패한 경우도 여기 속한다(저장에
+성공한 뒤에는 어떤 이유로도 FAILED 를 보내지 않는다).
 
 콜백 `error` 에는 코드에 묶인 안전 메시지만 싣는다. 원본 예외 메시지는 로그에만
 남는다 — 콜백 본문은 AI 서버 밖으로 나가므로 내부 식별자·경로가 실리면 안 된다.
@@ -68,11 +80,14 @@ from app.schemas import (
     TimelineDraftRequest,
 )
 from app.schemas.source_snapshot import TimelineWindow
-from app.services.callback import send_callback
+from app.services.app_server_client import AppServerClient, AppServerError, TaskToken
 from app.services.normalizer import normalize
-from app.services.source_repository import SourceRepository
-from app.services.timeline_repository import TimelineRepository
-from app.services.timeline_validator import TimelineValidationError
+from app.services.source_contract import source_raw_ids
+from app.services.timeline_result import build_result_request
+from app.services.timeline_validator import (
+    TimelineValidationError,
+    ensure_timeline_valid_for_storage,
+)
 
 logger = get_logger(__name__)
 
@@ -83,22 +98,21 @@ class _TimelineRunResult:
     request: TimelineDraftRequest | None
     draft: TimelineDraft | None
     failure_code: ErrorCode | None
+    callback_sent: bool
 
 
 async def process_timeline_task(
     task_id: str,
-    repo: SourceRepository,
-    timeline_repo: TimelineRepository,
+    client: AppServerClient,
     daily_record_id: int,
     window_start: str,
     window_end: str,
-    callback_token: str,
+    task_token: str,
 ) -> TaskStatus:
-    """스냅샷을 불러와 정규화·실행·저장하고 성공/실패를 콜백한다.
+    """입력을 조회해 정규화·실행·저장하고 성공/실패를 콜백한다.
 
     AI 서버는 상태를 보관하지 않으므로(App Server 소유), 결과는 콜백으로만 통보하고
-    최종 상태를 반환값으로 돌려준다(호출부/테스트 관찰용). 저장/검증 실패는 예외로
-    잡혀 FAILED 가 되며, partial 저장은 트랜잭션 롤백으로 남지 않는다.
+    최종 상태를 반환값으로 돌려준다(호출부/테스트 관찰용).
 
     전체를 `track_inflight` 로 감싼다. HTTP 응답(202)은 이미 나간 뒤이므로,
     AgentCore Runtime 이 `GET /ping` 으로 유휴 여부를 물었을 때 여기가 아직 돌고
@@ -106,6 +120,9 @@ async def process_timeline_task(
     """
 
     with track_inflight():
+        # 작업 전체가 이 홀더 하나를 공유한다. 응답 body 로 새 토큰이 오면 여기서
+        # 갈아 끼워지고, 다음 요청부터 갱신된 값이 헤더로 나간다.
+        token = TaskToken(task_token)
         observer, buffer = build_task_observer()
         logger.info(
             "관측 task 초기화: taskId=%s, collectionEnabled=%s, "
@@ -133,12 +150,11 @@ async def process_timeline_task(
                 with observation_context(task_id, observer):
                     result = await _process_observed(
                         task_id,
-                        repo,
-                        timeline_repo,
+                        client,
+                        token,
                         daily_record_id,
                         window_start,
                         window_end,
-                        callback_token,
                     )
                 status = result.status
                 root_input: dict[str, object] = {
@@ -154,6 +170,9 @@ async def process_timeline_task(
                 root_output: dict[str, object] = {
                     "status": status.value,
                     "persisted": status is TaskStatus.SUCCESS,
+                    "callbackSent": result.callback_sent,
+                    # 토큰 값은 남기지 않는다. 몇 번 갈렸는지만 본다.
+                    "tokenRefreshCount": token.refresh_count,
                     "durationMs": (perf_counter() - started) * 1000,
                     "tokenUsage": token_usage.summary(),
                 }
@@ -202,7 +221,7 @@ async def process_timeline_task(
         finally:
             # 콜백까지 끝난 뒤 관측을 내보낸다. 비활성화된 경우에도 그 이유를
             # 운영 로그에 남긴다. flush 는 내부에서 모든 실패를 흡수하므로 Timeline
-            # status·RDB 저장·콜백에 절대 영향을 주지 않는다(완전 격리).
+            # status·결과 저장·콜백에 절대 영향을 주지 않는다(완전 격리).
             await flush_task_observations(buffer, task_id=task_id)
             # AgentCore/EC2 컨테이너가 작업 직후 회수돼도 trace가 유실되지 않도록
             # 비동기 worker queue를 task 경계에서 비운다. 동기 flush는 event loop를
@@ -215,17 +234,16 @@ async def process_timeline_task(
 
 async def _process_observed(
     task_id: str,
-    repo: SourceRepository,
-    timeline_repo: TimelineRepository,
+    client: AppServerClient,
+    token: TaskToken,
     daily_record_id: int,
     window_start: str,
     window_end: str,
-    callback_token: str,
 ) -> _TimelineRunResult:
     """관측 컨텍스트가 열린 상태에서 실제 처리·저장·콜백을 수행한다.
 
     단계마다 관측 이벤트를 남긴다: REQUEST(입력 조회·정규화) → (MAIN_AGENT 이하는
-    하위에서) → STORAGE(RDB 저장) → CALLBACK(콜백) → FINAL(성공/실패/timeout).
+    하위에서) → STORAGE(결과 저장 API) → CALLBACK(콜백) → FINAL(성공/실패/timeout).
     """
 
     status = TaskStatus.SUCCESS
@@ -235,6 +253,9 @@ async def _process_observed(
     active_stage = ObservationStage.REQUEST
     request: TimelineDraftRequest | None = None
     draft: TimelineDraft | None = None
+    # 401/404/409 는 콜백도 같은 이유로 거절된다. 보내 봐야 실패 로그만 하나 더
+    # 남으므로 통보를 포기한다.
+    abort_callback = False
 
     try:
         emit_observation(
@@ -251,10 +272,10 @@ async def _process_observed(
             "retrieve-source-snapshot",
             as_type="span",
             input={"taskId": task_id},
-            metadata={"repository": type(repo).__name__},
+            metadata={"client": type(client).__name__, "source": "app-server-api"},
         ) as retrieval:
             try:
-                snapshot = await repo.get(task_id)
+                snapshot = await client.fetch_input(task_id, token)
             except Exception as exc:
                 update_observation(
                     retrieval,
@@ -267,168 +288,111 @@ async def _process_observed(
                         * 1000,
                     },
                     level="ERROR",
-                    status_message="수집 스냅샷 조회에 실패했습니다.",
+                    status_message="수집 원본 조회에 실패했습니다.",
                 )
                 raise
             update_observation(
                 retrieval,
                 output={
-                    "found": snapshot is not None,
+                    "found": True,
                     "durationMs": (perf_counter() - retrieval_started) * 1000,
-                    "sourceItemCount": (
-                        len(snapshot.source_items) if snapshot is not None else 0
-                    ),
-                    **(
-                        {
-                            "snapshot": snapshot.model_dump(
-                                by_alias=True,
-                                mode="json",
-                            )
-                        }
-                        if snapshot is not None
-                        else {}
-                    ),
-                    **(
-                        {
-                            "errorCode": int(
-                                ErrorCode.SOURCE_SNAPSHOT_NOT_FOUND
-                            )
-                        }
-                        if snapshot is None
-                        else {}
-                    ),
+                    "sourceItemCount": len(snapshot.source_items),
+                    "snapshot": snapshot.model_dump(by_alias=True, mode="json"),
                 },
-                level="ERROR" if snapshot is None else "DEFAULT",
-                status_message=(
-                    "수집 스냅샷을 찾지 못했습니다."
-                    if snapshot is None
-                    else None
-                ),
             )
-        if snapshot is None:
-            status = TaskStatus.FAILED
-            failure_code = report_error(
-                logger,
-                ErrorCode.SOURCE_SNAPSHOT_NOT_FOUND,
-                "수집 스냅샷을 찾지 못함",
-                context={"taskId": task_id},
-                stage=ObservationStage.REQUEST,
-                payload={"reason": "snapshot_not_found"},
-            )
-        else:
-            # 요청이 준 window 를 정본으로 덮어쓴다. 원본 스냅샷 객체(인메모리 스텁이
-            # 공유할 수 있음)를 건드리지 않도록 copy 후 교체한다.
-            normalize_started = perf_counter()
-            with trace_observation(
-                "normalize-source-snapshot",
-                as_type="span",
-                input={
-                    "snapshot": snapshot.model_dump(
-                        by_alias=True,
-                        mode="json",
-                    ),
-                    "window": {"start": window_start, "end": window_end},
-                },
-            ) as normalization:
-                try:
-                    snapshot = snapshot.model_copy(
-                        update={
-                            "timeline_window": TimelineWindow(
-                                start_time=window_start,
-                                end_time=window_end,
-                            )
-                        }
-                    )
-                    request = normalize(snapshot)
-                except Exception as exc:
-                    update_observation(
-                        normalization,
-                        output={
-                            "errorCode": int(code_of(exc)),
-                            "durationMs": (
-                                perf_counter() - normalize_started
-                            )
-                            * 1000,
-                        },
-                        level="ERROR",
-                        status_message="수집 스냅샷 정규화에 실패했습니다.",
-                    )
-                    raise
+
+        # 요청이 준 window 를 정본으로 덮어쓴다. 입력 조회 응답에도 window 가 있지만
+        # 접수 요청이 정본이라는 규칙을 유지한다(두 값은 같아야 정상이다).
+        normalize_started = perf_counter()
+        with trace_observation(
+            "normalize-source-snapshot",
+            as_type="span",
+            input={
+                "snapshot": snapshot.model_dump(by_alias=True, mode="json"),
+                "window": {"start": window_start, "end": window_end},
+            },
+        ) as normalization:
+            try:
+                snapshot = snapshot.model_copy(
+                    update={
+                        "timeline_window": TimelineWindow(
+                            start_time=window_start,
+                            end_time=window_end,
+                        )
+                    }
+                )
+                request = normalize(snapshot)
+            except Exception as exc:
                 update_observation(
                     normalization,
                     output={
+                        "errorCode": int(code_of(exc)),
                         "durationMs": (
                             perf_counter() - normalize_started
                         )
                         * 1000,
-                        "request": request.model_dump(
-                            by_alias=True,
-                            mode="json",
-                        ),
                     },
+                    level="ERROR",
+                    status_message="수집 스냅샷 정규화에 실패했습니다.",
                 )
-            emit_observation(
-                ObservationEventType.COMPLETED,
-                stage=ObservationStage.REQUEST,
-                payload={
-                    "inputItemCounts": request.source_item_counts(),
-                    "hasUserMemory": request.user_memory is not None,
+                raise
+            update_observation(
+                normalization,
+                output={
+                    "durationMs": (perf_counter() - normalize_started) * 1000,
                     "request": request.model_dump(by_alias=True, mode="json"),
                 },
             )
-            active_stage = ObservationStage.MAIN_AGENT
-            draft = await asyncio.wait_for(
-                run_main_agent(request),
-                timeout=settings.pipeline_timeout_sec,
-            )
-            # 확정 결과를 timeline_events/timeline_items/timeline_event_items 에
-            # 저장한다. 저장/검증 실패는 아래 except 로 잡혀 FAILED 로 처리된다.
-            active_stage = ObservationStage.STORAGE
-            emit_observation(
-                ObservationEventType.STARTED,
-                stage=ObservationStage.STORAGE,
-                payload={"dailyRecordId": daily_record_id},
-            )
-            storage_started = perf_counter()
-            with trace_observation(
-                "store-timeline",
-                as_type="span",
-                input={
-                    "taskId": task_id,
-                    "dailyRecordId": daily_record_id,
-                    "timeline": draft.model_dump(
-                        by_alias=True,
-                        mode="json",
-                    ),
-                },
-                metadata={"repository": type(timeline_repo).__name__},
-            ) as storage:
-                try:
-                    await timeline_repo.save(task_id, draft, daily_record_id)
-                except Exception as exc:
-                    update_observation(
-                        storage,
-                        output={
-                            "saved": False,
-                            "errorCode": int(code_of(exc)),
-                            "durationMs": (
-                                perf_counter() - storage_started
-                            )
-                            * 1000,
-                            "timeline": draft.model_dump(
-                                by_alias=True,
-                                mode="json",
-                            ),
-                        },
-                        level="ERROR",
-                        status_message="Timeline 저장에 실패했습니다.",
-                    )
-                    raise
+        emit_observation(
+            ObservationEventType.COMPLETED,
+            stage=ObservationStage.REQUEST,
+            payload={
+                "inputItemCounts": request.source_item_counts(),
+                "hasUserMemory": request.user_memory is not None,
+                "request": request.model_dump(by_alias=True, mode="json"),
+            },
+        )
+
+        active_stage = ObservationStage.MAIN_AGENT
+        draft = await asyncio.wait_for(
+            run_main_agent(request),
+            timeout=settings.pipeline_timeout_sec,
+        )
+
+        # 확정 결과를 App Server 결과 저장 API 로 보낸다. 저장/검증 실패는 아래
+        # except 로 잡혀 FAILED 로 처리된다.
+        active_stage = ObservationStage.STORAGE
+        emit_observation(
+            ObservationEventType.STARTED,
+            stage=ObservationStage.STORAGE,
+            payload={
+                "dailyRecordId": daily_record_id,
+                "eventCount": len(draft.events),
+            },
+        )
+        storage_started = perf_counter()
+        with trace_observation(
+            "store-timeline",
+            as_type="span",
+            input={
+                "taskId": task_id,
+                "dailyRecordId": daily_record_id,
+                "timeline": draft.model_dump(by_alias=True, mode="json"),
+            },
+            metadata={"client": type(client).__name__, "target": "app-server-api"},
+        ) as storage:
+            try:
+                # 입력에 없는 rawId 가 결과에 남아 있으면 저장 요청을 보내지 않는다.
+                # App Server 가 거절할 참조를 굳이 왕복시킬 이유가 없다.
+                ensure_timeline_valid_for_storage(draft, source_raw_ids(snapshot))
+                result_request = build_result_request(draft)
+                await client.submit_result(task_id, token, result_request)
+            except Exception as exc:
                 update_observation(
                     storage,
                     output={
-                        "saved": True,
-                        "eventCount": len(draft.events),
+                        "saved": False,
+                        "errorCode": int(code_of(exc)),
                         "durationMs": (
                             perf_counter() - storage_started
                         )
@@ -438,16 +402,28 @@ async def _process_observed(
                             mode="json",
                         ),
                     },
+                    level="ERROR",
+                    status_message="Timeline 결과 저장에 실패했습니다.",
                 )
-            emit_observation(
-                ObservationEventType.COMPLETED,
-                stage=ObservationStage.STORAGE,
-                payload={
-                    "dailyRecordId": daily_record_id,
+                raise
+            update_observation(
+                storage,
+                output={
+                    "saved": True,
                     "eventCount": len(draft.events),
+                    "durationMs": (perf_counter() - storage_started) * 1000,
                     "timeline": draft.model_dump(by_alias=True, mode="json"),
                 },
             )
+        emit_observation(
+            ObservationEventType.COMPLETED,
+            stage=ObservationStage.STORAGE,
+            payload={
+                "dailyRecordId": daily_record_id,
+                "eventCount": len(draft.events),
+                "timeline": draft.model_dump(by_alias=True, mode="json"),
+            },
+        )
     except asyncio.TimeoutError as exc:
         status = TaskStatus.FAILED
         failure_code = report_error(
@@ -465,14 +441,18 @@ async def _process_observed(
     except Exception as exc:  # noqa: BLE001 - 백그라운드 최종 방어선
         status = TaskStatus.FAILED
         # 도메인 예외는 자기 코드를 갖고 있고(SourceBatchError 1102,
-        # TimelineValidationError 1301, StructuredOutputError 1202 …), 분류되지
-        # 않은 예외만 INTERNAL_ERROR 로 떨어진다.
+        # AppServerError 1105/1303/1404…, TimelineValidationError 1301,
+        # StructuredOutputError 1202 …), 분류되지 않은 예외만 INTERNAL_ERROR 로
+        # 떨어진다.
+        abort_callback = isinstance(exc, AppServerError) and exc.abort
         failure_payload: dict[str, object] = {}
         if isinstance(exc, TimelineValidationError):
             failure_payload = {
                 "violationCodes": exc.violation_codes,
                 "violationCount": len(exc.details),
             }
+        if abort_callback:
+            failure_payload["callbackSkipped"] = True
         failure_code = report_error(
             logger,
             code_of(exc),
@@ -484,79 +464,24 @@ async def _process_observed(
             exc_info=True,
         )
 
-    # 설정된 App Server API URL 이 있으면 성공/실패 통보를 전달한다.
-    # (관측 flush 보다 콜백을 먼저 보낸다 — 콜백이 주 결과 통보다.)
-    if settings.app_server_api_url:
-        emit_observation(
-            ObservationEventType.STARTED,
-            stage=ObservationStage.CALLBACK,
-            payload={"status": status.value},
+    callback_sent = False
+    if abort_callback:
+        # 여기까지 오면 실패 코드는 위에서 이미 로그·관측에 남았다. 콜백을 건너뛴
+        # 사실만 한 줄 더 남긴다.
+        logger.warning(
+            "완료 콜백 생략: errorCode=%s, taskId=%s, reason=%s",
+            int(failure_code) if failure_code is not None else None,
+            task_id,
+            "App Server 가 토큰/task/순서를 거절해 통보 대상이 없습니다.",
         )
-        # 실패면 원인별 코드와 그 코드에 묶인 안전 메시지가 나간다. 원본 예외
-        # 메시지는 위에서 로그에만 남겼다.
-        #
-        # 분기 기준은 `status` 다(`failure_code` 가 아니다). 실패 경로는 모두 코드를
-        # 채우지만, 누군가 status 만 FAILED 로 두고 코드를 빠뜨리면 코드 기준 분기는
-        # 성공 콜백을 보내 버린다. 실패를 성공으로 통보하는 것보다 코드가 뭉개지는
-        # 편이 낫다.
-        payload = (
-            TimelineCallbackPayload.success()
-            if status is TaskStatus.SUCCESS
-            else TimelineCallbackPayload.failure(
-                failure_code or ErrorCode.INTERNAL_ERROR
-            )
+    else:
+        callback_sent = await _send_completion_callback(
+            client,
+            task_id,
+            token,
+            status,
+            failure_code,
         )
-        callback_started = perf_counter()
-        callback_body = payload.model_dump(by_alias=True, mode="json")
-        with trace_observation(
-            "send-completion-callback",
-            as_type="span",
-            input={
-                "taskId": task_id,
-                "status": status.value,
-                "payload": callback_body,
-            },
-            metadata={"targetConfigured": True},
-        ) as callback_observation:
-            sent = await send_callback(
-                settings.app_server_api_url,
-                task_id,
-                callback_token,
-                payload,
-            )
-            update_observation(
-                callback_observation,
-                output={
-                    "sent": sent,
-                    "status": status.value,
-                    "durationMs": (perf_counter() - callback_started) * 1000,
-                    "payload": callback_body,
-                    **(
-                        {"errorCode": int(ErrorCode.CALLBACK_SEND_FAILED)}
-                        if not sent
-                        else {}
-                    ),
-                },
-                level="DEFAULT" if sent else "ERROR",
-                status_message=None if sent else "완료 콜백 전송에 실패했습니다.",
-            )
-        if sent:
-            emit_observation(
-                ObservationEventType.COMPLETED,
-                stage=ObservationStage.CALLBACK,
-                payload={"sent": True, "status": status.value},
-            )
-        else:
-            # 콜백 전송 실패는 Timeline 결과를 바꾸지 않는다(이미 저장은 끝났다).
-            # 다만 App Server 가 결과를 못 받은 상태이므로 코드로 남겨 추적한다.
-            report_error(
-                logger,
-                ErrorCode.CALLBACK_SEND_FAILED,
-                "완료 콜백 전송 실패",
-                context={"taskId": task_id, "status": status.value},
-                stage=ObservationStage.CALLBACK,
-                payload={"sent": False, "status": status.value},
-            )
 
     emit_observation(
         ObservationEventType.COMPLETED
@@ -565,6 +490,7 @@ async def _process_observed(
         stage=ObservationStage.FINAL,
         payload={
             "status": status.value,
+            "callbackSent": callback_sent,
             **({"errorCode": int(failure_code)} if failure_code is not None else {}),
         },
     )
@@ -573,4 +499,81 @@ async def _process_observed(
         request=request,
         draft=draft,
         failure_code=failure_code,
+        callback_sent=callback_sent,
     )
+
+
+async def _send_completion_callback(
+    client: AppServerClient,
+    task_id: str,
+    token: TaskToken,
+    status: TaskStatus,
+    failure_code: ErrorCode | None,
+) -> bool:
+    """성공/실패 통보를 보낸다(관측 flush 보다 먼저 — 콜백이 주 결과 통보다)."""
+
+    emit_observation(
+        ObservationEventType.STARTED,
+        stage=ObservationStage.CALLBACK,
+        payload={"status": status.value},
+    )
+    # 실패면 원인별 코드와 그 코드에 묶인 안전 메시지가 나간다. 원본 예외
+    # 메시지는 위에서 로그에만 남겼다.
+    #
+    # 분기 기준은 `status` 다(`failure_code` 가 아니다). 실패 경로는 모두 코드를
+    # 채우지만, 누군가 status 만 FAILED 로 두고 코드를 빠뜨리면 코드 기준 분기는
+    # 성공 콜백을 보내 버린다. 실패를 성공으로 통보하는 것보다 코드가 뭉개지는
+    # 편이 낫다.
+    payload = (
+        TimelineCallbackPayload.success()
+        if status is TaskStatus.SUCCESS
+        else TimelineCallbackPayload.failure(failure_code or ErrorCode.INTERNAL_ERROR)
+    )
+    callback_started = perf_counter()
+    callback_body = payload.model_dump(by_alias=True, mode="json")
+    with trace_observation(
+        "send-completion-callback",
+        as_type="span",
+        input={
+            "taskId": task_id,
+            "status": status.value,
+            "payload": callback_body,
+        },
+        metadata={"target": "app-server-api"},
+    ) as callback_observation:
+        sent = await client.send_callback(task_id, token, payload)
+        update_observation(
+            callback_observation,
+            output={
+                "sent": sent,
+                "status": status.value,
+                "durationMs": (perf_counter() - callback_started) * 1000,
+                "payload": callback_body,
+                **(
+                    {"errorCode": int(ErrorCode.CALLBACK_SEND_FAILED)}
+                    if not sent
+                    else {}
+                ),
+            },
+            level="DEFAULT" if sent else "ERROR",
+            status_message=None if sent else "완료 콜백 전송에 실패했습니다.",
+        )
+
+    if sent:
+        emit_observation(
+            ObservationEventType.COMPLETED,
+            stage=ObservationStage.CALLBACK,
+            payload={"sent": True, "status": status.value},
+        )
+    else:
+        # 콜백 전송 실패는 Timeline 결과를 바꾸지 않는다(이미 저장은 끝났다).
+        # 다만 App Server 가 결과를 못 받은 상태이므로 코드로 남겨 추적한다.
+        report_error(
+            logger,
+            ErrorCode.CALLBACK_SEND_FAILED,
+            "완료 콜백 전송 실패",
+            context={"taskId": task_id, "status": status.value},
+            stage=ObservationStage.CALLBACK,
+            payload={"sent": False, "status": status.value},
+        )
+    return sent

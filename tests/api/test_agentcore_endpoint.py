@@ -12,14 +12,8 @@ from app.core import inflight
 from app.schemas import TaskStatus, TimelineDraft
 from app.server import app
 from app.services import timeline_runner
-from app.services.source_repository import (
-    InMemorySourceRepository,
-    get_source_repository,
-)
-from app.services.timeline_repository import (
-    NoopTimelineRepository,
-    get_timeline_repository,
-)
+from app.services.app_server_client import get_app_server_client
+from tests.fixtures.app_server import FakeAppServerClient
 from tests.fixtures.requests import default_source_items, make_snapshot
 
 _TASK_ID = "task-agentcore-1"
@@ -36,14 +30,12 @@ def clear_dependency_overrides():
 
 
 @pytest.fixture
-def repo() -> InMemorySourceRepository:
-    source_repo = InMemorySourceRepository()
-    source_repo.put(
-        make_snapshot(task_id=_TASK_ID, source_items=default_source_items())
+def app_server() -> FakeAppServerClient:
+    fake = FakeAppServerClient(
+        snapshot=make_snapshot(task_id=_TASK_ID, source_items=default_source_items())
     )
-    app.dependency_overrides[get_source_repository] = lambda: source_repo
-    app.dependency_overrides[get_timeline_repository] = NoopTimelineRepository
-    return source_repo
+    app.dependency_overrides[get_app_server_client] = lambda: fake
+    return fake
 
 
 @pytest.fixture
@@ -54,7 +46,6 @@ def fake_main_agent(monkeypatch):
         return draft
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", _run)
-    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
     return draft
 
 
@@ -87,14 +78,14 @@ def test_track_inflight_decrements_on_error():
     assert inflight.inflight_count() == 0
 
 
-def test_invocations_accepts_timeline_task(repo, fake_main_agent):
+def test_invocations_accepts_timeline_task(app_server, fake_main_agent):
     client = TestClient(app)
 
     response = client.post(
         "/invocations",
         json={
             "taskId": _TASK_ID,
-            "callbackToken": "callback-token-1",
+            "taskToken": "task-token-1",
             "dailyRecordId": 42,
             "window": _WINDOW,
         },
@@ -107,7 +98,7 @@ def test_invocations_accepts_timeline_task(repo, fake_main_agent):
     }
 
 
-def test_invocations_requires_all_fields(repo):
+def test_invocations_requires_all_fields(app_server):
     client = TestClient(app)
 
     response = client.post("/invocations", json={"taskId": _TASK_ID})
@@ -115,7 +106,7 @@ def test_invocations_requires_all_fields(repo):
     assert response.status_code == 422
 
 
-def test_background_task_marks_runtime_busy(repo, monkeypatch):
+def test_background_task_marks_runtime_busy(app_server, monkeypatch):
     """백그라운드 처리가 도는 동안 in-flight 로 잡혀야 `/ping` 이 HealthyBusy 가 된다."""
 
     busy_during_run: list[bool] = []
@@ -125,7 +116,6 @@ def test_background_task_marks_runtime_busy(repo, monkeypatch):
         return TimelineDraft(user_id="u-1", date="2026-06-20", timezone="Asia/Seoul")
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", _run)
-    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
 
     # TestClient 는 응답 반환 전에 BackgroundTasks 를 끝까지 실행한다.
     client = TestClient(app)
@@ -133,7 +123,7 @@ def test_background_task_marks_runtime_busy(repo, monkeypatch):
         "/invocations",
         json={
             "taskId": _TASK_ID,
-            "callbackToken": "callback-token-2",
+            "taskToken": "task-token-2",
             "dailyRecordId": 42,
             "window": _WINDOW,
         },

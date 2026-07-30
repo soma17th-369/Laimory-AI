@@ -11,8 +11,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 from app.core import langfuse_tracing
 from app.schemas import TaskStatus, TimelineDraft
 from app.services import timeline_runner
-from app.services.source_repository import InMemorySourceRepository
-from app.services.timeline_repository import NoopTimelineRepository
+from tests.fixtures.app_server import FakeAppServerClient
 from tests.fixtures.requests import default_source_items, make_snapshot
 
 _TASK_ID = "task-langfuse-runner"
@@ -44,11 +43,6 @@ def test_runner_trace_contains_every_boundary_input_and_output(
     monkeypatch.setattr(timeline_runner.settings, "obs_enabled", False)
     monkeypatch.setattr(timeline_runner.settings, "es_url", "")
     monkeypatch.setattr(timeline_runner.settings, "obs_local_dir", None)
-    monkeypatch.setattr(
-        timeline_runner.settings,
-        "app_server_api_url",
-        "https://app.example/s/api/v1",
-    )
 
     draft = TimelineDraft(
         user_id="u-1",
@@ -59,24 +53,10 @@ def test_runner_trace_contains_every_boundary_input_and_output(
     async def fake_main_agent(request):
         return draft
 
-    async def fake_send_callback(
-        app_server_api_url,
-        task_id,
-        callback_token,
-        payload,
-    ):
-        return True
-
     monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
-    monkeypatch.setattr(
-        timeline_runner,
-        "send_callback",
-        fake_send_callback,
-    )
 
-    repo = InMemorySourceRepository()
-    repo.put(
-        make_snapshot(
+    app_server = FakeAppServerClient(
+        snapshot=make_snapshot(
             task_id=_TASK_ID,
             source_items=default_source_items(),
         )
@@ -85,8 +65,7 @@ def test_runner_trace_contains_every_boundary_input_and_output(
     status = asyncio.run(
         timeline_runner.process_timeline_task(
             _TASK_ID,
-            repo,
-            NoopTimelineRepository(),
+            app_server,
             42,
             _WINDOW_START,
             _WINDOW_END,

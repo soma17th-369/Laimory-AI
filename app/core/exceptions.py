@@ -66,8 +66,6 @@ def code_of(exc: BaseException) -> ErrorCode:
         return exc.code
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return ErrorCode.PIPELINE_TIMEOUT
-    if _is_database_error(exc):
-        return ErrorCode.DATABASE_ERROR
     return ErrorCode.INTERNAL_ERROR
 
 
@@ -80,21 +78,6 @@ def code_of_or(exc: BaseException, fallback: ErrorCode) -> ErrorCode:
 
     code = code_of(exc)
     return fallback if code is ErrorCode.INTERNAL_ERROR else code
-
-
-def _is_database_error(exc: BaseException) -> bool:
-    """SQLAlchemy/드라이버 예외인지 본다.
-
-    sqlalchemy 를 함수 안에서 import 한다. 이 모듈은 관측·에이전트 등 DB 와 무관한
-    곳에서도 import 되므로, 미설치 환경(단위 테스트 최소 설치 등)에서 import 실패로
-    무너지지 않게 한다.
-    """
-
-    try:
-        from sqlalchemy.exc import SQLAlchemyError
-    except ImportError:  # pragma: no cover - sqlalchemy 는 정규 의존성이다.
-        return False
-    return isinstance(exc, SQLAlchemyError)
 
 
 def safe_message(exc: BaseException) -> str:

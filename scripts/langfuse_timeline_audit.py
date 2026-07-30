@@ -20,7 +20,7 @@ import uuid
 from typing import Any
 
 _AUDIT_FLAG = "LAIMORY_LANGFUSE_AUDIT"
-_CALLBACK_SENTINEL = "audit-callback-token-must-not-appear"
+_CALLBACK_SENTINEL = "audit-task-token-must-not-appear"
 _VISIBLE_SENTINEL = "합성 프로젝트 회의"
 _REQUIRED_AGENT_NAMES = {
     "main-agent",
@@ -202,41 +202,58 @@ def _synthetic_snapshot(task_id: str) -> Any:
 
 
 async def _run_timeline(task_id: str) -> Any:
+    """합성 입력으로 Timeline 전체를 한 번 돌린다.
+
+    App Server 는 호출하지 않는다. 실제 서버로 나가는 유일한 통로가 클라이언트
+    하나(이슈 #40)라 여기서만 인메모리 스텁으로 갈아 끼우면 된다.
+    """
+
     from app.schemas import TaskStatus
     from app.services import timeline_runner
-    from app.services.source_repository import InMemorySourceRepository
-    from app.services.timeline_repository import TimelineRepository
+    from app.services.app_server_client import AppServerClient
 
-    class AuditTimelineRepository(TimelineRepository):
+    class AuditAppServerClient(AppServerClient):
         def __init__(self) -> None:
             self.draft = None
+            self.result = None
 
-        async def save(self, task_id: str, draft: Any, daily_record_id: int) -> int:
-            self.draft = draft.model_copy(deep=True)
-            return len(draft.events)
+        async def fetch_input(self, task_id: str, token: Any) -> Any:
+            return _synthetic_snapshot(task_id)
 
-    async def audit_callback(*args: Any, **kwargs: Any) -> bool:
-        return True
+        async def submit_result(self, task_id: str, token: Any, request: Any) -> None:
+            self.result = request
 
-    source_repo = InMemorySourceRepository()
-    source_repo.put(_synthetic_snapshot(task_id))
-    timeline_repo = AuditTimelineRepository()
-    timeline_runner.send_callback = audit_callback
+        async def send_callback(self, task_id: str, token: Any, payload: Any) -> bool:
+            return True
 
-    status = await timeline_runner.process_timeline_task(
-        task_id,
-        source_repo,
-        timeline_repo,
-        430000,
-        "2026-07-30T00:00:00+09:00",
-        "2026-07-31T00:00:00+09:00",
-        _CALLBACK_SENTINEL,
-    )
+    app_server = AuditAppServerClient()
+
+    # draft 원본은 결과 저장 계약으로 좁혀지기 전 값이라 runner 안에서만 보인다.
+    # 감사용으로 한 벌 붙잡아 둔다.
+    original_build = timeline_runner.build_result_request
+
+    def capture(draft: Any) -> Any:
+        app_server.draft = draft.model_copy(deep=True)
+        return original_build(draft)
+
+    timeline_runner.build_result_request = capture
+    try:
+        status = await timeline_runner.process_timeline_task(
+            task_id,
+            app_server,
+            430000,
+            "2026-07-30T00:00:00+09:00",
+            "2026-07-31T00:00:00+09:00",
+            _CALLBACK_SENTINEL,
+        )
+    finally:
+        timeline_runner.build_result_request = original_build
+
     if status is not TaskStatus.SUCCESS:
         raise RuntimeError(f"합성 Timeline 실행이 실패했습니다: {status.value}")
-    if timeline_repo.draft is None:
-        raise RuntimeError("인메모리 Timeline 저장 결과가 없습니다.")
-    return timeline_repo.draft
+    if app_server.draft is None:
+        raise RuntimeError("Timeline 결과가 없습니다.")
+    return app_server.draft
 
 
 def _fetch_trace(client: Any, trace_id: str) -> dict[str, Any]:

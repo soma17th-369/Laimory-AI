@@ -31,10 +31,10 @@ AI 서버가 밖으로 내보내는 실패는 **정수 하나로 식별**합니�
 | 대역 | 영역 |
 |---|---|
 | 1000~1099 | 요청/입력 계약 — 클라이언트가 보낸 것이 계약을 어긴 경우 |
-| 1100~1199 | 원본 스냅샷 — staging DB의 수집 원본 조회/계약 |
+| 1100~1199 | 원본 스냅샷 — App Server 입력 조회 API 응답/계약 |
 | 1200~1299 | AI/LLM — 에이전트 실행, LLM 호출, 구조화 출력 |
-| 1300~1399 | 저장/DB — 결과 저장, 저장 전 자체검증, DB 접근 |
-| 1400~1499 | 외부 연동 — App Server 콜백, 관측 전송 |
+| 1300~1399 | 결과 저장 — App Server 결과 저장 API, 저장 전 자체검증 |
+| 1400~1499 | 외부 연동 — App Server 콜백, 인증/순서 거절, 관측 전송 |
 | 1900~1999 | 미분류 — 위 어디에도 속하지 않는 내부 오류 |
 
 ## 3. 코드 표
@@ -60,10 +60,11 @@ AI 서버가 밖으로 내보내는 실패는 **정수 하나로 식별**합니�
 
 | 코드 | 이름 | 의미 | HTTP | 흡수 |
 |---|---|---|---|---|
-| 1101 | `SOURCE_SNAPSHOT_NOT_FOUND` | `taskId`로 수집 원본을 찾지 못했습니다. | | |
+| 1101 | `SOURCE_SNAPSHOT_NOT_FOUND` | 입력 조회 API가 `taskId`의 수집 원본을 주지 않았습니다(404). | | |
 | 1102 | `SOURCE_CONTRACT_VIOLATION` | 수집 원본 묶음이 입력 계약을 어겼습니다. | | |
 | 1103 | `SOURCE_ITEM_NORMALIZE_FAILED` | 개별 수집 항목 정규화에 실패해 그 항목만 건너뛰었습니다. | | ✓ |
 | 1104 | `TIMEZONE_RESOLUTION_FAILED` | 요청 timezone을 해석하지 못해 KST로 진행했습니다. | | ✓ |
+| 1105 | `SOURCE_FETCH_FAILED` | 입력 조회 API 호출이 재시도까지 실패했습니다(5xx/timeout). | | |
 
 ### 1200~1299 AI/LLM
 
@@ -78,12 +79,13 @@ AI 서버가 밖으로 내보내는 실패는 **정수 하나로 식별**합니�
 | 1207 | `REPAIR_TOOL_FAILED` | Repair 도구 실행이 실패했습니다. | | ✓ |
 | 1208 | `DRAFT_EDIT_FAILED` | draft 편집을 적용할 수 없습니다. | | ✓ |
 
-### 1300~1399 저장/DB
+### 1300~1399 결과 저장
 
 | 코드 | 이름 | 의미 | HTTP | 흡수 |
 |---|---|---|---|---|
 | 1301 | `TIMELINE_STORAGE_VALIDATION_FAILED` | 저장 전 자체검증에서 계약 위반이 나왔습니다. | | |
-| 1302 | `DATABASE_ERROR` | DB 접근/트랜잭션이 실패했습니다. | | |
+| 1302 | *(예약)* | AI 서버가 staging DB에 직접 붙던 시절의 `DATABASE_ERROR`입니다. **사용하지 않습니다.** | | |
+| 1303 | `TIMELINE_RESULT_SUBMIT_FAILED` | 결과 저장 API 호출이 재시도까지 실패했습니다(5xx/timeout). | | |
 
 ### 1400~1499 외부 연동
 
@@ -92,6 +94,9 @@ AI 서버가 밖으로 내보내는 실패는 **정수 하나로 식별**합니�
 | 1401 | `CALLBACK_SEND_FAILED` | App Server 완료 콜백 전송이 실패했습니다. | | ✓ |
 | 1402 | `OBSERVATION_EXPORT_FAILED` | 관측 flush/ES 전송이 실패했습니다. | | ✓ |
 | 1403 | `OBSERVATION_EMIT_FAILED` | 관측 이벤트 기록이 실패했습니다. | | ✓ |
+| 1404 | `APP_SERVER_UNAUTHORIZED` | App Server가 `taskToken`을 거절했습니다(401). | | |
+| 1405 | `APP_SERVER_TASK_NOT_FOUND` | App Server에 task가 없거나 만료됐습니다(404). | | |
+| 1406 | `APP_SERVER_CONFLICT` | App Server가 호출 순서 충돌로 거절했습니다(409). | | |
 
 ### 1900~1999 미분류
 
@@ -125,10 +130,14 @@ AI 서버는 원인이 새로 분류될 때마다 코드를 추가합니다. 클
 |---|---|
 | 1201 `PIPELINE_TIMEOUT` | 가능 — 일시적 지연일 수 있습니다. |
 | 1203 `LLM_CALL_FAILED` | 가능 — provider 일시 장애일 수 있습니다. |
-| 1302 `DATABASE_ERROR` | 가능 — 커넥션 일시 장애일 수 있습니다. |
+| 1105 `SOURCE_FETCH_FAILED` | 가능 — App Server 일시 장애일 수 있습니다. |
+| 1303 `TIMELINE_RESULT_SUBMIT_FAILED` | 가능 — 저장은 아직 되지 않았습니다. 같은 task로 다시 요청할 수 있습니다. |
 | 1101 `SOURCE_SNAPSHOT_NOT_FOUND` | 불가 — 원본을 먼저 적재해야 합니다. |
 | 1102 `SOURCE_CONTRACT_VIOLATION` | 불가 — 적재 데이터를 고쳐야 합니다. |
 | 1001 `REQUEST_VALIDATION_FAILED` | 불가 — 요청을 고쳐야 합니다. |
+| 1404 `APP_SERVER_UNAUTHORIZED` | 불가 — 토큰이 무효합니다. AI 서버는 콜백 없이 중단합니다. |
+| 1405 `APP_SERVER_TASK_NOT_FOUND` | 불가 — task가 만료됐거나 없습니다. AI 서버는 콜백 없이 중단합니다. |
+| 1406 `APP_SERVER_CONFLICT` | 불가 — 호출 순서가 어긋났습니다. AI 서버는 콜백 없이 중단합니다. |
 
 ### 내부 정보는 응답에 없습니다
 
@@ -221,5 +230,6 @@ class SourceBatchError(AppError, ValueError):
 (`validator.parse_datetime`이 날짜 포맷을 차례로 시도하는 부분 등). 여기에 로그를
 남기면 정상 동작이 매번 경고를 뿜습니다.
 
-예외를 삼키지 않고 그대로 다시 던지는 곳(`db.session_scope`의 rollback 등)도
-따로 남기지 않습니다. 상위에서 같은 예외를 코드와 함께 기록하므로 중복입니다.
+예외를 삼키지 않고 그대로 다시 던지는 곳(`app_server_client`의 재시도 소진 전
+중간 시도 등)도 따로 남기지 않습니다. 상위에서 같은 예외를 코드와 함께 기록하므로
+중복입니다.

@@ -234,11 +234,14 @@ aws iam create-open-id-connect-provider \
 ### 3.5 네트워크 모드는 `VPC` 다
 
 `networkMode` 는 `PUBLIC` 과 `VPC` 중 하나인데, 이 프로젝트는 **`VPC` 를 써야 한다.**
-AI 서버는 private subnet 의 staging MySQL 에 host/port 로 직결하므로(`app/core/db.py`),
-`PUBLIC` 으로 만들면 DB 에 붙지 못한다.
+AI 서버는 입력 조회·결과 저장·완료 콜백을 전부 App Server 서버간 API 로 호출하므로
+(`app/services/app_server_client.py`), App Server 에 닿는 네트워크가 필요하다.
 
-- subnet: DB 에 접근 가능한 private subnet
-- security group: DB security group 의 3306 인바운드에 허용된 SG
+- subnet: App Server 에 접근 가능한 private subnet
+- security group: App Server security group 인바운드에 허용된 SG
+
+staging DB 직결은 이슈 #40 에서 제거됐다. DB security group 이나 3306 경로는 더 이상
+필요하지 않다.
 
 ## 4. GitHub 저장소 설정
 
@@ -351,8 +354,8 @@ Runtime 의 `environmentVariables` 로 주입한다.
 | `BEDROCK_MODEL` | O | Nova 모델 id 또는 추론 프로필 id. 비면 provider 생성 시 실패한다 |
 | `BEDROCK_REGION` | | 기본 `ap-northeast-2` |
 | `BEDROCK_AWS_PROFILE` | | **넣지 않는다.** 비어 있어야 실행 역할 자격증명을 쓴다 |
-| `DB_HOST` `DB_PORT` `DB_NAME` `DB_USER` `DB_PASSWORD` | O | staging MySQL 직결. DB 는 필수라 없으면 처리에 실패한다 |
-| `APP_SERVER_API_URL` | O | App Server 서버간 API 기본 URL(`/s/api/v1`까지). 비면 콜백을 보내지 않는다 |
+| `APP_SERVER_API_URL` | O | App Server 서버간 API 기본 URL(`/s/api/v1`까지). 유일한 데이터 경로라 비면 기동에 실패한다 |
+| `APP_SERVER_TIMEOUT_SEC` `APP_SERVER_MAX_ATTEMPTS` `APP_SERVER_RETRY_BACKOFF_SEC` | | 기본 10초 / 3회 / 0.5초. timeout·5xx 에만 재시도한다 |
 | `PIPELINE_TIMEOUT_SEC` | | 기본 120 |
 | `REPAIR_MAX_ITERATIONS` | | 기본 3 |
 | `OBS_ENABLED` `ES_URL` `ES_API_KEY` `ES_EVENT_INDEX` | | 관측(#28). 끄면 수집 자체를 하지 않는다 |

@@ -19,10 +19,10 @@
 
 ===========  ==========================================================
 1000~1099    요청/입력 계약 — 클라이언트가 보낸 것이 계약을 어긴 경우
-1100~1199    원본 스냅샷 — staging DB 의 수집 원본 조회/계약
+1100~1199    원본 스냅샷 — App Server 입력 조회 API 응답/계약
 1200~1299    AI/LLM — 에이전트 실행, LLM 호출, 구조화 출력
-1300~1399    저장/DB — 결과 저장, 저장 전 자체검증, DB 접근
-1400~1499    외부 연동 — App Server 콜백, 관측 전송
+1300~1399    결과 저장 — App Server 결과 저장 API, 저장 전 자체검증
+1400~1499    외부 연동 — App Server 콜백, 인증/순서 거절, 관측 전송
 1900~1999    미분류 — 위 어디에도 속하지 않는 내부 오류
 ===========  ==========================================================
 
@@ -69,7 +69,7 @@ class ErrorCode(IntEnum):
     LEGACY_TIMELINE_GENERATION_FAILED = 1008
 
     # --- 1100~1199 원본 스냅샷 -------------------------------------------
-    #: 요청 taskId 로 수집 원본을 찾지 못했다.
+    #: 입력 조회 API 가 요청 taskId 로 수집 원본을 돌려주지 않았다(404).
     SOURCE_SNAPSHOT_NOT_FOUND = 1101
     #: 수집 원본 묶음이 파이프라인 입력 계약을 어겼다(SourceBatchError).
     SOURCE_CONTRACT_VIOLATION = 1102
@@ -77,6 +77,8 @@ class ErrorCode(IntEnum):
     SOURCE_ITEM_NORMALIZE_FAILED = 1103
     #: 요청 timezone 을 해석하지 못해 기본값(KST)으로 진행했다(흡수 경로).
     TIMEZONE_RESOLUTION_FAILED = 1104
+    #: 입력 조회 API 호출이 실패했다(5xx/timeout 을 재시도까지 소진).
+    SOURCE_FETCH_FAILED = 1105
 
     # --- 1200~1299 AI/LLM ------------------------------------------------
     #: 메인 에이전트가 제한 시간 안에 끝나지 않았다.
@@ -96,11 +98,18 @@ class ErrorCode(IntEnum):
     #: draft 편집이 실패했다(대상 event 없음·필드 없음·스키마 위반).
     DRAFT_EDIT_FAILED = 1208
 
-    # --- 1300~1399 저장/DB -----------------------------------------------
+    # --- 1300~1399 결과 저장 ----------------------------------------------
     #: 저장 전 자체검증에서 계약 위반이 나왔다(TimelineValidationError).
     TIMELINE_STORAGE_VALIDATION_FAILED = 1301
-    #: DB 접근/트랜잭션이 실패했다.
+
+    #: **예약(deprecated)**. AI 서버가 staging DB 에 직접 붙던 시절의 코드다(#40
+    #: 이전). 지금은 모든 데이터 접근이 App Server API 라 이 코드를 낼 수 있는
+    #: 경로가 없다. 번호 재사용을 막기 위해서만 남긴다 — DB 계열 실패는 이제
+    #: :data:`TIMELINE_RESULT_SUBMIT_FAILED` 나 :data:`SOURCE_FETCH_FAILED` 다.
     DATABASE_ERROR = 1302
+
+    #: 결과 저장 API 호출이 실패했다(5xx/timeout 을 재시도까지 소진).
+    TIMELINE_RESULT_SUBMIT_FAILED = 1303
 
     # --- 1400~1499 외부 연동 ---------------------------------------------
     #: App Server 완료 콜백 전송이 실패했다.
@@ -109,6 +118,12 @@ class ErrorCode(IntEnum):
     OBSERVATION_EXPORT_FAILED = 1402
     #: 관측 이벤트 기록 자체가 실패했다(sink/observer 내부).
     OBSERVATION_EMIT_FAILED = 1403
+    #: App Server 가 taskToken 을 거절했다(401). 재시도하지 않고 중단한다.
+    APP_SERVER_UNAUTHORIZED = 1404
+    #: App Server 에 task 가 없거나 만료됐다(404, 입력 조회 외 경로).
+    APP_SERVER_TASK_NOT_FOUND = 1405
+    #: App Server 가 호출 순서 충돌로 거절했다(409). 재시도하지 않고 중단한다.
+    APP_SERVER_CONFLICT = 1406
 
     # --- 1900~1999 미분류 -------------------------------------------------
     #: 위 어디에도 분류되지 않은 내부 오류.
@@ -131,6 +146,7 @@ _MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.SOURCE_CONTRACT_VIOLATION: "수집 데이터가 올바르지 않습니다.",
     ErrorCode.SOURCE_ITEM_NORMALIZE_FAILED: "일부 수집 항목을 처리하지 못했습니다.",
     ErrorCode.TIMEZONE_RESOLUTION_FAILED: "요청 시간대를 해석하지 못했습니다.",
+    ErrorCode.SOURCE_FETCH_FAILED: "수집 데이터를 가져오지 못했습니다.",
     ErrorCode.PIPELINE_TIMEOUT: "타임라인 생성이 제한 시간을 초과했습니다.",
     ErrorCode.STRUCTURED_OUTPUT_INVALID: "AI 응답을 해석하지 못했습니다.",
     ErrorCode.LLM_CALL_FAILED: "AI 모델 호출에 실패했습니다.",
@@ -141,9 +157,13 @@ _MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.DRAFT_EDIT_FAILED: "타임라인 수정에 실패했습니다.",
     ErrorCode.TIMELINE_STORAGE_VALIDATION_FAILED: "타임라인 저장 검증에 실패했습니다.",
     ErrorCode.DATABASE_ERROR: "데이터 저장 중 오류가 발생했습니다.",
+    ErrorCode.TIMELINE_RESULT_SUBMIT_FAILED: "타임라인 결과 저장에 실패했습니다.",
     ErrorCode.CALLBACK_SEND_FAILED: "결과 통보에 실패했습니다.",
     ErrorCode.OBSERVATION_EXPORT_FAILED: "관측 데이터 전송에 실패했습니다.",
     ErrorCode.OBSERVATION_EMIT_FAILED: "관측 데이터 기록에 실패했습니다.",
+    ErrorCode.APP_SERVER_UNAUTHORIZED: "작업 인증에 실패했습니다.",
+    ErrorCode.APP_SERVER_TASK_NOT_FOUND: "작업을 찾을 수 없습니다.",
+    ErrorCode.APP_SERVER_CONFLICT: "작업 처리 순서가 맞지 않습니다.",
     ErrorCode.INTERNAL_ERROR: "타임라인 생성 중 오류가 발생했습니다.",
 }
 
@@ -158,9 +178,13 @@ _HTTP_STATUSES: dict[ErrorCode, int] = {
 }
 
 #: 새 코드가 써서는 안 되는 예약 번호. 구 계약이 쓰던 값이라 재사용하면
-#: 과거 로그·클라이언트 분기와 의미가 충돌한다.
+#: 과거 로그·클라이언트 분기와 의미가 충돌한다. 여기 든 코드는 실패 콜백에도
+#: 실을 수 없다 — 지금은 어떤 경로도 이 코드를 만들지 않는다.
 RESERVED_CODES: frozenset[ErrorCode] = frozenset(
-    {ErrorCode.LEGACY_TIMELINE_GENERATION_FAILED}
+    {
+        ErrorCode.LEGACY_TIMELINE_GENERATION_FAILED,
+        ErrorCode.DATABASE_ERROR,
+    }
 )
 
 

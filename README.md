@@ -32,10 +32,12 @@ app/
 │   ├── agentcore.py           # AgentCore Runtime 계약 (POST /invocations, GET /ping)
 │   └── v1/
 │       ├── router.py          # v1 라우터 취합
-│       └── timeline.py        # POST /v1/timeline (taskId 접수 → 202)
+│       └── timeline.py        # POST /v1/timeline (taskId+taskToken 접수 → 202)
 │
 ├── schemas/                   # Pydantic 계약(contract)
-│   ├── source_snapshot.py     # 수집 원본(taskId/sourceItems) 입력 계약
+│   ├── source_snapshot.py     # 수집 원본(taskId/sourceItems) 파이프라인 내부 계약
+│   ├── timeline_input.py      # App Server 입력 조회 응답 계약
+│   ├── timeline_result.py     # App Server 결과 저장 요청 계약
 │   ├── location.py/calendar.py/health.py/notification.py/photo.py
 │   ├── event_candidate.py     # AI 이벤트 후보 모델
 │   ├── timeline_request.py    # 정규화된 요청(main agent 입력)
@@ -55,9 +57,10 @@ app/
 │   └── main/main_agent.py     # events → timeline → repair 조율(LangGraph)
 │
 └── services/
-    ├── source_repository.py   # taskId로 수집 스냅샷 조회
-    ├── timeline_repository.py # 최종 timeline_events/timeline_items 저장
-    ├── timeline_validator.py  # 최종 저장 전 source 소속·시간 검증
+    ├── app_server_client.py   # App Server API 클라이언트 (입력 조회/결과 저장/콜백 + taskToken)
+    ├── source_contract.py     # 입력 조회 응답 묶음 계약 검증
+    ├── timeline_result.py     # draft → 결과 저장 요청 변환
+    ├── timeline_validator.py  # 결과 저장 전 source 소속·시간 검증
     ├── normalizer.py          # 수집 스냅샷 분리·정규화
     ├── draft_repair.py        # draft 확정 repair
     ├── draft_edit.py          # event 수정·삭제 (Repair 계획의 결정론 적용)
@@ -70,8 +73,7 @@ app/
     ├── meal_guard.py          # MEAL 지속시간 강제
     ├── place_resolver.py      # 장소 확정
     ├── place_text.py          # 장소 문자열 정규화·비교
-    ├── timeline_runner.py     # 백그라운드 파이프라인
-    └── callback.py            # 완료 상태 콜백
+    └── timeline_runner.py     # 백그라운드 파이프라인 (입력 조회→추론→결과 저장→콜백)
 
 tests/
 ├── agents/                    # Event/Repair Agent 테스트 (live 입력 테스트는 opt-in)

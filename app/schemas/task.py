@@ -31,10 +31,10 @@ class TaskStatus(str, Enum):
 class TimelineCallbackPayload(CamelModel):
     """완료 시 App Server 콜백 API body로 전달하는 상태 통보.
 
-    App Server 는 이 콜백으로 처리 완료(SUCCESS/FAILED)만 통보받고, 실제 결과는
-    staging DB(`timeline_events`/`timeline_items`/`timeline_event_items`)에서 읽는다.
-    `taskId` 는 URL path, `callbackToken` 은 `Callback-Token` 헤더로 전달하므로
-    body에는 API 서버 `DraftTaskCallbackRequest`와 같은 세 필드만 둔다.
+    App Server 는 이 콜백으로 처리 완료(SUCCESS/FAILED)만 통보받는다. 실제 결과는
+    그 전에 결과 저장 API 로 이미 전달됐다(이슈 #40) — 콜백은 통보 전용이라 결과
+    데이터를 싣지 않는다. `taskId` 는 URL path, `taskToken` 은 `Task-Token` 헤더로
+    전달하므로 body 에는 상태 세 필드만 둔다.
 
     `errorCode` 는 실패 원인을 식별하는 **정수**다(:mod:`app.core.error_codes`).
     구 계약은 `"ERROR_1008"` 문자열 하나로 모든 실패를 표현했지만, 그러면 App Server
