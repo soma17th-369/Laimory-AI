@@ -25,7 +25,7 @@ from app.core.observability.observer import Observer
 @dataclass(frozen=True)
 class ObservationContext:
     task_id: str
-    observer: Observer
+    observer: Observer | None
     stage: ObservationStage = ObservationStage.REQUEST
     agent: str | None = None
     iteration: int | None = None
@@ -44,9 +44,13 @@ def current_observation_context() -> ObservationContext | None:
 @contextmanager
 def observation_context(
     task_id: str,
-    observer: Observer,
+    observer: Observer | None,
 ) -> Iterator[ObservationContext]:
-    """Timeline 처리 전체가 공유할 최상위 관측 컨텍스트를 연다."""
+    """Timeline 처리 전체가 공유할 최상위 실행 컨텍스트를 연다.
+
+    Elasticsearch/local observer가 없어도 stage·agent 컨텍스트는 유지한다. Langfuse
+    generation 이름과 계층이 Elasticsearch 활성 여부에 종속되면 안 되기 때문이다.
+    """
 
     context = ObservationContext(task_id=task_id, observer=observer)
     token = _CURRENT.set(context)
@@ -105,7 +109,7 @@ def emit_observation(
     """현재 컨텍스트가 있으면 이벤트를 만들어 emit 하고, 없으면 조용히 건너뛴다."""
 
     current = _CURRENT.get()
-    if current is None:
+    if current is None or current.observer is None:
         return False
 
     event = ObservationEvent(

@@ -20,15 +20,20 @@ REDACTED = "[REDACTED]"
 _SENSITIVE_KEYS = {
     "apikey",
     "authorization",
+    "awsaccesskeyid",
+    "awssecretaccesskey",
+    "callbacktoken",
     "password",
     "passwd",
     "cookie",
     "setcookie",
     "secret",
+    "secretkey",
     "clientsecret",
     "accesstoken",
     "refreshtoken",
     "idtoken",
+    "sessiontoken",
 }
 # 이 키들의 값은 마스킹 후에도 저장하지 않는다. 키 이름은 비교 전에 영숫자 소문자로
 # 정규화하므로 system_prompt, source-items 같은 표기도 함께 차단된다.
@@ -43,6 +48,7 @@ _CONTENT_KEYS = {
     "input",
     "inputdata",
     "message",
+    "options",
     "output",
     "plan",
     "prompt",

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import field_validator
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -162,6 +162,44 @@ class Settings(BaseSettings):
     obs_max_events_per_task: int = 1000
     # dev 검사용: 값이 있으면 조립한 event 문서를 로컬에도 저장한다.
     obs_local_dir: str | None = None
+
+    # --- Langfuse tracing ---
+    # 기존 Elasticsearch 관측을 대체하지 않는 선택적 외부 tracing 계층이다.
+    # 키가 없거나 비활성화돼 있으면 no-op이며 Timeline 처리를 실패시키지 않는다.
+    langfuse_enabled: bool = False
+    langfuse_public_key: str = ""
+    langfuse_secret_key: SecretStr = SecretStr("")
+    # 이 프로젝트의 POC/운영 대상은 Langfuse Cloud Japan 리전이다.
+    langfuse_base_url: str = "https://jp.cloud.langfuse.com"
+    langfuse_sample_rate: float = 1.0
+    # 위치·건강·캘린더처럼 민감한 본문은 기본적으로 외부에 보내지 않는다.
+    langfuse_content_capture: Literal["NONE", "SANITIZED"] = "NONE"
+    langfuse_max_payload_bytes: int = 64 * 1024
+
+    @field_validator("langfuse_sample_rate")
+    @classmethod
+    def validate_langfuse_sample_rate(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("LANGFUSE_SAMPLE_RATE는 0과 1 사이여야 합니다.")
+        return value
+
+    @field_validator("langfuse_base_url", mode="before")
+    @classmethod
+    def validate_langfuse_base_url(cls, value: object) -> str:
+        normalized = str(value).strip().rstrip("/")
+        parsed = urlsplit(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("LANGFUSE_BASE_URL은 절대 HTTP(S) URL이어야 합니다.")
+        if parsed.query or parsed.fragment:
+            raise ValueError("LANGFUSE_BASE_URL에는 query 또는 fragment를 넣을 수 없습니다.")
+        return normalized
+
+    @field_validator("langfuse_max_payload_bytes")
+    @classmethod
+    def validate_langfuse_max_payload_bytes(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("LANGFUSE_MAX_PAYLOAD_BYTES는 1 이상이어야 합니다.")
+        return value
 
     # 운영 로그 포맷: "rich"(로컬 콘솔) | "json"(stdout JSON, CloudWatch Logs Insights).
     log_format: str = "rich"

@@ -188,6 +188,17 @@ OBS_MAX_PAYLOAD_BYTES=262144 # 이벤트별 payload 최대 byte
 OBS_MAX_EVENTS_PER_TASK=1000 # task별 메모리 버퍼 이벤트 상한
 OBS_LOCAL_DIR=               # dev 검사용 events.jsonl 저장 경로
 ES_EVENT_INDEX=ai-timeline-task # 단계별 실행 이벤트 인덱스 base
+
+# Langfuse tracing — Agent 계층, LLM generation, token/cost 분석
+LANGFUSE_ENABLED=false
+LANGFUSE_PUBLIC_KEY=         # Langfuse project public key
+LANGFUSE_SECRET_KEY=         # Langfuse project secret key. Git에 커밋하지 않는다.
+LANGFUSE_BASE_URL=https://jp.cloud.langfuse.com
+LANGFUSE_SAMPLE_RATE=1.0
+# 라이프로그 외부 전송은 기본 NONE. SANITIZED는 보안 검토 뒤 명시적으로 선택한다.
+LANGFUSE_CONTENT_CAPTURE=NONE # NONE(길이/해시) | SANITIZED(마스킹 본문)
+LANGFUSE_MAX_PAYLOAD_BYTES=65536
+
 LOG_FORMAT=rich              # 운영은 json (stdout JSON → CloudWatch Logs Insights)
 ```
 
@@ -229,6 +240,7 @@ Timeline 요청(`taskId`) 하나의 입력·Agent·LLM·저장·콜백 실행 �
 관측 전송은 실패해도 Timeline 처리에 영향을 주지 않는다.
 
 - 전체 설계·이벤트 계약·Kibana 조회·설정: [docs/timeline-observability.md](docs/timeline-observability.md)
+- Langfuse trace 구조·보안·설정·검증: [docs/langfuse-tracing.md](docs/langfuse-tracing.md)
 - ES 인덱스 매핑: [ai-timeline-task](docs/observability/ai-timeline-task-index-template.json)
 
 ---

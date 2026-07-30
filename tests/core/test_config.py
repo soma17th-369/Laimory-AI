@@ -40,6 +40,37 @@ def test_observation_content_capture_rejects_unknown_policy() -> None:
         _settings(obs_content_capture="RAW")
 
 
+def test_langfuse_defaults_to_japan_region_with_content_disabled() -> None:
+    configured = _settings()
+
+    assert configured.langfuse_base_url == "https://jp.cloud.langfuse.com"
+    assert configured.langfuse_content_capture == "NONE"
+    assert configured.langfuse_max_payload_bytes == 64 * 1024
+
+
+def test_langfuse_base_url_normalizes_trailing_slash() -> None:
+    configured = _settings(
+        langfuse_base_url=" https://jp.cloud.langfuse.com/ "
+    )
+
+    assert configured.langfuse_base_url == "https://jp.cloud.langfuse.com"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"langfuse_sample_rate": -0.1},
+        {"langfuse_sample_rate": 1.1},
+        {"langfuse_max_payload_bytes": 0},
+        {"langfuse_base_url": "jp.cloud.langfuse.com"},
+        {"langfuse_base_url": "https://jp.cloud.langfuse.com?tenant=1"},
+    ],
+)
+def test_langfuse_rejects_invalid_settings(overrides: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        _settings(**overrides)
+
+
 @pytest.mark.parametrize(
     "value",
     [

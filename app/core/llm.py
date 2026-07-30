@@ -16,6 +16,7 @@ import base64
 import importlib.metadata
 import json
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from time import perf_counter
@@ -23,10 +24,16 @@ from time import perf_counter
 from app.core.config import settings
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import report_error
+from app.core.langfuse_tracing import (
+    record_token_usage,
+    trace_observation,
+    update_observation,
+)
 from app.core.logging import get_logger
 from app.core.observability import (
     ObservationEventType,
     ObservationStage,
+    current_observation_context,
     emit_observation,
 )
 from app.core.structured import ModelT, run_structured, to_strict_schema
@@ -226,6 +233,21 @@ class LLMProvider(ABC):
 
         return {}
 
+    def _langfuse_usage_detail(self, response) -> dict[str, int]:
+        """Langfuse flat usage 규격의 상호 배타적인 토큰 bucket을 반환한다.
+
+        기본 구현은 세부 토큰이 없는 provider를 위한 input/output만 전달한다.
+        캐시·추론처럼 상위 합계에 포함되는 세부 토큰은 provider별 override에서
+        중복을 제거한다. ``total``은 Langfuse가 bucket 합계로 계산하게 둔다.
+        """
+
+        usage = self._usage_detail(response)
+        return {
+            key: usage[key]
+            for key in ("input", "output")
+            if key in usage
+        }
+
     def _emit_llm_prompt(
         self,
         prompt: str,
@@ -296,6 +318,79 @@ class LLMProvider(ABC):
             duration_ms=(perf_counter() - started) * 1000,
         )
 
+    @contextmanager
+    def _trace_generation(
+        self,
+        prompt: str,
+        *,
+        system: str | None,
+        temperature: float,
+        image_count: int = 0,
+        image_mime_types: list[str] | None = None,
+        options: dict | None = None,
+    ):
+        """provider 공통 Langfuse generation 관측을 연다.
+
+        원시 이미지 bytes와 provider option 값은 보내지 않는다. 프롬프트/응답 본문은
+        Langfuse 전용 NONE/SANITIZED 정책을 거쳐 trace에 들어간다.
+        """
+
+        messages: list[dict[str, str]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        context = current_observation_context()
+        if image_count:
+            observation_name = "describe-photo-images"
+        elif context is not None and context.stage is ObservationStage.EVENT_AGENT:
+            agent_name = (context.agent or "event").replace("_", "-")
+            observation_name = f"infer-{agent_name}-events"
+        elif context is not None and context.stage is ObservationStage.TIMELINE_AGENT:
+            observation_name = "generate-timeline-draft"
+        elif context is not None and context.stage is ObservationStage.REPAIR_AGENT:
+            observation_name = "analyze-timeline-repair"
+        else:
+            observation_name = "call-llm"
+
+        with trace_observation(
+            observation_name,
+            as_type="generation",
+            input=messages,
+            model=self.model,
+            model_parameters={"temperature": temperature},
+            metadata={
+                "provider": self.name,
+                "providerVersion": self._provider_version(),
+                "imageCount": image_count,
+                "imageMimeTypes": sorted(set(image_mime_types or [])),
+                "options": options or {},
+            },
+        ) as observation:
+            try:
+                yield observation
+            except Exception as exc:
+                update_observation(
+                    observation,
+                    output={
+                        "errorCode": int(ErrorCode.LLM_CALL_FAILED),
+                        "errorType": type(exc).__name__,
+                    },
+                    level="ERROR",
+                    status_message="LLM 호출에 실패했습니다.",
+                )
+                raise
+
+    def _update_generation(self, observation, response, text: str) -> None:
+        """generation에 응답과 provider가 실제 보고한 token usage를 기록한다."""
+
+        usage_details = self._langfuse_usage_detail(response)
+        record_token_usage(usage_details)
+        update_observation(
+            observation,
+            output=[{"role": "assistant", "content": text}],
+            usage_details=usage_details,
+        )
+
 
 @register_provider
 class OpenAIProvider(LLMProvider):
@@ -346,6 +441,25 @@ class OpenAIProvider(LLMProvider):
             detail["reasoning"] = reasoning
         return detail
 
+    def _langfuse_usage_detail(self, response) -> dict[str, int]:
+        """OpenAI의 inclusive prompt/completion 합계를 배타적 bucket으로 바꾼다."""
+
+        usage = self._usage_detail(response)
+        detail: dict[str, int] = {}
+
+        if "input" in usage:
+            detail["input"] = max(usage["input"] - usage.get("cached", 0), 0)
+        if "cached" in usage:
+            detail["input_cached_tokens"] = usage["cached"]
+        if "output" in usage:
+            detail["output"] = max(
+                usage["output"] - usage.get("reasoning", 0),
+                0,
+            )
+        if "reasoning" in usage:
+            detail["output_reasoning_tokens"] = usage["reasoning"]
+        return detail
+
     def complete(
         self,
         prompt: str,
@@ -365,21 +479,28 @@ class OpenAIProvider(LLMProvider):
             temperature=temperature,
             options=kwargs,
         )
-        started = perf_counter()
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature,
-                **kwargs,
-            )
-            self._log_usage(*self._usage(response))
-            text = response.choices[0].message.content or ""
-            self._emit_llm_response(started, response, text)
-            return text
-        except Exception as exc:
-            self._emit_llm_failure(started, exc)
-            raise
+        with self._trace_generation(
+            prompt,
+            system=system,
+            temperature=temperature,
+            options=kwargs,
+        ) as generation:
+            started = perf_counter()
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature,
+                    **kwargs,
+                )
+                self._log_usage(*self._usage(response))
+                text = response.choices[0].message.content or ""
+                self._emit_llm_response(started, response, text)
+                self._update_generation(generation, response, text)
+                return text
+            except Exception as exc:
+                self._emit_llm_failure(started, exc)
+                raise
 
     def complete_with_images(
         self,
@@ -411,21 +532,30 @@ class OpenAIProvider(LLMProvider):
             image_count=len(images),
             options=kwargs,
         )
-        started = perf_counter()
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature,
-                **kwargs,
-            )
-            self._log_usage(*self._usage(response))
-            text = response.choices[0].message.content or ""
-            self._emit_llm_response(started, response, text)
-            return text
-        except Exception as exc:
-            self._emit_llm_failure(started, exc)
-            raise
+        with self._trace_generation(
+            prompt,
+            system=system,
+            temperature=temperature,
+            image_count=len(images),
+            image_mime_types=[image.mime_type for image in images],
+            options=kwargs,
+        ) as generation:
+            started = perf_counter()
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature,
+                    **kwargs,
+                )
+                self._log_usage(*self._usage(response))
+                text = response.choices[0].message.content or ""
+                self._emit_llm_response(started, response, text)
+                self._update_generation(generation, response, text)
+                return text
+            except Exception as exc:
+                self._emit_llm_failure(started, exc)
+                raise
 
 
     def complete_json(
@@ -508,10 +638,29 @@ class GeminiProvider(LLMProvider):
             ("total", "total_token_count"),
             ("cached", "cached_content_token_count"),
             ("reasoning", "thoughts_token_count"),
+            ("tool", "tool_use_prompt_token_count"),
         ):
             value = getattr(usage, attr, None)
             if value is not None:
                 detail[key] = value
+        return detail
+
+    def _langfuse_usage_detail(self, response) -> dict[str, int]:
+        """Gemini의 effective prompt와 세부 토큰을 배타적 bucket으로 바꾼다."""
+
+        usage = self._usage_detail(response)
+        detail: dict[str, int] = {}
+
+        if "input" in usage:
+            detail["input"] = max(usage["input"] - usage.get("cached", 0), 0)
+        if "cached" in usage:
+            detail["input_cached_tokens"] = usage["cached"]
+        if "tool" in usage:
+            detail["input_tool_tokens"] = usage["tool"]
+        if "output" in usage:
+            detail["output"] = usage["output"]
+        if "reasoning" in usage:
+            detail["output_reasoning_tokens"] = usage["reasoning"]
         return detail
 
     def complete(
@@ -535,20 +684,27 @@ class GeminiProvider(LLMProvider):
             temperature=temperature,
             options=kwargs,
         )
-        started = perf_counter()
-        try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=config,
-            )
-            self._log_usage(*self._usage(response))
-            text = response.text or ""
-            self._emit_llm_response(started, response, text)
-            return text
-        except Exception as exc:
-            self._emit_llm_failure(started, exc)
-            raise
+        with self._trace_generation(
+            prompt,
+            system=system,
+            temperature=temperature,
+            options=kwargs,
+        ) as generation:
+            started = perf_counter()
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                    config=config,
+                )
+                self._log_usage(*self._usage(response))
+                text = response.text or ""
+                self._emit_llm_response(started, response, text)
+                self._update_generation(generation, response, text)
+                return text
+            except Exception as exc:
+                self._emit_llm_failure(started, exc)
+                raise
 
     def complete_with_images(
         self,
@@ -578,20 +734,29 @@ class GeminiProvider(LLMProvider):
             image_count=len(images),
             options=kwargs,
         )
-        started = perf_counter()
-        try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=parts,
-                config=config,
-            )
-            self._log_usage(*self._usage(response))
-            text = response.text or ""
-            self._emit_llm_response(started, response, text)
-            return text
-        except Exception as exc:
-            self._emit_llm_failure(started, exc)
-            raise
+        with self._trace_generation(
+            prompt,
+            system=system,
+            temperature=temperature,
+            image_count=len(images),
+            image_mime_types=[image.mime_type for image in images],
+            options=kwargs,
+        ) as generation:
+            started = perf_counter()
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=parts,
+                    config=config,
+                )
+                self._log_usage(*self._usage(response))
+                text = response.text or ""
+                self._emit_llm_response(started, response, text)
+                self._update_generation(generation, response, text)
+                return text
+            except Exception as exc:
+                self._emit_llm_failure(started, exc)
+                raise
 
 
     def complete_json(
@@ -680,21 +845,28 @@ class BedrockProvider(LLMProvider):
             temperature=temperature,
             options=kwargs,
         )
-        started = perf_counter()
-        try:
-            response = self._converse(
-                [{"text": prompt}],
-                system=system,
-                temperature=temperature,
-                **kwargs,
-            )
-            self._log_usage(*self._usage(response))
-            text = self._extract_text(response)
-            self._emit_llm_response(started, response, text)
-            return text
-        except Exception as exc:
-            self._emit_llm_failure(started, exc)
-            raise
+        with self._trace_generation(
+            prompt,
+            system=system,
+            temperature=temperature,
+            options=kwargs,
+        ) as generation:
+            started = perf_counter()
+            try:
+                response = self._converse(
+                    [{"text": prompt}],
+                    system=system,
+                    temperature=temperature,
+                    **kwargs,
+                )
+                self._log_usage(*self._usage(response))
+                text = self._extract_text(response)
+                self._emit_llm_response(started, response, text)
+                self._update_generation(generation, response, text)
+                return text
+            except Exception as exc:
+                self._emit_llm_failure(started, exc)
+                raise
 
     def complete_with_images(
         self,
@@ -722,21 +894,30 @@ class BedrockProvider(LLMProvider):
             image_count=len(images),
             options=kwargs,
         )
-        started = perf_counter()
-        try:
-            response = self._converse(
-                content,
-                system=system,
-                temperature=temperature,
-                **kwargs,
-            )
-            self._log_usage(*self._usage(response))
-            text = self._extract_text(response)
-            self._emit_llm_response(started, response, text)
-            return text
-        except Exception as exc:
-            self._emit_llm_failure(started, exc)
-            raise
+        with self._trace_generation(
+            prompt,
+            system=system,
+            temperature=temperature,
+            image_count=len(images),
+            image_mime_types=[image.mime_type for image in images],
+            options=kwargs,
+        ) as generation:
+            started = perf_counter()
+            try:
+                response = self._converse(
+                    content,
+                    system=system,
+                    temperature=temperature,
+                    **kwargs,
+                )
+                self._log_usage(*self._usage(response))
+                text = self._extract_text(response)
+                self._emit_llm_response(started, response, text)
+                self._update_generation(generation, response, text)
+                return text
+            except Exception as exc:
+                self._emit_llm_failure(started, exc)
+                raise
 
     def complete_json(
         self,
@@ -773,18 +954,28 @@ class BedrockProvider(LLMProvider):
                 "structuredSchema": schema.model_json_schema(),
             },
         )
-        started = perf_counter()
-        try:
-            response = self._converse_structured(
-                prompt, schema, system=system, temperature=temperature, **kwargs
-            )
-            self._log_usage(*self._usage(response))
-            text = self._extract_tool_use(response)
-            self._emit_llm_response(started, response, text)
-            return text
-        except Exception as exc:
-            self._emit_llm_failure(started, exc)
-            raise
+        with self._trace_generation(
+            prompt,
+            system=system,
+            temperature=temperature,
+            options={
+                **kwargs,
+                "structuredSchema": schema.model_json_schema(by_alias=True),
+            },
+        ) as generation:
+            started = perf_counter()
+            try:
+                response = self._converse_structured(
+                    prompt, schema, system=system, temperature=temperature, **kwargs
+                )
+                self._log_usage(*self._usage(response))
+                text = self._extract_tool_use(response)
+                self._emit_llm_response(started, response, text)
+                self._update_generation(generation, response, text)
+                return text
+            except Exception as exc:
+                self._emit_llm_failure(started, exc)
+                raise
 
     def _converse_structured(
         self,
@@ -893,6 +1084,22 @@ class BedrockProvider(LLMProvider):
         cache_write = usage.get("cacheWriteInputTokens")
         if cache_read is not None or cache_write is not None:
             detail["cached"] = (cache_read or 0) + (cache_write or 0)
+        return detail
+
+    def _langfuse_usage_detail(self, response) -> dict[str, int]:
+        """Bedrock의 이미 배타적인 non-cache/cache token 필드를 보존한다."""
+
+        usage = response.get("usage") or {}
+        detail: dict[str, int] = {}
+        for key, attr in (
+            ("input", "inputTokens"),
+            ("cache_read_input_tokens", "cacheReadInputTokens"),
+            ("cache_write_input_tokens", "cacheWriteInputTokens"),
+            ("output", "outputTokens"),
+        ):
+            value = usage.get(attr)
+            if value is not None:
+                detail[key] = value
         return detail
 
     @staticmethod

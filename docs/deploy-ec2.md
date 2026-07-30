@@ -232,6 +232,15 @@ DB_USER=<DB 사용자>
 DB_PASSWORD=<DB 비밀번호>
 
 APP_SERVER_API_URL=<App Server 서버간 API 기본 URL, 예: https://api.example.com/s/api/v1>
+
+# 선택: Langfuse. 키는 이 파일의 0600 권한과 EC2 접근 정책으로 보호한다.
+LANGFUSE_ENABLED=false
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_SECRET_KEY=
+LANGFUSE_BASE_URL=https://jp.cloud.langfuse.com
+LANGFUSE_SAMPLE_RATE=1.0
+LANGFUSE_CONTENT_CAPTURE=NONE
+LANGFUSE_MAX_PAYLOAD_BYTES=65536
 ```
 
 `BEDROCK_AWS_PROFILE`은 비워 둔다. boto3가 EC2 Instance Role의 임시 자격증명을

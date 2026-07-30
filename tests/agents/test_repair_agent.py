@@ -12,8 +12,14 @@ LLM 은 `FakeLLM` 으로 대신하고, 실제 호출은 하지 않는다.
 
 import json
 
+from langfuse import Langfuse
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
+
 from app.agents.repair import RepairAgent
 from app.agents.timeline.timeline_agent import TimelineAgent
+from app.core import langfuse_tracing
 from app.schemas import (
     AgentEventResult,
     AiEventCandidate,
@@ -289,6 +295,155 @@ def test_llm_failure_keeps_improvements_from_earlier_iterations():
     assert result.events[0].title == "고침"
     assert any("개선 실패" in warning.message for warning in result.warnings)
     assert all("LLM 장애" not in warning.message for warning in result.warnings)
+
+
+def test_langfuse_repair_iteration_nests_plan_tools_and_draft(
+    monkeypatch,
+) -> None:
+    exporter = InMemorySpanExporter()
+    client = Langfuse(
+        public_key="pk-lf-repair-hierarchy",
+        secret_key="sk-lf-test",
+        base_url="http://127.0.0.1:1",
+        span_exporter=exporter,
+    )
+    monkeypatch.setattr(langfuse_tracing, "get_langfuse_client", lambda: client)
+    monkeypatch.setattr(
+        langfuse_tracing.settings,
+        "langfuse_content_capture",
+        "SANITIZED",
+    )
+    plan = _plan(
+        [
+            {
+                "tool": "update_event",
+                "args": {
+                    "clientEventId": "event-001",
+                    "fields": {"title": "카페에서 쉬었다"},
+                },
+            }
+        ],
+        done=True,
+    )
+
+    with langfuse_tracing.trace_observation(
+        "repair-agent",
+        as_type="agent",
+    ):
+        RepairAgent(llm=FakeLLM([plan]), max_iterations=2).generate(
+            _request(),
+            _draft(_event("체류", "09:00", "10:00")),
+        )
+    client.flush()
+
+    spans = {span.name: span for span in exporter.get_finished_spans()}
+    expected = {
+        "repair-agent",
+        "confirm-timeline-draft",
+        "analyze-repair-iteration",
+        "execute-repair-plan",
+        "confirm-repair-iteration",
+        "execute-update-event",
+    }
+    assert expected <= spans.keys()
+
+    repair = spans["repair-agent"]
+    for child_name in (
+        "confirm-timeline-draft",
+        "analyze-repair-iteration",
+        "execute-repair-plan",
+        "confirm-repair-iteration",
+    ):
+        assert spans[child_name].parent.span_id == repair.context.span_id
+    assert (
+        spans["execute-update-event"].parent.span_id
+        == spans["execute-repair-plan"].context.span_id
+    )
+
+    analyze_input = json.loads(
+        spans["analyze-repair-iteration"].attributes[
+            "langfuse.observation.input"
+        ]
+    )
+    assert "[draft]" in analyze_input["prompt"]
+    assert analyze_input["system"]
+    analyze_output = json.loads(
+        spans["analyze-repair-iteration"].attributes[
+            "langfuse.observation.output"
+        ]
+    )
+    assert analyze_output["plan"]["toolCalls"][0]["tool"] == "update_event"
+
+    tool_input = json.loads(
+        spans["execute-update-event"].attributes[
+            "langfuse.observation.input"
+        ]
+    )
+    tool_output = json.loads(
+        spans["execute-update-event"].attributes[
+            "langfuse.observation.output"
+        ]
+    )
+    assert tool_input["call"]["args"]["fields"]["title"] == "카페에서 쉬었다"
+    assert tool_output["result"]["ok"] is True
+    assert tool_output["timeline"]["events"][0]["title"] == "카페에서 쉬었다"
+    confirmation_output = json.loads(
+        spans["confirm-repair-iteration"].attributes[
+            "langfuse.observation.output"
+        ]
+    )
+    assert confirmation_output["timeline"]["events"][0]["title"] == (
+        "카페에서 쉬었다"
+    )
+
+
+def test_langfuse_repair_loop_repeats_analyze_execute_confirm(
+    monkeypatch,
+) -> None:
+    exporter = InMemorySpanExporter()
+    client = Langfuse(
+        public_key="pk-lf-repair-loop",
+        secret_key="sk-lf-test",
+        base_url="http://127.0.0.1:1",
+        span_exporter=exporter,
+    )
+    monkeypatch.setattr(langfuse_tracing, "get_langfuse_client", lambda: client)
+    monkeypatch.setattr(
+        langfuse_tracing.settings,
+        "langfuse_content_capture",
+        "SANITIZED",
+    )
+    first_plan = _plan(
+        [
+            {
+                "tool": "update_event",
+                "args": {
+                    "clientEventId": "event-001",
+                    "fields": {"title": "첫 번째 수정"},
+                },
+            }
+        ],
+        done=False,
+    )
+    final_plan = _plan([], done=True)
+
+    with langfuse_tracing.trace_observation(
+        "repair-agent",
+        as_type="agent",
+    ):
+        RepairAgent(
+            llm=FakeLLM([first_plan, final_plan]),
+            max_iterations=3,
+        ).generate(
+            _request(),
+            _draft(_event("체류", "09:00", "10:00")),
+        )
+    client.flush()
+
+    spans = exporter.get_finished_spans()
+    assert sum(span.name == "analyze-repair-iteration" for span in spans) == 2
+    assert sum(span.name == "execute-repair-plan" for span in spans) == 1
+    assert sum(span.name == "confirm-repair-iteration" for span in spans) == 1
 
 
 # --- 상류 Agent 재실행 ---------------------------------------------------------

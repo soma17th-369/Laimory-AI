@@ -24,6 +24,7 @@ Event Agent 결과는 **Agent 이름을 키로** 들고 다닌다. Repair Agent 
 """
 
 import asyncio
+from time import perf_counter
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -34,6 +35,11 @@ from app.agents.repair.repair_agent import RepairAgent
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.core.config import settings
 from app.core.exceptions import code_of, report_error
+from app.core.langfuse_tracing import (
+    token_usage_scope,
+    trace_observation,
+    update_observation,
+)
 from app.core.logging import get_logger
 from app.core.observability import (
     ObservationEventType,
@@ -75,6 +81,51 @@ def _name_agents(agents: list[EventAgent]) -> dict[str, EventAgent]:
     return named
 
 
+def _request_trace_input(request: TimelineDraftRequest) -> dict[str, object]:
+    """Agent가 실제로 판단에 사용한 정규화 요청 전체와 요약을 반환한다."""
+
+    return {
+        "taskId": request.task_id,
+        "date": request.date,
+        "inputItemCounts": request.source_item_counts(),
+        "hasUserMemory": request.user_memory is not None,
+        "request": request.model_dump(by_alias=True, mode="json"),
+    }
+
+
+def _run_event_agent_traced(
+    name: str,
+    agent: EventAgent,
+    request: TimelineDraftRequest,
+) -> AgentEventResult:
+    """Event Agent 실행을 구체적인 agent 관측으로 감싼다."""
+
+    started = perf_counter()
+    with (
+        token_usage_scope() as token_usage,
+        trace_observation(
+            f"event-agent-{name.replace('_', '-')}",
+            as_type="agent",
+            input=_request_trace_input(request),
+            metadata={"agent": name, "sourceStage": "event"},
+        ) as observation,
+    ):
+        result = agent.generate(request)
+        update_observation(
+            observation,
+            output={
+                "candidateCount": len(result.candidates),
+                "fragmentCount": len(result.fragments),
+                "warningCount": len(result.warnings),
+                "durationMs": (perf_counter() - started) * 1000,
+                "tokenUsage": token_usage.summary(),
+                "result": result.model_dump(by_alias=True, mode="json"),
+            },
+            level="WARNING" if result.warnings else "DEFAULT",
+        )
+        return result
+
+
 def _build_graph():
     """타임라인 초안 생성 LangGraph 를 구성한다."""
 
@@ -84,12 +135,40 @@ def _build_graph():
 
         # Agent.generate 는 내부에서 실패를 warning 으로 흡수하므로 예외로 새지 않는다.
         results = await asyncio.gather(
-            *(asyncio.to_thread(agent.generate, request) for agent in agents.values())
+            *(
+                asyncio.to_thread(_run_event_agent_traced, name, agent, request)
+                for name, agent in agents.items()
+            )
         )
         return {"event_results": dict(zip(agents, results))}
 
     def merge_results_node(state: _MainAgentState) -> _MainAgentState:
-        merged = merge_event_results(list(state["event_results"].values()))
+        started = perf_counter()
+        event_results = {
+            name: result.model_dump(by_alias=True, mode="json")
+            for name, result in state["event_results"].items()
+        }
+        with trace_observation(
+            "merge-event-results",
+            # 병렬 Event Agent가 Timeline Agent로 합류하는 명시적 fan-in이다.
+            # Agent Graph의 시간 기반 추론이 Event Agent들을 서로 연결하지 않도록
+            # 구조 노드로 남긴다.
+            as_type="chain",
+            input={"eventResults": event_results},
+            metadata={"agentCount": len(event_results)},
+        ) as observation:
+            merged = merge_event_results(list(state["event_results"].values()))
+            update_observation(
+                observation,
+                output={
+                    "durationMs": (perf_counter() - started) * 1000,
+                    "mergedResult": merged.model_dump(
+                        by_alias=True,
+                        mode="json",
+                    ),
+                },
+                level="WARNING" if merged.warnings else "DEFAULT",
+            )
         logger.info(
             "이벤트 후보 취합 완료: candidates=%d, fragments=%d, warnings=%d",
             len(merged.candidates),
@@ -106,7 +185,26 @@ def _build_graph():
         return {"merged_result": merged}
 
     async def run_timeline_agent_node(state: _MainAgentState) -> _MainAgentState:
-        with observation_scope(ObservationStage.TIMELINE_AGENT, agent="timeline"):
+        with (
+            observation_scope(ObservationStage.TIMELINE_AGENT, agent="timeline"),
+            token_usage_scope() as token_usage,
+            trace_observation(
+                "timeline-agent",
+                as_type="agent",
+                input={
+                    "request": state["request"].model_dump(
+                        by_alias=True,
+                        mode="json",
+                    ),
+                    "mergedResult": state["merged_result"].model_dump(
+                        by_alias=True,
+                        mode="json",
+                    ),
+                },
+                metadata={"agent": "timeline"},
+            ) as langfuse_observation,
+        ):
+            started = perf_counter()
             emit_observation(
                 ObservationEventType.STARTED,
                 payload={
@@ -145,6 +243,18 @@ def _build_graph():
                     "timeline": draft.model_dump(by_alias=True, mode="json"),
                 },
             )
+            update_observation(
+                langfuse_observation,
+                output={
+                    "eventCount": len(draft.events),
+                    "questionCount": len(draft.questions),
+                    "warningCount": len(draft.warnings),
+                    "durationMs": (perf_counter() - started) * 1000,
+                    "tokenUsage": token_usage.summary(),
+                    "timeline": draft.model_dump(by_alias=True, mode="json"),
+                },
+                level="WARNING" if draft.warnings else "DEFAULT",
+            )
         logger.info(
             "타임라인 초안 생성 완료: events=%d, questions=%d, warnings=%d",
             len(draft.events),
@@ -155,7 +265,33 @@ def _build_graph():
 
     async def run_repair_agent_node(state: _MainAgentState) -> _MainAgentState:
         # Repair Agent 는 LLM 을 여러 번 부르는 블로킹 호출이라 스레드에 올린다.
-        with observation_scope(ObservationStage.REPAIR_AGENT, agent="repair"):
+        with (
+            observation_scope(ObservationStage.REPAIR_AGENT, agent="repair"),
+            token_usage_scope() as token_usage,
+            trace_observation(
+                "repair-agent",
+                as_type="agent",
+                input={
+                    "request": state["request"].model_dump(
+                        by_alias=True,
+                        mode="json",
+                    ),
+                    "eventResults": {
+                        name: result.model_dump(by_alias=True, mode="json")
+                        for name, result in state["event_results"].items()
+                    },
+                    "timeline": state["draft"].model_dump(
+                        by_alias=True,
+                        mode="json",
+                    ),
+                },
+                metadata={
+                    "agent": "repair",
+                    "maxIterations": settings.repair_max_iterations,
+                },
+            ) as langfuse_observation,
+        ):
+            started = perf_counter()
             emit_observation(
                 ObservationEventType.STARTED,
                 payload={
@@ -196,6 +332,18 @@ def _build_graph():
                     "warningCount": len(draft.warnings),
                     "timeline": draft.model_dump(by_alias=True, mode="json"),
                 },
+            )
+            update_observation(
+                langfuse_observation,
+                output={
+                    "eventCount": len(draft.events),
+                    "questionCount": len(draft.questions),
+                    "warningCount": len(draft.warnings),
+                    "durationMs": (perf_counter() - started) * 1000,
+                    "tokenUsage": token_usage.summary(),
+                    "timeline": draft.model_dump(by_alias=True, mode="json"),
+                },
+                level="WARNING" if draft.warnings else "DEFAULT",
             )
         logger.info(
             "타임라인 초안 확정 완료: events=%d, questions=%d, warnings=%d",
@@ -257,7 +405,21 @@ async def run_main_agent(
         model,
     )
 
-    with observation_scope(ObservationStage.MAIN_AGENT, agent="main"):
+    with (
+        observation_scope(ObservationStage.MAIN_AGENT, agent="main"),
+        token_usage_scope() as token_usage,
+        trace_observation(
+            "main-agent",
+            as_type="agent",
+            input=_request_trace_input(request),
+            metadata={
+                "agentCount": len(agents),
+                "provider": provider,
+                "model": model,
+            },
+        ) as langfuse_observation,
+    ):
+        started = perf_counter()
         emit_observation(
             ObservationEventType.STARTED,
             payload={
@@ -284,5 +446,17 @@ async def run_main_agent(
                 "warningCount": len(draft.warnings),
                 "timeline": draft.model_dump(by_alias=True, mode="json"),
             },
+        )
+        update_observation(
+            langfuse_observation,
+            output={
+                "eventCount": len(draft.events),
+                "questionCount": len(draft.questions),
+                "warningCount": len(draft.warnings),
+                "durationMs": (perf_counter() - started) * 1000,
+                "tokenUsage": token_usage.summary(),
+                "timeline": draft.model_dump(by_alias=True, mode="json"),
+            },
+            level="WARNING" if draft.warnings else "DEFAULT",
         )
     return draft

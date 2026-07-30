@@ -24,11 +24,18 @@ LLM 이 "무엇을 다시 확정해야 하는지" 골라 부를 수 있어야 �
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from time import perf_counter
 
 from app.agents.events import merge_event_results
 from app.agents.events.base_event_agent import EventAgent
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.core.logging import get_logger
+from app.core.langfuse_tracing import (
+    token_usage_scope,
+    trace_observation,
+    update_observation,
+)
+from app.core.observability import ObservationStage, observation_scope
 from app.schemas import (
     AgentEventResult,
     EventSourceType,
@@ -253,7 +260,8 @@ def _rerun_timeline_agent(ctx: RepairContext, args: dict) -> str:
         raise RepairToolError("Timeline Agent 가 연결되지 않아 재실행할 수 없습니다.")
 
     merged = merge_event_results(list(ctx.event_results.values()))
-    ctx.draft = ctx.timeline_agent.generate(ctx.request, merged)
+    with observation_scope(ObservationStage.TIMELINE_AGENT, agent="timeline"):
+        ctx.draft = ctx.timeline_agent.generate(ctx.request, merged)
     return (
         f"Timeline Agent 를 다시 돌려 draft 를 새로 만들었습니다: "
         f"events={len(ctx.draft.events)}건. 이전 draft 의 수정 내용은 남지 않습니다."
@@ -380,32 +388,112 @@ def execute_tool_calls(
 
     results: list[RepairToolResult] = []
     for call in tool_calls:
+        started = perf_counter()
+        trace_input = {
+            "call": call.model_dump(by_alias=True, mode="json"),
+            "timeline": ctx.draft.model_dump(by_alias=True, mode="json"),
+        }
         tool = _TOOLS.get(call.tool)
         if tool is None:
-            results.append(
-                RepairToolResult(
+            with trace_observation(
+                f"execute-{call.tool.replace('_', '-')}",
+                as_type="span",
+                input=trace_input,
+                metadata={"tool": call.tool},
+            ) as observation:
+                result = RepairToolResult(
                     tool=call.tool,
                     ok=False,
                     message=f"없는 도구입니다. 사용 가능: {', '.join(sorted(_TOOLS))}",
                 )
-            )
+                update_observation(
+                    observation,
+                    output={
+                        "ok": False,
+                        "errorCode": int(ErrorCode.REPAIR_TOOL_FAILED),
+                        "durationMs": (perf_counter() - started) * 1000,
+                        "result": result.model_dump(
+                            by_alias=True,
+                            mode="json",
+                        ),
+                        "timeline": ctx.draft.model_dump(
+                            by_alias=True,
+                            mode="json",
+                        ),
+                    },
+                    level="ERROR",
+                    status_message="등록되지 않은 Repair 도구입니다.",
+                )
+                results.append(result)
             continue
 
-        try:
-            message = tool.run(ctx, call.args)
-            results.append(RepairToolResult(tool=call.tool, ok=True, message=message))
-        except Exception as exc:  # noqa: BLE001 - 도구 실패가 repair 전체를 멈추지 않는다
-            report_error(
-                logger,
-                code_of(exc),
-                "Repair 도구 실행 실패",
-                exc=exc,
-                context={"tool": call.tool, "args": call.args},
-                payload={"tool": call.tool},
-            )
-            # message 는 LLM(Repair Agent)에게 되돌려 주는 값이라 원문을 유지한다.
-            # 외부(API·콜백)로 나가지 않으므로 안전 메시지로 바꾸지 않는다.
-            results.append(RepairToolResult(tool=call.tool, ok=False, message=str(exc)))
+        # 도구와 상류 재실행은 Repair Agent의 내부 실행 상세다. Agent Graph에는
+        # 고정된 Main/Event/Timeline/Repair 역할만 보이도록 span으로 기록한다.
+        with (
+            token_usage_scope() as token_usage,
+            trace_observation(
+                f"execute-{call.tool.replace('_', '-')}",
+                as_type="span",
+                input=trace_input,
+                metadata={"tool": call.tool},
+            ) as observation,
+        ):
+            try:
+                message = tool.run(ctx, call.args)
+                result = RepairToolResult(
+                    tool=call.tool, ok=True, message=message
+                )
+                update_observation(
+                    observation,
+                    output={
+                        "ok": True,
+                        "durationMs": (perf_counter() - started) * 1000,
+                        "tokenUsage": token_usage.summary(),
+                        "result": result.model_dump(
+                            by_alias=True,
+                            mode="json",
+                        ),
+                        "timeline": ctx.draft.model_dump(
+                            by_alias=True,
+                            mode="json",
+                        ),
+                    },
+                )
+                results.append(result)
+            except Exception as exc:  # noqa: BLE001 - 한 도구 실패는 격리한다.
+                failure_code = code_of(exc)
+                report_error(
+                    logger,
+                    failure_code,
+                    "Repair 도구 실행 실패",
+                    exc=exc,
+                    context={"tool": call.tool, "args": call.args},
+                    payload={"tool": call.tool},
+                )
+                # message 는 Repair Agent에게 되돌려 주는 값이라 원문을 유지한다.
+                result = RepairToolResult(
+                    tool=call.tool, ok=False, message=str(exc)
+                )
+                update_observation(
+                    observation,
+                    output={
+                        "ok": False,
+                        "errorCode": int(failure_code),
+                        "durationMs": (perf_counter() - started) * 1000,
+                        "tokenUsage": token_usage.summary(),
+                        "result": result.model_dump(
+                            by_alias=True,
+                            mode="json",
+                        ),
+                        "timeline": ctx.draft.model_dump(
+                            by_alias=True,
+                            mode="json",
+                        ),
+                    },
+                    level="ERROR",
+                    status_message="Repair 도구 실행에 실패했습니다.",
+                )
+                results.append(result)
 
     ctx.log.extend(results)
     return results

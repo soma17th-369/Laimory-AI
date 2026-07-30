@@ -7,6 +7,7 @@ from app.core.observability import (
     ObservationEventType,
     ObservationStage,
     Observer,
+    current_observation_context,
     emit_observation,
     observation_context,
     observation_scope,
@@ -16,6 +17,22 @@ from app.core.observability import (
 def test_emit_without_context_is_noop() -> None:
     # 컨텍스트가 열려 있지 않으면(스크립트·단위 테스트) 조용히 건너뛴다.
     assert emit_observation(ObservationEventType.STARTED) is False
+
+
+def test_scope_is_available_without_elasticsearch_observer() -> None:
+    """Langfuse용 stage·agent 문맥은 ES observer가 없어도 유지된다."""
+
+    with observation_context("task-langfuse-only", None):
+        with observation_scope(
+            ObservationStage.EVENT_AGENT,
+            agent="sleep_activity",
+        ):
+            current = current_observation_context()
+            assert current is not None
+            assert current.task_id == "task-langfuse-only"
+            assert current.stage is ObservationStage.EVENT_AGENT
+            assert current.agent == "sleep_activity"
+            assert emit_observation(ObservationEventType.STARTED) is False
 
 
 def test_context_propagates_into_to_thread() -> None:
