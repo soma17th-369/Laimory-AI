@@ -47,6 +47,24 @@ def test_openai_usage_detail_without_usage_is_empty() -> None:
     assert OpenAIProvider._usage_detail(SimpleNamespace()) == {}
 
 
+def test_openai_langfuse_usage_uses_exclusive_buckets() -> None:
+    usage = SimpleNamespace(
+        prompt_tokens=100,
+        completion_tokens=40,
+        total_tokens=140,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=70),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=15),
+    )
+    provider = object.__new__(OpenAIProvider)
+
+    assert provider._langfuse_usage_detail(SimpleNamespace(usage=usage)) == {
+        "input": 30,
+        "input_cached_tokens": 70,
+        "output": 25,
+        "output_reasoning_tokens": 15,
+    }
+
+
 def test_gemini_usage_detail() -> None:
     usage = SimpleNamespace(
         prompt_token_count=11,
@@ -58,12 +76,54 @@ def test_gemini_usage_detail() -> None:
     assert detail == {"input": 11, "output": 22, "total": 33, "cached": 5}
 
 
+def test_gemini_langfuse_usage_uses_exclusive_buckets() -> None:
+    usage = SimpleNamespace(
+        prompt_token_count=100,
+        candidates_token_count=20,
+        total_token_count=135,
+        cached_content_token_count=60,
+        thoughts_token_count=10,
+        tool_use_prompt_token_count=5,
+    )
+    provider = object.__new__(GeminiProvider)
+
+    assert provider._langfuse_usage_detail(
+        SimpleNamespace(usage_metadata=usage)
+    ) == {
+        "input": 40,
+        "input_cached_tokens": 60,
+        "input_tool_tokens": 5,
+        "output": 20,
+        "output_reasoning_tokens": 10,
+    }
+
+
 def test_bedrock_usage_detail() -> None:
     response = {"usage": {"inputTokens": 5, "outputTokens": 6, "totalTokens": 11}}
     assert BedrockProvider._usage_detail(response) == {
         "input": 5,
         "output": 6,
         "total": 11,
+    }
+
+
+def test_bedrock_langfuse_usage_preserves_non_overlapping_cache_buckets() -> None:
+    response = {
+        "usage": {
+            "inputTokens": 5,
+            "cacheReadInputTokens": 7,
+            "cacheWriteInputTokens": 3,
+            "outputTokens": 6,
+            "totalTokens": 11,
+        }
+    }
+    provider = object.__new__(BedrockProvider)
+
+    assert provider._langfuse_usage_detail(response) == {
+        "input": 5,
+        "cache_read_input_tokens": 7,
+        "cache_write_input_tokens": 3,
+        "output": 6,
     }
 
 

@@ -16,6 +16,8 @@ def test_redaction_masks_nested_secrets_and_personal_text_without_mutation() -> 
         "authorization": "Bearer abc.def.ghi",
         "nested": {
             "apiKey": "sk-abcdefghijklmnop",
+            "callbackToken": "callback-token-123",
+            "secret_key": "private-value",
             "error": "연락처 010-1234-5678, mail user@example.com",
         },
     }
@@ -26,6 +28,8 @@ def test_redaction_masks_nested_secrets_and_personal_text_without_mutation() -> 
     assert payload == original
     assert redacted["authorization"] == REDACTED
     assert redacted["nested"]["apiKey"] == REDACTED
+    assert redacted["nested"]["callbackToken"] == REDACTED
+    assert redacted["nested"]["secret_key"] == REDACTED
     assert redacted["nested"]["error"] == f"연락처 {REDACTED}, mail {REDACTED}"
 
 

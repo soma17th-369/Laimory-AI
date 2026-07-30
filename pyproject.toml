@@ -17,6 +17,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.0",
     "aiomysql>=0.2.0",
     "boto3>=1.43.53",
+    "langfuse==4.14.1",
 ]
 
 [dependency-groups]

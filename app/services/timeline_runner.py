@@ -38,12 +38,21 @@ Timeline/Repair Agent 와 그 안의 LLM 호출까지 같은 taskId 로 이어�
 """
 
 import asyncio
+from dataclasses import dataclass
+from time import perf_counter
 
 from app.agents.main import run_main_agent
 from app.core.config import settings
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import code_of, report_error
 from app.core.inflight import track_inflight
+from app.core.langfuse_tracing import (
+    flush_langfuse,
+    token_usage_scope,
+    trace_observation,
+    trace_timeline_task,
+    update_observation,
+)
 from app.core.logging import get_logger
 from app.core.observability import (
     ObservationEventType,
@@ -52,7 +61,12 @@ from app.core.observability import (
     observation_context,
 )
 from app.core.observability.runtime import build_task_observer, flush_task_observations
-from app.schemas import TaskStatus, TimelineCallbackPayload
+from app.schemas import (
+    TaskStatus,
+    TimelineCallbackPayload,
+    TimelineDraft,
+    TimelineDraftRequest,
+)
 from app.schemas.source_snapshot import TimelineWindow
 from app.services.callback import send_callback
 from app.services.normalizer import normalize
@@ -61,6 +75,14 @@ from app.services.timeline_repository import TimelineRepository
 from app.services.timeline_validator import TimelineValidationError
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class _TimelineRunResult:
+    status: TaskStatus
+    request: TimelineDraftRequest | None
+    draft: TimelineDraft | None
+    failure_code: ErrorCode | None
 
 
 async def process_timeline_task(
@@ -94,20 +116,22 @@ async def process_timeline_task(
             bool(settings.es_url),
             bool(settings.obs_local_dir),
         )
+        started = perf_counter()
         try:
-            if observer is None:
-                status = await _process_observed(
+            with (
+                token_usage_scope() as token_usage,
+                trace_timeline_task(
                     task_id,
-                    repo,
-                    timeline_repo,
-                    daily_record_id,
-                    window_start,
-                    window_end,
-                    callback_token,
-                )
-            else:
+                    daily_record_id=daily_record_id,
+                    window_start=window_start,
+                    window_end=window_end,
+                ) as langfuse_trace,
+            ):
+                # observer가 없어도 실행 stage·agent 컨텍스트는 연다. Langfuse는
+                # Elasticsearch와 독립적인 선택 기능이며, LLM generation 이름이
+                # ES 활성 여부에 따라 call-llm으로 퇴화하면 안 된다.
                 with observation_context(task_id, observer):
-                    status = await _process_observed(
+                    result = await _process_observed(
                         task_id,
                         repo,
                         timeline_repo,
@@ -116,11 +140,75 @@ async def process_timeline_task(
                         window_end,
                         callback_token,
                     )
+                status = result.status
+                root_input: dict[str, object] = {
+                    "taskId": task_id,
+                    "dailyRecordId": daily_record_id,
+                    "window": {"start": window_start, "end": window_end},
+                }
+                if result.request is not None:
+                    root_input["request"] = result.request.model_dump(
+                        by_alias=True,
+                        mode="json",
+                    )
+                root_output: dict[str, object] = {
+                    "status": status.value,
+                    "persisted": status is TaskStatus.SUCCESS,
+                    "durationMs": (perf_counter() - started) * 1000,
+                    "tokenUsage": token_usage.summary(),
+                }
+                if result.draft is not None:
+                    root_output["timeline"] = result.draft.model_dump(
+                        by_alias=True,
+                        mode="json",
+                    )
+                if result.failure_code is not None:
+                    root_output["errorCode"] = int(result.failure_code)
+
+                with trace_observation(
+                    "finalize-timeline",
+                    as_type="span",
+                    input={
+                        "status": status.value,
+                        **(
+                            {"errorCode": int(result.failure_code)}
+                            if result.failure_code is not None
+                            else {}
+                        ),
+                    },
+                    metadata={"stage": ObservationStage.FINAL.value},
+                ) as final_observation:
+                    update_observation(
+                        final_observation,
+                        output=root_output,
+                        level=(
+                            "DEFAULT"
+                            if status is TaskStatus.SUCCESS
+                            else "ERROR"
+                        ),
+                    )
+
+                update_observation(
+                    langfuse_trace,
+                    input=root_input,
+                    output=root_output,
+                    level="DEFAULT" if status is TaskStatus.SUCCESS else "ERROR",
+                    status_message=(
+                        None
+                        if status is TaskStatus.SUCCESS
+                        else "Timeline 처리가 실패했습니다."
+                    ),
+                )
         finally:
             # 콜백까지 끝난 뒤 관측을 내보낸다. 비활성화된 경우에도 그 이유를
             # 운영 로그에 남긴다. flush 는 내부에서 모든 실패를 흡수하므로 Timeline
             # status·RDB 저장·콜백에 절대 영향을 주지 않는다(완전 격리).
             await flush_task_observations(buffer, task_id=task_id)
+            # AgentCore/EC2 컨테이너가 작업 직후 회수돼도 trace가 유실되지 않도록
+            # 비동기 worker queue를 task 경계에서 비운다. 동기 flush는 event loop를
+            # 막지 않도록 worker thread에서 실행한다.
+            if settings.langfuse_enabled:
+                await asyncio.to_thread(flush_langfuse)
 
     return status
 
@@ -133,7 +221,7 @@ async def _process_observed(
     window_start: str,
     window_end: str,
     callback_token: str,
-) -> TaskStatus:
+) -> _TimelineRunResult:
     """관측 컨텍스트가 열린 상태에서 실제 처리·저장·콜백을 수행한다.
 
     단계마다 관측 이벤트를 남긴다: REQUEST(입력 조회·정규화) → (MAIN_AGENT 이하는
@@ -145,6 +233,8 @@ async def _process_observed(
     # 모두 이 하나를 쓰므로 세 곳이 다른 값을 말할 수 없다.
     failure_code: ErrorCode | None = None
     active_stage = ObservationStage.REQUEST
+    request: TimelineDraftRequest | None = None
+    draft: TimelineDraft | None = None
 
     try:
         emit_observation(
@@ -156,7 +246,65 @@ async def _process_observed(
                 "window": {"start": window_start, "end": window_end},
             },
         )
-        snapshot = await repo.get(task_id)
+        retrieval_started = perf_counter()
+        with trace_observation(
+            "retrieve-source-snapshot",
+            as_type="span",
+            input={"taskId": task_id},
+            metadata={"repository": type(repo).__name__},
+        ) as retrieval:
+            try:
+                snapshot = await repo.get(task_id)
+            except Exception as exc:
+                update_observation(
+                    retrieval,
+                    output={
+                        "found": False,
+                        "errorCode": int(code_of(exc)),
+                        "durationMs": (
+                            perf_counter() - retrieval_started
+                        )
+                        * 1000,
+                    },
+                    level="ERROR",
+                    status_message="수집 스냅샷 조회에 실패했습니다.",
+                )
+                raise
+            update_observation(
+                retrieval,
+                output={
+                    "found": snapshot is not None,
+                    "durationMs": (perf_counter() - retrieval_started) * 1000,
+                    "sourceItemCount": (
+                        len(snapshot.source_items) if snapshot is not None else 0
+                    ),
+                    **(
+                        {
+                            "snapshot": snapshot.model_dump(
+                                by_alias=True,
+                                mode="json",
+                            )
+                        }
+                        if snapshot is not None
+                        else {}
+                    ),
+                    **(
+                        {
+                            "errorCode": int(
+                                ErrorCode.SOURCE_SNAPSHOT_NOT_FOUND
+                            )
+                        }
+                        if snapshot is None
+                        else {}
+                    ),
+                },
+                level="ERROR" if snapshot is None else "DEFAULT",
+                status_message=(
+                    "수집 스냅샷을 찾지 못했습니다."
+                    if snapshot is None
+                    else None
+                ),
+            )
         if snapshot is None:
             status = TaskStatus.FAILED
             failure_code = report_error(
@@ -170,14 +318,55 @@ async def _process_observed(
         else:
             # 요청이 준 window 를 정본으로 덮어쓴다. 원본 스냅샷 객체(인메모리 스텁이
             # 공유할 수 있음)를 건드리지 않도록 copy 후 교체한다.
-            snapshot = snapshot.model_copy(
-                update={
-                    "timeline_window": TimelineWindow(
-                        start_time=window_start, end_time=window_end
+            normalize_started = perf_counter()
+            with trace_observation(
+                "normalize-source-snapshot",
+                as_type="span",
+                input={
+                    "snapshot": snapshot.model_dump(
+                        by_alias=True,
+                        mode="json",
+                    ),
+                    "window": {"start": window_start, "end": window_end},
+                },
+            ) as normalization:
+                try:
+                    snapshot = snapshot.model_copy(
+                        update={
+                            "timeline_window": TimelineWindow(
+                                start_time=window_start,
+                                end_time=window_end,
+                            )
+                        }
                     )
-                }
-            )
-            request = normalize(snapshot)
+                    request = normalize(snapshot)
+                except Exception as exc:
+                    update_observation(
+                        normalization,
+                        output={
+                            "errorCode": int(code_of(exc)),
+                            "durationMs": (
+                                perf_counter() - normalize_started
+                            )
+                            * 1000,
+                        },
+                        level="ERROR",
+                        status_message="수집 스냅샷 정규화에 실패했습니다.",
+                    )
+                    raise
+                update_observation(
+                    normalization,
+                    output={
+                        "durationMs": (
+                            perf_counter() - normalize_started
+                        )
+                        * 1000,
+                        "request": request.model_dump(
+                            by_alias=True,
+                            mode="json",
+                        ),
+                    },
+                )
             emit_observation(
                 ObservationEventType.COMPLETED,
                 stage=ObservationStage.REQUEST,
@@ -200,7 +389,56 @@ async def _process_observed(
                 stage=ObservationStage.STORAGE,
                 payload={"dailyRecordId": daily_record_id},
             )
-            await timeline_repo.save(task_id, draft, daily_record_id)
+            storage_started = perf_counter()
+            with trace_observation(
+                "store-timeline",
+                as_type="span",
+                input={
+                    "taskId": task_id,
+                    "dailyRecordId": daily_record_id,
+                    "timeline": draft.model_dump(
+                        by_alias=True,
+                        mode="json",
+                    ),
+                },
+                metadata={"repository": type(timeline_repo).__name__},
+            ) as storage:
+                try:
+                    await timeline_repo.save(task_id, draft, daily_record_id)
+                except Exception as exc:
+                    update_observation(
+                        storage,
+                        output={
+                            "saved": False,
+                            "errorCode": int(code_of(exc)),
+                            "durationMs": (
+                                perf_counter() - storage_started
+                            )
+                            * 1000,
+                            "timeline": draft.model_dump(
+                                by_alias=True,
+                                mode="json",
+                            ),
+                        },
+                        level="ERROR",
+                        status_message="Timeline 저장에 실패했습니다.",
+                    )
+                    raise
+                update_observation(
+                    storage,
+                    output={
+                        "saved": True,
+                        "eventCount": len(draft.events),
+                        "durationMs": (
+                            perf_counter() - storage_started
+                        )
+                        * 1000,
+                        "timeline": draft.model_dump(
+                            by_alias=True,
+                            mode="json",
+                        ),
+                    },
+                )
             emit_observation(
                 ObservationEventType.COMPLETED,
                 stage=ObservationStage.STORAGE,
@@ -268,12 +506,40 @@ async def _process_observed(
                 failure_code or ErrorCode.INTERNAL_ERROR
             )
         )
-        sent = await send_callback(
-            settings.app_server_api_url,
-            task_id,
-            callback_token,
-            payload,
-        )
+        callback_started = perf_counter()
+        callback_body = payload.model_dump(by_alias=True, mode="json")
+        with trace_observation(
+            "send-completion-callback",
+            as_type="span",
+            input={
+                "taskId": task_id,
+                "status": status.value,
+                "payload": callback_body,
+            },
+            metadata={"targetConfigured": True},
+        ) as callback_observation:
+            sent = await send_callback(
+                settings.app_server_api_url,
+                task_id,
+                callback_token,
+                payload,
+            )
+            update_observation(
+                callback_observation,
+                output={
+                    "sent": sent,
+                    "status": status.value,
+                    "durationMs": (perf_counter() - callback_started) * 1000,
+                    "payload": callback_body,
+                    **(
+                        {"errorCode": int(ErrorCode.CALLBACK_SEND_FAILED)}
+                        if not sent
+                        else {}
+                    ),
+                },
+                level="DEFAULT" if sent else "ERROR",
+                status_message=None if sent else "완료 콜백 전송에 실패했습니다.",
+            )
         if sent:
             emit_observation(
                 ObservationEventType.COMPLETED,
@@ -302,4 +568,9 @@ async def _process_observed(
             **({"errorCode": int(failure_code)} if failure_code is not None else {}),
         },
     )
-    return status
+    return _TimelineRunResult(
+        status=status,
+        request=request,
+        draft=draft,
+        failure_code=failure_code,
+    )

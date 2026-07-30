@@ -1,5 +1,6 @@
 .env
 .env.local
+.env.dev
 
 # AgentCore Runtime 환경 변수 파일 (DB 접속정보 포함, 최초 생성 때만 로컬에서 사용)
 runtime-env.json
@@ -8,6 +9,10 @@ runtime-env.json
 __pycache__/
 *.py[cod]
 .openai-docs-cache/
+
+# pytest 임시 산출물 (--basetemp 로 만든 검증용 디렉터리 포함)
+.pytest_cache/
+.pytest-*/
 
 # IDE 설정 (로컬 전용, DB 접속정보 등 노출 방지)
 .idea/

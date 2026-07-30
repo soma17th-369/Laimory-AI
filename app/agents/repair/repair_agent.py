@@ -24,6 +24,7 @@ draft**(첫 확정 또는 마지막 성공 반복의 결과)를 돌려주고 war
 
 import json
 from pathlib import Path
+from time import perf_counter
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -42,8 +43,14 @@ from app.agents.timeline.timeline_agent import TimelineAgent
 from app.core.config import settings
 from app.core.error_codes import ErrorCode, message_for
 from app.core.exceptions import code_of_or, report_error
+from app.core.langfuse_tracing import trace_observation, update_observation
 from app.core.logging import get_logger
-from app.core.observability import ObservationEventType, emit_observation
+from app.core.observability import (
+    ObservationEventType,
+    ObservationStage,
+    emit_observation,
+    observation_scope,
+)
 from app.core.structured import StructuredOutputError
 from app.schemas import (
     AgentEventResult,
@@ -182,7 +189,27 @@ class RepairAgent(Agent):
         )
 
         # LLM 이 무엇을 하든, 코드 확정은 반드시 한 번은 지나간다.
-        _confirm(ctx)
+        started = perf_counter()
+        with trace_observation(
+            "confirm-timeline-draft",
+            as_type="span",
+            input={
+                "request": request.model_dump(by_alias=True, mode="json"),
+                "timeline": draft.model_dump(by_alias=True, mode="json"),
+            },
+            metadata={"phase": "initial"},
+        ) as observation:
+            _confirm(ctx)
+            update_observation(
+                observation,
+                output={
+                    "durationMs": (perf_counter() - started) * 1000,
+                    "timeline": ctx.draft.model_dump(
+                        by_alias=True,
+                        mode="json",
+                    ),
+                },
+            )
 
         if self._max_iterations <= 0:
             logger.info("Repair Agent 반복 상한이 0 이라 코드 확정만 수행했습니다.")
@@ -236,12 +263,49 @@ class RepairAgent(Agent):
         def analyze_node(state: _State) -> _State:
             iteration = state["iteration"] + 1
             remaining = max_iterations - iteration + 1
-            plan = self.llm.complete_structured(
-                build_repair_prompt(ctx, remaining),
-                RepairPlan,
-                system=_SYSTEM_PROMPT,
-                temperature=0.0,
-            )
+            prompt = build_repair_prompt(ctx, remaining)
+            started = perf_counter()
+            with (
+                observation_scope(
+                    ObservationStage.REPAIR_AGENT,
+                    agent=self.name,
+                    iteration=iteration,
+                ),
+                trace_observation(
+                    "analyze-repair-iteration",
+                    # 같은 이름의 analyze/execute/confirm이 반복되면 Langfuse
+                    # Aggregated graph가 Repair loop를 cycle로 표현한다.
+                    as_type="chain",
+                    input={
+                        "iteration": iteration,
+                        "remainingIterations": remaining,
+                        "system": _SYSTEM_PROMPT,
+                        "prompt": prompt,
+                        "timeline": ctx.draft.model_dump(
+                            by_alias=True,
+                            mode="json",
+                        ),
+                    },
+                    metadata={
+                        "iteration": iteration,
+                        "maxIterations": max_iterations,
+                    },
+                ) as observation,
+            ):
+                plan = self.llm.complete_structured(
+                    prompt,
+                    RepairPlan,
+                    system=_SYSTEM_PROMPT,
+                    temperature=0.0,
+                )
+                update_observation(
+                    observation,
+                    output={
+                        "durationMs": (perf_counter() - started) * 1000,
+                        "plan": plan.model_dump(by_alias=True, mode="json"),
+                    },
+                    level="DEFAULT" if plan.done else "WARNING",
+                )
             logger.info(
                 "Repair 분석 %d/%d: issues=%d, toolCalls=%d, done=%s",
                 iteration,
@@ -265,43 +329,122 @@ class RepairAgent(Agent):
             return {"iteration": iteration, "plan": plan}
 
         def execute_node(state: _State) -> _State:
-            for call in state["plan"].tool_calls:
-                emit_observation(
-                    ObservationEventType.TOOL_CALL,
-                    iteration=state["iteration"],
-                    payload={
-                        "tool": call.tool,
-                        "argumentNames": sorted(call.args),
-                        "call": call.model_dump(by_alias=True, mode="json"),
+            iteration = state["iteration"]
+            started = perf_counter()
+            with (
+                observation_scope(
+                    ObservationStage.REPAIR_AGENT,
+                    agent=self.name,
+                    iteration=iteration,
+                ),
+                trace_observation(
+                    "execute-repair-plan",
+                    as_type="chain",
+                    input={
+                        "iteration": iteration,
+                        "plan": state["plan"].model_dump(
+                            by_alias=True,
+                            mode="json",
+                        ),
+                        "timeline": ctx.draft.model_dump(
+                            by_alias=True,
+                            mode="json",
+                        ),
                     },
+                    metadata={"iteration": iteration},
+                ) as observation,
+            ):
+                for call in state["plan"].tool_calls:
+                    emit_observation(
+                        ObservationEventType.TOOL_CALL,
+                        iteration=iteration,
+                        payload={
+                            "tool": call.tool,
+                            "argumentNames": sorted(call.args),
+                            "call": call.model_dump(by_alias=True, mode="json"),
+                        },
+                    )
+                results = execute_tool_calls(ctx, state["plan"].tool_calls)
+                for result in results:
+                    emit_observation(
+                        ObservationEventType.TOOL_RESULT
+                        if result.ok
+                        else ObservationEventType.FAILED,
+                        iteration=iteration,
+                        payload={
+                            "tool": result.tool,
+                            "ok": result.ok,
+                            "result": result.model_dump(
+                                by_alias=True,
+                                mode="json",
+                            ),
+                            "timeline": ctx.draft.model_dump(
+                                by_alias=True,
+                                mode="json",
+                            ),
+                        },
+                    )
+                update_observation(
+                    observation,
+                    output={
+                        "durationMs": (perf_counter() - started) * 1000,
+                        "results": [
+                            result.model_dump(by_alias=True, mode="json")
+                            for result in results
+                        ],
+                        "timeline": ctx.draft.model_dump(
+                            by_alias=True,
+                            mode="json",
+                        ),
+                    },
+                    level=(
+                        "WARNING"
+                        if any(not result.ok for result in results)
+                        else "DEFAULT"
+                    ),
                 )
-            results = execute_tool_calls(ctx, state["plan"].tool_calls)
-            for result in results:
-                emit_observation(
-                    ObservationEventType.TOOL_RESULT
-                    if result.ok
-                    else ObservationEventType.FAILED,
-                    iteration=state["iteration"],
-                    payload={
-                        "tool": result.tool,
-                        "ok": result.ok,
-                        "result": result.model_dump(by_alias=True, mode="json"),
+
+            # execute span 밖에서 sibling으로 열어 Aggregated graph가
+            # analyze → execute → confirm → analyze 순환을 추론할 수 있게 한다.
+            confirm_started = perf_counter()
+            with trace_observation(
+                "confirm-repair-iteration",
+                as_type="chain",
+                input={
+                    "iteration": iteration,
+                    "timeline": ctx.draft.model_dump(
+                        by_alias=True,
+                        mode="json",
+                    ),
+                },
+                metadata={"iteration": iteration},
+            ) as confirmation:
+                _confirm(ctx)
+                update_observation(
+                    confirmation,
+                    output={
+                        "durationMs": (
+                            perf_counter() - confirm_started
+                        )
+                        * 1000,
                         "timeline": ctx.draft.model_dump(
                             by_alias=True,
                             mode="json",
                         ),
                     },
                 )
-            _confirm(ctx)
             last_good[0] = ctx.draft.model_copy(deep=True)
             emit_observation(
                 ObservationEventType.DRAFT_UPDATED,
-                iteration=state["iteration"],
+                iteration=iteration,
                 payload={
                     "eventCount": len(ctx.draft.events),
                     "questionCount": len(ctx.draft.questions),
                     "warningCount": len(ctx.draft.warnings),
-                    "timeline": ctx.draft.model_dump(by_alias=True, mode="json"),
+                    "timeline": ctx.draft.model_dump(
+                        by_alias=True,
+                        mode="json",
+                    ),
                 },
             )
             return {}

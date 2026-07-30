@@ -1,6 +1,6 @@
 # Timeline 실행 관측
 
-Timeline 요청 하나가 입력 조회부터 Agent 처리, LLM 호출, RDB 저장, App Server 콜백까지 어떻게 실행됐는지 `taskId` 하나로 추적한다. 별도의 `transactionId`, `traceId`, `spanId`는 만들지 않는다.
+Timeline 요청 하나가 입력 조회부터 Agent 처리, LLM 호출, RDB 저장, App Server 콜백까지 어떻게 실행됐는지 내부 관측에서는 `taskId` 하나로 추적한다. Elasticsearch 문서에는 별도의 `transactionId`, `traceId`, `spanId`를 만들지 않는다. 선택적 Langfuse 연동은 SDK가 요구하는 trace/span ID를 사용하되, Langfuse trace ID를 `taskId`에서 결정적으로 생성해 같은 실행을 상호 조회할 수 있게 한다.
 
 관측 데이터는 목적에 따라 CloudWatch와 Elasticsearch로 나뉜다.
 
@@ -8,6 +8,7 @@ Timeline 요청 하나가 입력 조회부터 Agent 처리, LLM 호출, RDB 저�
 |---|---|---|
 | CloudWatch | FastAPI·uvicorn 운영 로그, DB·콜백·ES 전송 오류, provider/model/token 사용량 요약 | 애플리케이션이 stdout에 JSON을 출력하고 CloudWatch가 수집 |
 | Elasticsearch | 입력·프롬프트·응답·중간 결과와 단계·상태·소요 시간·토큰·모델 같은 Agent 실행 데이터 | 요청 중 메모리 버퍼에 모은 뒤 콜백 처리 후 `_bulk`로 일괄 전송 |
+| Langfuse(선택) | Agent Graph, LLM generation, provider/model/token/cost, 도구·조회·저장 계층 | SDK의 비동기 queue로 전송하고 task 종료 시 flush |
 
 기본 `SANITIZED` 정책은 입력, 사용자 메모리, 프롬프트와 시스템 프롬프트, LLM 응답,
 Event Agent 결과, timeline draft, repair plan, 도구 인자·결과를 payload에 남긴다.
@@ -25,6 +26,8 @@ REQUEST → MAIN_AGENT → EVENT_AGENT → TIMELINE_AGENT → REPAIR_AGENT
 ```
 
 관측은 부가 기능이다. 로컬 파일 기록이나 Elasticsearch 전송이 실패해도 Timeline 상태, RDB 저장, App Server 콜백 결과에는 영향을 주지 않는다.
+
+Langfuse 설정과 콘텐츠 보호 정책은 [Langfuse tracing](langfuse-tracing.md)을 따른다.
 
 ## Elasticsearch 이벤트
 
