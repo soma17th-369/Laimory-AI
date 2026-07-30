@@ -152,7 +152,8 @@ EC2 콘솔에서 **인스턴스 선택 → 작업 → 보안 → IAM 역할 수�
 
 ## 6. 네트워크
 
-EC2와 staging DB는 같은 VPC에서 통신해야 한다.
+EC2와 App Server는 같은 VPC에서 통신해야 한다. AI 서버는 이슈 #40 이후 staging DB에
+직접 붙지 않으므로 **DB 네트워크 경로와 자격증명이 필요하지 않다.**
 
 ### EC2 Security Group 인바운드
 
@@ -163,13 +164,16 @@ EC2와 staging DB는 같은 VPC에서 통신해야 한다.
 `8080`을 `0.0.0.0/0`에 열지 않는다. 현재 애플리케이션 API에는 인터넷 공개용 인증
 계층이 없다.
 
-### DB Security Group 인바운드
+### App Server Security Group 인바운드
 
 | 포트 | 소스 |
 |---|---|
-| TCP `3306` | EC2 Security Group |
+| App Server API 포트 | EC2 Security Group |
 
-EC2는 ECR, Systems Manager, Bedrock, App Server 콜백 URL로 나갈 수 있어야 한다.
+AI 서버가 입력 조회·결과 저장·완료 콜백을 모두 App Server 서버간 API로 호출하므로
+반대 방향 경로도 열려 있어야 한다.
+
+EC2는 ECR, Systems Manager, Bedrock, App Server API로 나갈 수 있어야 한다.
 private subnet이고 NAT가 없다면 각 서비스의 VPC Endpoint 구성이 필요하다.
 
 ## 7. EC2 최초 준비
@@ -225,13 +229,10 @@ BEDROCK_MODEL=<모델 또는 추론 프로필 ID>
 BEDROCK_REGION=ap-northeast-2
 BEDROCK_AWS_PROFILE=
 
-DB_HOST=<staging DB private host>
-DB_PORT=3306
-DB_NAME=<DB 이름>
-DB_USER=<DB 사용자>
-DB_PASSWORD=<DB 비밀번호>
-
 APP_SERVER_API_URL=<App Server 서버간 API 기본 URL, 예: https://api.example.com/s/api/v1>
+APP_SERVER_TIMEOUT_SEC=10
+APP_SERVER_MAX_ATTEMPTS=3
+APP_SERVER_RETRY_BACKOFF_SEC=0.5
 
 # 선택: Langfuse. 키는 이 파일의 0600 권한과 EC2 접근 정책으로 보호한다.
 LANGFUSE_ENABLED=false
@@ -246,9 +247,10 @@ LANGFUSE_MAX_PAYLOAD_BYTES=65536
 `BEDROCK_AWS_PROFILE`은 비워 둔다. boto3가 EC2 Instance Role의 임시 자격증명을
 사용한다.
 
-기존 `CALLBACK_URL`은 사용하지 않는다. `APP_SERVER_API_URL`에는 task별 경로를
-제외하고 `/s/api/v1`까지 넣는다. AI 서버가
-`/timeline/drafts/{taskId}/callback`을 붙여 호출한다.
+`APP_SERVER_API_URL`은 **필수**다(이슈 #40). AI 서버의 유일한 데이터 경로이며,
+비어 있으면 컨테이너가 기동 시점에 실패한다. task별 경로를 제외하고 버전 경로까지
+넣으면(`/s/api/v1` 또는 `/s/v1`) AI 서버가 `/timeline/drafts/{taskId}/input`,
+`/result`, `/callback`을 붙여 호출한다. 기존 `CALLBACK_URL`과 `DB_*`는 사용하지 않는다.
 
 ## 9. 배포
 

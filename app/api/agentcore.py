@@ -26,11 +26,7 @@ from app.api.v1.timeline import (
 )
 from app.core.inflight import is_busy
 from app.schemas.common import CamelModel
-from app.services.source_repository import SourceRepository, get_source_repository
-from app.services.timeline_repository import (
-    TimelineRepository,
-    get_timeline_repository,
-)
+from app.services.app_server_client import AppServerClient, get_app_server_client
 
 router = APIRouter()
 
@@ -70,14 +66,8 @@ def ping() -> PingResponse:
 async def invocations(
     request: TimelineTriggerRequest,
     background_tasks: BackgroundTasks,
-    repo: SourceRepository = Depends(get_source_repository),
-    timeline_repo: TimelineRepository = Depends(get_timeline_repository),
+    client: AppServerClient = Depends(get_app_server_client),
 ) -> TimelineDispatchResponse:
     """AgentCore Runtime 호출 진입점. `POST /v1/timeline` 과 동일하게 처리한다."""
 
-    return await create_timeline_draft(
-        request,
-        background_tasks,
-        repo,
-        timeline_repo,
-    )
+    return await create_timeline_draft(request, background_tasks, client)

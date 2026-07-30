@@ -10,14 +10,8 @@ from fastapi.testclient import TestClient
 from app.schemas import TaskStatus, TimelineDraft
 from app.server import app
 from app.services import timeline_runner
-from app.services.source_repository import (
-    InMemorySourceRepository,
-    get_source_repository,
-)
-from app.services.timeline_repository import (
-    NoopTimelineRepository,
-    get_timeline_repository,
-)
+from app.services.app_server_client import get_app_server_client
+from tests.fixtures.app_server import FakeAppServerClient
 from tests.fixtures.requests import default_source_items, make_snapshot
 
 _TASK_ID = "task-endpoint-1"
@@ -27,6 +21,17 @@ _WINDOW = {
 }
 
 
+def _payload(**overrides) -> dict:
+    body = {
+        "taskId": _TASK_ID,
+        "taskToken": "task-token-1",
+        "dailyRecordId": 42,
+        "window": _WINDOW,
+    }
+    body.update(overrides)
+    return body
+
+
 @pytest.fixture(autouse=True)
 def clear_dependency_overrides():
     yield
@@ -34,14 +39,12 @@ def clear_dependency_overrides():
 
 
 @pytest.fixture
-def repo() -> InMemorySourceRepository:
-    source_repo = InMemorySourceRepository()
-    source_repo.put(
-        make_snapshot(task_id=_TASK_ID, source_items=default_source_items())
+def client() -> FakeAppServerClient:
+    fake = FakeAppServerClient(
+        snapshot=make_snapshot(task_id=_TASK_ID, source_items=default_source_items())
     )
-    app.dependency_overrides[get_source_repository] = lambda: source_repo
-    app.dependency_overrides[get_timeline_repository] = NoopTimelineRepository
-    return source_repo
+    app.dependency_overrides[get_app_server_client] = lambda: fake
+    return fake
 
 
 @pytest.fixture
@@ -52,22 +55,13 @@ def fake_main_agent(monkeypatch):
         return draft
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", _run)
-    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
     return draft
 
 
-def test_post_accepts_timeline_task(repo, fake_main_agent):
-    client = TestClient(app)
+def test_post_accepts_timeline_task(client, fake_main_agent):
+    http = TestClient(app)
 
-    response = client.post(
-        "/v1/timeline",
-        json={
-            "taskId": _TASK_ID,
-            "callbackToken": "callback-token-1",
-            "dailyRecordId": 42,
-            "window": _WINDOW,
-        },
-    )
+    response = http.post("/v1/timeline", json=_payload())
 
     assert response.status_code == 202
     assert response.json() == {
@@ -76,36 +70,52 @@ def test_post_accepts_timeline_task(repo, fake_main_agent):
     }
 
 
-def test_post_missing_snapshot_is_still_accepted(fake_main_agent):
-    # 백그라운드 실패 여부는 콜백으로 통보되므로 접수 응답은 202다.
-    app.dependency_overrides[get_source_repository] = InMemorySourceRepository
-    app.dependency_overrides[get_timeline_repository] = NoopTimelineRepository
-    client = TestClient(app)
+def test_accepted_request_runs_the_full_app_server_flow(client, fake_main_agent):
+    """접수 후 백그라운드가 입력 조회 → 결과 저장 → 콜백을 순서대로 탄다."""
 
-    response = client.post(
-        "/v1/timeline",
-        json={
-            "taskId": "no-such-task",
-            "callbackToken": "callback-token-2",
-            "dailyRecordId": 42,
-            "window": _WINDOW,
-        },
+    http = TestClient(app)
+
+    http.post("/v1/timeline", json=_payload(taskToken="tok-flow"))
+
+    assert client.order == ["input", "result", "callback"]
+    assert client.callback_calls[0].token == "tok-flow"
+
+
+def test_post_missing_input_is_still_accepted(fake_main_agent):
+    # 백그라운드 실패 여부는 콜백으로 통보되므로 접수 응답은 202다.
+    app.dependency_overrides[get_app_server_client] = lambda: FakeAppServerClient(
+        snapshot=None
     )
+    http = TestClient(app)
+
+    response = http.post("/v1/timeline", json=_payload(taskId="no-such-task"))
 
     assert response.status_code == 202
 
 
 def test_get_timeline_task_route_does_not_exist():
-    client = TestClient(app)
+    http = TestClient(app)
 
-    response = client.get("/v1/timeline/does-not-exist")
+    response = http.get("/v1/timeline/does-not-exist")
 
     assert response.status_code == 404
 
 
-def test_post_requires_all_fields(repo):
-    client = TestClient(app)
+def test_post_requires_all_fields(client):
+    http = TestClient(app)
 
-    response = client.post("/v1/timeline", json={"taskId": _TASK_ID})
+    response = http.post("/v1/timeline", json={"taskId": _TASK_ID})
+
+    assert response.status_code == 422
+
+
+def test_post_rejects_legacy_callback_token_field(client):
+    """구 계약(`callbackToken`)으로는 접수되지 않는다."""
+
+    http = TestClient(app)
+    body = _payload()
+    body["callbackToken"] = body.pop("taskToken")
+
+    response = http.post("/v1/timeline", json=body)
 
     assert response.status_code == 422

@@ -53,13 +53,11 @@ app/
 ├── server.py                  # FastAPI 앱 생성 + 라우터 등록만 (얇게)
 │
 ├── core/                      # 공통 인프라
-│   ├── config.py              # 설정 (pydantic-settings, LLM_PROVIDER/API 키, DB_*, OBS_*/ES_* 등)
+│   ├── config.py              # 설정 (pydantic-settings, LLM_PROVIDER/API 키, APP_SERVER_*, OBS_*/ES_* 등)
 │   ├── logging.py             # 운영 로그 설정 (rich | stdout JSON→CloudWatch, LOG_FORMAT)
 │   ├── error_codes.py         # 오류 코드 카탈로그 (#42). 정수 코드·외부 안전 메시지·HTTP 상태의 유일한 정본. 값 중복은 import 시점에 차단
 │   ├── exceptions.py          # AppError 예외 계층(자기 ErrorCode 보유) + report_error: 로그와 관측을 같은 코드로 남기는 유일한 통로
 │   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형) + LLM 관측/토큰 emit
-│   ├── db.py                  # staging MySQL async engine/session (aiomysql, host/port 직결)
-│   ├── db_models.py           # staging 테이블 ORM 매핑 (draft source / daily record / timeline event·item / event↔item N:M 조인)
 │   ├── inflight.py            # 진행 중 백그라운드 처리 카운터 (GET /ping 의 Healthy/HealthyBusy 판단용, 프로세스 로컬)
 │   └── observability/         # Timeline 실행 관측 (#28). taskId 단일 키, SANITIZED 본문·메타데이터
 │       ├── models.py          #   ObservationEvent 계약 (taskId/sequence/stage/token/version)
@@ -76,12 +74,14 @@ app/
 │   ├── error_handlers.py      # 전역 예외 처리기 (#42). 검증오류/HTTPException/AppError/미처리 4종을 ErrorResponse 로 통일 + OpenAPI ERROR_RESPONSES
 │   └── v1/
 │       ├── router.py          # v1 라우터 취합
-│       └── timeline.py        # POST /v1/timeline (taskId+callbackToken+dailyRecordId+window 접수 → 202). 상태 조회 없음(상태는 App Server 소유)
+│       └── timeline.py        # POST /v1/timeline (taskId+taskToken+dailyRecordId+window 접수 → 202). 상태 조회 없음(상태는 App Server 소유)
 │
 ├── schemas/                   # Pydantic 계약(contract)
 │   ├── error.py               # 공통 오류 응답 ErrorResponse(errorCode:int, error:str)
 │   ├── task.py                # TaskStatus + 완료 콜백 payload(errorCode:int|None, 성공/실패 필드 짝 강제)
-│   ├── source_snapshot.py     # 수집 원본(taskId/sourceItems) 입력 계약
+│   ├── source_snapshot.py     # 수집 원본(taskId/sourceItems) 파이프라인 내부 계약
+│   ├── timeline_input.py      # App Server 입력 조회 응답 계약 (#40). window.startAt/endAt → CollectedSnapshot 변환
+│   ├── timeline_result.py     # App Server 결과 저장 요청 계약 (#40). eventType/title/subtitle/startAt/endAt/sourceRawIds 만
 │   ├── location.py/calendar.py/health.py/notification.py/photo.py  # 분리된 도메인 항목
 │   ├── event_candidate.py     # AI 이벤트 후보 모델
 │   ├── timeline_request.py    # 정규화된 요청(main agent 입력)
@@ -96,8 +96,11 @@ app/
 │   └── main/main_agent.py     # events → timeline → repair 조율(LangGraph)
 │
 └── services/
-    ├── source_repository.py   # taskId로 수집 스냅샷 조회 (MySQL: timeline_draft_source_items / 인메모리 스텁)
-    ├── timeline_repository.py # 결과 저장: timeline_events(요청 dailyRecordId 로 FK) + timeline_items(저장 시 raw_id 디듀프, daily record 소속은 event 만) + timeline_event_items(event↔item N:M). AI 생성분만 교체하는 트랜잭션
+    ├── app_server_client.py   # App Server 서버간 API 클라이언트 (#40). 입력 조회/결과 저장/콜백 3종을 소유.
+    │                          #   TaskToken 홀더(응답 body 로 갱신, Task-Token 헤더로만 전송, 로그 금지),
+    │                          #   재시도(timeout·5xx)와 중단(401/404/409) 정책의 유일한 자리
+    ├── source_contract.py     # 입력 조회 응답의 묶음 계약 검증 (taskId 일치/0건/rawId 중복) + SourceBatchError
+    ├── timeline_result.py     # TimelineDraft → 결과 저장 요청 변환 (subtitle←description, rawId 디듀프, 255자 절단, tz 정렬)
     ├── timeline_validator.py  # 저장 전 자체검증 (task source 소속/시간 등)
     ├── normalizer.py          # 수집 스냅샷을 itemType별로 분리·정규화
     ├── draft_repair.py        # draft 확정 repair (아래 순서대로 조립)
@@ -111,22 +114,28 @@ app/
     ├── meal_guard.py           # MEAL event 지속시간 20~60분 강제 (긴 체류 전체를 식사로 잡지 않음)
     ├── place_resolver.py       # placeLabel을 근거 place로 확정, 근거 없는 address 제거
     ├── place_text.py           # 장소 문자열 정규화·비교 (calendar_location/place_resolver/stay_merge 공용)
-    ├── timeline_runner.py     # 백그라운드(무상태): 조회→정규화→main agent→staging 저장→콜백. 최종 상태 반환
-    └── callback.py            # 완료 통보(SUCCESS/FAILED + callbackToken) App Server 콜백
+    └── timeline_runner.py     # 백그라운드(무상태): 입력 조회→정규화→main agent→결과 저장→콜백. 최종 상태 반환
 
-# 처리 흐름: taskId+callbackToken+dailyRecordId+window 접수 → 202 즉시응답 →
-#   (백그라운드) DB 조회 → 요청 window 를 정본으로 덮어쓰기 → normalize → main agent
-#   → timeline_events(dailyRecordId FK)/timeline_items(저장 시 디듀프)/timeline_event_items(N:M) 저장
-#   → 콜백(SUCCESS/FAILED 통보만; 실제 결과는 App Server 가 staging DB 에서 읽음)
+# 처리 흐름: taskId+taskToken+dailyRecordId+window 접수 → 202 즉시응답 →
+#   (백그라운드) 입력 조회 API → 요청 window 를 정본으로 덮어쓰기 → normalize → main agent
+#   → 저장 전 자체검증 → 결과 저장 API(200 확인) → 콜백(SUCCESS/FAILED 통보만)
+# 토큰(#40): 작업 하나에 taskToken 하나. 최초 값은 접수 요청 body, 이후는 App Server 응답
+#   body 의 taskToken 으로 갱신한다. 인증은 언제나 Task-Token 헤더다. 파생·교체하지 않고
+#   로그·관측에 값을 남기지 않는다(갱신 횟수만 남긴다).
+# 순서 계약(#40): 결과 저장 200 을 확인한 뒤에만 SUCCESS 콜백을 보낸다. 저장 성공 후에는
+#   어떤 이유로도 FAILED 를 보내지 않는다. 401/404/409 는 콜백도 거절되므로 통보 없이 중단한다.
+#   timeout/5xx 는 같은 토큰·같은 body 로 재시도한다.
 # 오류 계약(#42): 모든 실패는 정수 errorCode 하나로 식별한다. API 응답·콜백·운영 로그·
 #   관측 이벤트가 같은 코드를 쓴다. 코드 정본은 app/core/error_codes.py, 표와 연동 방법은
 #   docs/error-codes.md. except 블록은 report_error 만 호출한다(로그+관측 동시 기록).
 #   error 문자열에는 카탈로그의 안전 메시지만 나가고 원본 예외 메시지는 로그에만 남는다.
 #   관측 모듈 자신의 실패는 emit=False (관측으로 알리면 같은 경로를 다시 타 재귀한다).
 # AI 서버는 무상태다. task 상태는 App Server 가 소유하며(AI 는 상태 저장/조회 없음),
-#   AI 는 상태를 콜백으로만 통보한다. daily_records 도 직접 조회/생성하지 않고 dailyRecordId 로 FK 만 건다.
-# 저장/조회는 항상 실제 staging DB. DB 는 필수이며(없으면 실패), 인메모리 스텁은 단위 테스트 전용.
-# 접속 스모크: scripts/db_smoke.py (SSH 터널 열고 .env 채운 뒤 실행)
+#   AI 는 상태를 콜백으로만 통보한다.
+# 데이터 접근 경계(#40): AI 서버는 DB 에 직접 접근하지 않는다. 수집 원본 조회도 결과 저장도
+#   App Server API 로만 한다. DB 모듈·드라이버·접속 설정은 제거됐고, 되돌리지 않는다.
+#   APP_SERVER_API_URL 은 필수 설정이다(없으면 기동 실패). dailyRecordId 는 접수 요청에
+#   남아 있지만 저장 연결은 App Server 담당이라 AI 는 관측 상관값으로만 쓴다.
 # main agent 그래프: run_event_agents → merge_results → run_timeline_agent → repair_draft
 #   앞 3개는 LLM 이 의미를 판단하는 확률적 단계, repair_draft 는 코드가 확정하는 결정론적 단계다.
 # repair_draft 순서: sourceType 정정 → 캘린더 복원 → duration → 근거 구간 정렬 → MEAL
@@ -135,9 +144,9 @@ app/
 
 tests/
 ├── agents/                    # Event Agent live 입력 테스트(opt-in)
-├── api/ · services/ · main/   # 엔드포인트·정규화·저장소·파이프라인 단위 테스트
-├── integration/               # 실제 LLM·staging MySQL 통합 테스트(opt-in)
-└── fixtures/                  # 요청/스냅샷 빌더
+├── api/ · services/ · main/   # 엔드포인트·정규화·App Server 연동·파이프라인 단위 테스트
+├── integration/               # 실제 LLM 통합 테스트(opt-in)
+└── fixtures/                  # 요청/스냅샷 빌더 + App Server 클라이언트 테스트 더블
 
 # 배포 (#29)
 Dockerfile                     # amd64/arm64 공용, uv 멀티스테이지, non-root, 8080

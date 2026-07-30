@@ -1,8 +1,10 @@
-"""최종 타임라인 DB 저장 전 자체검증.
+"""결과 저장 요청을 보내기 전의 자체검증.
 
-``timeline_events``와 ``timeline_items``에 저장하기 전에 각 이벤트의 필수값과
-source 소속을 확인한다. 같은 source가 여러 이벤트의 근거가 되는 것은 허용한다.
-향후 source↔timeline item N:M 연결 테이블이 추가돼도 이 계약은 그대로 유지한다.
+App Server 결과 저장 API 를 호출하기 전에 각 이벤트의 필수값과 source 소속을
+확인한다. 같은 source가 여러 이벤트의 근거가 되는 것은 허용한다.
+
+입력에 없는 ``rawId``는 App Server 도 거절하지만, 여기서 먼저 막는다. 거절될 것이
+뻔한 요청을 왕복시키면 실패 원인이 네트워크 계층으로 밀려 진단이 어려워진다.
 """
 
 from dataclasses import dataclass

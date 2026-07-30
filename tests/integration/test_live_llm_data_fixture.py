@@ -219,7 +219,7 @@ def test_live_llm_pipeline_matches_data_fixture_shape_and_writes_comparison(
     from app.agents.timeline.timeline_agent import TimelineAgent
     from app.agents.main import run_main_agent
     from app.services.normalizer import normalize
-    from app.services.source_repository import load_snapshot_from_file
+    from tests.fixtures.snapshot_file import load_snapshot_from_file
 
     _trace("load input snapshot")
     expected = _load_json(EXPECTED_PATH)

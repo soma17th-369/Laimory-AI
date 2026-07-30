@@ -1,23 +1,46 @@
 # Laimory AI 서버 API 명세
 
-> 기준일: 2026-07-22  
+> 기준일: 2026-07-31
 > 현재 구현 기준
 
 ## 1. 처리 구조
 
-AI 서버는 타임라인 생성 요청을 비동기로 처리합니다.
+AI 서버는 타임라인 생성 요청을 비동기로 처리합니다. 데이터 접근은 **App Server
+서버간 API 하나로 일원화**되어 있습니다(이슈 #40). AI 서버는 데이터베이스에 직접
+접근하지 않습니다.
 
 ```text
 App Server
-→ 원본 데이터를 timeline_draft_source_items에 저장
-→ AI 서버에 타임라인 생성 요청
+→ AI 서버에 타임라인 생성 요청 (taskId, taskToken)
 → AI 서버가 202 Accepted 반환
-→ AI 서버가 타임라인 생성 및 DB 저장
-→ AI 서버가 App Server에 SUCCESS 또는 FAILED 콜백
-→ App Server가 DB에서 결과 조회
+→ AI 서버가 입력 조회 API 호출   GET  /timeline/drafts/{taskId}/input
+→ AI 서버가 타임라인 생성(추론)
+→ AI 서버가 결과 저장 API 호출   POST /timeline/drafts/{taskId}/result
+→ 저장 200 확인 후 완료 콜백     POST /timeline/drafts/{taskId}/callback
 ```
 
 AI 서버는 작업 상태를 별도로 저장하지 않으며, 작업 상태 조회용 GET API도 제공하지 않습니다.
+
+### 호출 순서 계약
+
+- 입력 조회 → 추론 → 결과 저장 → 콜백 순서를 지킵니다.
+- **결과 저장 200을 확인한 뒤에만** `SUCCESS` 콜백을 보냅니다.
+- 결과 저장에 성공한 뒤에는 어떤 이유로도 `FAILED`를 보내지 않습니다.
+
+### taskToken
+
+작업 하나에 토큰 하나를 사용합니다.
+
+| 구분 | 위치 |
+|---|---|
+| 최초 발급 | 타임라인 생성 요청 body의 `taskToken` |
+| 이후 갱신 | App Server 응답 body의 `taskToken` |
+| 인증 | 모든 AI → App Server 요청의 `Task-Token` 헤더 |
+
+- 응답 body에 `taskToken`이 있으면 그 값으로 갱신하고, 이후 요청은 갱신된 값을 씁니다.
+- 응답에 토큰이 없으면 직전 값을 계속 사용합니다.
+- AI 서버는 토큰을 파생하거나 변형하지 않으며, 로그·관측 데이터에 기록하지 않습니다.
+- 성공(2xx) 응답의 토큰만 받아들입니다. 거절된 응답 body의 값은 무시합니다.
 
 ## 2. 공통 정보
 
@@ -76,17 +99,16 @@ AgentCore Runtime에 배포한 환경에서는 `POST /invocations`가 동일한 
 
 ### 사전 조건
 
-- `timeline_draft_source_items`에 동일한 `taskId`를 가진 원본 데이터가 존재해야 합니다.
-- `dailyRecordId`에 해당하는 `daily_records` 데이터가 먼저 생성되어 있어야 합니다.
-- 동일 작업에 포함된 원본 데이터는 한 사용자의 데이터여야 합니다.
-- 동일 작업 안에서 원본 데이터의 `raw_id`는 중복될 수 없습니다.
+- 입력 조회 API가 동일한 `taskId`의 원본 데이터를 반환할 수 있어야 합니다.
+- `taskToken`이 세 API(입력 조회·결과 저장·콜백) 모두에서 유효해야 합니다.
+- 동일 작업 안에서 원본 데이터의 `rawId`는 중복될 수 없습니다.
 
 ### Request Body
 
 | 필드 | 타입 | 필수 | 설명 |
 |---|---|---:|---|
-| `taskId` | `string` | O | 작업 식별자. `timeline_draft_source_items.task_id`와 일치해야 합니다. |
-| `callbackToken` | `string` | O | 완료 콜백 인증 토큰입니다. 콜백의 `Callback-Token` 헤더로 반환됩니다. |
+| `taskId` | `string` | O | 작업 식별자입니다. |
+| `taskToken` | `string` | O | 이 작업의 최초 토큰입니다. AI 서버가 App Server를 호출할 때 `Task-Token` 헤더로 사용합니다. |
 | `dailyRecordId` | `integer` | O | 생성된 타임라인 이벤트를 연결할 Daily Record ID입니다. |
 | `window` | `object` | O | 타임라인 생성 범위입니다. |
 | `window.startAt` | `datetime` | O | 생성 범위 시작 시각입니다. |
@@ -97,7 +119,7 @@ AgentCore Runtime에 배포한 환경에서는 `POST /invocations`가 동일한 
 ```json
 {
   "taskId": "task-20260722-001",
-  "callbackToken": "callback-token-001",
+  "taskToken": "task-token-001",
   "dailyRecordId": 42,
   "window": {
     "startAt": "2026-07-22T00:00:00+09:00",
@@ -157,29 +179,151 @@ AgentCore Runtime에 배포한 환경에서는 `POST /invocations`가 동일한 
 
 요청 접수 이후 발생한 오류는 이미 반환된 `202` 응답에 반영되지 않습니다. 최종 성공 또는 실패 여부는 완료 콜백으로 전달됩니다.
 
-## 5. 완료 콜백
+## 5. AI 서버가 호출하는 App Server API
 
-AI 서버는 처리가 끝나면 서버에 설정된 `APP_SERVER_API_URL`에 task별 콜백
-경로를 붙여 결과 상태를 전송합니다.
+AI 서버는 설정된 `APP_SERVER_API_URL`에 task별 경로를 붙여 세 개의 API를 호출합니다.
 
 ```env
 APP_SERVER_API_URL=https://api.example.com/s/api/v1
 ```
 
-### Request
+| 순서 | Method | 경로 |
+|---|---|---|
+| 1 | `GET` | `{APP_SERVER_API_URL}/timeline/drafts/{taskId}/input` |
+| 2 | `POST` | `{APP_SERVER_API_URL}/timeline/drafts/{taskId}/result` |
+| 3 | `POST` | `{APP_SERVER_API_URL}/timeline/drafts/{taskId}/callback` |
+
+`APP_SERVER_API_URL`은 **필수 설정**입니다. AI 서버의 유일한 데이터 경로이므로 값이
+없으면 서버가 기동하지 않습니다. 버전 경로까지 넣으며 `/s/api/v1`과 `/s/v1` 두 형태를
+모두 허용합니다(환경에 따라 접두사가 다릅니다). 버전 경로가 빠진 값은 거부합니다.
+
+### 공통 규칙
 
 ```http
-POST {APP_SERVER_API_URL}/timeline/drafts/{taskId}/callback
-Callback-Token: {callbackToken}
+Task-Token: {taskToken}
 Content-Type: application/json
 ```
 
-`taskId`는 URL path에 안전하게 인코딩하며, `callbackToken`은 body나 로그에
-포함하지 않고 인증 헤더로만 전달합니다.
+- `taskId`는 URL path에 안전하게 인코딩합니다.
+- `taskToken`은 `Task-Token` 헤더로만 전달합니다. URL, 요청 body, 로그에 넣지 않습니다.
+- 응답 body에 `taskToken`이 오면 그 값으로 갱신해 이후 요청에 사용합니다.
 
-### 성공 콜백
+### 재시도와 중단
 
-타임라인 생성과 DB 저장이 모두 완료된 경우입니다.
+| 응답 | AI 서버 동작 |
+|---|---|
+| `2xx` | 다음 단계로 진행합니다. |
+| timeout, `5xx` | **같은 토큰과 같은 body로** 재시도합니다(기본 3회, 0.5초부터 2배씩 대기). |
+| `401` | 토큰 오류입니다. 재시도하지 않고 중단하며 콜백도 보내지 않습니다. |
+| `404` | task가 없거나 만료됐습니다. 재시도하지 않고 중단하며 콜백도 보내지 않습니다. |
+| `409` | 호출 순서 충돌입니다. 재시도하지 않고 중단하며 콜백도 보내지 않습니다. |
+| 그 밖의 `4xx` | 재시도하지 않고 실패로 처리한 뒤 `FAILED` 콜백을 보냅니다. |
+
+401/404/409에서 콜백을 보내지 않는 이유는 콜백도 같은 이유로 거절되기 때문입니다.
+
+### 5.1 입력 조회
+
+```http
+GET {APP_SERVER_API_URL}/timeline/drafts/{taskId}/input
+Task-Token: {taskToken}
+```
+
+#### Response `200 OK`
+
+```json
+{
+  "taskId": "task-20260722-001",
+  "recordDate": "2026-07-22",
+  "recordTimeZone": "Asia/Seoul",
+  "window": {
+    "startAt": "2026-07-22T00:00:00+09:00",
+    "endAt": "2026-07-23T00:00:00+09:00"
+  },
+  "sourceItems": [
+    {
+      "rawId": "b1f0b6d5-5c3e-4a4e-9a37-2f1f0d2f3b71",
+      "itemType": "PHOTO",
+      "startAt": "2026-07-22T12:10:00+09:00",
+      "endAt": null,
+      "payload": {}
+    }
+  ]
+}
+```
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `taskId` | `string` | 요청한 작업 ID와 같아야 합니다. |
+| `taskToken` | `string \| null` | 갱신 토큰입니다. 있으면 이후 요청에 사용합니다. |
+| `recordDate` | `string` | 대상 날짜입니다. |
+| `recordTimeZone` | `string` | 시간대입니다. 기본값은 `Asia/Seoul`입니다. |
+| `window` | `object` | 수집 범위입니다. 실제 생성 범위는 접수 요청의 `window`가 정본입니다. |
+| `sourceItems[].rawId` | `string` | 원본 식별자(UUID)입니다. 결과의 `sourceRawIds`가 참조합니다. |
+| `sourceItems[].itemType` | `string` | `PHOTO`, `CALENDAR`, `STAY`, `MOVEMENT`, `HEALTH`, `NOTIFICATION` |
+| `sourceItems[].startAt` | `datetime` | 항목 시각입니다. |
+| `sourceItems[].endAt` | `datetime \| null` | 종료 시각입니다. |
+| `sourceItems[].payload` | `object` | `itemType`별 원본 데이터입니다. |
+
+다음 조건은 입력 계약 위반(`1102`)으로 처리합니다.
+
+- 응답 `taskId`가 요청 `taskId`와 다름
+- `sourceItems`가 비어 있음
+- 같은 `rawId`가 두 번 이상 나옴
+- `rawId`가 UUID가 아니거나 `startAt`이 없음
+
+### 5.2 결과 저장
+
+```http
+POST {APP_SERVER_API_URL}/timeline/drafts/{taskId}/result
+Task-Token: {taskToken}
+```
+
+```json
+{
+  "events": [
+    {
+      "eventType": "MEAL",
+      "title": "점심",
+      "subtitle": null,
+      "startAt": "2026-07-22T12:00:00+09:00",
+      "endAt": "2026-07-22T13:00:00+09:00",
+      "sourceRawIds": ["b1f0b6d5-5c3e-4a4e-9a37-2f1f0d2f3b71"]
+    }
+  ]
+}
+```
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `eventType` | `string` | 아래 13종 중 하나입니다. |
+| `title` | `string` | 이벤트 제목입니다. 255자로 자릅니다. |
+| `subtitle` | `string \| null` | 부제입니다. 내용이 없으면 `null`입니다. 255자로 자릅니다. |
+| `startAt` | `datetime` | 시작 시각입니다. `recordTimeZone` 기준 offset으로 보냅니다. |
+| `endAt` | `datetime` | 종료 시각입니다. `startAt` 이상입니다. |
+| `sourceRawIds` | `string[]` | 근거 원본의 `rawId`입니다. 1개 이상이며 중복은 제거합니다. |
+
+`eventType` 값:
+
+```text
+WAKE_UP, SLEEP, MOVEMENT, CALENDAR_EVENT, MEAL, PHOTO_MOMENT,
+MEETING, CLASS, WORK, EXERCISE, SOCIAL, REST, UNKNOWN
+```
+
+- 성공 응답은 `200 OK`이며 body는 사용하지 않습니다.
+- 입력에 없는 `rawId`가 결과에 남아 있으면 AI 서버가 저장 요청 자체를 보내지 않고
+  `1301`로 실패 처리합니다.
+- 이벤트가 0건이어도 요청을 보냅니다. "생성 결과 없음"도 확정된 결과입니다.
+
+### 5.3 완료 콜백
+
+```http
+POST {APP_SERVER_API_URL}/timeline/drafts/{taskId}/callback
+Task-Token: {taskToken}
+```
+
+#### 성공 콜백
+
+결과 저장 `200`을 확인한 뒤에만 보냅니다.
 
 ```json
 {
@@ -189,9 +333,9 @@ Content-Type: application/json
 }
 ```
 
-### 실패 콜백
+#### 실패 콜백
 
-원본 조회, AI 처리, 검증 또는 DB 저장 중 오류가 발생한 경우입니다.
+입력 조회, 추론, 저장 전 검증, 결과 저장 중 실패한 경우입니다.
 
 ```json
 {
@@ -200,8 +344,6 @@ Content-Type: application/json
   "error": "타임라인 생성이 제한 시간을 초과했습니다."
 }
 ```
-
-### Callback Body
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
@@ -214,63 +356,50 @@ Content-Type: application/json
 
 | 실패 원인 | `errorCode` |
 |---|---|
-| 수집 원본을 찾지 못함 | `1101` |
-| 수집 원본이 입력 계약 위반 | `1102` |
+| 입력 조회가 원본을 반환하지 않음(404) | `1101` |
+| 입력이 계약 위반 | `1102` |
+| 입력 조회 호출 실패(5xx/timeout 소진) | `1105` |
 | 메인 에이전트 제한 시간 초과 | `1201` |
 | AI 응답 스키마 검증 실패 | `1202` |
 | 저장 전 자체검증 실패 | `1301` |
-| DB 접근/트랜잭션 실패 | `1302` |
+| 결과 저장 호출 실패(5xx/timeout 소진) | `1303` |
 | 분류되지 않은 내부 오류 | `1901` |
 
-> **계약 변경 (이슈 #42)**
-> 이전에는 모든 실패가 문자열 `"ERROR_1008"` 하나로 전달됐고 `error`에는 원본 예외
-> 메시지가 그대로 실렸습니다. 지금은 `errorCode`가 **정수**이며 원인별로 다릅니다.
-> `error`에는 사전에 정의된 안전한 메시지만 나가고, 원본 예외 메시지는 AI 서버
-> 로그에만 남습니다.
+> **계약 변경 (이슈 #40)**
+> `Callback-Token` 헤더가 `Task-Token`으로 바뀌었고, 토큰 이름도 `callbackToken`에서
+> `taskToken`으로 통일됐습니다. 콜백 body는 그대로입니다.
 >
-> App Server는 `errorCode`를 정수로 읽어야 하며, **모르는 코드는 총괄 실패로**
-> 처리하면 됩니다. 원인이 새로 분류될 때마다 코드가 추가됩니다.
+> `errorCode`는 이슈 #42에서 정한 **원인별 정수**를 계속 사용합니다. App Server는
+> 모르는 코드를 총괄 실패로 처리하면 됩니다.
 
 ### App Server 응답
 
-- App Server의 정상 응답은 HTTP `200 OK`이며, AI 서버는 HTTP `2xx`를 콜백
-  전송 성공으로 처리합니다.
-- 응답 Body는 사용하지 않습니다.
+- 정상 응답은 HTTP `200 OK`이며, AI 서버는 HTTP `2xx`를 성공으로 처리합니다.
+- 콜백 응답 body는 사용하지 않습니다(`taskToken` 갱신은 예외).
 
 ### 유의사항
 
-- 콜백에는 생성된 타임라인 데이터가 포함되지 않습니다.
-- App Server는 `SUCCESS` 콜백을 받은 후 DB에서 결과를 조회합니다.
-- 현재 콜백 재시도는 구현되어 있지 않습니다.
-- 콜백 전송 실패가 이미 저장된 타임라인 데이터를 되돌리지는 않습니다.
+- 콜백에는 생성된 타임라인 데이터가 포함되지 않습니다. 결과는 결과 저장 API로 이미
+  전달됐습니다.
+- 콜백 전송 실패는 이미 저장된 결과를 되돌리지 않습니다.
+- 콜백 timeout/5xx는 같은 토큰과 같은 body로 재시도합니다.
 
-## 6. DB 입출력
+## 6. 데이터 접근 경계
 
-### 입력 테이블
+| 대상 | 소유 | AI 서버 접근 |
+|---|---|---|
+| 수집 원본 | App Server | 입력 조회 API (읽기) |
+| 타임라인 결과 | App Server | 결과 저장 API (쓰기) |
+| 작업 상태 | App Server | 콜백으로 통보만 |
 
-| 테이블 | 설명 |
-|---|---|
-| `timeline_draft_source_items` | AI 서버가 `taskId`로 원본 데이터를 조회합니다. AI 서버는 이 테이블을 수정하지 않습니다. |
+AI 서버는 데이터베이스에 직접 접근하지 않으며, 운영에 DB 접속 정보와 네트워크
+권한이 필요하지 않습니다.
 
-### 출력 테이블
-
-| 테이블 | 설명 |
-|---|---|
-| `timeline_events` | 생성된 최종 타임라인 이벤트를 저장합니다. |
-| `timeline_items` | 이벤트 생성에 사용한 원본 항목을 `raw_id` 기준으로 저장합니다. |
-| `timeline_event_items` | 이벤트와 원본 항목의 N:M 관계를 저장합니다. |
-
-`timeline_draft_event_suggestions`는 현재 처리 흐름에서 사용하지 않습니다.
-
-### 저장 규칙
-
-- API로 받은 `dailyRecordId`를 `timeline_events.daily_record_id`에 연결합니다.
-- 이벤트의 `sourceRefs.rawId`를 이용해 원본 항목과 이벤트의 관계를 저장합니다.
-- 하나의 이벤트는 여러 원본 항목과 연결될 수 있습니다.
-- 하나의 원본 항목은 여러 이벤트와 연결될 수 있습니다.
-- 요청한 `taskId`에 속하지 않는 `rawId`가 결과에 포함되면 저장에 실패합니다.
-- 같은 `dailyRecordId`를 다시 처리하면 기존 AI 생성 데이터만 교체합니다.
-- 사용자가 생성한 데이터는 교체 대상에 포함하지 않습니다.
+> **계약 변경 (이슈 #40)**
+> 이전에는 AI 서버가 staging MySQL의 `timeline_draft_source_items`를 직접 조회하고
+> `timeline_events`/`timeline_items`/`timeline_event_items`에 직접 저장했습니다.
+> 지금은 두 경로 모두 App Server API로 대체됐습니다. `dailyRecordId`는 접수 요청에
+> 그대로 남아 있지만 저장 연결은 App Server가 담당합니다.
 
 ## 7. 서버 상태 확인
 
@@ -314,8 +443,8 @@ AI 서버는 요청을 `202`로 접수한 뒤 백그라운드에서 처리를 �
 | 값 | 사용 위치 | 설명 |
 |---|---|---|
 | `PROCESSING` | 타임라인 생성 접수 응답 | 요청이 접수되어 백그라운드 처리를 시작함 |
-| `SUCCESS` | 완료 콜백 | 타임라인 생성과 DB 저장이 완료됨 |
-| `FAILED` | 완료 콜백 | 원본 조회, AI 처리, 검증 또는 DB 저장에 실패함 |
+| `SUCCESS` | 완료 콜백 | 타임라인 생성과 결과 저장이 완료됨 |
+| `FAILED` | 완료 콜백 | 입력 조회, AI 처리, 검증 또는 결과 저장에 실패함 |
 
 ## 9. API 문서 확인
 

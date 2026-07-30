@@ -1,9 +1,11 @@
-"""백그라운드 타임라인 처리와 완료 콜백을 검증한다."""
+"""백그라운드 타임라인 처리와 App Server 연동을 검증한다.
+
+이슈 #40 이후 데이터 경로는 App Server API 하나다: 입력 조회 → 추론 → 결과 저장
+→ 콜백. 순서와 실패 분류, 토큰 취급이 이 파일의 계약이다.
+"""
 
 import asyncio
 import logging
-
-from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.error_codes import ErrorCode, message_for
 from app.core.observability import (
@@ -15,16 +17,17 @@ from app.core.observability import (
 from app.core.structured import StructuredOutputError
 from app.schemas import TaskStatus, TimelineDraft
 from app.services import timeline_runner
-from app.services.source_repository import InMemorySourceRepository
-from app.services.timeline_repository import NoopTimelineRepository
+from app.services.app_server_client import AppServerError
 from app.services.timeline_validator import (
     TimelineValidationError,
     TimelineViolation,
     TimelineViolationCode,
 )
+from tests.fixtures.app_server import FakeAppServerClient
 from tests.fixtures.requests import default_source_items, fixture_raw_id, make_snapshot
 
 _TASK_ID = "task-1"
+_TASK_TOKEN = "task-token-1"
 _DAILY_RECORD_ID = 42
 _WINDOW_START = "2026-06-20T00:00:00+09:00"
 _WINDOW_END = "2026-06-21T00:00:00+09:00"
@@ -34,105 +37,98 @@ def _draft() -> TimelineDraft:
     return TimelineDraft(user_id="u-1", date="2026-06-20", timezone="Asia/Seoul")
 
 
-def _seeded_repo(task_id: str = _TASK_ID) -> InMemorySourceRepository:
-    repo = InMemorySourceRepository()
-    repo.put(make_snapshot(task_id=task_id, source_items=default_source_items()))
-    return repo
+def _client(**overrides) -> FakeAppServerClient:
+    defaults = dict(
+        snapshot=make_snapshot(task_id=_TASK_ID, source_items=default_source_items())
+    )
+    defaults.update(overrides)
+    return FakeAppServerClient(**defaults)
 
 
-class _RaisingTimelineRepo:
-    """저장 단계에서 항상 예외를 발생시키는 테스트 저장소."""
-
-    def __init__(self, exc: Exception) -> None:
-        self.exc = exc
-
-    async def save(self, task_id, draft, daily_record_id):
-        raise self.exc
-
-
-def _run(
-    repo: InMemorySourceRepository,
-    task_id: str = _TASK_ID,
-    timeline_repo=None,
-    callback_token: str = "callback-token",
-) -> TaskStatus:
+def _run(client: FakeAppServerClient, task_token: str = _TASK_TOKEN) -> TaskStatus:
     return asyncio.run(
         timeline_runner.process_timeline_task(
-            task_id,
-            repo,
-            timeline_repo or NoopTimelineRepository(),
+            _TASK_ID,
+            client,
             _DAILY_RECORD_ID,
             _WINDOW_START,
             _WINDOW_END,
-            callback_token,
+            task_token,
         )
     )
 
 
-def _patch_callback(monkeypatch) -> list:
-    sent = []
-
-    async def fake_send(app_server_api_url, task_id, callback_token, payload):
-        sent.append((app_server_api_url, task_id, callback_token, payload))
-        return True
-
-    monkeypatch.setattr(timeline_runner, "send_callback", fake_send)
-    return sent
-
-
-def test_success_returns_success_and_sends_callback(monkeypatch):
+def _patch_agent(monkeypatch, draft: TimelineDraft | None = None) -> None:
     async def fake_main_agent(request):
-        return _draft()
+        return draft if draft is not None else _draft()
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
-    monkeypatch.setattr(
-        timeline_runner.settings,
-        "app_server_api_url",
-        "https://app.example/s/api/v1",
-    )
-    sent = _patch_callback(monkeypatch)
-
-    status = _run(_seeded_repo())
-
-    assert status is TaskStatus.SUCCESS
-    assert len(sent) == 1
-    assert sent[0][0] == "https://app.example/s/api/v1"
-    assert sent[0][1] == _TASK_ID
-    assert sent[0][2] == "callback-token"
-    assert sent[0][3].status is TaskStatus.SUCCESS
-    assert sent[0][3].error_code is None
-    assert sent[0][3].error is None
 
 
-def test_no_app_server_api_url_skips_callback(monkeypatch):
-    async def fake_main_agent(request):
-        return _draft()
+def test_success_stores_result_then_sends_success_callback(monkeypatch):
+    _patch_agent(monkeypatch)
+    client = _client()
 
-    monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
-    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
-    sent = _patch_callback(monkeypatch)
-
-    status = _run(_seeded_repo())
+    status = _run(client)
 
     assert status is TaskStatus.SUCCESS
-    assert sent == []
+    # 순서가 계약이다. 저장 200 을 확인하기 전에 SUCCESS 를 통보하면 App Server 가
+    # 아직 없는 결과를 읽으러 간다.
+    assert client.order == ["input", "result", "callback"]
+    assert client.last_callback.status is TaskStatus.SUCCESS
+    assert client.last_callback.error_code is None
+    assert client.last_callback.error is None
+
+
+def test_all_calls_use_the_same_task_token(monkeypatch):
+    _patch_agent(monkeypatch)
+    client = _client()
+
+    _run(client, task_token="tok-abc")
+
+    assert [call.token for call in client.fetch_calls] == ["tok-abc"]
+    assert [call.token for call in client.submit_calls] == ["tok-abc"]
+    assert [call.token for call in client.callback_calls] == ["tok-abc"]
+
+
+def test_refreshed_token_from_response_is_used_by_later_calls(monkeypatch):
+    """응답 body 가 새 토큰을 주면 그 뒤 호출은 갱신된 값을 쓴다."""
+
+    _patch_agent(monkeypatch)
+    client = _client(fetch_token="tok-2", submit_token="tok-3")
+
+    _run(client, task_token="tok-1")
+
+    assert client.fetch_calls[0].token == "tok-1"
+    assert client.submit_calls[0].token == "tok-2"
+    assert client.callback_calls[0].token == "tok-3"
+
+
+def test_task_token_never_appears_in_logs(monkeypatch, caplog):
+    """토큰은 로그 금지 대상이다(계약)."""
+
+    _patch_agent(monkeypatch)
+    client = _client(fetch_token="tok-rotated")
+
+    with caplog.at_level(logging.DEBUG):
+        status = _run(client, task_token="tok-secret")
+
+    assert status is TaskStatus.SUCCESS
+    assert "tok-secret" not in caplog.text
+    assert "tok-rotated" not in caplog.text
 
 
 def test_logs_observation_configuration_when_collection_is_disabled(
     monkeypatch,
     caplog,
 ):
-    async def fake_main_agent(request):
-        return _draft()
-
-    monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
-    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
+    _patch_agent(monkeypatch)
     monkeypatch.setattr(timeline_runner.settings, "obs_enabled", False)
     monkeypatch.setattr(timeline_runner.settings, "es_url", "")
     monkeypatch.setattr(timeline_runner.settings, "obs_local_dir", None)
 
     with caplog.at_level(logging.INFO, logger="app.services.timeline_runner"):
-        status = _run(_seeded_repo())
+        status = _run(_client())
 
     assert status is TaskStatus.SUCCESS
     assert (
@@ -141,12 +137,51 @@ def test_logs_observation_configuration_when_collection_is_disabled(
     ) in caplog.text
 
 
-def test_missing_snapshot_returns_failed(monkeypatch):
-    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
+def test_missing_input_fails_without_callback(monkeypatch):
+    """입력 조회 404 는 task 가 없다는 뜻이라 콜백도 거절된다 — 보내지 않는다."""
 
-    status = _run(InMemorySourceRepository())
+    _patch_agent(monkeypatch)
+    client = FakeAppServerClient(snapshot=None)
+
+    status = _run(client)
 
     assert status is TaskStatus.FAILED
+    assert client.callback_calls == []
+    assert client.submit_calls == []
+
+
+def test_unauthorized_token_aborts_without_callback(monkeypatch):
+    _patch_agent(monkeypatch)
+    client = _client(
+        fetch_error=AppServerError(
+            "401",
+            code=ErrorCode.APP_SERVER_UNAUTHORIZED,
+            abort=True,
+        )
+    )
+
+    status = _run(client)
+
+    assert status is TaskStatus.FAILED
+    assert client.callback_calls == []
+
+
+def test_input_fetch_failure_sends_failed_callback(monkeypatch):
+    """5xx/timeout 소진은 task 가 살아 있으므로 실패를 통보한다."""
+
+    _patch_agent(monkeypatch)
+    client = _client(
+        fetch_error=AppServerError(
+            "재시도 소진",
+            code=ErrorCode.SOURCE_FETCH_FAILED,
+        )
+    )
+
+    status = _run(client)
+
+    assert status is TaskStatus.FAILED
+    assert client.last_callback.error_code == int(ErrorCode.SOURCE_FETCH_FAILED)
+    assert client.last_callback.error == message_for(ErrorCode.SOURCE_FETCH_FAILED)
 
 
 def test_agent_exception_returns_failed_callback(monkeypatch):
@@ -154,22 +189,17 @@ def test_agent_exception_returns_failed_callback(monkeypatch):
         raise RuntimeError("메인 에이전트 오류")
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", boom)
-    monkeypatch.setattr(
-        timeline_runner.settings,
-        "app_server_api_url",
-        "https://app.example/s/api/v1",
-    )
-    sent = _patch_callback(monkeypatch)
+    client = _client()
 
-    status = _run(_seeded_repo())
+    status = _run(client)
 
     assert status is TaskStatus.FAILED
-    assert sent[0][3].status is TaskStatus.FAILED
+    assert client.submit_calls == []
     # 분류되지 않은 예외라 INTERNAL_ERROR 다. 원본 메시지("메인 에이전트 오류")는
     # 로그에만 남고 콜백에는 카탈로그 안전 메시지가 나간다.
-    assert sent[0][3].error_code == int(ErrorCode.INTERNAL_ERROR)
-    assert sent[0][3].error == message_for(ErrorCode.INTERNAL_ERROR)
-    assert "메인 에이전트 오류" not in (sent[0][3].error or "")
+    assert client.last_callback.error_code == int(ErrorCode.INTERNAL_ERROR)
+    assert client.last_callback.error == message_for(ErrorCode.INTERNAL_ERROR)
+    assert "메인 에이전트 오류" not in (client.last_callback.error or "")
 
 
 def test_structured_output_failure_keeps_specific_callback_code(monkeypatch):
@@ -177,65 +207,65 @@ def test_structured_output_failure_keeps_specific_callback_code(monkeypatch):
         raise StructuredOutputError("rawId=내부값이 잘못됐습니다")
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", boom)
-    monkeypatch.setattr(
-        timeline_runner.settings,
-        "app_server_api_url",
-        "https://app.example/s/api/v1",
-    )
-    sent = _patch_callback(monkeypatch)
+    client = _client()
 
-    status = _run(_seeded_repo())
+    status = _run(client)
 
     assert status is TaskStatus.FAILED
-    assert sent[0][3].error_code == int(ErrorCode.STRUCTURED_OUTPUT_INVALID)
-    assert sent[0][3].error == message_for(ErrorCode.STRUCTURED_OUTPUT_INVALID)
-    assert "rawId" not in (sent[0][3].error or "")
+    assert client.last_callback.error_code == int(ErrorCode.STRUCTURED_OUTPUT_INVALID)
+    assert "rawId" not in (client.last_callback.error or "")
 
 
-def test_callback_passes_callback_token_as_transport_argument(monkeypatch):
-    async def fake_main_agent(request):
-        return _draft()
+def test_result_submit_failure_sends_failed_callback(monkeypatch):
+    """저장 성공 **전** 이므로 FAILED 통보가 허용된다."""
 
-    monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
-    monkeypatch.setattr(
-        timeline_runner.settings,
-        "app_server_api_url",
-        "https://app.example/s/api/v1",
+    _patch_agent(monkeypatch)
+    client = _client(
+        submit_error=AppServerError(
+            "재시도 소진",
+            code=ErrorCode.TIMELINE_RESULT_SUBMIT_FAILED,
+        )
     )
-    sent = _patch_callback(monkeypatch)
 
-    status = _run(_seeded_repo(), callback_token="tok-123")
+    status = _run(client)
+
+    assert status is TaskStatus.FAILED
+    assert client.last_callback.status is TaskStatus.FAILED
+    assert client.last_callback.error_code == int(
+        ErrorCode.TIMELINE_RESULT_SUBMIT_FAILED
+    )
+
+
+def test_result_conflict_aborts_without_callback(monkeypatch):
+    _patch_agent(monkeypatch)
+    client = _client(
+        submit_error=AppServerError(
+            "409",
+            code=ErrorCode.APP_SERVER_CONFLICT,
+            abort=True,
+        )
+    )
+
+    status = _run(client)
+
+    assert status is TaskStatus.FAILED
+    assert client.callback_calls == []
+
+
+def test_callback_send_failure_does_not_change_status(monkeypatch):
+    """저장이 끝난 뒤의 콜백 실패는 결과를 되돌리지 않는다."""
+
+    _patch_agent(monkeypatch)
+    client = _client(callback_ok=False)
+
+    status = _run(client)
 
     assert status is TaskStatus.SUCCESS
-    assert sent[0][2] == "tok-123"
-
-
-def test_db_save_failure_returns_failed_callback(monkeypatch):
-    async def fake_main_agent(request):
-        return _draft()
-
-    monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
-    monkeypatch.setattr(
-        timeline_runner.settings,
-        "app_server_api_url",
-        "https://app.example/s/api/v1",
-    )
-    sent = _patch_callback(monkeypatch)
-    failing_repo = _RaisingTimelineRepo(SQLAlchemyError("DB 저장 실패"))
-
-    status = _run(_seeded_repo(), timeline_repo=failing_repo)
-
-    assert status is TaskStatus.FAILED
-    assert sent[0][3].status is TaskStatus.FAILED
-    assert sent[0][3].error_code == int(ErrorCode.DATABASE_ERROR)
-    assert sent[0][3].error == message_for(ErrorCode.DATABASE_ERROR)
-    assert "DB 저장 실패" not in (sent[0][3].error or "")
+    assert len(client.submit_calls) == 1
 
 
 def test_storage_validation_failure_observes_safe_codes_without_raw_id(monkeypatch):
-    async def fake_main_agent(request):
-        return _draft()
-
+    _patch_agent(monkeypatch)
     sink = InMemoryObservationSink()
     observer = Observer(sink)
 
@@ -251,19 +281,22 @@ def test_storage_validation_failure_observes_safe_codes_without_raw_id(monkeypat
             )
         ]
     )
-    monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
     monkeypatch.setattr(
         timeline_runner, "build_task_observer", lambda: (observer, sink)
     )
     monkeypatch.setattr(timeline_runner, "flush_task_observations", fake_flush)
-    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
-
-    status = _run(
-        _seeded_repo(),
-        timeline_repo=_RaisingTimelineRepo(validation_error),
+    monkeypatch.setattr(
+        timeline_runner,
+        "ensure_timeline_valid_for_storage",
+        _raise(validation_error),
     )
 
+    client = _client()
+    status = _run(client)
+
     assert status is TaskStatus.FAILED
+    # 검증에서 걸렸으므로 저장 요청 자체를 보내지 않는다.
+    assert client.submit_calls == []
     failed = next(
         event
         for event in sink.events
@@ -286,8 +319,17 @@ def test_timeout_returns_failed(monkeypatch):
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", slow)
     monkeypatch.setattr(timeline_runner.settings, "pipeline_timeout_sec", 0.05)
-    monkeypatch.setattr(timeline_runner.settings, "app_server_api_url", None)
+    client = _client()
 
-    status = _run(_seeded_repo())
+    status = _run(client)
 
     assert status is TaskStatus.FAILED
+    assert client.submit_calls == []
+    assert client.last_callback.error_code == int(ErrorCode.PIPELINE_TIMEOUT)
+
+
+def _raise(exc: Exception):
+    def _fail(*args, **kwargs):
+        raise exc
+
+    return _fail

@@ -95,51 +95,55 @@ class Settings(BaseSettings):
     # 0 이면 LLM 개선 없이 결정론 확정(draft_repair)만 수행한다.
     repair_max_iterations: int = 3
 
-    # App Server 서버간 API 기본 URL. `/s/api/{version}` 까지를 넣고, task별
-    # Timeline callback 리소스 경로는 코드에서 조립한다. 요청 계약에는 callback URL이
-    # 없으므로 환경별로 고정하며, 비어 있으면 완료 콜백을 보내지 않는다.
-    app_server_api_url: str | None = None
+    # App Server 서버간 API 기본 URL. 버전 경로(`/s/api/v1` 또는 `/s/v1`)까지를
+    # 넣고, task별 리소스 경로(input/result/callback)는 코드에서 조립한다. 요청
+    # 계약에는 URL이 없으므로 환경별로 고정한다.
+    #
+    # **필수**다(이슈 #40). AI 서버는 더 이상 staging DB 에 직접 붙지 않고 입력
+    # 조회·결과 저장·완료 통보를 전부 이 API 로 한다 — 값이 없으면 아무 일도 할 수
+    # 없으므로 기동 시점에 실패하는 편이 낫다.
+    app_server_api_url: str
 
-    # App Server 콜백 POST 요청 timeout(초).
-    callback_timeout_sec: float = 10.0
+    # App Server API 요청 timeout(초). 입력 조회·결과 저장·콜백에 공통 적용한다.
+    app_server_timeout_sec: float = 10.0
+
+    # App Server API 시도 횟수 상한(최초 1회 + 재시도). timeout/5xx 에만 재시도한다.
+    # 4xx 는 재시도해도 같은 답이 오므로 즉시 중단한다.
+    app_server_max_attempts: int = 3
+
+    # 재시도 간 대기 시간(초). 시도마다 2배씩 늘린다(0.5 → 1.0 → 2.0).
+    app_server_retry_backoff_sec: float = 0.5
 
     @field_validator("app_server_api_url", mode="before")
     @classmethod
-    def validate_app_server_api_url(cls, value: object) -> str | None:
+    def validate_app_server_api_url(cls, value: object) -> str:
         """App Server API 기본 URL을 정규화하고 절대 HTTP(S) URL인지 검증한다."""
 
-        if value is None:
-            return None
-
-        normalized = str(value).strip()
+        normalized = str(value or "").strip()
         if not normalized:
-            return None
+            raise ValueError("APP_SERVER_API_URL은 비어 있을 수 없습니다.")
 
         parsed = urlsplit(normalized)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("APP_SERVER_API_URL은 절대 HTTP(S) URL이어야 합니다.")
         if parsed.query or parsed.fragment:
             raise ValueError("APP_SERVER_API_URL에는 query 또는 fragment를 넣을 수 없습니다.")
-        if re.search(r"/s/api/v\d+/?$", parsed.path) is None:
-            raise ValueError("APP_SERVER_API_URL은 /s/api/v{숫자} 경로로 끝나야 합니다.")
+        # 배포 환경마다 서버간 API 접두사가 `/s/api/v1` 과 `/s/v1` 로 갈린다. 둘 다
+        # 받되 버전 경로가 빠진 값은 계속 막는다 — 버전 없는 base 로 붙으면 경로가
+        # 통째로 404 가 되고, 그때는 원인이 설정이라는 게 잘 드러나지 않는다.
+        if re.search(r"/s(/api)?/v\d+/?$", parsed.path) is None:
+            raise ValueError(
+                "APP_SERVER_API_URL은 /s/api/v{숫자} 또는 /s/v{숫자} 경로로 끝나야 합니다."
+            )
 
         return normalized.rstrip("/")
 
-    # --- staging RDB(MySQL) 설정 (이슈 #25) ---
-    # AI 서버는 App Server 가 적재한 timeline_draft_source_items 를 taskId 로 읽고,
-    # 분석 결과를 timeline_events/timeline_items 에 저장한다. DB 는 필수다 — DB 없이
-    # 도는 모드는 없으며, 접속 정보가 없거나 접속이 안 되면 처리에 실패한다.
-    # 접속은 host/port 직결이다. prod 는 VPC 로 private subnet DB 에 바로 붙고,
-    # 로컬 검증은 SSH 터널을 열어 DB_HOST 를 127.0.0.1:로컬포트로 가리키면 된다.
-    db_host: str = "127.0.0.1"
-    db_port: int = 3306
-    db_name: str = "laimory"
-    db_user: str = ""
-    db_password: str = ""
-    # SQLAlchemy engine 이 실행 SQL 을 로그로 남길지(디버깅용).
-    db_echo: bool = False
-    # DB 작업(조회/저장) 요청 timeout(초).
-    db_timeout_sec: float = 10.0
+    @field_validator("app_server_max_attempts")
+    @classmethod
+    def validate_app_server_max_attempts(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("APP_SERVER_MAX_ATTEMPTS는 1 이상이어야 합니다.")
+        return value
 
     # --- 관측(observability) export 설정 (이슈 #28) ---
     # Timeline 실행 로그를 taskId 단위 JSON 문서로 Elasticsearch 에 보낸다. 마스터

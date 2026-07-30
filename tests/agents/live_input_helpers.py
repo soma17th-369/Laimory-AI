@@ -15,7 +15,7 @@ from app.agents.events.photo.describer import VisionPhotoDescriber
 from app.agents.events.photo.image_source import LocalFilePhotoImageSource
 from app.schemas import TimelineDraftRequest
 from app.services.normalizer import normalize
-from app.services.source_repository import load_snapshot_from_file
+from tests.fixtures.snapshot_file import load_snapshot_from_file
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 INPUT_DIR = ROOT_DIR / "data" / "input"
