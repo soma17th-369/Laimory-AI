@@ -98,7 +98,7 @@ start_filebeat() {
     -v /var/run/docker.sock:/var/run/docker.sock:ro \
     "${LOG_OPTS[@]}" \
     "$image" \
-    filebeat -e -strict.perms=false
+    filebeat -e --strict.perms=false
 }
 
 wait_until_filebeat_running() {
