@@ -58,7 +58,7 @@ _CONTENT_KEYS = {
     "message",
     "options",
     "output",
-    "plans",
+    "plan",
     "prompt",
     "request",
     "response",
