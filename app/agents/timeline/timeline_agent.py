@@ -103,8 +103,7 @@ def _report_skipped_item(kind: str, index: int, exc: Exception) -> None:
         ErrorCode.STRUCTURED_OUTPUT_INVALID,
         "Timeline 응답 항목 검증 실패로 제외",
         exc=exc,
-        context={"kind": kind, "index": index},
-        payload={"kind": kind, "index": index, "action": "skipped"},
+        context={"kind": kind, "index": index, "action": "skipped"},
     )
 
 
@@ -214,7 +213,6 @@ class TimelineAgent(Agent):
                 "Timeline Agent 실행 실패",
                 exc=exc,
                 context={"fallback": "empty_draft"},
-                payload={"fallback": "empty_draft"},
                 exc_info=True,
             )
             return _empty_draft(

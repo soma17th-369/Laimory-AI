@@ -25,13 +25,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 FROM python:3.14-slim AS runtime
 
-# 로그는 버퍼링 없이 stdout 으로 흘려 CloudWatch 가 그대로 수집하게 한다.
+# 로그는 버퍼링 없이 stdout 으로 흘린다. EC2 에서는 별도 Filebeat 컨테이너가 이 stdout 을
+# 줄 단위로 읽어 Elasticsearch 로 보낸다(이슈 #47). 버퍼링이 걸리면 수집이 그만큼 밀린다.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH"
 
 # 컨테이너 기본값. AgentCore environmentVariables 또는 EC2의 env 파일로 덮어쓴다.
-# 모델 id, DB 접속, 콜백 URL, 관측 설정 같은 환경별 값은 이미지에 굽지 않는다.
+# 모델 id, App Server URL, Langfuse 키 같은 환경별 값은 이미지에 굽지 않는다.
+# LOG_FORMAT=json 은 기본값으로 굽는다 — Filebeat 가 읽으려면 한 줄이 유효한 JSON 이어야 한다.
 ENV APP_ENV=prod \
     LOG_LEVEL=INFO \
     LOG_FORMAT=json \
@@ -46,8 +48,8 @@ RUN groupadd --system --gid 10001 laimory \
 COPY --from=builder /app/.venv /app/.venv
 COPY app ./app
 # config.py 가 agent_version 을 pyproject.toml 에서 읽는다. virtual project 라
-# importlib.metadata 로는 버전을 못 찾으므로, 관측 문서의 agentVersion 이 "unknown"
-# 이 되지 않도록 pyproject.toml 을 함께 넣는다.
+# importlib.metadata 로는 버전을 못 찾으므로, 로그의 version 필드와 Langfuse release 가
+# "unknown" 이 되지 않도록 pyproject.toml 을 함께 넣는다.
 COPY pyproject.toml ./
 
 USER laimory

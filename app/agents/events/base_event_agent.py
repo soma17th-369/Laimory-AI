@@ -5,13 +5,8 @@ from abc import abstractmethod
 from app.agents.base import Agent
 from app.core.error_codes import ErrorCode, message_for
 from app.core.exceptions import code_of_or, report_error
-from app.core.logging import get_logger
-from app.core.observability import (
-    ObservationEventType,
-    ObservationStage,
-    emit_observation,
-    observation_scope,
-)
+from app.core.execution_context import ExecutionStage
+from app.core.logging import get_logger, log_fields, stage_span
 from app.schemas import AgentEventResult, AgentWarning, TimelineDraftRequest
 from app.services.source_integrity import filter_agent_result_sources
 from app.services.validator import filter_result_to_window, resolve_window_bounds
@@ -33,15 +28,11 @@ class EventAgent(Agent):
         의미가 확정된 뒤 `draft_repair` 에서 다룬다.
         """
 
-        with observation_scope(
-            ObservationStage.EVENT_AGENT, agent=self._agent_name()
-        ):
-            emit_observation(
-                ObservationEventType.STARTED,
-                payload={
-                    "request": request.model_dump(by_alias=True, mode="json"),
-                },
-            )
+        with stage_span(
+            logger,
+            ExecutionStage.EVENT_AGENT,
+            agent=self._agent_name(),
+        ) as outcome:
             try:
                 result = self._generate(request)
             except Exception as exc:
@@ -69,10 +60,12 @@ class EventAgent(Agent):
 
             filtered, source_stats = filter_agent_result_sources(result, request)
             if source_stats.changed:
-                emit_observation(
-                    ObservationEventType.VALIDATION_REPAIRED,
-                    payload=source_stats.observation_payload(
-                        item_kind="CANDIDATE_OR_FRAGMENT"
+                logger.info(
+                    "입력에 없는 rawId 참조 정리",
+                    extra=log_fields(
+                        **source_stats.violation_log_fields(
+                            item_kind="CANDIDATE_OR_FRAGMENT"
+                        )
                     ),
                 )
                 filtered.warnings.append(
@@ -87,15 +80,9 @@ class EventAgent(Agent):
                     )
                 )
             filtered = self._enforce_window(request, filtered)
-            emit_observation(
-                ObservationEventType.COMPLETED,
-                payload={
-                    "candidateCount": len(filtered.candidates),
-                    "fragmentCount": len(filtered.fragments),
-                    "warningCount": len(filtered.warnings),
-                    "result": filtered.model_dump(by_alias=True, mode="json"),
-                },
-            )
+            outcome["candidateCount"] = len(filtered.candidates)
+            outcome["fragmentCount"] = len(filtered.fragments)
+            outcome["warningCount"] = len(filtered.warnings)
             return filtered
 
     def _agent_name(self) -> str:

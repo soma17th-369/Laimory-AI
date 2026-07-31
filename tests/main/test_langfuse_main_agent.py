@@ -13,11 +13,7 @@ from app.agents.main import run_main_agent
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.core import langfuse_tracing
 from app.core.llm import OpenAIProvider
-from app.core.observability import (
-    InMemoryObservationSink,
-    Observer,
-    observation_context,
-)
+from app.core.execution_context import execution_context
 from app.schemas import AgentEventResult
 from tests.fixtures.fake_llm import candidate
 from tests.fixtures.pipeline import StubEventAgent, confirm_only_repair_agent
@@ -110,11 +106,9 @@ def test_main_agent_trace_has_full_recursive_hierarchy_and_rollups(
         },
         ensure_ascii=False,
     )
-    observer = Observer(InMemoryObservationSink())
-
     async def run() -> None:
         with (
-            observation_context(request.task_id, observer),
+            execution_context(request.task_id),
             langfuse_tracing.trace_timeline_task(
                 request.task_id,
                 daily_record_id=42,

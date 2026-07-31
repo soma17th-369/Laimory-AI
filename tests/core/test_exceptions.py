@@ -1,4 +1,4 @@
-"""예외 → 코드 매핑과, 로그·관측을 한 번에 남기는 공통 헬퍼를 검증한다."""
+"""예외 → 코드 매핑과, 실패를 구조화 로그로 남기는 공통 헬퍼를 검증한다."""
 
 import asyncio
 import logging
@@ -14,14 +14,7 @@ from app.core.exceptions import (
     report_error,
     safe_message,
 )
-from app.core.observability import (
-    InMemoryObservationSink,
-    ObservationEventType,
-    ObservationStage,
-    Observer,
-    observation_context,
-)
-from app.core.observability.sinks import CompositeObservationError
+from app.core.execution_context import ExecutionStage, execution_context
 from app.core.structured import StructuredOutputError
 from app.services.draft_edit import DraftEditError
 from app.services.source_contract import SourceBatchError
@@ -48,7 +41,6 @@ def _validation_error() -> TimelineValidationError:
         (_validation_error(), ErrorCode.TIMELINE_STORAGE_VALIDATION_FAILED),
         (DraftEditError("x"), ErrorCode.DRAFT_EDIT_FAILED),
         (RepairToolError("x"), ErrorCode.REPAIR_TOOL_FAILED),
-        (CompositeObservationError([]), ErrorCode.OBSERVATION_EMIT_FAILED),
         (asyncio.TimeoutError(), ErrorCode.PIPELINE_TIMEOUT),
         (TimeoutError(), ErrorCode.PIPELINE_TIMEOUT),
         (RuntimeError("분류되지 않음"), ErrorCode.INTERNAL_ERROR),
@@ -63,7 +55,6 @@ def test_legacy_base_classes_still_catchable():
     """기존에 이 예외들을 표준 타입으로 잡던 호출부가 그대로 동작해야 한다."""
 
     assert isinstance(SourceBatchError("x"), ValueError)
-    assert isinstance(CompositeObservationError([]), RuntimeError)
 
 
 def test_safe_message_never_returns_the_original_text():
@@ -100,8 +91,8 @@ def test_app_error_message_is_catalog_message_not_detail():
     assert "/srv/secret" not in exc.message
 
 
-def test_report_error_logs_error_code_first(caplog):
-    """로그를 errorCode 로 필터·집계하려면 필드 이름과 위치가 흔들리면 안 된다."""
+def test_report_error_puts_code_in_a_structured_field(caplog):
+    """errorCode 로 필터·집계하려면 값이 메시지 문자열이 아니라 필드에 있어야 한다."""
 
     with caplog.at_level(logging.WARNING, logger=logger.name):
         returned = report_error(
@@ -110,14 +101,14 @@ def test_report_error_logs_error_code_first(caplog):
             "타임라인 처리 timeout",
             exc=asyncio.TimeoutError(),
             context={"taskId": "task-1"},
-            emit=False,
         )
 
     assert returned is ErrorCode.PIPELINE_TIMEOUT
-    assert (
-        "타임라인 처리 timeout: errorCode=1201, errorType=TimeoutError, taskId=task-1"
-        in caplog.text
-    )
+    record = caplog.records[-1]
+    assert record.getMessage() == "타임라인 처리 timeout"
+    assert record.fields["errorCode"] == int(ErrorCode.PIPELINE_TIMEOUT)
+    assert record.fields["errorType"] == "TimeoutError"
+    assert record.fields["taskId"] == "task-1"
 
 
 def test_report_error_keeps_original_message_in_logs(caplog):
@@ -129,80 +120,79 @@ def test_report_error_keeps_original_message_in_logs(caplog):
             ErrorCode.TIMELINE_RESULT_SUBMIT_FAILED,
             "저장 실패",
             exc=RuntimeError("connection to 10.0.0.5:3306 refused"),
-            emit=False,
         )
 
-    assert "connection to 10.0.0.5:3306 refused" in caplog.text
+    assert (
+        caplog.records[-1].fields["errorMessage"]
+        == "connection to 10.0.0.5:3306 refused"
+    )
 
 
-def test_report_error_emits_observation_with_same_code():
-    """로그와 관측이 같은 코드를 써야 한 실패를 두 곳에서 이어 볼 수 있다."""
+def test_report_error_records_stage_and_agent_fields(caplog):
+    """어느 단계에서 깨졌는지가 로그 필드로 남아야 추적이 된다."""
 
-    sink = InMemoryObservationSink()
-    observer = Observer(sink)
-
-    with observation_context("task-1", observer):
+    with caplog.at_level(logging.WARNING, logger=logger.name):
         report_error(
             logger,
             ErrorCode.EVENT_AGENT_FAILED,
             "Event Agent 실행 실패",
             exc=RuntimeError("boom"),
-            stage=ObservationStage.EVENT_AGENT,
+            stage=ExecutionStage.EVENT_AGENT,
             agent="calendar",
-            payload={"fallback": "empty_result"},
+            context={"fallback": "empty_result"},
         )
 
-    assert len(sink.events) == 1
-    event = sink.events[0]
-    assert event.event_type is ObservationEventType.FAILED
-    assert event.stage is ObservationStage.EVENT_AGENT
-    assert event.agent == "calendar"
-    assert event.payload == {
-        "errorCode": int(ErrorCode.EVENT_AGENT_FAILED),
-        "errorType": "RuntimeError",
-        "fallback": "empty_result",
-    }
+    fields = caplog.records[-1].fields
+    assert fields["errorCode"] == int(ErrorCode.EVENT_AGENT_FAILED)
+    assert fields["stage"] == "EVENT_AGENT"
+    assert fields["agent"] == "calendar"
+    assert fields["fallback"] == "empty_result"
 
 
-def test_report_error_payload_cannot_override_common_error_fields():
-    sink = InMemoryObservationSink()
-    observer = Observer(sink)
-
-    with observation_context("task-1", observer):
-        report_error(
-            logger,
-            ErrorCode.TIMELINE_RESULT_SUBMIT_FAILED,
-            "저장 실패",
-            exc=RuntimeError("boom"),
-            payload={"errorCode": 9999, "errorType": "FakeError"},
-        )
-
-    assert sink.events[0].payload["errorCode"] == int(ErrorCode.TIMELINE_RESULT_SUBMIT_FAILED)
-    assert sink.events[0].payload["errorType"] == "RuntimeError"
-
-
-def test_report_error_with_emit_false_writes_no_observation():
-    """관측 모듈 자신의 실패는 관측으로 알릴 수 없다(재귀한다)."""
-
-    sink = InMemoryObservationSink()
-    observer = Observer(sink)
-
-    with observation_context("task-1", observer):
-        report_error(
-            logger,
-            ErrorCode.OBSERVATION_EMIT_FAILED,
-            "관측 이벤트 기록 실패",
-            exc=RuntimeError("sink down"),
-            emit=False,
-        )
-
-    assert sink.events == []
-
-
-def test_report_error_without_observation_context_does_not_raise(caplog):
-    """스크립트·단위 테스트처럼 관측 컨텍스트가 없어도 로그는 남아야 한다."""
+def test_report_error_omits_empty_optional_fields(caplog):
+    """값 없는 항목까지 null 로 채우면 매핑만 늘고 검색에는 도움이 안 된다."""
 
     with caplog.at_level(logging.WARNING, logger=logger.name):
         report_error(logger, ErrorCode.LLM_CALL_FAILED, "LLM 호출 실패")
 
-    assert "errorCode=1203" in caplog.text
+    fields = caplog.records[-1].fields
+    assert fields == {"errorCode": int(ErrorCode.LLM_CALL_FAILED)}
+
+
+def test_report_error_with_traceback_leaves_message_to_the_formatter(caplog):
+    """exc_info 를 남길 때는 포매터가 error.message 를 채우므로 중복하지 않는다."""
+
+    with caplog.at_level(logging.ERROR, logger=logger.name):
+        report_error(
+            logger,
+            ErrorCode.INTERNAL_ERROR,
+            "미처리 예외",
+            exc=RuntimeError("boom"),
+            level=logging.ERROR,
+            exc_info=True,
+        )
+
+    record = caplog.records[-1]
+    assert record.exc_info is not None
+    assert record.fields["errorType"] == "RuntimeError"
+    assert "errorMessage" not in record.fields
+
+
+def test_report_error_without_execution_context_does_not_raise(caplog):
+    """스크립트·단위 테스트처럼 실행 컨텍스트가 없어도 로그는 남아야 한다."""
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        report_error(logger, ErrorCode.LLM_CALL_FAILED, "LLM 호출 실패")
+
+    assert caplog.records[-1].fields["errorCode"] == 1203
+
+
+def test_report_error_inside_execution_context_keeps_task_correlation(caplog):
+    """taskId 는 실행 컨텍스트가 붙이므로 호출부가 매번 넘기지 않아도 된다."""
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        with execution_context("task-ctx"):
+            report_error(logger, ErrorCode.LLM_CALL_FAILED, "LLM 호출 실패")
+
+    # 필드에는 없고, 포매터가 컨텍스트에서 읽어 넣는다.
+    assert "taskId" not in caplog.records[-1].fields

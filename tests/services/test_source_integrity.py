@@ -1,14 +1,9 @@
 """LLM이 만든 rawId를 실제 요청 allowlist와 대조하는 경계 검증."""
 
+import logging
+
 from app.agents.events.base_event_agent import EventAgent
-from app.core.observability import (
-    InMemoryObservationSink,
-    ObservationEventType,
-    ObservationStage,
-    Observer,
-    observation_context,
-    observation_scope,
-)
+from app.core.execution_context import ExecutionStage, execution_scope
 from app.schemas import AgentEventResult, TimelineDraft, TimelineEventDraft
 from app.services.draft_repair import repair_draft
 from app.services.source_integrity import (
@@ -118,7 +113,15 @@ class _IntegrityEventAgent(EventAgent):
         return self.result
 
 
-def test_event_agent_observes_recovered_source_violation_without_raw_ids():
+def _violation_record(caplog):
+    return next(
+        record
+        for record in caplog.records
+        if record.getMessage() == "입력에 없는 rawId 참조 정리"
+    )
+
+
+def test_event_agent_logs_recovered_source_violation_without_raw_ids(caplog):
     result = AgentEventResult.model_validate(
         {
             "candidates": [
@@ -127,50 +130,39 @@ def test_event_agent_observes_recovered_source_violation_without_raw_ids():
             "fragments": [],
         }
     )
-    sink = InMemoryObservationSink()
 
-    with observation_context("task-integrity", Observer(sink)):
+    with caplog.at_level(logging.INFO, logger="app.agents.events.base_event_agent"):
         _IntegrityEventAgent(result).generate(_request())
 
-    event = next(
-        item
-        for item in sink.events
-        if item.event_type is ObservationEventType.VALIDATION_REPAIRED
-    )
-    assert event.stage is ObservationStage.EVENT_AGENT
-    assert event.payload == {
+    record = _violation_record(caplog)
+    assert record.fields == {
         "validationCode": "SOURCE_RAW_ID_NOT_IN_REQUEST",
         "itemKind": "CANDIDATE_OR_FRAGMENT",
         "removedRefCount": 1,
         "droppedItemCount": 0,
     }
-    assert VALID_RAW_ID not in str(event.payload)
-    assert UNKNOWN_RAW_ID not in str(event.payload)
+    # rawId 원문은 사용자 데이터라 운영 로그로 나가지 않는다.
+    assert VALID_RAW_ID not in str(record.fields)
+    assert UNKNOWN_RAW_ID not in str(record.fields)
 
 
-def test_repair_observes_dropped_event_without_raw_ids():
+def test_repair_logs_dropped_event_without_raw_ids(caplog):
     draft = TimelineDraft(
         user_id="u",
         date="2026-06-20",
         timezone="Asia/Seoul",
         events=[_event("전부 환각", [UNKNOWN_RAW_ID])],
     )
-    sink = InMemoryObservationSink()
 
-    with observation_context("task-integrity", Observer(sink)):
-        with observation_scope(ObservationStage.REPAIR_AGENT, agent="repair"):
+    with caplog.at_level(logging.INFO, logger="app.services.draft_repair"):
+        with execution_scope(ExecutionStage.REPAIR_AGENT, agent="repair"):
             repair_draft(draft, _request())
 
-    event = next(
-        item
-        for item in sink.events
-        if item.event_type is ObservationEventType.VALIDATION_REPAIRED
-    )
-    assert event.stage is ObservationStage.REPAIR_AGENT
-    assert event.payload == {
+    record = _violation_record(caplog)
+    assert record.fields == {
         "validationCode": "SOURCE_RAW_ID_NOT_IN_REQUEST",
         "itemKind": "TIMELINE_EVENT",
         "removedRefCount": 1,
         "droppedItemCount": 1,
     }
-    assert UNKNOWN_RAW_ID not in str(event.payload)
+    assert UNKNOWN_RAW_ID not in str(record.fields)

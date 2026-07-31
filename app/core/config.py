@@ -149,30 +149,12 @@ class Settings(BaseSettings):
             raise ValueError("APP_SERVER_MAX_ATTEMPTS는 1 이상이어야 합니다.")
         return value
 
-    # --- 관측(observability) export 설정 (이슈 #28) ---
-    # Timeline 실행 로그를 taskId 단위 JSON 문서로 Elasticsearch 에 보낸다. 마스터
-    # 스위치가 꺼져 있고 로컬 출력도 없으면 수집 자체를 하지 않는다. 관측은 부가
-    # 기능이라 꺼져도, 전송에 실패해도 Timeline 처리에는 영향을 주지 않는다.
-    obs_enabled: bool = False
-    # 배포/빌드 버전. 관측 이벤트/문서에 agentVersion 으로 실어 버전별 품질 비교에 쓴다.
+    # 배포/빌드 버전. 운영 로그의 `version` 필드와 Langfuse release 로 나가 어느
+    # 배포본이 낸 로그·trace 인지 특정한다. EC2 배포는 이미지 태그를 넣는다.
     agent_version: str = _default_agent_version()
-    # Elasticsearch 접속. es_url 이 비어 있으면 ES 전송을 건너뛴다.
-    es_url: str = ""
-    es_api_key: str = ""
-    es_event_index: str = "ai-timeline-task"
-    es_timeout_sec: float = 5.0
-    es_max_retries: int = 3
-    # SANITIZED 는 입력·프롬프트·응답·draft 등 실행 본문을 마스킹한 뒤 저장하고,
-    # NONE 은 본문 대신 길이와 해시만 남긴다. 어느 정책이든 이벤트당 크기 제한을
-    # 적용하며 마스킹하지 않은 원문 저장 모드는 제공하지 않는다.
-    obs_content_capture: Literal["NONE", "SANITIZED"] = "SANITIZED"
-    obs_max_payload_bytes: int = 256 * 1024
-    obs_max_events_per_task: int = 1000
-    # dev 검사용: 값이 있으면 조립한 event 문서를 로컬에도 저장한다.
-    obs_local_dir: str | None = None
 
     # --- Langfuse tracing ---
-    # 기존 Elasticsearch 관측을 대체하지 않는 선택적 외부 tracing 계층이다.
+    # AI 실행 관측(agent 트리·LLM generation·토큰)을 전담하는 계층이다(이슈 #47).
     # 키가 없거나 비활성화돼 있으면 no-op이며 Timeline 처리를 실패시키지 않는다.
     langfuse_enabled: bool = False
     langfuse_public_key: str = ""
@@ -228,7 +210,9 @@ class Settings(BaseSettings):
             raise ValueError("LANGFUSE_MAX_PAYLOAD_BYTES는 1 이상이어야 합니다.")
         return value
 
-    # 운영 로그 포맷: "rich"(로컬 콘솔) | "json"(stdout JSON, CloudWatch Logs Insights).
+    # 운영 로그 포맷: "rich"(로컬 콘솔) | "json"(stdout 한 줄 JSON).
+    # 운영에서는 반드시 "json" 이다. EC2 에서 Filebeat 가 컨테이너 stdout 을 줄 단위로
+    # 읽어 Elasticsearch 로 보내므로, 한 줄이 유효한 JSON 이 아니면 그 이벤트를 잃는다.
     log_format: str = "rich"
 
 

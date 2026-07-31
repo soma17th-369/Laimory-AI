@@ -8,12 +8,7 @@ import asyncio
 import logging
 
 from app.core.error_codes import ErrorCode, message_for
-from app.core.observability import (
-    InMemoryObservationSink,
-    ObservationEventType,
-    ObservationStage,
-    Observer,
-)
+from app.core.execution_context import ExecutionStage
 from app.core.structured import StructuredOutputError
 from app.schemas import TaskStatus, TimelineDraft
 from app.services import timeline_runner
@@ -118,23 +113,37 @@ def test_task_token_never_appears_in_logs(monkeypatch, caplog):
     assert "tok-rotated" not in caplog.text
 
 
-def test_logs_observation_configuration_when_collection_is_disabled(
-    monkeypatch,
-    caplog,
-):
+def test_logs_stage_boundaries_for_operational_tracing(monkeypatch, caplog):
+    """운영자가 taskId 로 단계별 소요시간과 진행 지점을 따라갈 수 있어야 한다."""
+
     _patch_agent(monkeypatch)
-    monkeypatch.setattr(timeline_runner.settings, "obs_enabled", False)
-    monkeypatch.setattr(timeline_runner.settings, "es_url", "")
-    monkeypatch.setattr(timeline_runner.settings, "obs_local_dir", None)
 
     with caplog.at_level(logging.INFO, logger="app.services.timeline_runner"):
         status = _run(_client())
 
     assert status is TaskStatus.SUCCESS
-    assert (
-        "관측 task 초기화: taskId=task-1, collectionEnabled=False, "
-        "obsEnabled=False, esUrlConfigured=False, localOutputConfigured=False"
-    ) in caplog.text
+    messages = [record.getMessage() for record in caplog.records]
+    assert f"단계 시작: {ExecutionStage.REQUEST.value}" in messages
+    assert f"단계 완료: {ExecutionStage.REQUEST.value}" in messages
+    assert f"단계 시작: {ExecutionStage.STORAGE.value}" in messages
+    assert f"단계 완료: {ExecutionStage.STORAGE.value}" in messages
+
+    storage_done = next(
+        record
+        for record in caplog.records
+        if record.getMessage() == f"단계 완료: {ExecutionStage.STORAGE.value}"
+    )
+    assert storage_done.fields["durationMs"] >= 0
+
+    final = next(
+        record
+        for record in caplog.records
+        if record.getMessage() == "타임라인 처리 종료"
+    )
+    assert final.fields["stage"] == ExecutionStage.FINAL.value
+    assert final.fields["status"] == TaskStatus.SUCCESS.value
+    assert final.fields["callbackSent"] is True
+    assert "errorCode" not in final.fields
 
 
 def test_missing_input_fails_without_callback(monkeypatch):
@@ -264,13 +273,11 @@ def test_callback_send_failure_does_not_change_status(monkeypatch):
     assert len(client.submit_calls) == 1
 
 
-def test_storage_validation_failure_observes_safe_codes_without_raw_id(monkeypatch):
+def test_storage_validation_failure_logs_safe_codes_without_raw_id(
+    monkeypatch,
+    caplog,
+):
     _patch_agent(monkeypatch)
-    sink = InMemoryObservationSink()
-    observer = Observer(sink)
-
-    async def fake_flush(buffer, *, task_id):
-        return None
 
     unknown_raw_id = fixture_raw_id("runner-unknown")
     validation_error = TimelineValidationError(
@@ -282,34 +289,31 @@ def test_storage_validation_failure_observes_safe_codes_without_raw_id(monkeypat
         ]
     )
     monkeypatch.setattr(
-        timeline_runner, "build_task_observer", lambda: (observer, sink)
-    )
-    monkeypatch.setattr(timeline_runner, "flush_task_observations", fake_flush)
-    monkeypatch.setattr(
         timeline_runner,
         "ensure_timeline_valid_for_storage",
         _raise(validation_error),
     )
 
     client = _client()
-    status = _run(client)
+    with caplog.at_level(logging.WARNING, logger="app.services.timeline_runner"):
+        status = _run(client)
 
     assert status is TaskStatus.FAILED
     # 검증에서 걸렸으므로 저장 요청 자체를 보내지 않는다.
     assert client.submit_calls == []
-    failed = next(
-        event
-        for event in sink.events
-        if event.stage is ObservationStage.STORAGE
-        and event.event_type is ObservationEventType.FAILED
+    failure = next(
+        record
+        for record in caplog.records
+        if record.getMessage() == "타임라인 처리 실패"
     )
-    assert failed.payload == {
-        "errorCode": int(ErrorCode.TIMELINE_STORAGE_VALIDATION_FAILED),
-        "errorType": "TimelineValidationError",
-        "violationCodes": ["SOURCE_RAW_ID_NOT_IN_TASK"],
-        "violationCount": 1,
-    }
-    assert unknown_raw_id not in str(failed.payload)
+    assert failure.fields["errorCode"] == int(
+        ErrorCode.TIMELINE_STORAGE_VALIDATION_FAILED
+    )
+    assert failure.fields["stage"] == ExecutionStage.STORAGE.value
+    assert failure.fields["violationCodes"] == ["SOURCE_RAW_ID_NOT_IN_TASK"]
+    assert failure.fields["violationCount"] == 1
+    # rawId 원문은 예외 메시지에만 있고 구조화 필드로는 나가지 않는다.
+    assert unknown_raw_id not in str(failure.fields)
 
 
 def test_timeout_returns_failed(monkeypatch):

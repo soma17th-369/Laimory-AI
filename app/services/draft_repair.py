@@ -50,8 +50,7 @@ rawId 참조는 제거하고, 그 결과 유효한 근거가 하나도 남지 �
 
 from datetime import datetime, tzinfo
 
-from app.core.logging import get_logger
-from app.core.observability import ObservationEventType, emit_observation
+from app.core.logging import get_logger, log_fields
 from app.schemas import (
     EventSourceType,
     EventType,
@@ -582,9 +581,11 @@ def repair_draft(draft: TimelineDraft, request: TimelineDraftRequest) -> Timelin
     # 근거가 하나도 남지 않은 event는 이후 보정 단계로 넘기지 않는다.
     source_stats = filter_draft_sources(draft, request)
     if source_stats.changed:
-        emit_observation(
-            ObservationEventType.VALIDATION_REPAIRED,
-            payload=source_stats.observation_payload(item_kind="TIMELINE_EVENT"),
+        logger.info(
+            "입력에 없는 rawId 참조 정리",
+            extra=log_fields(
+                **source_stats.violation_log_fields(item_kind="TIMELINE_EVENT")
+            ),
         )
 
     # 이후 모든 단계가 sourceRef 로 입력을 되짚으므로, LLM 이 붙인 sourceType 라벨을

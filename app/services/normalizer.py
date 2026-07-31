@@ -7,7 +7,7 @@ import re
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import report_error
 from app.core.logging import get_logger
-from app.core.observability import ObservationStage
+from app.core.execution_context import ExecutionStage
 from app.schemas import (
     CalendarItem,
     CollectedSnapshot,
@@ -139,8 +139,7 @@ def normalize(snapshot: CollectedSnapshot) -> TimelineDraftRequest:
                     "수집 항목 정규화 실패",
                     exc=exc,
                     context={"itemType": item_type.value, "rawId": item.raw_id},
-                    stage=ObservationStage.REQUEST,
-                    payload={"itemType": item_type.value},
+                    stage=ExecutionStage.REQUEST,
                 )
 
     window = None

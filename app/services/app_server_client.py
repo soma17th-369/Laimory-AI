@@ -252,16 +252,13 @@ class HttpAppServerClient(AppServerClient):
             )
         except AppServerError as exc:
             # 콜백 실패는 이미 끝난 처리를 되돌리지 않는다. 코드와 함께 로그로만
-            # 남기고 False 를 돌려준다. 관측 이벤트는 호출부(timeline_runner)가
-            # CALLBACK 단계에서 한 번만 낸다 — 여기서도 emit 하면 실패 건수가
-            # 두 배로 잡힌다.
+            # 남기고 False 를 돌려준다.
             report_error(
                 logger,
                 exc.code,
                 "완료 콜백 전송 실패",
                 exc=exc,
                 context={"taskId": task_id, "status": payload.status.value},
-                emit=False,
             )
             return False
 

@@ -186,31 +186,37 @@ metadata에는 이 기본 차단을 적용하지 않는다. metadata는 호출�
 
 ## Elasticsearch와의 역할 분리
 
-두 저장소는 목적이 다르므로 둘 다 유지한다. 같은 실행을 양쪽에서 찾을 때는 `taskId`를
-쓴다(Elasticsearch는 `taskId` 필드, Langfuse는 `session`).
+두 저장소는 목적이 다르고 서로 대체하지 않는다(이슈 #47). 같은 실행을 양쪽에서 찾을
+때는 `taskId`를 쓴다(운영 로그는 `taskId` 필드, Langfuse는 `session`).
 
-| 항목 | Elasticsearch | Langfuse |
+| 항목 | Elasticsearch (운영 로그) | Langfuse |
 |---|---|---|
-| 역할 | 운영 상태·`errorCode`·단계별 지연·토큰 요약·전송 실패 분석의 정본 | Agent 계층, prompt/response, 중간 산출물, 모델 지연·토큰·비용, 품질 평가 |
-| 단위 | `taskId` 단위 이벤트 문서 | trace → span/generation 계층 |
+| 역할 | FastAPI 요청, 처리 결과, `errorCode`, 단계별 지연, 외부 API 연동, 배포·헬스체크 | Agent 계층, prompt/response, 중간 산출물, 모델 지연·토큰·비용, 품질 평가 |
+| 경로 | 앱 stdout(한 줄 JSON) → Filebeat 컨테이너 → `logs-laimory.ai-<env>` | 앱 → Langfuse SDK |
+| 단위 | 로그 줄. `taskId`/`stage`로 한 실행을 이어 본다 | trace → span/generation 계층 |
+| 본문 | **담지 않는다** | `LANGFUSE_CONTENT_CAPTURE` 정책에 따라 |
 | 필수 여부 | 운영 필수 | 선택. 꺼도 Timeline 처리에 영향 없음 |
 
-### 중복 데이터 처리 방침
+**애플리케이션은 Elasticsearch를 직접 호출하지 않는다.** 예전에는
+`app/core/observability/`가 관측 이벤트를 `_bulk`로 직접 보냈지만 이슈 #47에서
+제거했다. 그 경로를 다른 HTTP 클라이언트로 재구현하지 않는다.
 
-본문(입력·프롬프트·응답·중간 산출물)을 두 저장소에 동시에 장기 보관하지 않는다.
+### 본문은 Langfuse 하나에만 남는다
 
-- 운영 기본값은 Elasticsearch `OBS_CONTENT_CAPTURE=SANITIZED` + Langfuse `NONE`이다.
-  이 조합에서는 본문 정본이 Elasticsearch 하나뿐이고 Langfuse에는 진단 지표와
-  길이·해시만 남으므로 중복이 생기지 않는다.
-- local/dev는 Langfuse도 `SANITIZED`가 기본이다. 개발 중에는 프롬프트와 중간 산출물을
-  봐야 디버깅이 되기 때문이며, 이 구간은 의도된 중복이다.
-- POC 기간에만 한시적으로 운영에서도 양쪽 `SANITIZED`를 함께 켜서 같은 `taskId`의
-  기록을 비교한다. 이때는 중복 구간이므로 비교가 끝나면 되돌린다.
-- Langfuse가 Agent 분석 경로로 안정화되어 본문을 Langfuse에서 보게 되면,
-  Elasticsearch를 `OBS_CONTENT_CAPTURE=NONE`으로 전환해 본문 정본을 Langfuse로
-  옮긴다. Elasticsearch에는 상태·`errorCode`·지연·토큰 같은 메타데이터만 남긴다.
-- 어느 방향이든 본문을 보관하는 쪽에만 접근 권한과 보존 기간 정책을 적용한다.
-  전환 시점과 보존 기간은 운영 결정 사항이며 이 문서를 갱신해 남긴다.
+프롬프트·LLM 응답·draft 전문·사용자 원문·agent reasoning은 **운영 로그로 복제하지
+않는다.** 그래서 본문 정본은 언제나 Langfuse 하나뿐이고, 두 저장소에 같은 내용이
+동시에 쌓이는 구간이 없다.
+
+- 운영 기본값은 Langfuse `NONE`이다(`LANGFUSE_CONTENT_CAPTURE`를 비워 두면
+  `APP_ENV`로 정해진다). 이때 trace에는 진단 지표와 길이·해시만 남는다.
+- local/dev는 `SANITIZED`가 기본이다. 개발 중에는 프롬프트와 중간 산출물을 봐야
+  디버깅이 되기 때문이다.
+- 운영에서 본문을 보려면 Langfuse를 `SANITIZED`로 올린다. 그때는 Langfuse 프로젝트의
+  접근 권한과 보존 기간 정책이 그대로 본문 보호 정책이 된다. 전환 시점과 보존 기간은
+  운영 결정 사항이며 이 문서를 갱신해 남긴다.
+
+운영 로그의 필드 계약과 조회 방법은 [operational-logging.md](operational-logging.md)에
+있다.
 
 ## 설정
 

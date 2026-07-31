@@ -5,16 +5,12 @@
 1. :class:`AppError` — 자기 :class:`~app.core.error_codes.ErrorCode` 를 아는 예외의
    기반. 도메인 예외는 모두 이걸 상속해서, 잡는 쪽이 예외 클래스명을 알아보지
    않고도 코드를 꺼낼 수 있게 한다.
-2. :func:`report_error` — **운영 로그와 관측 이벤트를 같은 코드로 한 번에 남기는
-   유일한 통로**. 모든 ``except`` 블록이 이것만 호출하면 로그·관측·API 응답·콜백이
-   같은 실패에 다른 값을 쓸 수가 없다. 각자 로그를 찍고 각자 emit 하면 언젠가
-   갈리는데, 그때 갈렸다는 사실조차 알기 어렵다.
+2. :func:`report_error` — **실패를 정수 코드와 함께 운영 로그에 남기는 유일한 통로**.
+   모든 ``except`` 블록이 이것만 호출하면 로그·API 응답·콜백이 같은 실패에 다른 값을
+   쓸 수가 없다. 각자 로그를 찍으면 언젠가 갈리는데, 그때 갈렸다는 사실조차 알기 어렵다.
 
 원본 예외 메시지(``str(exc)``)와 traceback 은 **로그에만** 남는다. 외부(API 응답·
 콜백)로는 :func:`~app.core.error_codes.message_for` 의 안전 메시지만 나간다.
-
-관측(observability) 모듈 자신의 실패는 ``emit=False`` 로 호출해야 한다. 관측 기록이
-깨진 상황에서 관측으로 그 사실을 알리려 하면 같은 실패 경로를 다시 타서 재귀한다.
 """
 
 from __future__ import annotations
@@ -24,9 +20,10 @@ import logging
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from app.core.error_codes import ErrorCode, message_for
+from app.core.logging import log_fields
 
 if TYPE_CHECKING:  # pragma: no cover - 타입 검사 전용
-    from app.core.observability.models import ObservationStage
+    from app.core.execution_context import ExecutionStage
 
 
 class AppError(Exception):
@@ -98,42 +95,38 @@ def report_error(
     *,
     exc: BaseException | None = None,
     context: dict[str, Any] | None = None,
-    stage: "ObservationStage | None" = None,
+    stage: "ExecutionStage | None" = None,
     agent: str | None = None,
-    payload: dict[str, Any] | None = None,
     provider: str | None = None,
     model: str | None = None,
     provider_version: str | None = None,
     duration_ms: float | None = None,
-    emit: bool = True,
     level: int = logging.WARNING,
     exc_info: bool = False,
 ) -> ErrorCode:
-    """실패 하나를 운영 로그와 관측 이벤트에 **같은 코드로** 기록한다.
+    """실패 하나를 정수 ``errorCode`` 와 함께 운영 로그에 기록한다.
 
-    로그 줄은 항상 ``errorCode`` 로 시작하는 고정 순서를 갖는다::
+    ``message`` 는 사람이 읽을 한 줄이고, 기계가 읽을 값은 전부 구조화 필드로 나간다::
 
-        타임라인 처리 실패: errorCode=1201, errorType=TimeoutError, taskId=abc-1
+        {"message": "타임라인 처리 실패", "errorCode": 1201,
+         "errorType": "TimeoutError", "taskId": "abc-1", "stage": "MAIN_AGENT"}
 
-    CloudWatch Logs Insights 에서 ``errorCode`` 로 필터·집계하려면 필드 위치와
-    이름이 흔들리지 않아야 해서 순서를 고정했다.
+    Elasticsearch 에서 ``errorCode`` 로 필터·집계하려면 값이 메시지 문자열 안이 아니라
+    필드에 있어야 한다. ``taskId``/``stage``/``agent`` 는 실행 컨텍스트가 자동으로
+    붙이므로 ``context`` 에 다시 넣지 않아도 된다.
 
     Args:
         logger: 호출 지점 모듈의 로거.
         code: 카탈로그 코드.
         summary: 무슨 실패인지 한글 한 줄(식별자·원문 값은 ``context`` 로 넘긴다).
-        exc: 원본 예외. 있으면 ``errorType``/``error`` 를 로그에 붙인다.
-        context: 로그에 ``키=값`` 으로 붙일 진단 정보(taskId, rawId 등).
-        stage: 관측 이벤트 단계. 생략하면 현재 컨텍스트 단계를 쓴다.
-        agent: 관측 이벤트 agent 라벨.
-        payload: 관측 payload 에 더할 항목. ``errorCode``/``errorType`` 은 여기서
-            자동으로 채우므로 넣지 않아도 된다.
-        provider: 관측 이벤트 provider(LLM 호출 실패에서 쓴다).
-        model: 관측 이벤트 model.
-        provider_version: 관측 이벤트 providerVersion.
+        exc: 원본 예외. 있으면 ``errorType``/``errorMessage`` 를 필드로 붙인다.
+        context: 구조화 필드로 붙일 진단 정보(rawId, httpStatus 등).
+        stage: 실패한 단계. 생략하면 현재 실행 컨텍스트의 단계를 쓴다.
+        agent: agent 라벨. 생략하면 현재 실행 컨텍스트 값을 쓴다.
+        provider: LLM provider(LLM 호출 실패에서 쓴다).
+        model: LLM model.
+        provider_version: provider SDK 버전.
         duration_ms: 실패까지 걸린 시간(ms).
-        emit: 관측 이벤트를 낼지 여부. **관측 모듈 자신의 실패는 반드시 False** —
-            아니면 같은 실패 경로를 다시 타서 재귀한다.
         level: 로그 레벨. 기본 WARNING.
         exc_info: traceback 까지 남길지. 최종 실패에만 True 로 둔다.
 
@@ -141,80 +134,25 @@ def report_error(
         기록한 코드(호출부가 그대로 콜백/응답에 쓸 수 있게 돌려준다).
     """
 
-    fields: list[str] = ["errorCode=%s"]
-    # summary 도 인자로 넘긴다. format string 에 직접 넣으면 그 안의 '%' 가
-    # 로깅의 %-포매팅에 걸려 메시지가 통째로 깨진다.
-    args: list[Any] = [summary, int(code)]
-
+    fields: dict[str, Any] = {
+        "errorCode": int(code),
+        "stage": stage.value if stage is not None else None,
+        "agent": agent,
+        "provider": provider,
+        "model": model,
+        "providerVersion": provider_version,
+        "durationMs": duration_ms,
+    }
     if exc is not None:
-        fields.append("errorType=%s")
-        args.append(type(exc).__name__)
+        fields["errorType"] = type(exc).__name__
+        if not exc_info:
+            # 원본 메시지는 로그에만 남고 외부(API 응답·콜백)로는 나가지 않는다.
+            # traceback 을 남길 때는 포매터가 `error.message` 를 채우므로 생략한다.
+            fields["errorMessage"] = str(exc)
+    fields.update(context or {})
 
-    for key, value in (context or {}).items():
-        fields.append(f"{key}=%s")
-        args.append(value)
-
-    if exc is not None:
-        # 원본 메시지는 마지막에 둔다. 길이가 들쭉날쭉해 앞에 오면 고정 필드를
-        # 읽기 어려워진다. 이 값은 로그에만 남고 외부로 나가지 않는다.
-        fields.append("error=%s")
-        args.append(exc)
-
-    logger.log(level, "%s: " + ", ".join(fields), *args, exc_info=exc_info)
-
-    if emit:
-        _emit_failure(
-            code,
-            exc=exc,
-            stage=stage,
-            agent=agent,
-            payload=payload,
-            provider=provider,
-            model=model,
-            provider_version=provider_version,
-            duration_ms=duration_ms,
-        )
+    # summary 는 인자로 넘긴다. format string 에 직접 넣으면 그 안의 '%' 가 로깅의
+    # %-포매팅에 걸려 메시지가 통째로 깨진다.
+    logger.log(level, "%s", summary, extra=log_fields(**fields), exc_info=exc_info)
 
     return code
-
-
-def _emit_failure(
-    code: ErrorCode,
-    *,
-    exc: BaseException | None,
-    stage: "ObservationStage | None",
-    agent: str | None,
-    payload: dict[str, Any] | None,
-    provider: str | None = None,
-    model: str | None = None,
-    provider_version: str | None = None,
-    duration_ms: float | None = None,
-) -> None:
-    """관측 FAILED 이벤트를 낸다(관측 컨텍스트가 없으면 조용히 건너뛴다).
-
-    ``app.core.observability`` 를 함수 안에서 import 한다. 관측 모듈들도 실패를
-    남기려고 이 모듈을 import 하므로, 최상단에서 서로를 import 하면 순환이 된다.
-    """
-
-    from app.core.observability import ObservationEventType, emit_observation
-
-    event_payload: dict[str, Any] = {
-        key: value
-        for key, value in (payload or {}).items()
-        if key not in {"errorCode", "errorType"}
-    }
-    # 호출부 payload 가 실수로 공통 식별 필드를 덮을 수 없게 마지막에 확정한다.
-    event_payload["errorCode"] = int(code)
-    if exc is not None:
-        event_payload["errorType"] = type(exc).__name__
-
-    emit_observation(
-        ObservationEventType.FAILED,
-        stage=stage,
-        agent=agent,
-        payload=event_payload,
-        provider=provider,
-        model=model,
-        provider_version=provider_version,
-        duration_ms=duration_ms,
-    )

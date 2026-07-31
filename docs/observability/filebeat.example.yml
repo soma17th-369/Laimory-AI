@@ -1,0 +1,101 @@
+# Laimory AI 운영 로그 수집 Filebeat 설정 템플릿 (이슈 #47)
+#
+# 이 파일은 **자격증명이 없는 템플릿**이다. 실제 파일은 EC2 의
+# /opt/laimory-ai/filebeat.yml 에 root 소유 0600 으로 두고, 접속정보는 같은 디렉터리의
+# filebeat.env 에서 환경변수로 주입한다(${ES_HOSTS}, ${ES_API_KEY}, ${LAIMORY_ENV}).
+# 준비 절차는 docs/deploy-ec2.md, 필드 계약은 docs/operational-logging.md 참고.
+#
+# 수집 대상은 `laimory-ai` 애플리케이션 컨테이너의 stdout 하나뿐이다. Filebeat 자신의
+# 로그나 다른 컨테이너 로그는 수집하지 않는다.
+
+filebeat.autodiscover:
+  providers:
+    - type: docker
+      # 컨테이너 이름이 정확히 일치할 때만 수집한다. `contains` 를 쓰면 나중에
+      # laimory-ai-* 컨테이너가 생겼을 때 조용히 함께 딸려 온다.
+      templates:
+        - condition:
+            equals:
+              docker.container.name: laimory-ai
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.docker.container.id}/*.log
+              # 배포로 컨테이너가 삭제돼도 열어 둔 파일 핸들로 남은 줄을 마저 읽는다.
+              # 이 둘은 짝이다 — clean_removed 를 켜 두면 아직 읽는 중인 파일의
+              # 상태가 registry 에서 지워져 진행 위치를 잃는다.
+              close_removed: false
+              clean_removed: false
+
+processors:
+  # 앱이 내보내는 한 줄 JSON 을 최상위 필드로 편다. 실패하면 error.message 에
+  # 남고 원본 message 는 그대로 남으므로 이벤트를 잃지 않는다.
+  - decode_json_fields:
+      fields: ["message"]
+      target: ""
+      overwrite_keys: true
+      add_error_key: true
+      max_depth: 3
+  # 앱은 `timestamp` 로 시각을 싣는다. `@timestamp` 는 Beats 가 이벤트 시각으로
+  # 예약한 이름이라 앱이 그 이름을 쓰면 충돌한다. 여기서 옮겨 담는다.
+  - timestamp:
+      field: timestamp
+      timezone: UTC
+      layouts:
+        - "2006-01-02T15:04:05.999Z"
+      ignore_missing: true
+  - drop_fields:
+      fields: ["timestamp"]
+      ignore_missing: true
+  - add_host_metadata:
+      netinfo.enabled: false
+  # 방어선. 앱이 이미 마스킹하지만, 수집기에서도 한 번 더 지운다. 마스킹이 한 겹
+  # 뚫려도 Elasticsearch 까지 가지는 않게 한다.
+  - drop_fields:
+      fields:
+        - taskToken
+        - authorization
+        - apiKey
+        - password
+        - secret
+        - accessToken
+        - refreshToken
+      ignore_missing: true
+  # 쓰지 않는 수집기 메타데이터. t3.micro 에서 전송량을 줄인다.
+  - drop_fields:
+      fields:
+        - agent.ephemeral_id
+        - agent.id
+        - ecs.version
+        - input.type
+        - stream
+      ignore_missing: true
+
+# t3.micro(1GiB) 대응. 기본 큐(4096 이벤트)는 이 인스턴스에서 과하다.
+queue.mem:
+  events: 1024
+  flush.min_events: 256
+  flush.timeout: 5s
+max_procs: 1
+
+# 배포마다 컨테이너가 바뀌므로 진행 위치를 자주 내려 쓴다. 재시작 후 중복·유실을 줄인다.
+filebeat.registry.flush: 1s
+
+output.elasticsearch:
+  hosts: ["${ES_HOSTS}"]
+  api_key: "${ES_API_KEY}"
+  # `logs-<dataset>-<namespace>` 는 Elasticsearch 내장 `logs` 인덱스 템플릿이
+  # 잡아 주는 이름이라, 별도 템플릿 없이 data stream 이 자동 생성된다.
+  # 롤오버와 보존은 ILM 이 관리한다.
+  index: "logs-laimory.ai-${LAIMORY_ENV}"
+
+# 위 index 이름을 그대로 쓰려면 Filebeat 자신의 템플릿·ILM 설치를 꺼야 한다.
+# (설치하려면 ES 관리 권한이 필요한데, 수집용 API key 에는 주지 않는다.)
+setup.template.enabled: false
+setup.ilm.enabled: false
+
+# Filebeat 자신의 로그는 stdout 으로 낸다. 파일로 쓰면 t3.micro 디스크를 앱 로그와
+# 같이 갉아먹고, docker 로그 로테이션의 관리도 받지 못한다.
+logging.level: warning
+logging.to_files: false
+logging.to_stderr: true

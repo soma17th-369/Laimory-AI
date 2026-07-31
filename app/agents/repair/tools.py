@@ -35,7 +35,7 @@ from app.core.langfuse_tracing import (
     trace_observation,
     update_observation,
 )
-from app.core.observability import ObservationStage, observation_scope
+from app.core.execution_context import ExecutionStage, execution_scope
 from app.schemas import (
     AgentEventResult,
     EventSourceType,
@@ -260,7 +260,7 @@ def _rerun_timeline_agent(ctx: RepairContext, args: dict) -> str:
         raise RepairToolError("Timeline Agent 가 연결되지 않아 재실행할 수 없습니다.")
 
     merged = merge_event_results(list(ctx.event_results.values()))
-    with observation_scope(ObservationStage.TIMELINE_AGENT, agent="timeline"):
+    with execution_scope(ExecutionStage.TIMELINE_AGENT, agent="timeline"):
         ctx.draft = ctx.timeline_agent.generate(ctx.request, merged)
     return (
         f"Timeline Agent 를 다시 돌려 draft 를 새로 만들었습니다: "
@@ -467,8 +467,9 @@ def execute_tool_calls(
                     failure_code,
                     "Repair 도구 실행 실패",
                     exc=exc,
-                    context={"tool": call.tool, "args": call.args},
-                    payload={"tool": call.tool},
+                    # 인자 **값**은 남기지 않는다. LLM 이 만든 편집 인자에는 event
+                    # title 같은 사용자 콘텐츠가 들어간다(그쪽 추적은 Langfuse 담당).
+                    context={"tool": call.tool, "argumentNames": sorted(call.args)},
                 )
                 # message 는 Repair Agent에게 되돌려 주는 값이라 원문을 유지한다.
                 result = RepairToolResult(

@@ -85,9 +85,6 @@ async def handle_request_validation_error(
         "요청 검증 실패",
         exc=exc,
         context={"method": request.method, "path": request.url.path},
-        # 요청 단계 실패라 taskId 관측 컨텍스트가 아직 없다. emit 해도 버려지므로
-        # 로그만 남긴다.
-        emit=False,
     )
     return _json_error(ErrorCode.REQUEST_VALIDATION_FAILED)
 
@@ -105,7 +102,6 @@ async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
         "요청 처리 실패",
         exc=exc,
         context={"method": request.method, "path": request.url.path},
-        emit=False,
     )
     return _json_error(exc.code)
 
@@ -131,8 +127,6 @@ async def handle_http_exception(
             "path": request.url.path,
             "httpStatus": exc.status_code,
         },
-        # 404/405 는 정상 운영에서도 흔해 관측을 오염시킨다. 로그로 충분하다.
-        emit=False,
         level=_http_log_level(exc.status_code),
     )
     # 상태 코드는 원래 값을 유지한다. 401/403 등 카탈로그가 4xx 로 뭉뚱그린
@@ -153,7 +147,6 @@ async def handle_unexpected_error(request: Request, exc: Exception) -> JSONRespo
         "미처리 예외",
         exc=exc,
         context={"method": request.method, "path": request.url.path},
-        emit=False,
         level=logging.ERROR,
         exc_info=True,
     )
