@@ -37,10 +37,16 @@ ping_status() {
 
 start_container() {
   local image_uri="$1"
+  # 배포한 이미지 태그를 그대로 버전으로 넘긴다. 태그에 git sha 가 들어 있어 Langfuse
+  # release 와 관측 agentVersion 으로 배포본을 특정할 수 있다. 넘기지 않으면 pyproject
+  # 버전(0.1.0)이 그대로 남아 어느 배포본의 trace 인지 구분되지 않는다(이슈 #48).
+  # `-e` 는 `--env-file` 보다 우선하므로 runtime.env 에 값이 있어도 배포본 기준이 이긴다.
+  local image_tag="${image_uri##*:}"
   docker run -d \
     --name "$CONTAINER_NAME" \
     --restart unless-stopped \
     --env-file "$ENV_FILE" \
+    -e "AGENT_VERSION=${image_tag}" \
     -p "${HOST_PORT}:8080" \
     "$image_uri"
 }

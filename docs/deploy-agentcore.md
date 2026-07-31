@@ -360,7 +360,7 @@ Runtime 의 `environmentVariables` 로 주입한다.
 | `REPAIR_MAX_ITERATIONS` | | 기본 3 |
 | `OBS_ENABLED` `ES_URL` `ES_API_KEY` `ES_EVENT_INDEX` | | 관측(#28). 끄면 수집 자체를 하지 않는다 |
 | `LANGFUSE_ENABLED` `LANGFUSE_PUBLIC_KEY` `LANGFUSE_SECRET_KEY` `LANGFUSE_BASE_URL` | | 선택적 Langfuse tracing. 일본 리전 URL은 `https://jp.cloud.langfuse.com`. 라이프로그 본문 보호를 위해 기본 비활성 |
-| `LANGFUSE_SAMPLE_RATE` `LANGFUSE_CONTENT_CAPTURE` `LANGFUSE_MAX_PAYLOAD_BYTES` | | sampling 비율, 콘텐츠 정책, observation별 payload 상한. 운영 기본은 `NONE` 권장 |
+| `LANGFUSE_SAMPLE_RATE` `LANGFUSE_CONTENT_CAPTURE` `LANGFUSE_MAX_PAYLOAD_BYTES` | | sampling 비율, 콘텐츠 정책, observation별 payload 상한. `LANGFUSE_CONTENT_CAPTURE`는 비워 두면 `APP_ENV`로 정해진다(local/dev=`SANITIZED`, 그 외=`NONE`). 운영에서 본문을 내보내지 않으려면 비워 두거나 `NONE`을 명시한다 |
 
 기존 Runtime에 `CALLBACK_URL`이 있으면 `APP_SERVER_API_URL`로 교체해야 한다.
 값에는 task별 경로를 제외하고 `/s/api/v1`까지 넣는다. 배포 워크플로는 기존

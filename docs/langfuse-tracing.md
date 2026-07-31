@@ -50,7 +50,7 @@ cycle로 표현된다. 조회·정규화·개별 도구·저장·콜백은 graph
 
 ### 입력과 출력
 
-`LANGFUSE_CONTENT_CAPTURE=SANITIZED`이면 다음 데이터가 각 단계의 input/output에
+콘텐츠 정책이 `SANITIZED`이면(local/dev 기본값) 다음 데이터가 각 단계의 input/output에
 마스킹된 형태로 들어간다.
 
 - root: 정규화 전후 요청, 최종 Timeline, 성공·실패 상태
@@ -65,9 +65,10 @@ generation은 표준 role message 배열로 저장하므로 Langfuse가 대화�
 provider, model, temperature, 이미지 개수와 MIME type도 함께 기록한다. 이미지 원본
 bytes는 기록하지 않는다.
 
-payload가 `LANGFUSE_MAX_PAYLOAD_BYTES`를 넘으면 preview, 원래 byte 길이, SHA-256을
-포함한 잘림 요약으로 바뀐다. callback token, API key, Authorization, AWS 자격증명과
-사진 원본은 어떤 정책에서도 외부로 보내지 않는다.
+payload가 `LANGFUSE_MAX_PAYLOAD_BYTES`를 넘으면 본문이 preview, 원래 byte 길이,
+SHA-256을 포함한 잘림 요약으로 바뀐다. 이때도 진단 지표는 그대로 남는다 — 크기 때문에
+`durationMs`나 `errorCode`까지 잃지 않는다. callback token, API key, Authorization,
+AWS 자격증명과 사진 원본은 어떤 정책에서도 외부로 보내지 않는다.
 
 ### taskId 검색
 
@@ -89,7 +90,8 @@ ID도 `taskId`로부터 결정적으로 생성하므로 같은 task의 재시도
 Langfuse UI의 observation start/end 시간으로 각 단계의 latency가 자동 계산된다.
 또한 애플리케이션에서 측정한 밀리초를 각 observation의
 `output.durationMs`에 명시적으로 기록한다. 최상위 `generate-timeline`의
-`durationMs`는 조회부터 저장·콜백까지 task 전체 시간이다.
+`durationMs`는 조회부터 저장·콜백까지 task 전체 시간이다. `durationMs`는 진단 지표라
+`NONE` 정책에서도 남는다.
 
 ### 토큰과 비용
 
@@ -105,7 +107,8 @@ Langfuse UI의 observation start/end 시간으로 각 단계의 latency가 자�
 않고 해당 bucket을 비워 둔다.
 
 Main Agent, Event Agent, Timeline Agent, Repair Agent와 최상위 task에는 하위
-generation의 합계를 `output.tokenUsage`로 함께 기록한다.
+generation의 합계를 `output.tokenUsage`로 함께 기록한다. `tokenUsage`도 진단 지표라
+`NONE` 정책에서 하위 집계까지 그대로 남는다.
 
 ```json
 {
@@ -136,17 +139,45 @@ Agent/root의 `tokenUsage`는 해당 범위의 합계를 한눈에 확인할 때
 
 실패 observation은 `ERROR` level과 안전한 `statusMessage`를 사용한다.
 애플리케이션 오류는 `output.errorCode`에 `app/core/error_codes.py`의 정수 코드를
-기록한다. 원본 예외 메시지나 Secret은 Langfuse로 보내지 않는다.
+기록한다. `errorCode`와 `errorType`은 진단 지표라 `NONE` 정책에서도 남으므로, 본문을
+내보내지 않는 환경에서도 어느 단계가 어떤 코드로 실패했는지는 화면에서 확인할 수 있다.
+원본 예외 메시지나 Secret은 Langfuse로 보내지 않는다.
 
 ## 콘텐츠 정책
 
 Timeline에는 위치, 건강, 캘린더, 알림, 사진 메타데이터가 포함될 수 있다.
-외부 전송의 기본값은 `NONE`이다.
+`LANGFUSE_CONTENT_CAPTURE`를 지정하지 않으면 실행 환경으로 정한다. `APP_ENV`가
+`local` 또는 `dev`면 `SANITIZED`, 그 밖에는 `NONE`이다. 값을 지정하면 그 값이 항상 이긴다.
 
 | 정책 | Langfuse input/output |
 |---|---|
-| `NONE` | 본문을 UTF-8 byte 길이와 SHA-256으로 치환 |
+| `NONE` | 진단 지표만 남기고 나머지는 `body` 하나로 접어 길이와 SHA-256만 기록 |
 | `SANITIZED` | Secret과 식별 가능한 개인정보 패턴을 마스킹한 본문 |
+
+`NONE`에서도 사라지지 않는 진단 지표는 다음과 같다. 본문이 아니라 숫자·열거형·식별자라
+외부로 나가도 안전하고, 이게 없으면 어느 단계가 얼마나 걸렸는지조차 알 수 없다.
+
+`agent`, `agentCount`, `dailyRecordId`, `durationMs`, `errorCode`, `errorType`,
+`generationCount`, `iteration`, `maxIterations`, `model`, `ok`, `provider`, `sequence`,
+`stage`, `status`, `taskId`, `tokenUsage`, `tool`, `usageDetails`
+
+`NONE`에서 도구 span의 output은 이렇게 남는다.
+
+```json
+{
+  "ok": true,
+  "durationMs": 812.4,
+  "tokenUsage": { "generationCount": 1, "inputTokens": 1200, "outputTokens": 340 },
+  "body": { "contentCaptured": false, "byteLength": 13849, "sha256": "da4991..." }
+}
+```
+
+목록에 없는 키는 전부 본문으로 보고 접는다. 새 키가 생겨도 본문이 새지 않게 하려는
+것이므로(기본 차단), 진단 지표를 추가하려면 `app/core/observability/redaction.py`의
+`_DIAGNOSTIC_KEYS`에 명시적으로 넣어야 한다.
+
+metadata에는 이 기본 차단을 적용하지 않는다. metadata는 호출부가 직접 고른 라벨이라
+본문이 아니며, 본문 키만 골라 지우는 기존 규칙을 그대로 쓴다.
 
 `SANITIZED`는 완전한 익명화가 아니다. 위치·일정·건강 정보처럼 패턴만으로 제거하기
 어려운 내용은 남을 수 있다. 운영에서 활성화하기 전에 처리 근거, 프로젝트 접근 권한,
@@ -168,11 +199,13 @@ Timeline에는 위치, 건강, 캘린더, 알림, 사진 메타데이터가 포�
 
 본문(입력·프롬프트·응답·중간 산출물)을 두 저장소에 동시에 장기 보관하지 않는다.
 
-- 기본값은 Elasticsearch `OBS_CONTENT_CAPTURE=SANITIZED` + Langfuse
-  `LANGFUSE_CONTENT_CAPTURE=NONE`이다. 이 조합에서는 본문 정본이 Elasticsearch
-  하나뿐이고 Langfuse에는 길이와 해시만 남으므로 중복이 생기지 않는다.
-- POC 기간에만 한시적으로 양쪽 `SANITIZED`를 함께 켜서 같은 `taskId`의 기록을
-  비교한다. 이때는 중복 구간이므로 비교가 끝나면 되돌린다.
+- 운영 기본값은 Elasticsearch `OBS_CONTENT_CAPTURE=SANITIZED` + Langfuse `NONE`이다.
+  이 조합에서는 본문 정본이 Elasticsearch 하나뿐이고 Langfuse에는 진단 지표와
+  길이·해시만 남으므로 중복이 생기지 않는다.
+- local/dev는 Langfuse도 `SANITIZED`가 기본이다. 개발 중에는 프롬프트와 중간 산출물을
+  봐야 디버깅이 되기 때문이며, 이 구간은 의도된 중복이다.
+- POC 기간에만 한시적으로 운영에서도 양쪽 `SANITIZED`를 함께 켜서 같은 `taskId`의
+  기록을 비교한다. 이때는 중복 구간이므로 비교가 끝나면 되돌린다.
 - Langfuse가 Agent 분석 경로로 안정화되어 본문을 Langfuse에서 보게 되면,
   Elasticsearch를 `OBS_CONTENT_CAPTURE=NONE`으로 전환해 본문 정본을 Langfuse로
   옮긴다. Elasticsearch에는 상태·`errorCode`·지연·토큰 같은 메타데이터만 남긴다.
@@ -190,12 +223,20 @@ LANGFUSE_PUBLIC_KEY=pk-lf-...
 LANGFUSE_SECRET_KEY=sk-lf-...
 LANGFUSE_BASE_URL=https://jp.cloud.langfuse.com
 LANGFUSE_SAMPLE_RATE=1.0
-LANGFUSE_CONTENT_CAPTURE=NONE
 LANGFUSE_MAX_PAYLOAD_BYTES=65536
 ```
 
+`LANGFUSE_CONTENT_CAPTURE`는 일부러 비워 둔다. 비워 두면 `APP_ENV` 기준으로
+local/dev는 `SANITIZED`, 그 밖은 `NONE`이 적용된다. 값을 적으면 그 값이 항상 이기므로,
+dev에서 본문이 안 보이면 **환경 파일에 `LANGFUSE_CONTENT_CAPTURE=NONE`이 남아 있는지
+먼저 확인한다**(EC2는 `/opt/laimory-ai/runtime.env`).
+
 - 비활성화되었거나 key pair가 불완전하면 Langfuse는 no-op이다.
 - `APP_ENV`는 Langfuse environment, `AGENT_VERSION`은 release/version으로 전파된다.
+  EC2 배포는 `scripts/deploy-ec2.sh`가 배포 이미지 태그를 `AGENT_VERSION`으로 넘기므로
+  release로 배포본을 특정할 수 있다.
+- OTel `service.name`은 `laimory-ai`로 고정한다. 다르게 쓰려면 `OTEL_SERVICE_NAME`을
+  지정한다.
 - 초기 구조 검수 중에는 `LANGFUSE_SAMPLE_RATE=1.0`을 사용한다. 운영 비율은 비용,
   데이터 양과 조사 요구를 반영해 낮출 수 있다.
 - trace 전송·flush 실패는 Timeline 처리, RDB 저장, 콜백과 격리된다.

@@ -13,6 +13,7 @@ Langfuse는 에이전트 트리·모델 지연·토큰/비용 분석을 위한 �
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -32,12 +33,17 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.observability.models import ContentCapture
 from app.core.observability.redaction import (
+    capture_external_content,
     capture_payload,
     redact_text,
     redact_value,
 )
 
 logger = get_logger(__name__)
+
+# Langfuse 가 조립하는 OTel Resource 의 service.name. 지정하지 않으면 OTel 기본값인
+# `unknown_service` 가 그대로 노출된다.
+_SERVICE_NAME = "laimory-ai"
 
 ObservationType = Literal[
     "span",
@@ -158,16 +164,40 @@ def _json_safe(value: Any) -> Any:
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 
 
-def capture_langfuse_content(value: Any, *, field: str) -> Any:
-    """설정된 콘텐츠 정책으로 한 필드의 값을 안전하게 캡처한다."""
+def _content_policy() -> ContentCapture:
+    return ContentCapture(settings.langfuse_capture_policy)
+
+
+def capture_langfuse_body(value: Any) -> Any:
+    """observation 의 input/output 을 정책에 따라 캡처한다.
+
+    사용자 데이터를 싣는 자리는 여기뿐이므로 ``NONE`` 에서는 진단 지표만 남기고 나머지를
+    전부 접는다. 값을 ``{"input": ...}`` 같은 봉투로 감싸지 않는다 — 봉투 키 이름이
+    콘텐츠 정책 판정에 걸려 payload 가 통째로 사라지던 원인이다(이슈 #48).
+    """
+
+    return capture_external_content(
+        _json_safe(value),
+        _content_policy(),
+        max_bytes=settings.langfuse_max_payload_bytes,
+    )
+
+
+def capture_langfuse_metadata(value: Mapping[str, Any]) -> Any:
+    """observation 의 metadata 를 캡처한다.
+
+    metadata 는 호출부가 직접 고른 라벨(agent/tool/iteration/provider/stage…)이라 본문이
+    아니다. 여기에 기본 차단을 적용하면 지금 보이는 라벨까지 사라지므로, 본문 키만
+    골라 지우는 기존 denylist 를 그대로 쓴다.
+    """
 
     captured = capture_payload(
-        {field: _json_safe(value)},
-        ContentCapture(settings.langfuse_content_capture),
+        {"metadata": _json_safe(value)},
+        _content_policy(),
         max_bytes=settings.langfuse_max_payload_bytes,
     )
     # 크기 제한에 걸리면 capture_payload가 전체 payload 요약을 반환한다.
-    return captured.get(field, captured)
+    return captured.get("metadata", captured)
 
 
 def _mask_attribute(value: Any) -> Any:
@@ -223,6 +253,11 @@ def get_langfuse_client() -> Langfuse | None:
         )
         return None
 
+    # OTel Resource 는 Langfuse client 를 만들 때 한 번 조립된다. service.name 을 주지
+    # 않으면 `unknown_service` 로 남아 어느 서비스가 보낸 trace 인지 화면에서 알 수 없다.
+    # 운영자가 값을 지정했으면 그대로 존중한다.
+    os.environ.setdefault("OTEL_SERVICE_NAME", _SERVICE_NAME)
+
     try:
         return Langfuse(
             public_key=settings.langfuse_public_key,
@@ -260,13 +295,10 @@ def trace_observation(
         kwargs: dict[str, Any] = {
             "name": name,
             "as_type": as_type,
-            "metadata": capture_langfuse_content(
-                metadata or {},
-                field="metadata",
-            ),
+            "metadata": capture_langfuse_metadata(metadata or {}),
         }
         if input is not None:
-            kwargs["input"] = capture_langfuse_content(input, field="input")
+            kwargs["input"] = capture_langfuse_body(input)
         if model is not None:
             kwargs["model"] = model
         if model_parameters:
@@ -377,11 +409,11 @@ def update_observation(
     try:
         kwargs: dict[str, Any] = {}
         if input is not None:
-            kwargs["input"] = capture_langfuse_content(input, field="input")
+            kwargs["input"] = capture_langfuse_body(input)
         if output is not None:
-            kwargs["output"] = capture_langfuse_content(output, field="output")
+            kwargs["output"] = capture_langfuse_body(output)
         if metadata:
-            kwargs["metadata"] = _json_safe(metadata)
+            kwargs["metadata"] = capture_langfuse_metadata(metadata)
         if usage_details:
             kwargs["usage_details"] = dict(usage_details)
         if level is not None:

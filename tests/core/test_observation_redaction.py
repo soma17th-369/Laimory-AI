@@ -9,6 +9,7 @@ from app.core.observability import (
     redact_value,
     summarize_content,
 )
+from app.core.observability.redaction import capture_external_content
 
 
 def test_redaction_masks_nested_secrets_and_personal_text_without_mutation() -> None:
@@ -104,3 +105,70 @@ def test_oversized_none_metadata_is_hashed_without_preview() -> None:
     assert len(captured["sha256"]) == 64
     assert "가" not in str(captured)
     assert "contentPreview" not in captured
+
+
+def test_external_none_policy_blocks_by_default_and_keeps_diagnostics() -> None:
+    """외부 전송은 allowlist 다. denylist 에 없는 키도 본문이면 나가지 않는다(이슈 #48)."""
+
+    captured = capture_external_content(
+        {
+            "ok": True,
+            "durationMs": 12.5,
+            # `timeline` 은 `_CONTENT_KEYS` 에 없다. denylist 였다면 그대로 나갔다.
+            "timeline": {"events": [{"placeLabel": "서울 자택"}]},
+        },
+        ContentCapture.NONE,
+        max_bytes=4096,
+    )
+
+    assert captured["ok"] is True
+    assert captured["durationMs"] == 12.5
+    assert captured["body"]["contentCaptured"] is False
+    assert "서울 자택" not in str(captured)
+
+
+def test_external_capture_does_not_treat_value_as_envelope() -> None:
+    """값을 감싸지 않으므로 `input`/`output` 이라는 이름에 걸리지 않는다(이슈 #48)."""
+
+    captured = capture_external_content(
+        {"status": "SUCCESS", "errorCode": 1901},
+        ContentCapture.NONE,
+        max_bytes=4096,
+    )
+
+    assert captured == {"status": "SUCCESS", "errorCode": 1901}
+
+
+def test_external_none_policy_summarizes_non_mapping_values() -> None:
+    captured = capture_external_content(
+        [{"role": "user", "content": "민감한 프롬프트"}],
+        ContentCapture.NONE,
+        max_bytes=4096,
+    )
+
+    assert captured["contentCaptured"] is False
+    assert "민감한 프롬프트" not in str(captured)
+
+
+def test_external_sanitized_policy_keeps_masked_body() -> None:
+    captured = capture_external_content(
+        [{"role": "user", "content": "민감한 프롬프트 user@example.com"}],
+        ContentCapture.SANITIZED,
+        max_bytes=4096,
+    )
+
+    assert captured[0]["content"] == f"민감한 프롬프트 {REDACTED}"
+
+
+def test_external_oversized_payload_keeps_diagnostics_and_truncates_body() -> None:
+    captured = capture_external_content(
+        {"durationMs": 12.5, "draft": "가" * 1000},
+        ContentCapture.SANITIZED,
+        max_bytes=100,
+    )
+
+    assert captured["durationMs"] == 12.5
+    assert captured["body"]["contentCaptured"] is True
+    assert captured["body"]["truncated"] is True
+    assert captured["body"]["storedByteLength"] <= 100
+    assert "가" in captured["body"]["contentPreview"]

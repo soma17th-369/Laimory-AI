@@ -17,6 +17,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# Langfuse 로 실행 본문을 내보내도 되는 실행 환경(이슈 #48). 개발 중에는 프롬프트와
+# 중간 산출물을 봐야 디버깅이 되고, 그 밖에서는 기본적으로 내보내지 않는다.
+_BODY_VISIBLE_APP_ENVS = {"local", "dev"}
+
 
 def _default_agent_version() -> str:
     try:
@@ -176,9 +180,28 @@ class Settings(BaseSettings):
     # 이 프로젝트의 POC/운영 대상은 Langfuse Cloud Japan 리전이다.
     langfuse_base_url: str = "https://jp.cloud.langfuse.com"
     langfuse_sample_rate: float = 1.0
-    # 위치·건강·캘린더처럼 민감한 본문은 기본적으로 외부에 보내지 않는다.
-    langfuse_content_capture: Literal["NONE", "SANITIZED"] = "NONE"
+    # 위치·건강·캘린더처럼 민감한 본문은 기본적으로 외부에 보내지 않는다. 값을 지정하지
+    # 않으면 실행 환경으로 정한다(`langfuse_capture_policy` 참고).
+    langfuse_content_capture: Literal["NONE", "SANITIZED"] | None = None
     langfuse_max_payload_bytes: int = 64 * 1024
+
+    @property
+    def langfuse_capture_policy(self) -> str:
+        """실제로 적용할 Langfuse 콘텐츠 정책.
+
+        `LANGFUSE_CONTENT_CAPTURE` 를 지정하면 그 값이 항상 이긴다. 지정하지 않으면
+        local/dev 는 `SANITIZED`, 그 밖은 `NONE` 이다. 개발 환경에서 기본값이 `NONE`
+        이라 trace 에 해시만 남아 디버깅이 불가능했다(이슈 #48).
+
+        dev 컨테이너는 EC2 의 `/opt/laimory-ai/runtime.env` 를 읽으므로, 그 파일에
+        `LANGFUSE_CONTENT_CAPTURE=NONE` 이 남아 있으면 이 기본값보다 우선한다.
+        """
+
+        if self.langfuse_content_capture is not None:
+            return self.langfuse_content_capture
+        if self.app_env.strip().lower() in _BODY_VISIBLE_APP_ENVS:
+            return "SANITIZED"
+        return "NONE"
 
     @field_validator("langfuse_sample_rate")
     @classmethod

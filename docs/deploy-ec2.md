@@ -240,9 +240,16 @@ LANGFUSE_PUBLIC_KEY=
 LANGFUSE_SECRET_KEY=
 LANGFUSE_BASE_URL=https://jp.cloud.langfuse.com
 LANGFUSE_SAMPLE_RATE=1.0
-LANGFUSE_CONTENT_CAPTURE=NONE
 LANGFUSE_MAX_PAYLOAD_BYTES=65536
 ```
+
+`LANGFUSE_CONTENT_CAPTURE`는 넣지 않는다. 비워 두면 `APP_ENV` 기준으로 local/dev는
+`SANITIZED`, 그 밖은 `NONE`이 적용된다. 이 파일에 값을 적으면 그 값이 코드 기본값을
+이기므로, **dev 인스턴스의 `runtime.env`에 예전 `LANGFUSE_CONTENT_CAPTURE=NONE` 줄이
+남아 있으면 지운다.** 남겨 두면 Langfuse trace에 본문이 계속 보이지 않는다(이슈 #48).
+
+`AGENT_VERSION`도 이 파일에 넣지 않아도 된다. `scripts/deploy-ec2.sh`가 배포 이미지
+태그를 컨테이너에 넘기며, `docker run -e`가 `--env-file`보다 우선한다.
 
 `BEDROCK_AWS_PROFILE`은 비워 둔다. boto3가 EC2 Instance Role의 임시 자격증명을
 사용한다.
