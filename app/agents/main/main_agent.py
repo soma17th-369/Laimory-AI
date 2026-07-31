@@ -40,13 +40,8 @@ from app.core.langfuse_tracing import (
     trace_observation,
     update_observation,
 )
-from app.core.logging import get_logger
-from app.core.observability import (
-    ObservationEventType,
-    ObservationStage,
-    emit_observation,
-    observation_scope,
-)
+from app.core.execution_context import ExecutionStage
+from app.core.logging import get_logger, log_fields, stage_span
 from app.schemas import AgentEventResult, TimelineDraft, TimelineDraftRequest
 
 logger = get_logger(__name__)
@@ -170,23 +165,23 @@ def _build_graph():
                 level="WARNING" if merged.warnings else "DEFAULT",
             )
         logger.info(
-            "이벤트 후보 취합 완료: candidates=%d, fragments=%d, warnings=%d",
-            len(merged.candidates),
-            len(merged.fragments),
-            len(merged.warnings),
-        )
-        emit_observation(
-            ObservationEventType.COMPLETED,
-            payload={
-                "phase": "merge_results",
-                "mergedResult": merged.model_dump(by_alias=True, mode="json"),
-            },
+            "이벤트 후보 취합 완료",
+            extra=log_fields(
+                candidateCount=len(merged.candidates),
+                fragmentCount=len(merged.fragments),
+                warningCount=len(merged.warnings),
+                durationMs=round((perf_counter() - started) * 1000, 3),
+            ),
         )
         return {"merged_result": merged}
 
     async def run_timeline_agent_node(state: _MainAgentState) -> _MainAgentState:
         with (
-            observation_scope(ObservationStage.TIMELINE_AGENT, agent="timeline"),
+            stage_span(
+                logger,
+                ExecutionStage.TIMELINE_AGENT,
+                agent="timeline",
+            ) as outcome,
             token_usage_scope() as token_usage,
             trace_observation(
                 "timeline-agent",
@@ -205,19 +200,6 @@ def _build_graph():
             ) as langfuse_observation,
         ):
             started = perf_counter()
-            emit_observation(
-                ObservationEventType.STARTED,
-                payload={
-                    "request": state["request"].model_dump(
-                        by_alias=True,
-                        mode="json",
-                    ),
-                    "agentResult": state["merged_result"].model_dump(
-                        by_alias=True,
-                        mode="json",
-                    ),
-                },
-            )
             try:
                 draft = await asyncio.to_thread(
                     state["timeline_agent"].generate,
@@ -234,15 +216,6 @@ def _build_graph():
                     exc=exc,
                 )
                 raise
-            emit_observation(
-                ObservationEventType.COMPLETED,
-                payload={
-                    "eventCount": len(draft.events),
-                    "questionCount": len(draft.questions),
-                    "warningCount": len(draft.warnings),
-                    "timeline": draft.model_dump(by_alias=True, mode="json"),
-                },
-            )
             update_observation(
                 langfuse_observation,
                 output={
@@ -255,18 +228,20 @@ def _build_graph():
                 },
                 level="WARNING" if draft.warnings else "DEFAULT",
             )
-        logger.info(
-            "타임라인 초안 생성 완료: events=%d, questions=%d, warnings=%d",
-            len(draft.events),
-            len(draft.questions),
-            len(draft.warnings),
-        )
+            outcome["eventCount"] = len(draft.events)
+            outcome["questionCount"] = len(draft.questions)
+            outcome["warningCount"] = len(draft.warnings)
         return {"draft": draft}
 
     async def run_repair_agent_node(state: _MainAgentState) -> _MainAgentState:
         # Repair Agent 는 LLM 을 여러 번 부르는 블로킹 호출이라 스레드에 올린다.
         with (
-            observation_scope(ObservationStage.REPAIR_AGENT, agent="repair"),
+            stage_span(
+                logger,
+                ExecutionStage.REPAIR_AGENT,
+                agent="repair",
+                maxIterations=settings.repair_max_iterations,
+            ) as outcome,
             token_usage_scope() as token_usage,
             trace_observation(
                 "repair-agent",
@@ -292,19 +267,6 @@ def _build_graph():
             ) as langfuse_observation,
         ):
             started = perf_counter()
-            emit_observation(
-                ObservationEventType.STARTED,
-                payload={
-                    "request": state["request"].model_dump(
-                        by_alias=True,
-                        mode="json",
-                    ),
-                    "timeline": state["draft"].model_dump(
-                        by_alias=True,
-                        mode="json",
-                    ),
-                },
-            )
             try:
                 draft = await asyncio.to_thread(
                     lambda: state["repair_agent"].generate(
@@ -324,15 +286,6 @@ def _build_graph():
                     exc=exc,
                 )
                 raise
-            emit_observation(
-                ObservationEventType.COMPLETED,
-                payload={
-                    "eventCount": len(draft.events),
-                    "questionCount": len(draft.questions),
-                    "warningCount": len(draft.warnings),
-                    "timeline": draft.model_dump(by_alias=True, mode="json"),
-                },
-            )
             update_observation(
                 langfuse_observation,
                 output={
@@ -345,12 +298,9 @@ def _build_graph():
                 },
                 level="WARNING" if draft.warnings else "DEFAULT",
             )
-        logger.info(
-            "타임라인 초안 확정 완료: events=%d, questions=%d, warnings=%d",
-            len(draft.events),
-            len(draft.questions),
-            len(draft.warnings),
-        )
+            outcome["eventCount"] = len(draft.events)
+            outcome["questionCount"] = len(draft.questions)
+            outcome["warningCount"] = len(draft.warnings)
         return {"draft": draft}
 
     graph = StateGraph(_MainAgentState)
@@ -397,16 +347,16 @@ async def run_main_agent(
     # 실행에 사용될 모델은 설정에서 결정론적으로 정해진다.
     provider = settings.llm_provider
     model = getattr(settings, f"{provider}_model", "")
-    logger.info(
-        "메인 에이전트 시작: taskId=%s, agents=%d, provider=%s, model=%s",
-        request.task_id,
-        len(agents),
-        provider,
-        model,
-    )
 
     with (
-        observation_scope(ObservationStage.MAIN_AGENT, agent="main"),
+        stage_span(
+            logger,
+            ExecutionStage.MAIN_AGENT,
+            agent="main",
+            agentCount=len(agents),
+            provider=provider,
+            model=model,
+        ) as outcome,
         token_usage_scope() as token_usage,
         trace_observation(
             "main-agent",
@@ -420,15 +370,6 @@ async def run_main_agent(
         ) as langfuse_observation,
     ):
         started = perf_counter()
-        emit_observation(
-            ObservationEventType.STARTED,
-            payload={
-                "agents": list(agents),
-                "inputItemCounts": request.source_item_counts(),
-                "hasUserMemory": request.user_memory is not None,
-                "request": request.model_dump(by_alias=True, mode="json"),
-            },
-        )
         final_state = await _build_graph().ainvoke(
             {
                 "request": request,
@@ -438,15 +379,6 @@ async def run_main_agent(
             }
         )
         draft = final_state["draft"]
-        emit_observation(
-            ObservationEventType.COMPLETED,
-            payload={
-                "eventCount": len(draft.events),
-                "questionCount": len(draft.questions),
-                "warningCount": len(draft.warnings),
-                "timeline": draft.model_dump(by_alias=True, mode="json"),
-            },
-        )
         update_observation(
             langfuse_observation,
             output={
@@ -459,4 +391,7 @@ async def run_main_agent(
             },
             level="WARNING" if draft.warnings else "DEFAULT",
         )
+        outcome["eventCount"] = len(draft.events)
+        outcome["questionCount"] = len(draft.questions)
+        outcome["warningCount"] = len(draft.warnings)
     return draft

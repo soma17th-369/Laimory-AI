@@ -1,17 +1,20 @@
-"""관측 payload의 민감정보 제거와 콘텐츠 캡처 정책.
+"""민감정보 마스킹과 콘텐츠 캡처 정책.
 
-``SANITIZED`` 정책에서는 입력·프롬프트·응답·draft·도구 인자 같은 실행 본문을
-Secret과 식별 가능한 개인정보 패턴을 마스킹한 뒤 저장한다. ``NONE`` 정책에서는
-본문을 길이와 SHA-256으로 치환한다. 어느 정책이든 이벤트당 크기 제한을 적용하며,
-마스킹하지 않은 원문 저장 모드는 제공하지 않는다.
+원문 그대로 저장하는 모드는 제공하지 않는다. ``SANITIZED`` 는 Secret 과 식별 가능한
+개인정보 패턴을 마스킹한 뒤 남기고, ``NONE`` 은 본문을 길이와 SHA-256 으로 치환한다.
+어느 정책이든 크기 제한을 적용한다.
 
-본문을 가리는 방식은 두 가지이고, 쓰는 곳이 다르다(이슈 #48).
+쓰는 곳은 세 군데이며 방식이 다르다.
 
-- ``capture_payload``: Elasticsearch 관측용. payload 는 호출부가 조립한 dict 이고
-  본문 키가 그 안에 들어 있으므로, ``_CONTENT_KEYS`` denylist 로 그 키만 요약한다.
-- ``capture_external_content``: Langfuse 같은 외부 전송용. 값이 dict 가 아닐 수도 있고
-  키 이름을 통제할 수 없으므로 ``_DIAGNOSTIC_KEYS`` allowlist 로 **기본 차단**한다.
-  denylist 는 목록에 없는 새 키가 조용히 나가므로 외부 경로에는 쓰지 않는다.
+- :func:`capture_external_content` — Langfuse observation 의 input/output. 값이 dict 가
+  아닐 수도 있고 키 이름을 통제할 수 없으므로 ``_DIAGNOSTIC_KEYS`` allowlist 로
+  **기본 차단**한다. denylist 는 목록에 없는 새 키가 조용히 나가므로 쓰지 않는다(#48).
+- :func:`capture_payload` — Langfuse observation 의 metadata. 호출부가 직접 고른 라벨
+  (agent/tool/iteration/provider/stage…)이라 본문이 아니다. 여기에 기본 차단을 적용하면
+  보여야 할 라벨까지 사라지므로 ``_CONTENT_KEYS`` denylist 로 본문 키만 요약한다.
+- :func:`redact_value` / :func:`redact_text` — 운영 로그(:mod:`app.core.logging`)의
+  구조화 필드와 예외 메시지. 로그는 개발자가 고른 값만 담지만, 예외 메시지처럼 외부에서
+  온 문자열이 섞이는 자리가 있어 마지막으로 한 번 더 거른다.
 """
 
 from __future__ import annotations
@@ -20,9 +23,21 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
+from enum import StrEnum
 from typing import Any
 
-from app.core.observability.models import ContentCapture
+
+class ContentCapture(StrEnum):
+    """본문을 외부로 내보내는 수준.
+
+    ``NONE`` 은 본문 대신 길이와 해시만 남긴다. ``SANITIZED`` 는 Secret 과 식별 가능한
+    패턴을 마스킹하고 크기 제한을 적용한 본문을 남긴다. 마스킹하지 않은 원문 모드는
+    제공하지 않는다.
+    """
+
+    NONE = "NONE"
+    SANITIZED = "SANITIZED"
+
 
 REDACTED = "[REDACTED]"
 _SENSITIVE_KEYS = {
@@ -42,6 +57,7 @@ _SENSITIVE_KEYS = {
     "refreshtoken",
     "idtoken",
     "sessiontoken",
+    "tasktoken",
 }
 # 이 키들의 값은 마스킹 후에도 저장하지 않는다. 키 이름은 비교 전에 영숫자 소문자로
 # 정규화하므로 system_prompt, source-items 같은 표기도 함께 차단된다.

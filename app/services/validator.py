@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import report_error
 from app.core.logging import get_logger
-from app.core.observability import ObservationStage
+from app.core.execution_context import ExecutionStage
 from app.schemas import (
     AgentEventResult,
     TimelineDraft,
@@ -63,9 +63,8 @@ def resolve_timezone(name: str | None) -> tzinfo:
                 ErrorCode.TIMEZONE_RESOLUTION_FAILED,
                 "timezone 로드 실패로 KST(+09:00)를 사용합니다",
                 exc=exc,
-                context={"timezone": key},
-                stage=ObservationStage.REQUEST,
-                payload={"timezone": key, "fallback": _DEFAULT_TZ},
+                context={"timezone": key, "fallback": _DEFAULT_TZ},
+                stage=ExecutionStage.REQUEST,
             )
         return timezone(timedelta(hours=9), _DEFAULT_TZ)
 

@@ -63,8 +63,6 @@ def _prepare_environment() -> None:
     os.environ["LANGFUSE_SAMPLE_RATE"] = "1.0"
     os.environ["LANGFUSE_CONTENT_CAPTURE"] = "SANITIZED"
     os.environ["APP_ENV"] = "timeline-audit"
-    os.environ["OBS_ENABLED"] = "false"
-    os.environ["OBS_LOCAL_DIR"] = ""
     os.environ["APP_SERVER_API_URL"] = "https://audit.invalid/s/api/v1"
     os.environ["PIPELINE_TIMEOUT_SEC"] = "300"
     # Agent Graph의 repair cycle을 실제 감사 trace에서도 확인할 수 있도록

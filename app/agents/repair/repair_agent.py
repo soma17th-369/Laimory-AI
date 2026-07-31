@@ -44,13 +44,8 @@ from app.core.config import settings
 from app.core.error_codes import ErrorCode, message_for
 from app.core.exceptions import code_of_or, report_error
 from app.core.langfuse_tracing import trace_observation, update_observation
-from app.core.logging import get_logger
-from app.core.observability import (
-    ObservationEventType,
-    ObservationStage,
-    emit_observation,
-    observation_scope,
-)
+from app.core.execution_context import ExecutionStage, execution_scope
+from app.core.logging import get_logger, log_fields
 from app.core.structured import StructuredOutputError
 from app.schemas import (
     AgentEventResult,
@@ -228,7 +223,6 @@ class RepairAgent(Agent):
                 "Repair Agent 실행 실패",
                 exc=exc,
                 context={"fallback": "last_good_draft"},
-                payload={"fallback": "last_good_draft"},
                 exc_info=True,
             )
             restored = last_good[0]
@@ -266,8 +260,8 @@ class RepairAgent(Agent):
             prompt = build_repair_prompt(ctx, remaining)
             started = perf_counter()
             with (
-                observation_scope(
-                    ObservationStage.REPAIR_AGENT,
+                execution_scope(
+                    ExecutionStage.REPAIR_AGENT,
                     agent=self.name,
                     iteration=iteration,
                 ),
@@ -307,24 +301,17 @@ class RepairAgent(Agent):
                     level="DEFAULT" if plan.done else "WARNING",
                 )
             logger.info(
-                "Repair 분석 %d/%d: issues=%d, toolCalls=%d, done=%s",
-                iteration,
-                max_iterations,
-                len(plan.issues),
-                len(plan.tool_calls),
-                plan.done,
-            )
-            emit_observation(
-                ObservationEventType.PLAN,
-                iteration=iteration,
-                payload={
-                    "remainingIterations": remaining,
-                    "issueCount": len(plan.issues),
-                    "toolCallCount": len(plan.tool_calls),
-                    "toolNames": [call.tool for call in plan.tool_calls],
-                    "done": plan.done,
-                    "plan": plan.model_dump(by_alias=True, mode="json"),
-                },
+                "Repair 분석 완료",
+                extra=log_fields(
+                    iteration=iteration,
+                    maxIterations=max_iterations,
+                    remainingIterations=remaining,
+                    issueCount=len(plan.issues),
+                    toolCallCount=len(plan.tool_calls),
+                    toolNames=[call.tool for call in plan.tool_calls],
+                    done=plan.done,
+                    durationMs=round((perf_counter() - started) * 1000, 3),
+                ),
             )
             return {"iteration": iteration, "plan": plan}
 
@@ -332,8 +319,8 @@ class RepairAgent(Agent):
             iteration = state["iteration"]
             started = perf_counter()
             with (
-                observation_scope(
-                    ObservationStage.REPAIR_AGENT,
+                execution_scope(
+                    ExecutionStage.REPAIR_AGENT,
                     agent=self.name,
                     iteration=iteration,
                 ),
@@ -354,36 +341,16 @@ class RepairAgent(Agent):
                     metadata={"iteration": iteration},
                 ) as observation,
             ):
-                for call in state["plan"].tool_calls:
-                    emit_observation(
-                        ObservationEventType.TOOL_CALL,
-                        iteration=iteration,
-                        payload={
-                            "tool": call.tool,
-                            "argumentNames": sorted(call.args),
-                            "call": call.model_dump(by_alias=True, mode="json"),
-                        },
-                    )
                 results = execute_tool_calls(ctx, state["plan"].tool_calls)
-                for result in results:
-                    emit_observation(
-                        ObservationEventType.TOOL_RESULT
-                        if result.ok
-                        else ObservationEventType.FAILED,
+                logger.info(
+                    "Repair 도구 실행 완료",
+                    extra=log_fields(
                         iteration=iteration,
-                        payload={
-                            "tool": result.tool,
-                            "ok": result.ok,
-                            "result": result.model_dump(
-                                by_alias=True,
-                                mode="json",
-                            ),
-                            "timeline": ctx.draft.model_dump(
-                                by_alias=True,
-                                mode="json",
-                            ),
-                        },
-                    )
+                        toolNames=[result.tool for result in results],
+                        okCount=sum(1 for result in results if result.ok),
+                        failedCount=sum(1 for result in results if not result.ok),
+                    ),
+                )
                 update_observation(
                     observation,
                     output={
@@ -434,18 +401,14 @@ class RepairAgent(Agent):
                     },
                 )
             last_good[0] = ctx.draft.model_copy(deep=True)
-            emit_observation(
-                ObservationEventType.DRAFT_UPDATED,
-                iteration=iteration,
-                payload={
-                    "eventCount": len(ctx.draft.events),
-                    "questionCount": len(ctx.draft.questions),
-                    "warningCount": len(ctx.draft.warnings),
-                    "timeline": ctx.draft.model_dump(
-                        by_alias=True,
-                        mode="json",
-                    ),
-                },
+            logger.info(
+                "Repair 반복 draft 확정",
+                extra=log_fields(
+                    iteration=iteration,
+                    eventCount=len(ctx.draft.events),
+                    questionCount=len(ctx.draft.questions),
+                    warningCount=len(ctx.draft.warnings),
+                ),
             )
             return {}
 

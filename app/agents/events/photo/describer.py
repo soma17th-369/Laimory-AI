@@ -28,7 +28,7 @@ from app.core.error_codes import ErrorCode
 from app.core.exceptions import report_error
 from app.core.llm import ImageInput
 from app.core.logging import get_logger
-from app.core.observability import ObservationStage
+from app.core.execution_context import ExecutionStage
 from app.schemas import PhotoItem
 
 logger = get_logger(__name__)
@@ -65,8 +65,8 @@ def parse_descriptions(text: str, valid_raw_ids: set[str]) -> dict[str, str]:
             logger,
             ErrorCode.STRUCTURED_OUTPUT_INVALID,
             "사진 description 응답에서 JSON 객체를 찾지 못했습니다",
-            stage=ObservationStage.EVENT_AGENT,
-            payload={"parser": "photo_description"},
+            stage=ExecutionStage.EVENT_AGENT,
+            context={"parser": "photo_description"},
         )
         return {}
     try:
@@ -77,8 +77,8 @@ def parse_descriptions(text: str, valid_raw_ids: set[str]) -> dict[str, str]:
             ErrorCode.STRUCTURED_OUTPUT_INVALID,
             "사진 description JSON 파싱에 실패했습니다",
             exc=exc,
-            stage=ObservationStage.EVENT_AGENT,
-            payload={"parser": "photo_description"},
+            stage=ExecutionStage.EVENT_AGENT,
+            context={"parser": "photo_description"},
         )
         return {}
 

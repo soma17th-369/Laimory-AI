@@ -70,16 +70,28 @@ def test_app_server_max_attempts_must_be_at_least_one() -> None:
         _settings(app_server_max_attempts=0)
 
 
-def test_observation_content_capture_defaults_to_sanitized() -> None:
+def test_elasticsearch_settings_are_gone() -> None:
+    """앱은 Elasticsearch 를 직접 호출하지 않는다(이슈 #47).
+
+    접속 정보를 설정으로 되살리면 직접 전송 경로도 함께 돌아온다. 운영 로그는
+    stdout JSON 을 Filebeat 가 실어 나르고, 그 자격증명은 EC2 에만 둔다.
+    """
+
     configured = _settings()
 
-    assert configured.obs_content_capture == "SANITIZED"
-    assert configured.obs_max_payload_bytes == 256 * 1024
-
-
-def test_observation_content_capture_rejects_unknown_policy() -> None:
-    with pytest.raises(ValidationError):
-        _settings(obs_content_capture="RAW")
+    for removed in (
+        "obs_enabled",
+        "obs_content_capture",
+        "obs_max_payload_bytes",
+        "obs_max_events_per_task",
+        "obs_local_dir",
+        "es_url",
+        "es_api_key",
+        "es_event_index",
+        "es_timeout_sec",
+        "es_max_retries",
+    ):
+        assert not hasattr(configured, removed), removed
 
 
 def test_langfuse_defaults_to_japan_region_with_content_disabled() -> None:

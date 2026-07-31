@@ -27,8 +27,8 @@ class SourceFilterStats:
     def changed(self) -> bool:
         return bool(self.removed_refs or self.dropped_items)
 
-    def observation_payload(self, *, item_kind: str) -> dict[str, str | int]:
-        """rawId 원문 없이 운영 관측에 남길 안전한 위반 메타데이터."""
+    def violation_log_fields(self, *, item_kind: str) -> dict[str, str | int]:
+        """rawId 원문 없이 운영 로그에 남길 안전한 위반 메타데이터."""
 
         return {
             "validationCode": "SOURCE_RAW_ID_NOT_IN_REQUEST",

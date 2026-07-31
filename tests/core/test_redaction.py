@@ -1,15 +1,15 @@
-"""관측 payload의 콘텐츠 정책·마스킹·크기 제한 검증."""
+"""외부 전송 payload의 콘텐츠 정책·마스킹·크기 제한 검증."""
 
 from copy import deepcopy
 
-from app.core.observability import (
+from app.core.redaction import (
     ContentCapture,
     REDACTED,
+    capture_external_content,
     capture_payload,
     redact_value,
     summarize_content,
 )
-from app.core.observability.redaction import capture_external_content
 
 
 def test_redaction_masks_nested_secrets_and_personal_text_without_mutation() -> None:

@@ -138,6 +138,14 @@ jobs:
                   sed -n 's/^PREVIOUS_IMAGE_URI=//p' <<<"$stdout" | tail -n 1
                 )"
                 echo "previous-image-uri=${previous_image_uri}" >> "$GITHUB_OUTPUT"
+                # 로그 수집기(#47) 상태. 배포 성공 여부와는 분리돼 있어 요약으로만 알린다.
+                filebeat_status="$(
+                  sed -n 's/^FILEBEAT_STATUS=//p' <<<"$stdout" | tail -n 1
+                )"
+                echo "filebeat-status=${filebeat_status:-unknown}" >> "$GITHUB_OUTPUT"
+                if [[ "$filebeat_status" == failed || "$filebeat_status" == skipped-* ]]; then
+                  echo "::warning::Filebeat 로그 수집이 정상이 아닙니다: ${filebeat_status}. docs/deploy-ec2.md 참고."
+                fi
                 exit 0
                 ;;
               Failed|Cancelled|TimedOut|DeliveryTimedOut|ExecutionTimedOut|Undeliverable|Terminated)
@@ -179,6 +187,7 @@ jobs:
             echo "| 이미지 태그 | \`${{ steps.meta.outputs.image-tag }}\` |"
             echo "| digest | \`${{ steps.build.outputs.digest }}\` |"
             echo "| 직전 이미지 | \`${{ steps.ssm.outputs.previous-image-uri || '없음' }}\` |"
+            echo "| Filebeat | \`${{ steps.ssm.outputs.filebeat-status || '확인 불가' }}\` |"
             echo "| ECR 삭제 이미지 | \`${{ steps.prune.outputs.deleted-count || '0' }}\` |"
             echo "| EC2 | \`${EC2_INSTANCE_ID}\` |"
             echo "| SSM command | \`${{ steps.ssm.outputs.command-id }}\` |"

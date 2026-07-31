@@ -1,7 +1,7 @@
 # 오류 코드 계약
 
 AI 서버가 밖으로 내보내는 실패는 **정수 하나로 식별**합니다. API 응답, App Server
-완료 콜백, 운영 로그, 관측 이벤트가 같은 실패에 같은 정수를 씁니다.
+완료 콜백, 운영 로그가 같은 실패에 같은 정수를 씁니다.
 
 정본은 [`app/core/error_codes.py`](../app/core/error_codes.py)입니다. 이 문서는 그
 카탈로그를 읽는 방법과 클라이언트 연동 방법을 설명합니다.
@@ -34,13 +34,13 @@ AI 서버가 밖으로 내보내는 실패는 **정수 하나로 식별**합니�
 | 1100~1199 | 원본 스냅샷 — App Server 입력 조회 API 응답/계약 |
 | 1200~1299 | AI/LLM — 에이전트 실행, LLM 호출, 구조화 출력 |
 | 1300~1399 | 결과 저장 — App Server 결과 저장 API, 저장 전 자체검증 |
-| 1400~1499 | 외부 연동 — App Server 콜백, 인증/순서 거절, 관측 전송 |
+| 1400~1499 | 외부 연동 — App Server 콜백, 인증/순서 거절 |
 | 1900~1999 | 미분류 — 위 어디에도 속하지 않는 내부 오류 |
 
 ## 3. 코드 표
 
 `HTTP` 열이 비어 있는 코드는 백그라운드 전용입니다. HTTP 응답으로는 나가지 않고,
-완료 콜백과 로그·관측에만 나타납니다.
+완료 콜백과 운영 로그에만 나타납니다.
 
 `흡수` 열이 ✓인 코드는 **처리를 중단시키지 않습니다**. 그 단계만 실패하고 파이프라인은
 대체 결과로 계속 진행하며, 최종 상태는 `SUCCESS`일 수 있습니다. 추적을 위해 코드만
@@ -92,8 +92,8 @@ AI 서버가 밖으로 내보내는 실패는 **정수 하나로 식별**합니�
 | 코드 | 이름 | 의미 | HTTP | 흡수 |
 |---|---|---|---|---|
 | 1401 | `CALLBACK_SEND_FAILED` | App Server 완료 콜백 전송이 실패했습니다. | | ✓ |
-| 1402 | `OBSERVATION_EXPORT_FAILED` | 관측 flush/ES 전송이 실패했습니다. | | ✓ |
-| 1403 | `OBSERVATION_EMIT_FAILED` | 관측 이벤트 기록이 실패했습니다. | | ✓ |
+| 1402 | *(예약)* | AI 서버가 관측 이벤트를 Elasticsearch로 직접 보내던 시절의 `OBSERVATION_EXPORT_FAILED`입니다. **사용하지 않습니다.** | | |
+| 1403 | *(예약)* | 같은 시절의 `OBSERVATION_EMIT_FAILED`입니다. **사용하지 않습니다.** | | |
 | 1404 | `APP_SERVER_UNAUTHORIZED` | App Server가 `taskToken`을 거절했습니다(401). | | |
 | 1405 | `APP_SERVER_TASK_NOT_FOUND` | App Server에 task가 없거나 만료됐습니다(404). | | |
 | 1406 | `APP_SERVER_CONFLICT` | App Server가 호출 순서 충돌로 거절했습니다(409). | | |
@@ -146,35 +146,35 @@ AI 서버는 원인이 새로 분류될 때마다 코드를 추가합니다. 클
 같은 식별자, 경로, traceback은 **서버 로그에만** 남습니다. 장애를 추적할 때는
 `errorCode`로 로그를 조회하세요.
 
-## 5. 로그·관측에서 찾기
+## 5. 운영 로그에서 찾기
 
-모든 예외 경로가 `errorCode`를 포함한 로그를 남깁니다. 필드 순서가 고정이라
-CloudWatch Logs Insights에서 그대로 필터·집계할 수 있습니다.
-
-```
-타임라인 처리 timeout: errorCode=1201, errorType=TimeoutError, taskId=task-1
-```
-
-```
-fields @timestamp, @message
-| filter @message like /errorCode=1201/
-| stats count() by bin(5m)
-```
-
-관측 이벤트(`stage`별 `FAILED`)의 `payload`에도 같은 값이 `errorCode`로 들어갑니다.
+모든 예외 경로가 `errorCode`를 **구조화 필드**로 담은 한 줄 JSON 로그를 남깁니다.
+EC2에서는 Filebeat가 이 stdout을 Elasticsearch로 실어 나릅니다(이슈 #47).
 
 ```json
-{
-  "stage": "STORAGE",
-  "eventType": "FAILED",
-  "payload": {
-    "errorCode": 1301,
-    "errorType": "TimelineValidationError",
-    "violationCodes": ["SOURCE_RAW_ID_NOT_IN_TASK"],
-    "violationCount": 1
-  }
-}
+{"timestamp":"2026-07-31T04:12:07.882Z","log.level":"WARNING",
+ "logger":"app.services.timeline_runner","message":"타임라인 처리 실패",
+ "service":"laimory-ai","environment":"prod","taskId":"task-1","stage":"STORAGE",
+ "errorCode":1301,"errorType":"TimelineValidationError",
+ "violationCodes":["SOURCE_RAW_ID_NOT_IN_TASK"],"violationCount":1}
 ```
+
+값이 메시지 문자열이 아니라 필드에 있으므로 Kibana에서 그대로 필터·집계할 수 있습니다.
+
+```
+errorCode: 1201 and environment: "prod"
+```
+
+한 task의 전체 흐름은 `taskId`로 봅니다. 단계 경계(`단계 시작`/`단계 완료`)에
+`stage`와 `durationMs`가 함께 남아 어디서 얼마나 걸렸는지 이어 볼 수 있습니다.
+
+```
+taskId: "task-1"
+```
+
+조회 예시와 필드 계약은 [docs/operational-logging.md](operational-logging.md)에
+정리돼 있습니다. 프롬프트·LLM 응답·draft 본문은 운영 로그에 남지 않으며, 그 수준의
+추적은 Langfuse가 담당합니다.
 
 ## 6. 새 코드를 추가할 때
 
@@ -194,8 +194,8 @@ fields @timestamp, @message
 ## 7. 코드를 남기는 방법
 
 `except` 블록은 [`report_error`](../app/core/exceptions.py)만 호출합니다. 이 함수가
-로그와 관측 이벤트를 **같은 코드로 한 번에** 남기는 유일한 통로입니다. 각자 로그를
-찍고 각자 emit하면 언젠가 값이 갈리는데, 그때 갈렸다는 사실조차 알기 어렵습니다.
+실패를 **코드와 함께** 운영 로그에 남기는 유일한 통로입니다. 각자 로그를 찍으면
+언젠가 값이 갈리는데, 그때 갈렸다는 사실조차 알기 어렵습니다.
 
 ```python
 except Exception as exc:
@@ -204,11 +204,14 @@ except Exception as exc:
         code_of(exc),              # 예외가 아는 코드. 모르면 INTERNAL_ERROR.
         "타임라인 처리 실패",        # 무슨 실패인지 한 줄
         exc=exc,
-        context={"taskId": task_id},   # 로그에만 나가는 진단 정보
-        stage=ObservationStage.STORAGE,
+        context={"taskId": task_id},   # 로그에만 나가는 구조화 진단 필드
+        stage=ExecutionStage.STORAGE,
         exc_info=True,
     )
 ```
+
+`taskId`·`stage`·`agent`는 실행 컨텍스트([`app/core/execution_context.py`](../app/core/execution_context.py))가
+자동으로 붙이므로, 컨텍스트와 다른 값을 남길 때만 직접 넘기면 됩니다.
 
 도메인 예외는 `AppError`를 상속해 자기 코드를 갖습니다. 그러면 잡는 쪽이 예외
 클래스명을 알아보지 않고도 `code_of(exc)`로 코드를 꺼낼 수 있습니다.
@@ -218,11 +221,12 @@ class SourceBatchError(AppError, ValueError):
     default_code = ErrorCode.SOURCE_CONTRACT_VIOLATION
 ```
 
-### 관측 모듈 자신의 실패는 `emit=False`
+### 본문을 로그에 담지 않습니다
 
-관측 기록이 깨진 상황에서 그 사실을 관측으로 알리려 하면 같은 실패 경로를 다시 타
-무한 재귀합니다. `observer.py`, `sinks.py`, `elasticsearch.py`, `runtime.py`의 실패는
-로그만 남깁니다.
+`context`에 넣는 값은 식별자·건수·상태 같은 진단 지표입니다. 프롬프트, LLM 응답,
+draft 전문, 사용자 원문, LLM이 만든 도구 인자 **값**은 넣지 않습니다. 그 수준의
+추적은 Langfuse가 담당하며, 운영 로그에 복제하면 Elasticsearch로 사용자 데이터가
+흘러갑니다.
 
 ### 코드를 붙이지 않는 곳
 

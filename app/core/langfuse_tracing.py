@@ -1,8 +1,9 @@
 """Langfuse tracing 어댑터.
 
 Timeline 실행의 trace/span 계층과 LLM generation을 Langfuse Python SDK v4로
-내보낸다. 기존 Elasticsearch 관측은 운영 이벤트·오류 코드의 정본으로 그대로 두고,
-Langfuse는 에이전트 트리·모델 지연·토큰/비용 분석을 위한 선택적 계층으로만 쓴다.
+내보낸다. **AI 실행 관측(agent 트리·모델 지연·토큰/비용)은 Langfuse가 전담한다**
+(이슈 #47). FastAPI 요청·오류·외부 연동 같은 운영 로그는 stdout JSON → Filebeat →
+Elasticsearch 로 따로 흐르며, 애플리케이션은 Elasticsearch를 직접 호출하지 않는다.
 
 라이프로그 본문은 위치·건강·캘린더 정보를 포함할 수 있다. 따라서 기본 정책은
 ``NONE``이며, 입력/출력을 byte 길이와 해시로 치환한다. ``SANITIZED``를 명시한
@@ -30,9 +31,9 @@ from langfuse.types import (
 )
 
 from app.core.config import settings
-from app.core.logging import get_logger
-from app.core.observability.models import ContentCapture
-from app.core.observability.redaction import (
+from app.core.logging import SERVICE_NAME, get_logger
+from app.core.redaction import (
+    ContentCapture,
     capture_external_content,
     capture_payload,
     redact_text,
@@ -40,10 +41,6 @@ from app.core.observability.redaction import (
 )
 
 logger = get_logger(__name__)
-
-# Langfuse 가 조립하는 OTel Resource 의 service.name. 지정하지 않으면 OTel 기본값인
-# `unknown_service` 가 그대로 노출된다.
-_SERVICE_NAME = "laimory-ai"
 
 ObservationType = Literal[
     "span",
@@ -255,8 +252,9 @@ def get_langfuse_client() -> Langfuse | None:
 
     # OTel Resource 는 Langfuse client 를 만들 때 한 번 조립된다. service.name 을 주지
     # 않으면 `unknown_service` 로 남아 어느 서비스가 보낸 trace 인지 화면에서 알 수 없다.
+    # 운영 로그의 `service` 필드와 같은 값을 써야 두 시스템에서 같은 서비스로 보인다.
     # 운영자가 값을 지정했으면 그대로 존중한다.
-    os.environ.setdefault("OTEL_SERVICE_NAME", _SERVICE_NAME)
+    os.environ.setdefault("OTEL_SERVICE_NAME", SERVICE_NAME)
 
     try:
         return Langfuse(

@@ -29,13 +29,8 @@ from app.core.langfuse_tracing import (
     trace_observation,
     update_observation,
 )
-from app.core.logging import get_logger
-from app.core.observability import (
-    ObservationEventType,
-    ObservationStage,
-    current_observation_context,
-    emit_observation,
-)
+from app.core.execution_context import ExecutionStage, current_execution_context
+from app.core.logging import get_logger, log_fields
 from app.core.structured import ModelT, run_structured, to_strict_schema
 
 logger = get_logger(__name__)
@@ -210,11 +205,13 @@ class LLMProvider(ABC):
         """
 
         logger.info(
-            "LLM 토큰 사용량: provider=%s, model=%s, inputTokens=%s, outputTokens=%s",
-            self.name,
-            self.model,
-            input_tokens,
-            output_tokens,
+            "LLM 토큰 사용량",
+            extra=log_fields(
+                provider=self.name,
+                model=self.model,
+                inputTokens=input_tokens,
+                outputTokens=output_tokens,
+            ),
         )
 
     def _provider_version(self) -> str | None:
@@ -248,58 +245,8 @@ class LLMProvider(ABC):
             if key in usage
         }
 
-    def _emit_llm_prompt(
-        self,
-        prompt: str,
-        *,
-        system: str | None = None,
-        temperature: float | None = None,
-        image_count: int = 0,
-        options: dict | None = None,
-    ) -> None:
-        """LLM 호출 직전 PROMPT 관측 이벤트를 남긴다(컨텍스트 없으면 no-op)."""
-
-        payload: dict = {"prompt": prompt}
-        if system is not None:
-            payload["system"] = system
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if options:
-            # Provider 옵션은 SDK 객체가 섞일 수 있어 ES 직렬화 가능한 형태로 고정한다.
-            payload["options"] = json.loads(json.dumps(options, default=str))
-        if image_count:
-            payload["imageCount"] = image_count
-        emit_observation(
-            ObservationEventType.PROMPT,
-            stage=ObservationStage.LLM,
-            provider=self.name,
-            model=self.model,
-            provider_version=self._provider_version(),
-            payload=payload,
-        )
-
-    def _emit_llm_response(self, started: float, response, text: str) -> None:
-        """LLM 응답 후 RESPONSE 관측 이벤트를 남긴다(duration·provider 토큰 포함)."""
-
-        usage = self._usage_detail(response)
-        emit_observation(
-            ObservationEventType.RESPONSE,
-            stage=ObservationStage.LLM,
-            provider=self.name,
-            model=self.model,
-            provider_version=self._provider_version(),
-            duration_ms=(perf_counter() - started) * 1000,
-            input_tokens=usage.get("input"),
-            output_tokens=usage.get("output"),
-            total_tokens=usage.get("total"),
-            cached_tokens=usage.get("cached"),
-            reasoning_tokens=usage.get("reasoning"),
-            tool_tokens=usage.get("tool"),
-            payload={"response": text},
-        )
-
-    def _emit_llm_failure(self, started: float, exc: Exception) -> None:
-        """LLM 호출 실패를 로그와 FAILED 관측 이벤트에 같은 코드로 남긴다.
+    def _report_llm_failure(self, started: float, exc: Exception) -> None:
+        """LLM 호출 실패를 오류 코드와 함께 운영 로그에 남긴다.
 
         provider 별 호출 지점이 여럿이지만 실패는 모두 여기로 모인다. 코드 부여를
         한 곳에서만 하려고 그렇게 뒀다.
@@ -310,8 +257,7 @@ class LLMProvider(ABC):
             ErrorCode.LLM_CALL_FAILED,
             "LLM 호출 실패",
             exc=exc,
-            context={"provider": self.name, "model": self.model},
-            stage=ObservationStage.LLM,
+            stage=ExecutionStage.LLM,
             provider=self.name,
             model=self.model,
             provider_version=self._provider_version(),
@@ -339,15 +285,15 @@ class LLMProvider(ABC):
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        context = current_observation_context()
+        context = current_execution_context()
         if image_count:
             observation_name = "describe-photo-images"
-        elif context is not None and context.stage is ObservationStage.EVENT_AGENT:
+        elif context is not None and context.stage is ExecutionStage.EVENT_AGENT:
             agent_name = (context.agent or "event").replace("_", "-")
             observation_name = f"infer-{agent_name}-events"
-        elif context is not None and context.stage is ObservationStage.TIMELINE_AGENT:
+        elif context is not None and context.stage is ExecutionStage.TIMELINE_AGENT:
             observation_name = "generate-timeline-draft"
-        elif context is not None and context.stage is ObservationStage.REPAIR_AGENT:
+        elif context is not None and context.stage is ExecutionStage.REPAIR_AGENT:
             observation_name = "analyze-timeline-repair"
         else:
             observation_name = "call-llm"
@@ -473,12 +419,6 @@ class OpenAIProvider(LLMProvider):
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        self._emit_llm_prompt(
-            prompt,
-            system=system,
-            temperature=temperature,
-            options=kwargs,
-        )
         with self._trace_generation(
             prompt,
             system=system,
@@ -495,11 +435,10 @@ class OpenAIProvider(LLMProvider):
                 )
                 self._log_usage(*self._usage(response))
                 text = response.choices[0].message.content or ""
-                self._emit_llm_response(started, response, text)
                 self._update_generation(generation, response, text)
                 return text
             except Exception as exc:
-                self._emit_llm_failure(started, exc)
+                self._report_llm_failure(started, exc)
                 raise
 
     def complete_with_images(
@@ -525,13 +464,6 @@ class OpenAIProvider(LLMProvider):
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": content})
 
-        self._emit_llm_prompt(
-            prompt,
-            system=system,
-            temperature=temperature,
-            image_count=len(images),
-            options=kwargs,
-        )
         with self._trace_generation(
             prompt,
             system=system,
@@ -550,11 +482,10 @@ class OpenAIProvider(LLMProvider):
                 )
                 self._log_usage(*self._usage(response))
                 text = response.choices[0].message.content or ""
-                self._emit_llm_response(started, response, text)
                 self._update_generation(generation, response, text)
                 return text
             except Exception as exc:
-                self._emit_llm_failure(started, exc)
+                self._report_llm_failure(started, exc)
                 raise
 
 
@@ -678,12 +609,6 @@ class GeminiProvider(LLMProvider):
             temperature=temperature,
             **kwargs,
         )
-        self._emit_llm_prompt(
-            prompt,
-            system=system,
-            temperature=temperature,
-            options=kwargs,
-        )
         with self._trace_generation(
             prompt,
             system=system,
@@ -699,11 +624,10 @@ class GeminiProvider(LLMProvider):
                 )
                 self._log_usage(*self._usage(response))
                 text = response.text or ""
-                self._emit_llm_response(started, response, text)
                 self._update_generation(generation, response, text)
                 return text
             except Exception as exc:
-                self._emit_llm_failure(started, exc)
+                self._report_llm_failure(started, exc)
                 raise
 
     def complete_with_images(
@@ -727,13 +651,6 @@ class GeminiProvider(LLMProvider):
             parts.append(
                 types.Part.from_bytes(data=image.data, mime_type=image.mime_type)
             )
-        self._emit_llm_prompt(
-            prompt,
-            system=system,
-            temperature=temperature,
-            image_count=len(images),
-            options=kwargs,
-        )
         with self._trace_generation(
             prompt,
             system=system,
@@ -751,11 +668,10 @@ class GeminiProvider(LLMProvider):
                 )
                 self._log_usage(*self._usage(response))
                 text = response.text or ""
-                self._emit_llm_response(started, response, text)
                 self._update_generation(generation, response, text)
                 return text
             except Exception as exc:
-                self._emit_llm_failure(started, exc)
+                self._report_llm_failure(started, exc)
                 raise
 
 
@@ -839,12 +755,6 @@ class BedrockProvider(LLMProvider):
         temperature: float = 0.7,
         **kwargs,
     ) -> str:
-        self._emit_llm_prompt(
-            prompt,
-            system=system,
-            temperature=temperature,
-            options=kwargs,
-        )
         with self._trace_generation(
             prompt,
             system=system,
@@ -861,11 +771,10 @@ class BedrockProvider(LLMProvider):
                 )
                 self._log_usage(*self._usage(response))
                 text = self._extract_text(response)
-                self._emit_llm_response(started, response, text)
                 self._update_generation(generation, response, text)
                 return text
             except Exception as exc:
-                self._emit_llm_failure(started, exc)
+                self._report_llm_failure(started, exc)
                 raise
 
     def complete_with_images(
@@ -887,13 +796,6 @@ class BedrockProvider(LLMProvider):
                     }
                 }
             )
-        self._emit_llm_prompt(
-            prompt,
-            system=system,
-            temperature=temperature,
-            image_count=len(images),
-            options=kwargs,
-        )
         with self._trace_generation(
             prompt,
             system=system,
@@ -912,11 +814,10 @@ class BedrockProvider(LLMProvider):
                 )
                 self._log_usage(*self._usage(response))
                 text = self._extract_text(response)
-                self._emit_llm_response(started, response, text)
                 self._update_generation(generation, response, text)
                 return text
             except Exception as exc:
-                self._emit_llm_failure(started, exc)
+                self._report_llm_failure(started, exc)
                 raise
 
     def complete_json(
@@ -945,15 +846,6 @@ class BedrockProvider(LLMProvider):
                 prompt, system=system, temperature=temperature, **kwargs
             )
 
-        self._emit_llm_prompt(
-            prompt,
-            system=system,
-            temperature=temperature,
-            options={
-                **kwargs,
-                "structuredSchema": schema.model_json_schema(),
-            },
-        )
         with self._trace_generation(
             prompt,
             system=system,
@@ -970,11 +862,10 @@ class BedrockProvider(LLMProvider):
                 )
                 self._log_usage(*self._usage(response))
                 text = self._extract_tool_use(response)
-                self._emit_llm_response(started, response, text)
                 self._update_generation(generation, response, text)
                 return text
             except Exception as exc:
-                self._emit_llm_failure(started, exc)
+                self._report_llm_failure(started, exc)
                 raise
 
     def _converse_structured(

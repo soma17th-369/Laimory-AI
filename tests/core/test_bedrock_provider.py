@@ -215,26 +215,36 @@ def test_complete_with_images_attaches_image_blocks(monkeypatch):
     assert content[1]["image"]["source"]["bytes"] == b"\xff\xd8\xff"
 
 
+def _usage_fields(caplog) -> dict:
+    record = next(
+        r for r in caplog.records if r.getMessage() == "LLM 토큰 사용량"
+    )
+    return record.fields
+
+
 def test_logs_token_usage(monkeypatch, caplog):
     provider, _ = _make_provider(monkeypatch)
     with caplog.at_level(logging.INFO, logger="app.core.llm"):
         provider.complete("x")
-    msgs = [r.getMessage() for r in caplog.records]
-    assert any(
-        "토큰 사용량" in m
-        and "provider=bedrock" in m
-        and "inputTokens=12" in m
-        and "outputTokens=5" in m
-        for m in msgs
-    ), msgs
+
+    fields = _usage_fields(caplog)
+    assert fields["provider"] == "bedrock"
+    assert fields["inputTokens"] == 12
+    assert fields["outputTokens"] == 5
 
 
-def test_usage_missing_logs_none(monkeypatch, caplog):
+def test_usage_missing_omits_token_fields(monkeypatch, caplog):
+    """usage 를 주지 않는 응답이면 토큰 필드를 빼고 남긴다(추정하지 않는다)."""
+
     response = {"output": {"message": {"content": [{"text": "hi"}]}}}  # usage 없음
     provider, _ = _make_provider(monkeypatch, response=response)
     with caplog.at_level(logging.INFO, logger="app.core.llm"):
         provider.complete("x")
-    assert any("inputTokens=None" in r.getMessage() for r in caplog.records)
+
+    fields = _usage_fields(caplog)
+    assert "inputTokens" not in fields
+    assert "outputTokens" not in fields
+    assert fields["provider"] == "bedrock"
 
 
 def test_image_format_mapping():

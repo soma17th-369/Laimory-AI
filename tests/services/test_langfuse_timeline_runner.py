@@ -40,9 +40,6 @@ def test_runner_trace_contains_every_boundary_input_and_output(
         "SANITIZED",
     )
     monkeypatch.setattr(timeline_runner.settings, "langfuse_enabled", False)
-    monkeypatch.setattr(timeline_runner.settings, "obs_enabled", False)
-    monkeypatch.setattr(timeline_runner.settings, "es_url", "")
-    monkeypatch.setattr(timeline_runner.settings, "obs_local_dir", None)
 
     draft = TimelineDraft(
         user_id="u-1",

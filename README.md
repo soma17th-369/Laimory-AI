@@ -179,17 +179,9 @@ BEDROCK_AWS_PROFILE=laimory-bedrock
 BEDROCK_REGION=ap-northeast-2
 BEDROCK_MODEL=global.amazon.nova-2-lite-v1:0
 
-# 관측(Observability) — 마스킹한 Agent 실행 본문과 메타데이터를 ES로 보낸다(#28).
-# OBS_ENABLED=false이고 OBS_LOCAL_DIR도 비어 있으면 수집 자체가 no-op이다.
-OBS_ENABLED=false            # ES 전송 마스터 스위치
-ES_URL=                      # 예: https://es.internal:9200 (비면 전송 안 함)
-ES_API_KEY=                  # Elasticsearch ApiKey (선택)
+# 운영 로그 — 로컬은 rich, 운영은 한 줄 JSON(stdout → Filebeat → Elasticsearch, #47).
+LOG_FORMAT=rich              # rich(로컬 콘솔) | json(운영). 운영에서는 반드시 json
 AGENT_VERSION=               # 선택: 이미지 tag/commit SHA. 기본은 패키지 버전
-OBS_CONTENT_CAPTURE=SANITIZED # SANITIZED(마스킹 본문) | NONE(길이/해시)
-OBS_MAX_PAYLOAD_BYTES=262144 # 이벤트별 payload 최대 byte
-OBS_MAX_EVENTS_PER_TASK=1000 # task별 메모리 버퍼 이벤트 상한
-OBS_LOCAL_DIR=               # dev 검사용 events.jsonl 저장 경로
-ES_EVENT_INDEX=ai-timeline-task # 단계별 실행 이벤트 인덱스 base
 
 # Langfuse tracing — Agent 계층, LLM generation, token/cost 분석
 LANGFUSE_ENABLED=false
@@ -235,16 +227,24 @@ LLM 토큰 사용량: provider=bedrock, model=..., inputTokens=123, outputTokens
 
 ## 관측 (Observability)
 
-Timeline 요청(`taskId`) 하나의 입력·Agent·LLM·저장·콜백 실행 흐름을 구조화 로그로 모아
-**Elasticsearch → Kibana** 에서 조회한다. 기본 `SANITIZED` 정책은 입력·사용자 메모리·
-프롬프트·LLM 응답·draft·repair plan·도구 인자/결과를 Secret과 식별 가능한 개인정보
-패턴을 마스킹한 뒤 저장한다. `NONE` 정책은 본문 대신 길이와 해시만 남긴다. 운영 로그
-(FastAPI 등)는 `LOG_FORMAT=json` 으로 stdout JSON 을 남겨 **CloudWatch** 가 수집한다.
-관측 전송은 실패해도 Timeline 처리에 영향을 주지 않는다.
+관측은 두 갈래이고 서로 대체하지 않는다(이슈 #47).
 
-- 전체 설계·이벤트 계약·Kibana 조회·설정: [docs/timeline-observability.md](docs/timeline-observability.md)
+- **Langfuse** — AI agent 실행 관측. agent 트리, LLM generation, 프롬프트·응답 본문,
+  token usage. 본문은 `LANGFUSE_CONTENT_CAPTURE` 정책으로 마스킹한 뒤 내보낸다.
+- **Elasticsearch** — FastAPI 요청, 처리 결과, 오류, 외부 API 연동, 백그라운드 작업의
+  운영 로그. 앱은 stdout에 한 줄 JSON만 쓰고, EC2에서 별도 Filebeat 컨테이너가 그 로그를
+  `logs-laimory.ai-<env>` data stream으로 실어 나른다.
+
+**애플리케이션은 Elasticsearch를 직접 호출하지 않는다.** ES URL도 자격증명도 앱 설정에
+없으며, 그 경계는 정적 검색 테스트가 지킨다. 프롬프트·LLM 응답·draft 전문·사용자 원문은
+운영 로그에 남지 않는다.
+
+`taskId`와 `errorCode`는 구조화 필드라 Kibana에서 그대로 필터·집계할 수 있다.
+
+- 로그 필드 계약·조회 예시·smoke test: [docs/operational-logging.md](docs/operational-logging.md)
 - Langfuse trace 구조·보안·설정·검증: [docs/langfuse-tracing.md](docs/langfuse-tracing.md)
-- ES 인덱스 매핑: [ai-timeline-task](docs/observability/ai-timeline-task-index-template.json)
+- 오류 코드 카탈로그: [docs/error-codes.md](docs/error-codes.md)
+- Filebeat 설정 템플릿: [filebeat.example.yml](docs/observability/filebeat.example.yml)
 
 ---
 

@@ -1,6 +1,6 @@
 # EC2 컨테이너 배포 가이드
 
-> 기준일: 2026-07-24
+> 기준일: 2026-07-31 (이슈 #47 로그 수집기 반영)
 > 대상: 기존 `t3.micro` EC2에서 Laimory AI 서버를 단일 Docker 컨테이너로 운영
 
 AgentCore 장애 우회용 운영 경로다. `dev` 브랜치에 배포 대상 파일이 반영되면 GitHub
@@ -17,11 +17,23 @@ dev push
 → ECR push
 → SSM Run Command
 → EC2가 Instance Role로 ECR pull
+→ 로그 수집기(laimory-filebeat) 확인·기동
 → 기존 작업이 끝날 때까지 대기
-→ 컨테이너 교체
+→ 애플리케이션 컨테이너 교체
 → GET /ping 검증
 → 실패 시 직전 이미지 자동 복구
 ```
+
+EC2에는 컨테이너가 둘이다.
+
+| 컨테이너 | 역할 | 배포 시 |
+|---|---|---|
+| `laimory-ai` | 애플리케이션 | 매번 새 이미지로 교체 |
+| `laimory-filebeat` | 운영 로그 수집(#47). 앱 stdout → Elasticsearch | 정상 동작 중이면 **건드리지 않는다** |
+
+앱 교체 중에 수집기까지 내리면 그 사이 로그를 잃으므로, 이미지와 설정이 그대로면
+Filebeat는 그대로 둔다. 자세한 로그 계약은
+[operational-logging.md](operational-logging.md) 참고.
 
 App Server는 AgentCore API 대신 같은 VPC 안의 EC2 HTTP API를 직접 호출한다.
 
@@ -173,7 +185,11 @@ EC2와 App Server는 같은 VPC에서 통신해야 한다. AI 서버는 이슈 #
 AI 서버가 입력 조회·결과 저장·완료 콜백을 모두 App Server 서버간 API로 호출하므로
 반대 방향 경로도 열려 있어야 한다.
 
-EC2는 ECR, Systems Manager, Bedrock, App Server API로 나갈 수 있어야 한다.
+EC2는 ECR, Systems Manager, Bedrock, App Server API, **Elasticsearch**로 나갈 수
+있어야 한다. Elasticsearch로 나가는 것은 애플리케이션이 아니라 같은 인스턴스의
+`laimory-filebeat` 컨테이너다(이슈 #47). ES가 VPC 밖이면 그 경로도 열어야 하며,
+Filebeat 이미지를 받으려면 `docker.elastic.co`에도 닿아야 한다.
+
 private subnet이고 NAT가 없다면 각 서비스의 VPC Endpoint 구성이 필요하다.
 
 ## 7. EC2 최초 준비
@@ -222,6 +238,8 @@ sudo vi /opt/laimory-ai/runtime.env
 ```dotenv
 APP_ENV=prod
 LOG_LEVEL=INFO
+# 운영에서는 반드시 json 이다. Filebeat 가 stdout 을 줄 단위로 읽으므로 한 줄이
+# 유효한 JSON 이 아니면 그 이벤트를 통째로 잃는다(이슈 #47).
 LOG_FORMAT=json
 
 LLM_PROVIDER=bedrock
@@ -248,6 +266,12 @@ LANGFUSE_MAX_PAYLOAD_BYTES=65536
 이기므로, **dev 인스턴스의 `runtime.env`에 예전 `LANGFUSE_CONTENT_CAPTURE=NONE` 줄이
 남아 있으면 지운다.** 남겨 두면 Langfuse trace에 본문이 계속 보이지 않는다(이슈 #48).
 
+예전 관측 설정(`OBS_ENABLED`, `ES_URL`, `ES_API_KEY`, `ES_EVENT_INDEX`,
+`OBS_CONTENT_CAPTURE`, `OBS_LOCAL_DIR` 등)이 남아 있으면 지운다. 이슈 #47 이후
+애플리케이션은 이 값을 읽지 않으며(설정이 `extra="ignore"`라 조용히 무시된다),
+남겨 두면 앱이 아직 Elasticsearch에 붙는 것처럼 보인다. Elasticsearch 접속정보는
+`filebeat.env`(§9) 한 곳에만 둔다.
+
 `AGENT_VERSION`도 이 파일에 넣지 않아도 된다. `scripts/deploy-ec2.sh`가 배포 이미지
 태그를 컨테이너에 넘기며, `docker run -e`가 `--env-file`보다 우선한다.
 
@@ -259,7 +283,95 @@ LANGFUSE_MAX_PAYLOAD_BYTES=65536
 넣으면(`/s/api/v1` 또는 `/s/v1`) AI 서버가 `/timeline/drafts/{taskId}/input`,
 `/result`, `/callback`을 붙여 호출한다. 기존 `CALLBACK_URL`과 `DB_*`는 사용하지 않는다.
 
-## 9. 배포
+## 9. 로그 수집기(Filebeat) 준비
+
+운영 로그는 앱 컨테이너 stdout에서 나와 별도 Filebeat 컨테이너를 거쳐 Elasticsearch로
+들어간다(이슈 #47). 애플리케이션은 Elasticsearch에 직접 접속하지 않으므로, ES 접속정보는
+**이 EC2에만** 둔다.
+
+### 9.1 파일 세 개와 디렉터리 하나
+
+```bash
+sudo mkdir -p /opt/laimory-ai/filebeat-data
+```
+
+| 경로 | 내용 | 권한 |
+|---|---|---|
+| `/opt/laimory-ai/filebeat.yml` | Filebeat 설정. 자격증명은 `${}` 참조만 | root:root `0600` |
+| `/opt/laimory-ai/filebeat.env` | `FILEBEAT_IMAGE`, ES 접속정보, 환경 이름 | root:root `0600` |
+| `/opt/laimory-ai/filebeat-data/` | registry(읽은 위치). **필수** | root:root `0700` |
+| `/opt/laimory-ai/runtime.env` | 앱 환경변수(§8) | root:root `0600` |
+
+`filebeat-data`가 없거나 마운트되지 않으면 Filebeat가 재시작할 때마다 로그를 처음부터
+다시 읽어 Elasticsearch에 중복이 쌓인다.
+
+### 9.2 설정 파일
+
+저장소의 [`docs/observability/filebeat.example.yml`](observability/filebeat.example.yml)을
+그대로 복사한다. 이 템플릿에는 자격증명이 없다 — 값은 `filebeat.env`에서 환경변수로
+들어간다.
+
+```bash
+sudo vi /opt/laimory-ai/filebeat.yml    # 템플릿 내용 붙여넣기
+sudo chown root:root /opt/laimory-ai/filebeat.yml
+sudo chmod 600 /opt/laimory-ai/filebeat.yml
+```
+
+수집 대상은 컨테이너 이름이 정확히 `laimory-ai`인 것 하나다. Filebeat 자신의 로그나
+다른 컨테이너 로그는 들어오지 않는다.
+
+### 9.3 접속정보
+
+```bash
+sudo touch /opt/laimory-ai/filebeat.env
+sudo chmod 600 /opt/laimory-ai/filebeat.env
+sudo vi /opt/laimory-ai/filebeat.env
+```
+
+```dotenv
+# Elasticsearch 버전에 맞춘 태그를 쓴다. 배포 스크립트가 이 값으로 컨테이너를 만든다.
+FILEBEAT_IMAGE=docker.elastic.co/beats/filebeat:<ES 버전에 맞춘 태그>
+
+ES_HOSTS=https://<elasticsearch-host>:9200
+# 수집 전용 API key. 인덱스 쓰기 권한만 준다(템플릿·ILM 관리 권한은 주지 않는다).
+ES_API_KEY=<id>:<api_key>
+
+# data stream 이름의 namespace. logs-laimory.ai-<이 값> 으로 들어간다.
+LAIMORY_ENV=prod
+```
+
+`ES_API_KEY`에는 `logs-laimory.ai-*`에 대한 `auto_configure`/`create_doc` 권한만 주면
+된다. Filebeat 설정이 `setup.template.enabled: false`, `setup.ilm.enabled: false`라
+관리 권한을 요구하지 않는다. 인덱스 템플릿은 Elasticsearch 내장 `logs-*-*` 템플릿이
+잡아 준다.
+
+### 9.4 배포 스크립트가 하는 일
+
+`scripts/deploy-ec2.sh`가 앱 컨테이너를 교체하기 **전에** `ensure_filebeat`를 실행한다.
+
+- 설정 파일이나 `filebeat.env`가 없으면 경고만 남기고 건너뛴다(`FILEBEAT_STATUS=skipped-*`)
+- 이미 실행 중이고 이미지·설정 해시가 그대로면 **건드리지 않는다**(`running`)
+- 이미지나 설정이 바뀌었거나 죽어 있으면 재생성한다(`started`)
+- 기동에 실패해도 **애플리케이션 배포를 실패시키지 않는다**(`failed`)
+
+마지막 항목이 정책이다. 로그 수집이 서비스 가용성을 막는 구조는 만들지 않는다. 대신
+GitHub Actions 요약의 `Filebeat` 행과 워크플로 경고로 드러나므로, `failed`나
+`skipped-*`가 보이면 배포 자체와 무관하게 따로 조치한다.
+
+컨테이너는 `--restart unless-stopped`로 뜨므로 EC2 재부팅이나 Docker 재시작 후에도
+자동으로 복구된다. 두 컨테이너 모두 `--log-opt max-size=20m --log-opt max-file=3`으로
+로그를 로테이션한다 — json-file 드라이버 기본값은 무제한이라 `t3.micro` 디스크가
+조용히 찬다.
+
+### 9.5 `docker.sock` 마운트에 대해
+
+Filebeat는 컨테이너 이름으로 수집 대상을 고르기 위해 Docker autodiscover를 쓰며, 이를
+위해 `/var/run/docker.sock`을 **읽기 전용**으로 마운트한다. Docker 데몬 접근은 사실상
+호스트 root 상당 권한이므로, 이 컨테이너에는 신뢰하는 공식 이미지만 쓰고 태그를
+고정한다. 이 노출을 허용할 수 없으면 수집 방식을 컨테이너 ID 경로 glob으로 바꿔야
+하며, 그 경우 이름 기반 필터의 정확도가 떨어진다.
+
+## 10. 배포
 
 자동 배포 대상:
 
@@ -276,6 +388,10 @@ LANGFUSE_MAX_PAYLOAD_BYTES=65536
 유휴 상태가 된 뒤 이미지를 교체하고 5분 동안 새 컨테이너를 확인한다. 새 컨테이너가
 정상 기동하지 못하면 직전 이미지로 자동 복구한다.
 
+`filebeat.yml`을 고쳤을 때는 배포가 설정 해시 변화를 보고 Filebeat를 재생성한다.
+앱 변경 없이 수집 설정만 바꾸려면 Actions에서 워크플로를 수동 실행하거나, EC2에서
+직접 컨테이너를 지우고 다음 배포를 기다린다.
+
 배포 성공 후 workflow는 ECR에서 현재 배포 이미지와 실제로 교체된 직전 이미지의
 태그를 확인하고, 나머지 tagged/untagged 이미지 digest를 삭제한다. 단순 push 시각의
 최신 2개가 아니라 실행 중이던 직전 컨테이너 이미지를 보존하므로, 중간에 배포 실패
@@ -283,19 +399,99 @@ LANGFUSE_MAX_PAYLOAD_BYTES=65536
 확인할 수 없으면 안전을 위해 정리를 건너뛰거나 실패 처리하며 기존 이미지를 삭제하지
 않는다. `BatchDeleteImage` 제한에 맞춰 한 번에 최대 100개씩 삭제한다.
 
-## 10. t3.micro 운영 주의
+## 11. 운영과 장애 대응
 
-`t3.micro`는 메모리가 1GiB라 긴급 운영 용도로만 본다.
+### 상태 확인
+
+```bash
+curl http://127.0.0.1:8080/ping
+docker ps --filter name=laimory-
+docker logs --tail 200 laimory-ai
+docker logs --tail 200 laimory-filebeat
+```
+
+애플리케이션 로그는 한 줄 JSON이다. 사람이 읽을 때는 `jq`를 쓴다.
+
+```bash
+docker logs --tail 200 laimory-ai | jq -r '"\(.timestamp) \(."log.level") \(.taskId // "-") \(.message)"'
+```
+
+### Filebeat가 로그를 보내지 못할 때
+
+앱은 영향받지 않는다. stdout은 계속 나가고 Docker 로그 파일에 남아 있으므로, 수집기를
+복구하면 registry에 기록된 위치부터 **이어서** 전송한다.
+
+```bash
+docker logs --tail 100 laimory-filebeat        # 인증(401)/연결/권한 오류 확인
+docker restart laimory-filebeat                # 대개 이걸로 복구된다
+docker inspect laimory-filebeat --format '{{.State.Status}} {{.RestartCount}}'
+```
+
+컨테이너가 아예 없으면 다음 배포가 다시 만든다. 즉시 세우려면 Actions에서 워크플로를
+수동 실행한다.
+
+### Elasticsearch가 죽었을 때
+
+Filebeat가 자체 큐에 담고 재시도한다. 큐가 차면 harvester가 멈추고, ES가 돌아오면
+로그 파일에 남아 있는 지점부터 이어 읽는다. 확인할 것은 **로그 파일이 그 사이에
+로테이션으로 사라지지 않았는지**다.
+
+```bash
+# 앱 컨테이너 로그 파일 크기와 로테이션 상태
+sudo ls -alh /var/lib/docker/containers/$(docker inspect --format '{{.Id}}' laimory-ai)/
+```
+
+`max-size=20m × max-file=3` = 최대 60MB치가 버퍼다. 장애가 그보다 오래 가면 오래된
+구간은 유실된다. ES 장애가 길어질 것 같으면 로테이션 상한을 임시로 올린다.
+
+### 로그 적체·유실 확인
+
+```bash
+# 마지막으로 적재된 시각 (오래 전이면 파이프라인이 끊긴 것)
+curl -s "$ES_HOSTS/logs-laimory.ai-prod/_search?size=1&sort=@timestamp:desc" \
+  -H "Authorization: ApiKey $ES_API_KEY" | jq '.hits.hits[0]._source."@timestamp"'
+```
+
+registry가 커졌는지도 가끔 본다. 설정이 `clean_removed: false`라 배포마다 항목이
+하나씩 쌓인다(배포 시 삭제된 컨테이너의 마지막 줄까지 읽기 위한 의도된 선택이다).
+
+```bash
+sudo du -sh /opt/laimory-ai/filebeat-data
+```
+
+수백 MB가 되면 Filebeat를 멈추고 registry를 지운 뒤 다시 세운다. 이때 현재 파일의
+읽은 위치도 함께 사라져 **중복 적재가 한 번 일어난다.**
+
+```bash
+docker rm -f laimory-filebeat
+sudo rm -rf /opt/laimory-ai/filebeat-data/*
+# 다음 배포 또는 워크플로 수동 실행으로 재생성
+```
+
+### 롤백
+
+애플리케이션 롤백은 기존과 같다 — 배포 스크립트가 새 컨테이너 기동 실패를 감지하면
+직전 이미지로 자동 복구한다. Filebeat는 앱 이미지와 무관하므로 롤백 대상이 아니다.
+
+수집 설정을 되돌려야 하면 `/opt/laimory-ai/filebeat.yml`을 이전 내용으로 되돌리고
+컨테이너를 지운다. 다음 배포가 바뀐 해시를 보고 재생성한다.
+
+```bash
+docker rm -f laimory-filebeat
+```
+
+## 12. t3.micro 운영 주의
+
+`t3.micro`는 메모리가 1GiB라 긴급 운영 용도로만 본다. 컨테이너가 둘이 되면서 여유가
+더 줄었다 — Filebeat는 RSS 100~150MB를 쓴다.
 
 - uvicorn worker는 하나만 사용한다.
 - 이미지는 GitHub Actions에서 빌드하고 EC2에서는 pull만 한다.
 - `free -h`, `docker stats`, 커널 OOM 로그를 관찰한다.
+- Filebeat 설정의 `queue.mem`과 `max_procs`를 임의로 올리지 않는다(t3.micro에 맞춰
+  줄여 둔 값이다).
 - 메모리 부족이 반복되면 `t3.small` 이상으로 변경한다.
 
-상태 확인:
-
 ```bash
-curl http://127.0.0.1:8080/ping
-docker ps --filter name=laimory-ai
-docker logs --tail 200 laimory-ai
+docker stats --no-stream
 ```

@@ -22,7 +22,7 @@
 1100~1199    원본 스냅샷 — App Server 입력 조회 API 응답/계약
 1200~1299    AI/LLM — 에이전트 실행, LLM 호출, 구조화 출력
 1300~1399    결과 저장 — App Server 결과 저장 API, 저장 전 자체검증
-1400~1499    외부 연동 — App Server 콜백, 인증/순서 거절, 관측 전송
+1400~1499    외부 연동 — App Server 콜백, 인증/순서 거절
 1900~1999    미분류 — 위 어디에도 속하지 않는 내부 오류
 ===========  ==========================================================
 
@@ -114,10 +114,15 @@ class ErrorCode(IntEnum):
     # --- 1400~1499 외부 연동 ---------------------------------------------
     #: App Server 완료 콜백 전송이 실패했다.
     CALLBACK_SEND_FAILED = 1401
-    #: 관측 이벤트 flush/전송이 실패했다(주 처리와 격리된 부가 기능).
-    OBSERVATION_EXPORT_FAILED = 1402
-    #: 관측 이벤트 기록 자체가 실패했다(sink/observer 내부).
-    OBSERVATION_EMIT_FAILED = 1403
+
+    #: **예약(deprecated)**. AI 서버가 관측 이벤트를 직접 Elasticsearch ``_bulk`` 로
+    #: 보내던 시절의 코드다(#47 이전). 지금은 애플리케이션이 Elasticsearch 를 호출하지
+    #: 않는다 — 운영 로그는 stdout JSON 을 Filebeat 가 실어 나르고, AI 실행 관측은
+    #: Langfuse 가 맡는다. 번호 재사용을 막기 위해서만 남긴다.
+    LEGACY_OBSERVATION_EXPORT_FAILED = 1402
+    #: **예약(deprecated)**. 같은 이유로 남긴 관측 sink/observer 기록 실패 코드다.
+    LEGACY_OBSERVATION_EMIT_FAILED = 1403
+
     #: App Server 가 taskToken 을 거절했다(401). 재시도하지 않고 중단한다.
     APP_SERVER_UNAUTHORIZED = 1404
     #: App Server 에 task 가 없거나 만료됐다(404, 입력 조회 외 경로).
@@ -159,8 +164,8 @@ _MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.DATABASE_ERROR: "데이터 저장 중 오류가 발생했습니다.",
     ErrorCode.TIMELINE_RESULT_SUBMIT_FAILED: "타임라인 결과 저장에 실패했습니다.",
     ErrorCode.CALLBACK_SEND_FAILED: "결과 통보에 실패했습니다.",
-    ErrorCode.OBSERVATION_EXPORT_FAILED: "관측 데이터 전송에 실패했습니다.",
-    ErrorCode.OBSERVATION_EMIT_FAILED: "관측 데이터 기록에 실패했습니다.",
+    ErrorCode.LEGACY_OBSERVATION_EXPORT_FAILED: "관측 데이터 전송에 실패했습니다.",
+    ErrorCode.LEGACY_OBSERVATION_EMIT_FAILED: "관측 데이터 기록에 실패했습니다.",
     ErrorCode.APP_SERVER_UNAUTHORIZED: "작업 인증에 실패했습니다.",
     ErrorCode.APP_SERVER_TASK_NOT_FOUND: "작업을 찾을 수 없습니다.",
     ErrorCode.APP_SERVER_CONFLICT: "작업 처리 순서가 맞지 않습니다.",
@@ -184,6 +189,8 @@ RESERVED_CODES: frozenset[ErrorCode] = frozenset(
     {
         ErrorCode.LEGACY_TIMELINE_GENERATION_FAILED,
         ErrorCode.DATABASE_ERROR,
+        ErrorCode.LEGACY_OBSERVATION_EXPORT_FAILED,
+        ErrorCode.LEGACY_OBSERVATION_EMIT_FAILED,
     }
 )
 

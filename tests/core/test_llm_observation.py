@@ -1,24 +1,20 @@
-"""LLM provider 경계의 관측(PROMPT/RESPONSE/FAILED)과 토큰 정규화 검증.
+"""LLM provider 경계의 토큰 정규화와 실패 기록 검증.
 
 - `_usage_detail` 은 provider 응답값만 담고, 없는 값은 생략한다(추정 금지).
-- provider.complete 는 `complete()->str` 반환을 유지하면서 PROMPT/RESPONSE(+토큰·
-  duration·provider/model/providerVersion)를, 실패 시 FAILED 를 emit 한다.
+- provider.complete 는 `complete()->str` 반환을 유지하면서 토큰 사용량을 구조화
+  로그로 남기고, 실패는 errorCode 와 함께 남긴다.
+- 프롬프트·응답 본문은 운영 로그로 나가지 않는다(그쪽은 Langfuse 담당, 이슈 #47).
 """
 
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
 
 from app.core.error_codes import ErrorCode
+from app.core.execution_context import ExecutionStage
 from app.core.llm import BedrockProvider, GeminiProvider, OpenAIProvider
-from app.core.observability import (
-    InMemoryObservationSink,
-    ObservationEventType,
-    ObservationStage,
-    Observer,
-    observation_context,
-)
 
 
 # --- _usage_detail: provider 응답값만, 없는 값은 생략 -------------------------
@@ -160,7 +156,7 @@ def _fake_response(content: str, usage) -> SimpleNamespace:
     return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
 
 
-def test_openai_complete_emits_prompt_and_response_with_tokens() -> None:
+def test_openai_complete_returns_text_and_logs_token_usage(caplog) -> None:
     usage = SimpleNamespace(
         prompt_tokens=10,
         completion_tokens=20,
@@ -170,69 +166,90 @@ def test_openai_complete_emits_prompt_and_response_with_tokens() -> None:
     )
     provider = _openai_provider(_FakeOpenAIClient(response=_fake_response("hello", usage)))
 
-    sink = InMemoryObservationSink()
-    with observation_context("task-llm", Observer(sink)):
+    with caplog.at_level(logging.INFO, logger="app.core.llm"):
         text = provider.complete("hi", system="sys")
 
     assert text == "hello"  # 공개 계약(str 반환) 유지
-    prompt_ev = next(e for e in sink.events if e.event_type is ObservationEventType.PROMPT)
-    response_ev = next(
-        e for e in sink.events if e.event_type is ObservationEventType.RESPONSE
+    usage_record = next(
+        record for record in caplog.records if record.getMessage() == "LLM 토큰 사용량"
     )
-    assert prompt_ev.stage is ObservationStage.LLM
-    assert prompt_ev.provider == "openai" and prompt_ev.model == "gpt-test"
-    assert prompt_ev.payload == {
-        "prompt": "hi",
-        "system": "sys",
-        "temperature": 0.7,
+    assert usage_record.fields == {
+        "provider": "openai",
+        "model": "gpt-test",
+        "inputTokens": 10,
+        "outputTokens": 20,
     }
-    assert response_ev.input_tokens == 10
-    assert response_ev.output_tokens == 20
-    assert response_ev.total_tokens == 30
-    assert response_ev.duration_ms is not None and response_ev.duration_ms >= 0
-    assert response_ev.payload == {"response": "hello"}
-    # providerVersion 은 설치된 openai SDK 버전에서 온다.
-    assert response_ev.provider_version is not None
 
 
-def test_openai_complete_emits_failed_and_reraises() -> None:
+def test_llm_logs_never_carry_prompt_or_response_bodies(caplog) -> None:
+    """프롬프트·응답 본문은 Langfuse 로만 나간다(운영 로그로 복제하지 않는다)."""
+
+    usage = SimpleNamespace(
+        prompt_tokens=1,
+        completion_tokens=1,
+        total_tokens=2,
+        prompt_tokens_details=None,
+        completion_tokens_details=None,
+    )
+    provider = _openai_provider(
+        _FakeOpenAIClient(response=_fake_response("응답-본문-비밀", usage))
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="app.core.llm"):
+        provider.complete("프롬프트-본문-비밀", system="시스템-본문-비밀")
+
+    logged = json.dumps(
+        [
+            {"message": record.getMessage(), "fields": getattr(record, "fields", {})}
+            for record in caplog.records
+        ],
+        ensure_ascii=False,
+        default=str,
+    )
+    assert "프롬프트-본문-비밀" not in logged
+    assert "시스템-본문-비밀" not in logged
+    assert "응답-본문-비밀" not in logged
+
+
+def test_openai_complete_reports_failure_code_and_reraises(caplog) -> None:
     provider = _openai_provider(_FakeOpenAIClient(exc=RuntimeError("boom")))
 
-    sink = InMemoryObservationSink()
-    with observation_context("task-llm", Observer(sink)):
+    with caplog.at_level(logging.WARNING, logger="app.core.llm"):
         with pytest.raises(RuntimeError):
             provider.complete("hi")
 
-    failed = [e for e in sink.events if e.event_type is ObservationEventType.FAILED]
-    assert len(failed) == 1
-    assert failed[0].stage is ObservationStage.LLM
-    assert failed[0].provider == "openai"
-    assert failed[0].payload == {
-        "errorCode": int(ErrorCode.LLM_CALL_FAILED),
-        "errorType": "RuntimeError",
-    }
-    assert "boom" not in json.dumps(failed[0].payload)
+    failures = [
+        record for record in caplog.records if record.getMessage() == "LLM 호출 실패"
+    ]
+    assert len(failures) == 1
+    fields = failures[0].fields
+    assert fields["errorCode"] == int(ErrorCode.LLM_CALL_FAILED)
+    assert fields["stage"] == ExecutionStage.LLM.value
+    assert fields["provider"] == "openai"
+    assert fields["model"] == "gpt-test"
+    assert fields["durationMs"] >= 0
+    # providerVersion 은 설치된 openai SDK 버전에서 온다.
+    assert fields["providerVersion"] is not None
 
 
-def test_openai_response_parsing_failure_is_observed() -> None:
+def test_openai_response_parsing_failure_is_reported(caplog) -> None:
     provider = _openai_provider(
         _FakeOpenAIClient(response=SimpleNamespace(choices=[], usage=None))
     )
 
-    sink = InMemoryObservationSink()
-    with observation_context("task-llm", Observer(sink)):
+    with caplog.at_level(logging.WARNING, logger="app.core.llm"):
         with pytest.raises(IndexError):
             provider.complete("hi")
 
     assert any(
-        event.event_type is ObservationEventType.FAILED
-        and event.stage is ObservationStage.LLM
-        for event in sink.events
+        record.getMessage() == "LLM 호출 실패"
+        and record.fields["errorCode"] == int(ErrorCode.LLM_CALL_FAILED)
+        for record in caplog.records
     )
 
 
-def test_llm_emit_is_noop_without_context() -> None:
-    # 관측 컨텍스트가 없으면 provider.complete 는 그대로 동작하고 아무것도 남기지 않는다.
+def test_llm_call_works_without_execution_context() -> None:
+    # 실행 컨텍스트가 없어도(스크립트 실행) provider.complete 는 그대로 동작한다.
     usage = SimpleNamespace(
         prompt_tokens=1,
         completion_tokens=1,
