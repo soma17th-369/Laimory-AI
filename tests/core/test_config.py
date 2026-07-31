@@ -86,8 +86,35 @@ def test_langfuse_defaults_to_japan_region_with_content_disabled() -> None:
     configured = _settings()
 
     assert configured.langfuse_base_url == "https://jp.cloud.langfuse.com"
-    assert configured.langfuse_content_capture == "NONE"
+    assert configured.langfuse_content_capture is None
+    assert configured.langfuse_capture_policy == "NONE"
     assert configured.langfuse_max_payload_bytes == 64 * 1024
+
+
+@pytest.mark.parametrize(
+    ("app_env", "expected"),
+    [
+        ("local", "SANITIZED"),
+        ("dev", "SANITIZED"),
+        ("DEV", "SANITIZED"),
+        ("prod", "NONE"),
+        ("timeline-audit", "NONE"),
+    ],
+)
+def test_langfuse_capture_policy_follows_app_env(app_env: str, expected: str) -> None:
+    """설정을 비워 두면 실행 환경이 정한다(이슈 #48).
+
+    dev 기본값이 NONE 이라 trace 에 해시만 남고 디버깅이 불가능했다.
+    """
+
+    assert _settings(app_env=app_env).langfuse_capture_policy == expected
+
+
+@pytest.mark.parametrize("app_env", ["local", "dev", "prod"])
+def test_explicit_langfuse_content_capture_always_wins(app_env: str) -> None:
+    configured = _settings(app_env=app_env, langfuse_content_capture="NONE")
+
+    assert configured.langfuse_capture_policy == "NONE"
 
 
 def test_langfuse_base_url_normalizes_trailing_slash() -> None:

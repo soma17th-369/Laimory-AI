@@ -80,15 +80,123 @@ def test_none_capture_never_exposes_original_content(monkeypatch) -> None:
         langfuse_tracing.settings, "langfuse_content_capture", "NONE"
     )
 
-    captured = langfuse_tracing.capture_langfuse_content(
-        {"prompt": "서울 집에서 user@example.com에게 연락"}, field="input"
+    captured = langfuse_tracing.capture_langfuse_body(
+        {"prompt": "서울 집에서 user@example.com에게 연락"}
     )
 
-    assert captured["contentCaptured"] is False
-    assert captured["byteLength"] > 0
-    assert len(captured["sha256"]) == 64
+    assert captured["body"]["contentCaptured"] is False
+    assert captured["body"]["byteLength"] > 0
+    assert len(captured["body"]["sha256"]) == 64
     assert "서울" not in str(captured)
     assert "user@example.com" not in str(captured)
+
+
+def test_none_capture_keeps_diagnostics_next_to_suppressed_body(monkeypatch) -> None:
+    """본문을 가려도 어느 단계가 얼마나 걸렸고 무엇이 실패했는지는 남아야 한다(이슈 #48)."""
+
+    monkeypatch.setattr(
+        langfuse_tracing.settings, "langfuse_content_capture", "NONE"
+    )
+
+    captured = langfuse_tracing.capture_langfuse_body(
+        {
+            "ok": False,
+            "durationMs": 812.4,
+            "errorCode": int(ErrorCode.REPAIR_TOOL_FAILED),
+            "tokenUsage": {"generationCount": 2, "inputTokens": 1200},
+            "result": {"message": "서울 집에서 회의"},
+        }
+    )
+
+    assert captured["ok"] is False
+    assert captured["durationMs"] == 812.4
+    assert captured["errorCode"] == int(ErrorCode.REPAIR_TOOL_FAILED)
+    # 중첩 dict 인 진단 지표는 하위 집계까지 그대로 남는다.
+    assert captured["tokenUsage"] == {"generationCount": 2, "inputTokens": 1200}
+    assert captured["body"]["contentCaptured"] is False
+    assert "서울" not in str(captured)
+
+
+def test_none_capture_suppresses_keys_missing_from_denylist(monkeypatch) -> None:
+    """allowlist 기반이라 `_CONTENT_KEYS` 에 없는 키도 본문이면 나가지 않는다(이슈 #48)."""
+
+    monkeypatch.setattr(
+        langfuse_tracing.settings, "langfuse_content_capture", "NONE"
+    )
+
+    captured = langfuse_tracing.capture_langfuse_body(
+        {"timeline": {"events": [{"placeLabel": "서울 자택"}]}}
+    )
+
+    assert "서울 자택" not in str(captured)
+    assert captured["body"]["contentCaptured"] is False
+
+
+def test_none_capture_does_not_depend_on_envelope_key_name(monkeypatch) -> None:
+    """호출부가 넘긴 값이 `input`/`output` 이라는 이름 때문에 사라지면 안 된다(이슈 #48)."""
+
+    monkeypatch.setattr(
+        langfuse_tracing.settings, "langfuse_content_capture", "NONE"
+    )
+
+    assert langfuse_tracing.capture_langfuse_body({"status": "SUCCESS"}) == {
+        "status": "SUCCESS"
+    }
+
+
+def test_none_capture_keeps_metadata_labels(monkeypatch) -> None:
+    """metadata 는 호출부가 고른 라벨이라 기본 차단 대상이 아니다(이슈 #48)."""
+
+    monkeypatch.setattr(
+        langfuse_tracing.settings, "langfuse_content_capture", "NONE"
+    )
+
+    captured = langfuse_tracing.capture_langfuse_metadata(
+        {"tool": "update_event", "iteration": 2, "client": "AppServerClient"}
+    )
+
+    assert captured == {
+        "tool": "update_event",
+        "iteration": 2,
+        "client": "AppServerClient",
+    }
+
+
+def test_metadata_capture_masks_secrets(monkeypatch) -> None:
+    monkeypatch.setattr(
+        langfuse_tracing.settings, "langfuse_content_capture", "SANITIZED"
+    )
+
+    captured = langfuse_tracing.capture_langfuse_metadata(
+        {"tool": "update_event", "authorization": "Bearer token-value"}
+    )
+
+    assert captured["tool"] == "update_event"
+    assert captured["authorization"] == "[REDACTED]"
+
+
+def test_oversized_payload_keeps_diagnostics(monkeypatch) -> None:
+    """크기 제한에 걸려도 durationMs/errorCode 까지 잃지 않는다(이슈 #48)."""
+
+    monkeypatch.setattr(
+        langfuse_tracing.settings, "langfuse_content_capture", "SANITIZED"
+    )
+    monkeypatch.setattr(
+        langfuse_tracing.settings, "langfuse_max_payload_bytes", 256
+    )
+
+    captured = langfuse_tracing.capture_langfuse_body(
+        {
+            "durationMs": 12.5,
+            "errorCode": int(ErrorCode.REPAIR_TOOL_FAILED),
+            "draft": "가" * 1000,
+        }
+    )
+
+    assert captured["durationMs"] == 12.5
+    assert captured["errorCode"] == int(ErrorCode.REPAIR_TOOL_FAILED)
+    assert captured["body"]["truncated"] is True
+    assert captured["body"]["byteLength"] > 256
 
 
 def test_sanitized_capture_masks_secrets_and_contact_data(monkeypatch) -> None:
@@ -96,13 +204,12 @@ def test_sanitized_capture_masks_secrets_and_contact_data(monkeypatch) -> None:
         langfuse_tracing.settings, "langfuse_content_capture", "SANITIZED"
     )
 
-    captured = langfuse_tracing.capture_langfuse_content(
+    captured = langfuse_tracing.capture_langfuse_body(
         {
             "authorization": "Bearer token-value",
             "email": "user@example.com",
             "phone": "010-1234-5678",
-        },
-        field="input",
+        }
     )
 
     assert captured["authorization"] == "[REDACTED]"
@@ -223,7 +330,7 @@ def test_update_capture_failure_is_isolated(monkeypatch) -> None:
     observation = _FakeObservation()
     monkeypatch.setattr(
         langfuse_tracing,
-        "capture_langfuse_content",
+        "capture_langfuse_body",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("capture failed")),
     )
 

@@ -197,8 +197,9 @@ LANGFUSE_PUBLIC_KEY=         # Langfuse project public key
 LANGFUSE_SECRET_KEY=         # Langfuse project secret key. Git에 커밋하지 않는다.
 LANGFUSE_BASE_URL=https://jp.cloud.langfuse.com
 LANGFUSE_SAMPLE_RATE=1.0
-# 라이프로그 외부 전송은 기본 NONE. SANITIZED는 보안 검토 뒤 명시적으로 선택한다.
-LANGFUSE_CONTENT_CAPTURE=NONE # NONE(길이/해시) | SANITIZED(마스킹 본문)
+# 비워 두면 APP_ENV로 정한다(local/dev=SANITIZED, 그 외=NONE). 적으면 그 값이 이긴다.
+# NONE 에서도 durationMs/tokenUsage/errorCode 같은 진단 지표는 남는다.
+LANGFUSE_CONTENT_CAPTURE=     # NONE(진단 지표+길이/해시) | SANITIZED(마스킹 본문)
 LANGFUSE_MAX_PAYLOAD_BYTES=65536
 
 LOG_FORMAT=rich              # 운영은 json (stdout JSON → CloudWatch Logs Insights)
