@@ -200,7 +200,7 @@ docker run -d --name laimory-filebeat --user root --env-file /tmp/filebeat.env \
   -v /var/lib/docker/containers:/var/lib/docker/containers:ro \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   "$(grep '^FILEBEAT_IMAGE=' /tmp/filebeat.env | cut -d= -f2-)" \
-  filebeat -e -strict.perms=false
+  filebeat -e --strict.perms=false
 
 # 3) 요청을 흘리고
 curl -s http://127.0.0.1:8080/ping
