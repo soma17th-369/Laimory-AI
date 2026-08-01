@@ -99,10 +99,17 @@ rawId가 task 안에서 중복되지 않는지 확인한다. normalizer는 itemT
 
 ### PhotoItem
 
-`rawId`, `takenAt`, `dateTaken?`, `fileName?`, `clientPhotoUri?`, `latitude?`,
-`longitude?`, `description?`
+`rawId`, `takenAt`, `dateTaken?`, `latitude?`, `longitude?`, `description?`,
+`photoUrl?`
 
-수집 payload에 `photoFile`만 있으면 normalizer가 이를 `clientPhotoUri`로 옮긴다.
+`photoUrl`은 App Server가 주는 S3 이미지 URL이다. Photo Agent가 이 URL에서 실제
+이미지를 내려받아 vision 모델로 `description`을 만든다. presigned URL이면 query에
+서명 자격증명이 실리므로 **직렬화에서 제외**(`exclude=True`)되며, 프롬프트·운영
+로그·Langfuse 어디에도 값이 나가지 않는다.
+
+`fileName`·`clientPhotoUri`·`photoFile`은 payload에 와도 무시한다. 각각 스토리지
+객체 이름(UUID)과 클라이언트 내부 URI(`content://…`)라 AI가 쓸 정보가 없고,
+프롬프트에 들어가면 LLM이 의미를 지어낼 여지만 생긴다(이슈 #52).
 
 ## 검증 책임
 

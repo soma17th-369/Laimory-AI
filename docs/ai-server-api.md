@@ -245,7 +245,9 @@ Task-Token: {taskToken}
       "itemType": "PHOTO",
       "startAt": "2026-07-22T12:10:00+09:00",
       "endAt": null,
-      "payload": {}
+      "payload": {
+        "photoUrl": "https://<버킷>.s3.<리전>.amazonaws.com/<키>?<서명>"
+      }
     }
   ]
 }
@@ -263,6 +265,18 @@ Task-Token: {taskToken}
 | `sourceItems[].startAt` | `datetime` | 항목 시각입니다. |
 | `sourceItems[].endAt` | `datetime \| null` | 종료 시각입니다. |
 | `sourceItems[].payload` | `object` | `itemType`별 원본 데이터입니다. |
+
+`itemType=PHOTO`의 `payload.photoUrl`은 S3 이미지 URL입니다. AI 서버가 이 URL에서
+이미지를 내려받아 멀티모달 LLM으로 사진 설명을 만듭니다(이슈 #52).
+
+- 다운로드 대상은 `PHOTO_URL_ALLOWED_HOSTS`에 등록된 호스트의 `https` URL뿐입니다.
+  redirect는 따라가지 않습니다.
+- 형식은 JPEG·PNG·WebP, 장당 5MB, 한 번에 최대 20장까지 받습니다. 한 배치의 이미지
+  총합은 20MB로 제한합니다.
+- presigned URL이면 **입력 조회부터 이미지 다운로드까지가 유효 시간 안에** 끝나야
+  합니다. 만료된 URL은 다운로드 실패로 처리되며, 해당 사진만 메타데이터 기반 설명으로
+  대체하고 타임라인 생성은 계속합니다(오류 코드 `1407`, 흡수).
+- `photoUrl` 값은 운영 로그·Langfuse·LLM 프롬프트 어디에도 남기지 않습니다.
 
 다음 조건은 입력 계약 위반(`1102`)으로 처리합니다.
 

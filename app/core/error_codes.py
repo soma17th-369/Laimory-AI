@@ -129,6 +129,9 @@ class ErrorCode(IntEnum):
     APP_SERVER_TASK_NOT_FOUND = 1405
     #: App Server 가 호출 순서 충돌로 거절했다(409). 재시도하지 않고 중단한다.
     APP_SERVER_CONFLICT = 1406
+    #: 사진 이미지 다운로드에 실패했다(HTTP 오류·timeout·형식/크기 거부·URL 정책 위반).
+    #: 해당 사진만 메타데이터 설명으로 대체하고 진행한다(흡수 경로).
+    PHOTO_IMAGE_FETCH_FAILED = 1407
 
     # --- 1900~1999 미분류 -------------------------------------------------
     #: 위 어디에도 분류되지 않은 내부 오류.
@@ -169,6 +172,7 @@ _MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.APP_SERVER_UNAUTHORIZED: "작업 인증에 실패했습니다.",
     ErrorCode.APP_SERVER_TASK_NOT_FOUND: "작업을 찾을 수 없습니다.",
     ErrorCode.APP_SERVER_CONFLICT: "작업 처리 순서가 맞지 않습니다.",
+    ErrorCode.PHOTO_IMAGE_FETCH_FAILED: "사진 이미지를 가져오지 못했습니다.",
     ErrorCode.INTERNAL_ERROR: "타임라인 생성 중 오류가 발생했습니다.",
 }
 

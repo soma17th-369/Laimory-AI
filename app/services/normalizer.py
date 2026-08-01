@@ -99,11 +99,10 @@ def _notification(item: CollectedSourceItem) -> NotificationItem:
 
 
 def _photo(item: CollectedSourceItem) -> PhotoItem:
-    payload = dict(item.payload)
-    if "clientPhotoUri" not in payload and "photoFile" in payload:
-        payload["clientPhotoUri"] = payload["photoFile"]
+    # payload 의 `photoUrl` 은 PhotoItem 이 그대로 받는다. `photoFile`/`fileName`/
+    # `clientPhotoUri` 는 모델에 필드가 없어 조용히 무시된다(#52).
     return PhotoItem.model_validate(
-        {"rawId": item.raw_id, "takenAt": item.start_at, **payload}
+        {"rawId": item.raw_id, "takenAt": item.start_at, **item.payload}
     )
 
 

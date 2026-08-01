@@ -56,7 +56,11 @@ def test_normalize_maps_every_domain():
     assert request.notifications[0].posted_at == "2026-06-20T00:00:00"
 
     assert len(request.photos) == 1
-    assert request.photos[0].client_photo_uri == "content://p"
+    # App Server 가 주는 photoUrl 은 그대로 살아남는다(#52).
+    assert request.photos[0].photo_url == "https://images.example.com/p.jpg"
+    # filename/clientPhotoUri 는 필드가 없어 무시되며, 그 때문에 항목이 탈락하지 않는다.
+    assert not hasattr(request.photos[0], "client_photo_uri")
+    assert not hasattr(request.photos[0], "filename")
 
     # Agent 입력에는 DB 내부 id가 없고 source 식별자는 UUID rawId 하나뿐이다.
     for item in request.iter_source_items():

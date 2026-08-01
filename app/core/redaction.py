@@ -58,6 +58,9 @@ _SENSITIVE_KEYS = {
     "idtoken",
     "sessiontoken",
     "tasktoken",
+    # presigned S3 URL 이면 query 에 서명 자격증명이 실린다(#52). 값 자체가 비밀이라
+    # 마스킹 대상이다.
+    "photourl",
 }
 # 이 키들의 값은 마스킹 후에도 저장하지 않는다. 키 이름은 비교 전에 영숫자 소문자로
 # 정규화하므로 system_prompt, source-items 같은 표기도 함께 차단된다.
@@ -115,6 +118,12 @@ _TEXT_PATTERNS = (
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), f"Bearer {REDACTED}"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"), REDACTED),
     (re.compile(r"\bAIza[A-Za-z0-9_-]{20,}\b"), REDACTED),
+    # presigned S3 URL 의 서명 파라미터(#52). 키 이름으로 거르지 못하는 자리 —
+    # 예외 메시지나 자유 문자열에 URL 이 통째로 섞여 들어올 때의 2차 방어다.
+    (
+        re.compile(r"(?i)(X-Amz-(?:Signature|Credential|Security-Token))=[^&\s\"']+"),
+        rf"\1={REDACTED}",
+    ),
     (
         re.compile(
             r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![A-Za-z0-9.-])"

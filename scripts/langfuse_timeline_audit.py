@@ -173,8 +173,7 @@ def _synthetic_snapshot(task_id: str) -> Any:
                 ItemType.PHOTO,
                 "2026-07-30T12:20:00+09:00",
                 payload={
-                    "filename": "synthetic-lunch.jpg",
-                    "clientPhotoUri": "synthetic://lunch",
+                    # description 이 이미 있어 다운로드 대상이 아니다(#52).
                     "description": "합성 점심 식사 사진 설명",
                 },
             ),

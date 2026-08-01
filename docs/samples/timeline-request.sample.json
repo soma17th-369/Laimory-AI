@@ -84,8 +84,7 @@
       "rawId": "44444444-4444-4444-8444-444444444444",
       "takenAt": "2026-06-30T13:40:00+09:00",
       "dateTaken": 1782794400000,
-      "fileName": "IMG_20260630_134000.jpg",
-      "clientPhotoUri": "content://media/external/images/media/12345",
+      "photoUrl": "https://images.example.com/photo.jpg?X-Amz-Signature=<redacted>",
       "latitude": 37.5321,
       "longitude": 126.9624,
       "description": "회의실 책상과 노트북이 보이는 사진"

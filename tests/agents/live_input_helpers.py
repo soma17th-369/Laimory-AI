@@ -11,8 +11,6 @@ import pytest
 from dotenv import load_dotenv
 
 from app.agents.events.photo import PhotoEventAgent
-from app.agents.events.photo.describer import VisionPhotoDescriber
-from app.agents.events.photo.image_source import LocalFilePhotoImageSource
 from app.schemas import TimelineDraftRequest
 from app.services.normalizer import normalize
 from tests.fixtures.snapshot_file import load_snapshot_from_file
@@ -24,18 +22,15 @@ SNAPSHOT_PATH = INPUT_DIR / "2026-07-08.json"
 
 
 def vision_photo_event_agent() -> PhotoEventAgent:
-    """data/input 의 실제 이미지를 vision 으로 보는 Photo Event Agent.
+    """기본 조립을 쓰는 Photo Event Agent.
 
-    입력 JSON 의 `photoFile`(→`clientPhotoUri`)이 실제 파일명과 일치하므로,
-    `LocalFilePhotoImageSource(INPUT_DIR)` 가 실제 JPEG 바이너리를 읽어 vision
-    호출에 실어 보낸다. 이미지를 못 구한 사진은 메타데이터 fallback 으로 채운다.
+    이슈 #52 이후 이미지 소스는 `photoUrl` 다운로드 하나다. `data/input` 스냅샷에는
+    `photoUrl` 이 없으므로 사진 설명은 메타데이터 fallback 으로 채워지고, 나머지
+    event 추론은 그대로 검증된다. 실제 이미지로 vision 경로를 보려면 스냅샷에
+    `photoUrl` 을 넣고 `PHOTO_URL_ALLOWED_HOSTS` 를 지정한다.
     """
 
-    return PhotoEventAgent(
-        describer=VisionPhotoDescriber(
-            image_source=LocalFilePhotoImageSource(INPUT_DIR)
-        )
-    )
+    return PhotoEventAgent()
 
 
 def load_repo_env() -> None:
