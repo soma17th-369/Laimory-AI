@@ -34,7 +34,6 @@ from app.agents.events.base_event_agent import EventAgent
 from app.agents.repair.repair_agent import RepairAgent
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.core.config import settings
-from app.core.exceptions import code_of, report_error
 from app.core.langfuse_tracing import (
     token_usage_scope,
     trace_observation,
@@ -164,7 +163,7 @@ def _build_graph():
                 },
                 level="WARNING" if merged.warnings else "DEFAULT",
             )
-        logger.info(
+        logger.debug(
             "이벤트 후보 취합 완료",
             extra=log_fields(
                 candidateCount=len(merged.candidates),
@@ -200,22 +199,14 @@ def _build_graph():
             ) as langfuse_observation,
         ):
             started = perf_counter()
-            try:
-                draft = await asyncio.to_thread(
-                    state["timeline_agent"].generate,
-                    state["request"],
-                    state["merged_result"],
-                )
-            except Exception as exc:
-                # 여기서 흡수하지 않고 다시 던진다. 최종 처리(콜백·상태)는
-                # timeline_runner 가 같은 코드로 이어서 기록한다.
-                report_error(
-                    logger,
-                    code_of(exc),
-                    "Timeline Agent 노드 실패",
-                    exc=exc,
-                )
-                raise
+            # 실패는 흡수하지도, 여기서 기록하지도 않고 그대로 올린다. 다시 던지는
+            # 경계마다 남기면 실패 하나가 여러 건으로 집계된다 — 코드 부여와 최종
+            # 기록은 timeline_runner 가 소유한다(이슈 #53).
+            draft = await asyncio.to_thread(
+                state["timeline_agent"].generate,
+                state["request"],
+                state["merged_result"],
+            )
             update_observation(
                 langfuse_observation,
                 output={
@@ -267,25 +258,16 @@ def _build_graph():
             ) as langfuse_observation,
         ):
             started = perf_counter()
-            try:
-                draft = await asyncio.to_thread(
-                    lambda: state["repair_agent"].generate(
-                        state["request"],
-                        state["draft"],
-                        event_results=state["event_results"],
-                        event_agents=state["event_agents"],
-                        timeline_agent=state["timeline_agent"],
-                    )
+            # Timeline Agent 노드와 같은 이유로 흡수하지도, 기록하지도 않는다.
+            draft = await asyncio.to_thread(
+                lambda: state["repair_agent"].generate(
+                    state["request"],
+                    state["draft"],
+                    event_results=state["event_results"],
+                    event_agents=state["event_agents"],
+                    timeline_agent=state["timeline_agent"],
                 )
-            except Exception as exc:
-                # Timeline Agent 노드와 같은 이유로 흡수하지 않는다.
-                report_error(
-                    logger,
-                    code_of(exc),
-                    "Repair Agent 노드 실패",
-                    exc=exc,
-                )
-                raise
+            )
             update_observation(
                 langfuse_observation,
                 output={

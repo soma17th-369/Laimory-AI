@@ -108,12 +108,11 @@ def reinforce_calendar_location(
         if event.confidence == before:
             continue
 
-        logger.info(
-            "캘린더-위치 상관으로 confidence 보강: event=%s, %.2f -> %.2f, "
-            "locationText=%s, stay=%s",
+        # 어떤 장소가 어떤 일정과 맞았는지는 사용자 콘텐츠다(Langfuse 담당).
+        # 여기서는 우리가 만든 id 와 보정폭만 남긴다.
+        logger.debug(
+            "캘린더-위치 상관으로 confidence 보강: event=%s, %.2f -> %.2f",
             event.client_event_id,
             before,
             event.confidence,
-            calendar.location_text,
-            stay.place or stay.address,
         )

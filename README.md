@@ -24,7 +24,9 @@ app/
 │
 ├── core/                      # 공통 인프라
 │   ├── config.py              # 설정 (pydantic-settings, LLM_PROVIDER/API 키 등)
-│   ├── logging.py             # 관찰 로그 설정
+│   ├── logging.py             # 로그 출력 설정 (rich | 한 줄 JSON)
+│   ├── operational_logging.py # Elasticsearch 로 나가는 운영 이벤트의 유일한 통로 (#53).
+│   │                          #   event.dataset 표식 + 이벤트별 필드 allowlist
 │   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형)
 │   └── inflight.py            # 진행 중 백그라운드 처리 카운터 (GET /ping 상태 판단용)
 │
@@ -212,11 +214,12 @@ LOG_FORMAT=rich              # 운영은 json (stdout JSON → CloudWatch Logs I
   배포 환경(`APP_ENV=prod`)에서는 이 값이 있더라도 무시하고 EC2 Instance Role 또는
   AgentCore Runtime 실행 역할을 씁니다.
 
-타임라인을 어떤 provider/모델로 만들었는지와 각 LLM 호출의 토큰 사용량은 **로그**로
-남습니다. 비용은 AWS Cost Explorer에서 확인하며, 호출별 토큰 양은 아래 로그로 확인합니다.
+타임라인을 어떤 provider/모델로 만들었는지와 각 LLM 호출의 토큰 사용량은 **Langfuse**로
+남습니다(이슈 #53). 비용은 AWS Cost Explorer에서, 호출별 토큰 양은 Langfuse의
+generation usage에서 확인합니다. Langfuse를 끈 로컬 환경에서는 같은 값이 컨테이너
+로그에 DEBUG로 남습니다.
 
 ```text
-메인 에이전트 시작: taskId=..., agents=N, provider=bedrock, model=global.amazon.nova-2-lite-v1:0
 LLM 토큰 사용량: provider=bedrock, model=..., inputTokens=123, outputTokens=45
 ```
 
@@ -227,19 +230,27 @@ LLM 토큰 사용량: provider=bedrock, model=..., inputTokens=123, outputTokens
 
 ## 관측 (Observability)
 
-관측은 두 갈래이고 서로 대체하지 않는다(이슈 #47).
+관측은 두 갈래이고 서로 대체하지 않는다(이슈 #47, #53).
 
 - **Langfuse** — AI agent 실행 관측. agent 트리, LLM generation, 프롬프트·응답 본문,
-  token usage. 본문은 `LANGFUSE_CONTENT_CAPTURE` 정책으로 마스킹한 뒤 내보낸다.
-- **Elasticsearch** — FastAPI 요청, 처리 결과, 오류, 외부 API 연동, 백그라운드 작업의
-  운영 로그. 앱은 stdout에 한 줄 JSON만 쓰고, EC2에서 별도 Filebeat 컨테이너가 그 로그를
-  `logs-laimory.ai-<env>` data stream으로 실어 나른다.
+  단계별 지연, token usage. 본문은 `LANGFUSE_CONTENT_CAPTURE` 정책으로 마스킹한 뒤 내보낸다.
+- **Elasticsearch** — FastAPI **운영 이벤트**. HTTP 요청 완료, 서버 시작·종료,
+  백그라운드 작업 완료, 외부 API 연동 결과·재시도. 앱은 stdout에 한 줄 JSON만 쓰고,
+  EC2에서 별도 Filebeat 컨테이너가 `logs-laimory.ai-<env>` data stream으로 실어 나른다.
+
+**수집 대상은 코드가 명시한 운영 이벤트뿐이다(#53).**
+[`app/core/operational_logging.py`](app/core/operational_logging.py)의 emitter만
+`event.dataset=laimory.api` 표식을 만들 수 있고, 이벤트마다 허용 필드가 정해져 있다.
+표식이 없는 줄(일반 앱 로그, Agent/LLM 진단, 서드파티 로그, 비JSON 출력)은 Filebeat가
+`drop_event`로 버린다. 그래서 로그 호출을 새로 추가해도 수집 범위는 넓어지지 않는다.
 
 **애플리케이션은 Elasticsearch를 직접 호출하지 않는다.** ES URL도 자격증명도 앱 설정에
-없으며, 그 경계는 정적 검색 테스트가 지킨다. 프롬프트·LLM 응답·draft 전문·사용자 원문은
-운영 로그에 남지 않는다.
+없으며, 그 경계는 정적 검색 테스트가 지킨다. 프롬프트·LLM 응답·draft 전문·사용자 원문·
+예외 원문·traceback은 운영 이벤트에 남지 않는다.
 
-`taskId`와 `errorCode`는 구조화 필드라 Kibana에서 그대로 필터·집계할 수 있다.
+`event.action`으로 이벤트 종류를, `taskId`로 한 실행을, `errorCode`로 실패를 필터·집계한다.
+`POST /v1/timeline`의 202 응답시간과 이후 백그라운드 전체 처리시간은 서로 다른 이벤트
+(`http.request.completed` / `timeline.task.completed`)로 확인한다.
 
 - 로그 필드 계약·조회 예시·smoke test: [docs/operational-logging.md](docs/operational-logging.md)
 - Langfuse trace 구조·보안·설정·검증: [docs/langfuse-tracing.md](docs/langfuse-tracing.md)

@@ -86,4 +86,4 @@ def normalize_source_types(draft: TimelineDraft, request: TimelineDraftRequest) 
                 repaired += 1
 
     if repaired:
-        logger.info("sourceRef 의 sourceType %d건을 입력의 실제 타입으로 맞췄습니다.", repaired)
+        logger.debug("sourceRef 의 sourceType %d건을 입력의 실제 타입으로 맞췄습니다.", repaired)

@@ -224,7 +224,7 @@ def _usage_fields(caplog) -> dict:
 
 def test_logs_token_usage(monkeypatch, caplog):
     provider, _ = _make_provider(monkeypatch)
-    with caplog.at_level(logging.INFO, logger="app.core.llm"):
+    with caplog.at_level(logging.DEBUG, logger="app.core.llm"):
         provider.complete("x")
 
     fields = _usage_fields(caplog)
@@ -238,7 +238,7 @@ def test_usage_missing_omits_token_fields(monkeypatch, caplog):
 
     response = {"output": {"message": {"content": [{"text": "hi"}]}}}  # usage 없음
     provider, _ = _make_provider(monkeypatch, response=response)
-    with caplog.at_level(logging.INFO, logger="app.core.llm"):
+    with caplog.at_level(logging.DEBUG, logger="app.core.llm"):
         provider.complete("x")
 
     fields = _usage_fields(caplog)

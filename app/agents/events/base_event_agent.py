@@ -60,7 +60,7 @@ class EventAgent(Agent):
 
             filtered, source_stats = filter_agent_result_sources(result, request)
             if source_stats.changed:
-                logger.info(
+                logger.debug(
                     "입력에 없는 rawId 참조 정리",
                     extra=log_fields(
                         **source_stats.violation_log_fields(

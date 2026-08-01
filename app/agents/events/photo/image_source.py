@@ -369,7 +369,7 @@ def load_images(
     targets = list(enumerate(photos))[:max_images]
     outcome.skipped = len(photos) - len(targets)
     if outcome.skipped:
-        logger.info(
+        logger.debug(
             "사진 장수 상한으로 일부를 내려받지 않습니다: 전체=%d, 대상=%d",
             len(photos),
             len(targets),
@@ -436,7 +436,7 @@ def load_images(
 
     outcome.duration_ms = (perf_counter() - started) * 1000
     if outcome.skipped or outcome.failed:
-        logger.info(
+        logger.debug(
             "사진 이미지 다운로드 요약: 요청=%d, 성공=%d, 실패=%d, 생략=%d, bytes=%d",
             outcome.requested,
             outcome.succeeded,

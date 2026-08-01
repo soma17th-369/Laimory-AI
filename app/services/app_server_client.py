@@ -35,11 +35,25 @@ App Server 응답 코드를 카탈로그 코드로 옮긴다. 두 갈래로 갈�
 
 재시도는 timeout 과 5xx 에만 한다. 같은 토큰·같은 body 로 다시 보내며, 시도 간
 대기는 2배씩 늘린다.
+
+## 운영 이벤트 (이슈 #53)
+
+외부 연동은 AI 서버 장애의 절반이라 Elasticsearch 로 보내는 몇 안 되는 이벤트다.
+
+- ``dependency.request.completed`` — 논리적 호출 하나의 종료. operation, 시도 횟수,
+  HTTP 상태, 소요시간, 실패면 errorCode.
+- ``dependency.request.retry`` — 재시도 한 번. 사유는 예외 클래스명이나 HTTP 상태다.
+
+URL, 요청·응답 body, 토큰 값, 예외 원문은 어느 이벤트에도 넣지 않는다. 토큰은
+값 대신 갱신 횟수(``tokenRefreshCount``)만 종료 이벤트에 실린다.
 """
 
 import asyncio
+import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from functools import lru_cache
+from time import perf_counter
 from typing import Any
 from urllib.parse import quote
 
@@ -48,8 +62,13 @@ from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.error_codes import ErrorCode
-from app.core.exceptions import AppError, report_error
+from app.core.exceptions import AppError
 from app.core.logging import get_logger
+from app.core.operational_logging import (
+    EventOutcome,
+    OperationalEvent,
+    emit_event,
+)
 from app.schemas import CollectedSnapshot, TimelineCallbackPayload
 from app.schemas.timeline_input import TimelineInputResponse
 from app.schemas.timeline_result import TimelineResultRequest
@@ -59,6 +78,9 @@ logger = get_logger(__name__)
 
 TASK_TOKEN_HEADER = "Task-Token"
 TASK_TOKEN_FIELD = "taskToken"
+
+#: 외부 연동 이벤트의 상대 이름. 상대가 늘면 값이 늘고, 필드 이름은 그대로다.
+DEPENDENCY_NAME = "app-server"
 
 INPUT_PATH = "/timeline/drafts/{taskId}/input"
 RESULT_PATH = "/timeline/drafts/{taskId}/result"
@@ -70,6 +92,20 @@ _ABORT_STATUSES: dict[int, ErrorCode] = {
     404: ErrorCode.APP_SERVER_TASK_NOT_FOUND,
     409: ErrorCode.APP_SERVER_CONFLICT,
 }
+
+
+@dataclass
+class _CallProgress:
+    """논리적 호출 하나가 어디까지 갔는지. 종료 이벤트가 이 값을 읽는다.
+
+    성공/실패 어느 쪽으로 끝나든 같은 값을 봐야 해서 반환값이 아니라 호출부가 들고
+    있는 상자에 적는다.
+    """
+
+    #: 실제로 보낸 시도 횟수(1부터).
+    attempts: int = 0
+    #: 마지막으로 받은 HTTP 상태. 응답을 받지 못했으면 None(연결 실패·timeout).
+    http_status: int | None = None
 
 
 class AppServerError(AppError):
@@ -250,23 +286,14 @@ class HttpAppServerClient(AppServerClient):
                 failure_code=ErrorCode.CALLBACK_SEND_FAILED,
                 json_body=payload.model_dump(by_alias=True, mode="json"),
             )
-        except AppServerError as exc:
-            # 콜백 실패는 이미 끝난 처리를 되돌리지 않는다. 코드와 함께 로그로만
-            # 남기고 False 를 돌려준다.
-            report_error(
-                logger,
-                exc.code,
-                "완료 콜백 전송 실패",
-                exc=exc,
-                context={"taskId": task_id, "status": payload.status.value},
-            )
+        except AppServerError:
+            # 콜백 실패는 이미 끝난 처리를 되돌리지 않는다. 호출 자체의 실패는
+            # `_request` 가 외부 연동 이벤트로 이미 닫았고, "결과를 통보하지 못했다"
+            # 는 사실은 호출부(timeline_runner)가 소유한다. 여기서 한 번 더 남기면
+            # 같은 실패가 두 곳에서 집계된다.
             return False
 
-        logger.info(
-            "콜백 전송 완료: taskId=%s, status=%s",
-            task_id,
-            payload.status.value,
-        )
+        logger.debug("콜백 전송 완료: operation=callback, status=%s", payload.status.value)
         return True
 
     # --- 내부 ----------------------------------------------------------
@@ -287,7 +314,11 @@ class HttpAppServerClient(AppServerClient):
         failure_code: ErrorCode,
         json_body: dict[str, Any] | None = None,
     ) -> Any:
-        """재시도 정책을 적용해 한 번의 논리적 호출을 수행한다.
+        """재시도를 포함한 **논리적 호출 하나**를 수행하고 결과를 이벤트로 닫는다.
+
+        재시도가 몇 번이었든 종료 이벤트는 한 건이다. 운영자가 보는 단위는 "입력
+        조회가 됐는가" 이지 "세 번째 시도가 어땠는가" 가 아니다 — 그건 retry
+        이벤트가 따로 답한다.
 
         Returns:
             2xx 응답의 JSON body(없거나 JSON 이 아니면 ``None``).
@@ -297,8 +328,87 @@ class HttpAppServerClient(AppServerClient):
                 재시도 대상이 아닌 4xx 를 받은 경우.
         """
 
+        progress = _CallProgress()
+        started = perf_counter()
+        try:
+            body = await self._attempt_with_retries(
+                progress,
+                method,
+                url,
+                task_id=task_id,
+                token=token,
+                operation=operation,
+                not_found_code=not_found_code,
+                failure_code=failure_code,
+                json_body=json_body,
+            )
+        except AppServerError as exc:
+            self._emit_completed(
+                operation,
+                task_id,
+                token,
+                progress,
+                started,
+                outcome=EventOutcome.FAILURE,
+                error_code=exc.code,
+            )
+            raise
+
+        self._emit_completed(
+            operation,
+            task_id,
+            token,
+            progress,
+            started,
+            outcome=EventOutcome.SUCCESS,
+        )
+        return body
+
+    def _emit_completed(
+        self,
+        operation: str,
+        task_id: str,
+        token: TaskToken,
+        progress: "_CallProgress",
+        started: float,
+        *,
+        outcome: EventOutcome,
+        error_code: ErrorCode | None = None,
+    ) -> None:
+        emit_event(
+            OperationalEvent.DEPENDENCY_REQUEST_COMPLETED,
+            outcome=outcome,
+            level=(
+                logging.INFO if outcome is EventOutcome.SUCCESS else logging.ERROR
+            ),
+            dependency=DEPENDENCY_NAME,
+            operation=operation,
+            httpStatus=progress.http_status,
+            attempts=progress.attempts,
+            durationMs=round((perf_counter() - started) * 1000, 3),
+            errorCode=int(error_code) if error_code is not None else None,
+            taskId=task_id,
+            tokenRefreshCount=token.refresh_count,
+        )
+
+    async def _attempt_with_retries(
+        self,
+        progress: "_CallProgress",
+        method: str,
+        url: str,
+        *,
+        task_id: str,
+        token: TaskToken,
+        operation: str,
+        not_found_code: ErrorCode,
+        failure_code: ErrorCode,
+        json_body: dict[str, Any] | None = None,
+    ) -> Any:
+        """재시도 정책을 적용해 실제 요청을 보낸다(진행 상황은 ``progress`` 에)."""
+
         last_detail = ""
         for attempt in range(1, self._max_attempts + 1):
+            progress.attempts = attempt
             try:
                 response = await self._send(method, url, token, json_body)
             except httpx.HTTPError as exc:
@@ -313,18 +423,14 @@ class HttpAppServerClient(AppServerClient):
                 continue
 
             status_code = response.status_code
+            progress.http_status = status_code
 
             if 200 <= status_code < 300:
                 body = _json_body(response)
                 # 토큰 갱신은 성공 응답에서만 받는다. 실패 응답 body 의 값을 물면
                 # 거절된 흐름이 준 토큰으로 다음 요청을 보내게 된다.
-                if token.absorb(body):
-                    logger.info(
-                        "taskToken 갱신: taskId=%s, operation=%s, refreshCount=%d",
-                        task_id,
-                        operation,
-                        token.refresh_count,
-                    )
+                # 갱신 사실은 값 없이 종료 이벤트의 `tokenRefreshCount` 로 나간다.
+                token.absorb(body)
                 return body
 
             abort_code = _ABORT_STATUSES.get(status_code)
@@ -351,7 +457,11 @@ class HttpAppServerClient(AppServerClient):
             if attempt >= self._max_attempts:
                 break
             await self._wait_before_retry(
-                attempt, task_id, operation, reason=f"status={status_code}"
+                attempt,
+                task_id,
+                operation,
+                reason="server_error",
+                http_status=status_code,
             )
 
         raise AppServerError(
@@ -392,17 +502,27 @@ class HttpAppServerClient(AppServerClient):
         operation: str,
         *,
         reason: str,
+        http_status: int | None = None,
     ) -> None:
+        """다음 시도까지 기다리고, 재시도 사실을 운영 이벤트로 남긴다.
+
+        ``reason`` 은 예외 클래스명(`ConnectTimeout` 등)이나 ``server_error`` 처럼
+        고정된 라벨이다. 예외 원문은 URL·body 를 품을 수 있어 싣지 않는다.
+        """
+
         delay = self._backoff_sec * (2 ** (attempt - 1))
-        logger.warning(
-            "App Server 호출 재시도: taskId=%s, operation=%s, attempt=%d/%d, "
-            "reason=%s, delaySec=%.2f",
-            task_id,
-            operation,
-            attempt,
-            self._max_attempts,
-            reason,
-            delay,
+        emit_event(
+            OperationalEvent.DEPENDENCY_REQUEST_RETRY,
+            outcome=EventOutcome.FAILURE,
+            level=logging.WARNING,
+            dependency=DEPENDENCY_NAME,
+            operation=operation,
+            attempt=attempt,
+            maxAttempts=self._max_attempts,
+            reason=reason,
+            httpStatus=http_status,
+            delayMs=round(delay * 1000, 3),
+            taskId=task_id,
         )
         if delay > 0:
             await asyncio.sleep(delay)

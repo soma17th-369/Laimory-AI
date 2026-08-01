@@ -95,7 +95,7 @@ def update_event(
 
     index = draft.events.index(event)
     draft.events[index] = updated
-    logger.info(
+    logger.debug(
         "Repair: event 수정 clientEventId=%s, fields=%s",
         client_event_id,
         ", ".join(sorted(fields)),
@@ -122,9 +122,7 @@ def delete_event(draft: TimelineDraft, client_event_id: str) -> TimelineEventDra
                 if event_id != client_event_id
             ]
 
-    logger.info(
-        "Repair: event 삭제 clientEventId=%s, title=%s",
-        client_event_id,
-        event.title,
-    )
+    # 제목은 사용자 콘텐츠라 남기지 않는다. 무엇이 지워졌는지는 Langfuse 의 도구
+    # 실행 기록에서 본다.
+    logger.debug("Repair: event 삭제 clientEventId=%s", client_event_id)
     return event

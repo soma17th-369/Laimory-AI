@@ -5,8 +5,14 @@
 # filebeat.env 에서 환경변수로 주입한다(${ES_HOSTS}, ${ES_API_KEY}, ${LAIMORY_ENV}).
 # 준비 절차는 docs/deploy-ec2.md, 필드 계약은 docs/operational-logging.md 참고.
 #
-# 수집 대상은 `laimory-ai` 애플리케이션 컨테이너의 stdout 하나뿐이다. Filebeat 자신의
-# 로그나 다른 컨테이너 로그는 수집하지 않는다.
+# 수집 대상은 `laimory-ai` 애플리케이션 컨테이너의 stdout 하나뿐이며, 그중에서도
+# 앱이 **운영 이벤트로 표식을 단 줄**만 보낸다(이슈 #53). 표식은 event.dataset 이고
+# 값은 `laimory.api` 다. 표식이 없는 줄(일반 앱 로그, Agent/LLM 진단, httpx·botocore
+# 같은 서드파티 로그, JSON 이 아닌 줄)은 전부 버린다.
+#
+# 방어선은 두 겹이다. 애플리케이션에서는 app/core/operational_logging.py 의 emitter 만
+# 표식을 만들 수 있고, 여기서는 표식이 정확히 일치하지 않으면 버린다. 한쪽이 뚫려도
+# 사용자 데이터가 Elasticsearch 까지 가지 않게 하기 위해서다.
 
 filebeat.autodiscover:
   providers:
@@ -28,14 +34,27 @@ filebeat.autodiscover:
               clean_removed: false
 
 processors:
-  # 앱이 내보내는 한 줄 JSON 을 최상위 필드로 편다. 실패하면 error.message 에
-  # 남고 원본 message 는 그대로 남으므로 이벤트를 잃지 않는다.
+  # 앱이 내보내는 한 줄 JSON 을 최상위 필드로 편다. 실패해도 이벤트는 남지만 표식이
+  # 없으므로 바로 다음 drop_event 에서 버려진다.
+  #
+  # expand_keys 가 핵심이다. 앱은 `event.dataset` 처럼 점이 든 키를 그대로 쓰는데,
+  # 이 옵션이 없으면 Beats 는 그걸 최상위의 리터럴 키 하나로 들고 있어서 아래
+  # 조건식(event.dataset)이 영영 매칭되지 않는다. 그러면 모든 이벤트가 버려진다.
   - decode_json_fields:
       fields: ["message"]
       target: ""
       overwrite_keys: true
       add_error_key: true
+      expand_keys: true
       max_depth: 3
+  # fail-closed. 표식이 정확히 `laimory.api` 인 이벤트만 통과한다. 새 로그 호출이
+  # 추가되든, JSON decode 가 실패하든, 서드파티 로거가 끼어들든 수집 범위는 넓어지지
+  # 않는다. 순서가 계약이다 — decode 앞에 두면 표식을 읽을 수 없어 전부 버려진다.
+  - drop_event:
+      when:
+        not:
+          equals:
+            event.dataset: laimory.api
   # 앱은 `timestamp` 로 시각을 싣는다. `@timestamp` 는 Beats 가 이벤트 시각으로
   # 예약한 이름이라 앱이 그 이름을 쓰면 충돌한다. 여기서 옮겨 담는다.
   - timestamp:
@@ -51,6 +70,11 @@ processors:
       netinfo.enabled: false
   # 방어선. 앱이 이미 마스킹하지만, 수집기에서도 한 번 더 지운다. 마스킹이 한 겹
   # 뚫려도 Elasticsearch 까지 가지는 않게 한다.
+  #
+  # error.message/error.stack_trace 는 운영 이벤트에 아예 실리지 않지만(이슈 #53),
+  # 표식이 잘못 붙은 줄이 하나라도 통과하면 예외 원문과 traceback 이 그 자리로 들어온다.
+  # url/query/body 계열도 같은 이유로 지운다. event.dataset/action/outcome 은 남긴다 —
+  # 그걸 지우면 이벤트 종류를 구분할 수단이 사라진다.
   - drop_fields:
       fields:
         - taskToken
@@ -60,6 +84,14 @@ processors:
         - secret
         - accessToken
         - refreshToken
+        - error.message
+        - error.stack_trace
+        - errorMessage
+        - url
+        - query
+        - body
+        - prompt
+        - response
       ignore_missing: true
   # 쓰지 않는 수집기 메타데이터. t3.micro 에서 전송량을 줄인다.
   - drop_fields:

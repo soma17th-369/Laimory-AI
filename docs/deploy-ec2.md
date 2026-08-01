@@ -414,6 +414,21 @@ Filebeat는 컨테이너 이름으로 수집 대상을 고르기 위해 Docker a
 앱 변경 없이 수집 설정만 바꾸려면 Actions에서 워크플로를 수동 실행하거나, EC2에서
 직접 컨테이너를 지우고 다음 배포를 기다린다.
 
+> **저장소의 템플릿을 고쳐도 EC2는 바뀌지 않는다.** 운영 설정은 레포 밖의
+> `/opt/laimory-ai/filebeat.yml`이다. `docs/observability/filebeat.example.yml`을
+> 바꿨으면 배포 **전에** 그 파일을 갱신해야 효력이 생긴다.
+>
+> ```bash
+> sudo cp /opt/laimory-ai/filebeat.yml /opt/laimory-ai/filebeat.yml.bak
+> sudo vi /opt/laimory-ai/filebeat.yml     # 새 템플릿 내용으로 교체
+> sudo chown root:root /opt/laimory-ai/filebeat.yml && sudo chmod 600 /opt/laimory-ai/filebeat.yml
+> docker rm -f laimory-filebeat            # 다음 배포가 새 설정으로 다시 만든다
+> ```
+>
+> 이슈 #53의 수집 필터(`drop_event` + `decode_json_fields.expand_keys`)가 그 예다.
+> 반영하지 않으면 예전처럼 컨테이너 stdout 전체가 적재되고, 순서나 필드 경로가 틀리면
+> 반대로 **아무것도 적재되지 않는다.** 교체 후 §11의 확인 절차로 적재를 반드시 본다.
+
 배포 성공 후 workflow는 ECR에서 현재 배포 이미지와 실제로 교체된 직전 이미지의
 태그를 확인하고, 나머지 tagged/untagged 이미지 digest를 삭제한다. 단순 push 시각의
 최신 2개가 아니라 실행 중이던 직전 컨테이너 이미지를 보존하므로, 중간에 배포 실패
@@ -436,6 +451,23 @@ docker logs --tail 200 laimory-filebeat
 
 ```bash
 docker logs --tail 200 laimory-ai | jq -r '"\(.timestamp) \(."log.level") \(.taskId // "-") \(.message)"'
+```
+
+컨테이너 로그에는 Elasticsearch로 가지 않는 줄이 섞여 있다(이슈 #53). 수집되는
+운영 이벤트만 보려면 표식으로 거른다.
+
+```bash
+docker logs --tail 500 laimory-ai \
+  | jq -r 'select(."event.dataset" == "laimory.api")
+           | "\(.timestamp) \(."log.level") \(."event.action") \(."event.outcome") \(.errorCode // "-")"'
+```
+
+수집 설정을 바꾼 뒤에는 실제 적재도 확인한다. 표식이 있는 이벤트만 있고, 정상
+`/ping`이 없으면 정상이다.
+
+```bash
+curl -s "$ES_HOSTS/logs-laimory.ai-prod/_search?size=10&sort=@timestamp:desc" \
+  -H "Authorization: ApiKey $ES_API_KEY" | jq '.hits.hits[]._source | {action: .event.action, outcome: .event.outcome}'
 ```
 
 ### Filebeat가 로그를 보내지 못할 때

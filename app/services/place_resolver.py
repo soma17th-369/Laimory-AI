@@ -245,7 +245,7 @@ def resolve_places(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
             )
         )
 
-    logger.info(
+    logger.debug(
         "장소 확정: placeLabel 보강=%d, placeLabel 제거=%d, address 보강=%d, address 제거=%d",
         len(filled_labels),
         len(cleared_labels),

@@ -20,23 +20,38 @@ FastAPI 기본값은 그렇지 않다. 요청 검증 실패는 ``{"detail": [...
 그 밖의 모든 예외                  1901 (500). traceback 은 로그에만.
 ===============================  ==============================================
 
-어느 경로든 :func:`~app.core.exceptions.report_error` 하나만 거치므로, 응답에 실린
-``errorCode`` 와 로그에 남는 ``errorCode`` 는 같은 값일 수밖에 없다.
+## 로그 (이슈 #53)
+
+처리기는 **자기 이벤트를 만들지 않는다**. 코드를 확정한 뒤
+:func:`~app.api.request_logging.annotate_request_error` 로 요청 scope 에 적어 두면,
+요청 미들웨어가 method/route/httpStatus/durationMs 와 합쳐 `http.request.completed`
+한 건으로 닫는다. 실패한 요청이 두 줄로 갈리던 문제(레벨도 서로 달랐다)가 여기서 사라진다.
+
+:func:`~app.core.exceptions.report_error` 호출은 남지만 이제 **로컬 진단**이다.
+표식이 없어 Elasticsearch 로 가지 않으며, 검증 오류는 입력값 대신 위반 개수와
+필드 경로만 남긴다.
 """
 
 import logging
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.api.request_logging import annotate_request_error
 from app.core.error_codes import ErrorCode, code_for_http_status, http_status_for
 from app.core.exceptions import AppError, report_error
 from app.core.logging import get_logger
 from app.schemas.error import ErrorResponse
 
 logger = get_logger(__name__)
+
+#: 로컬 진단에 남길 검증 위반 개수 상한과 항목 길이 상한. 위반 목록은 보낸 쪽이
+#: 만든 요청에서 나오므로 우리가 크기를 정한다.
+_MAX_VIOLATIONS = 10
+_MAX_VIOLATION_LENGTH = 120
 
 #: OpenAPI ``responses`` 에 붙일 공통 오류 응답 스펙. 라우터가 이걸 참조해
 #: 명세와 실제 응답이 갈리지 않게 한다.
@@ -53,9 +68,31 @@ ERROR_RESPONSES: dict[int | str, dict] = {
 
 
 def _http_log_level(status_code: int) -> int:
-    """4xx 는 클라이언트 잘못이라 INFO, 5xx 는 서버 잘못이라 ERROR 로 남긴다."""
+    """로컬 진단 레벨. 4xx 는 클라이언트 잘못이라 INFO, 5xx 는 ERROR.
+
+    Elasticsearch 로 나가는 요청 이벤트의 레벨은 여기서 정하지 않는다
+    (:func:`~app.core.operational_logging.http_level` 이 소유한다).
+    """
 
     return logging.INFO if status_code < 500 else logging.ERROR
+
+
+def _validation_diagnostics(exc: RequestValidationError) -> dict[str, Any]:
+    """검증 실패를 **입력값 없이** 요약한다.
+
+    pydantic 의 오류 항목에는 ``input``/``ctx``/``msg`` 로 잘못 보낸 값 자체가 들어
+    있다. 여기서는 위반 개수와 "어느 필드가 어떤 규칙을 어겼는지" 만 뽑는다.
+    """
+
+    errors = exc.errors()
+    violations = [
+        (
+            f"{'.'.join(str(part) for part in error.get('loc', ()))}"
+            f":{error.get('type', 'invalid')}"
+        )[:_MAX_VIOLATION_LENGTH]
+        for error in errors[:_MAX_VIOLATIONS]
+    ]
+    return {"violationCount": len(errors), "violationFields": violations}
 
 
 def _json_error(code: ErrorCode, status_code: int | None = None) -> JSONResponse:
@@ -77,14 +114,21 @@ async def handle_request_validation_error(
     FastAPI 기본 응답은 위반 필드 경로와 **입력값 자체**를 담는다. 그대로 두면
     잘못 보낸 값이 응답으로 되돌아 나가므로, 진단 정보는 로그에만 남기고 응답에는
     코드와 고정 메시지만 내보낸다.
+
+    예외 객체는 로그로 넘기지 않는다 — ``str(exc)`` 에 잘못 보낸 값이 그대로 들어 있다.
     """
 
+    annotate_request_error(
+        request,
+        ErrorCode.REQUEST_VALIDATION_FAILED,
+        error_type=type(exc).__name__,
+    )
     report_error(
         logger,
         ErrorCode.REQUEST_VALIDATION_FAILED,
         "요청 검증 실패",
-        exc=exc,
-        context={"method": request.method, "path": request.url.path},
+        context=_validation_diagnostics(exc),
+        level=logging.INFO,
     )
     return _json_error(ErrorCode.REQUEST_VALIDATION_FAILED)
 
@@ -96,13 +140,8 @@ async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
     로그에만 남고, 응답에는 코드에 묶인 안전 메시지가 나간다.
     """
 
-    report_error(
-        logger,
-        exc.code,
-        "요청 처리 실패",
-        exc=exc,
-        context={"method": request.method, "path": request.url.path},
-    )
+    annotate_request_error(request, exc.code, error_type=type(exc).__name__)
+    report_error(logger, exc.code, "요청 처리 실패", exc=exc)
     return _json_error(exc.code)
 
 
@@ -117,16 +156,13 @@ async def handle_http_exception(
     """
 
     code = code_for_http_status(exc.status_code)
+    annotate_request_error(request, code, error_type=type(exc).__name__)
     report_error(
         logger,
         code,
         "HTTP 오류 응답",
         exc=exc,
-        context={
-            "method": request.method,
-            "path": request.url.path,
-            "httpStatus": exc.status_code,
-        },
+        context={"httpStatus": exc.status_code},
         level=_http_log_level(exc.status_code),
     )
     # 상태 코드는 원래 값을 유지한다. 401/403 등 카탈로그가 4xx 로 뭉뚱그린
@@ -137,16 +173,25 @@ async def handle_http_exception(
 async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
     """분류되지 않은 예외 — 마지막 방어선.
 
-    여기까지 온 예외는 우리가 예상하지 못한 것이다. traceback 을 로그에 남겨 원인을
-    추적할 수 있게 하되, 밖으로는 1901 과 고정 메시지만 내보낸다.
+    여기까지 온 예외는 우리가 예상하지 못한 것이다. traceback 은 **로컬 진단**으로만
+    남기고(표식이 없어 Elasticsearch 로 가지 않는다), 밖으로는 1901 과 고정 메시지만
+    내보낸다.
+
+    이 처리기는 Starlette 의 ``ServerErrorMiddleware`` 에서 돌아 요청 로그 미들웨어보다
+    바깥이다. 그래서 여기 주석은 요청 이벤트에 닿지 못하고, 미들웨어가 같은 코드로
+    이벤트를 이미 닫는다. 주석은 처리기 순서가 바뀌었을 때를 위한 것이다.
     """
 
+    annotate_request_error(
+        request,
+        ErrorCode.INTERNAL_ERROR,
+        error_type=type(exc).__name__,
+    )
     report_error(
         logger,
         ErrorCode.INTERNAL_ERROR,
         "미처리 예외",
         exc=exc,
-        context={"method": request.method, "path": request.url.path},
         level=logging.ERROR,
         exc_info=True,
     )

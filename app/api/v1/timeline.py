@@ -14,10 +14,11 @@ AI 서버는 task 상태를 보관하지 않으며(상태는 App Server 소유),
 엔드포인트는 두지 않는다.
 """
 
-from fastapi import APIRouter, BackgroundTasks, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, status
 from pydantic import AwareDatetime, Field
 
 from app.api.error_handlers import ERROR_RESPONSES
+from app.api.request_logging import annotate_request_task
 from app.schemas import TaskStatus
 from app.schemas.common import CamelModel
 from app.services.app_server_client import AppServerClient, get_app_server_client
@@ -61,8 +62,9 @@ class TimelineDispatchResponse(CamelModel):
     responses=ERROR_RESPONSES,
 )
 async def create_timeline_draft(
-    request: TimelineTriggerRequest,
+    payload: TimelineTriggerRequest,
     background_tasks: BackgroundTasks,
+    http_request: Request,
     client: AppServerClient = Depends(get_app_server_client),
 ) -> TimelineDispatchResponse:
     """`taskId` 로 타임라인 초안 생성을 접수한다.
@@ -70,19 +72,23 @@ async def create_timeline_draft(
     실제 처리(입력 조회 → 정규화 → 메인 에이전트 → 결과 저장 → 콜백)를 백그라운드로
     넘기고, 즉시 taskId 와 PROCESSING 을 반환한다. AI 서버는 task 상태를 보관하지
     않으며(상태는 App Server 소유), 결과는 콜백으로만 통보한다.
+
+    접수 이벤트(202)에 `taskId` 를 실어, 나중에 나올 백그라운드 완료 이벤트와 같은
+    상관키로 잇는다. `taskToken` 과 `window` 는 넘기지 않는다.
     """
 
+    annotate_request_task(http_request, payload.task_id)
     background_tasks.add_task(
         process_timeline_task,
-        request.task_id,
+        payload.task_id,
         client,
-        request.daily_record_id,
-        request.window.start_at.isoformat(),
-        request.window.end_at.isoformat(),
-        request.task_token,
+        payload.daily_record_id,
+        payload.window.start_at.isoformat(),
+        payload.window.end_at.isoformat(),
+        payload.task_token,
     )
 
     return TimelineDispatchResponse(
-        task_id=request.task_id,
+        task_id=payload.task_id,
         status=TaskStatus.PROCESSING,
     )

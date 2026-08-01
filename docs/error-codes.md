@@ -154,35 +154,45 @@ AI 서버는 원인이 새로 분류될 때마다 코드를 추가합니다. 클
 같은 식별자, 경로, traceback은 **서버 로그에만** 남습니다. 장애를 추적할 때는
 `errorCode`로 로그를 조회하세요.
 
-## 5. 운영 로그에서 찾기
+## 5. 로그에서 찾기
 
-모든 예외 경로가 `errorCode`를 **구조화 필드**로 담은 한 줄 JSON 로그를 남깁니다.
-EC2에서는 Filebeat가 이 stdout을 Elasticsearch로 실어 나릅니다(이슈 #47).
+실패는 두 자리에 남고, 목적이 다릅니다(이슈 #53).
+
+**Elasticsearch — 운영 이벤트.** 최종 경계가 `errorCode`를 **구조화 필드**로 담아
+남깁니다. HTTP 요청은 `http.request.completed`, 백그라운드 작업은
+`timeline.task.completed`, 외부 연동은 `dependency.request.completed` 입니다.
 
 ```json
-{"timestamp":"2026-07-31T04:12:07.882Z","log.level":"WARNING",
- "logger":"app.services.timeline_runner","message":"타임라인 처리 실패",
- "service":"laimory-ai","environment":"prod","taskId":"task-1","stage":"STORAGE",
- "errorCode":1301,"errorType":"TimelineValidationError",
- "violationCodes":["SOURCE_RAW_ID_NOT_IN_TASK"],"violationCount":1}
+{"timestamp":"2026-08-01T04:12:07.882Z","log.level":"ERROR",
+ "logger":"app.operational","message":"Timeline 작업 완료",
+ "service":"laimory-ai","environment":"prod",
+ "event.dataset":"laimory.api","event.action":"timeline.task.completed",
+ "event.outcome":"failure","taskId":"task-1","status":"FAILED",
+ "errorCode":1301,"failureStage":"STORAGE","durationMs":41822.5,"callbackSent":true}
 ```
 
 값이 메시지 문자열이 아니라 필드에 있으므로 Kibana에서 그대로 필터·집계할 수 있습니다.
 
 ```
-errorCode: 1201 and environment: "prod"
+errorCode: 1301 and environment: "prod"
 ```
 
-한 task의 전체 흐름은 `taskId`로 봅니다. 단계 경계(`단계 시작`/`단계 완료`)에
-`stage`와 `durationMs`가 함께 남아 어디서 얼마나 걸렸는지 이어 볼 수 있습니다.
+**컨테이너 stdout — 로컬 진단.** `report_error`가 남기는 줄에는 `errorType`,
+`errorMessage`(마스킹한 원본), 최종 실패의 traceback까지 있습니다. 이 줄은 수집
+표식이 없어 Elasticsearch로 가지 않으므로 `docker logs laimory-ai`로 봅니다.
 
+```json
+{"log.level":"WARNING","logger":"app.services.timeline_runner",
+ "message":"타임라인 처리 실패","taskId":"task-1","stage":"STORAGE",
+ "errorCode":1301,"errorType":"TimelineValidationError",
+ "violationCodes":["SOURCE_RAW_ID_NOT_IN_TASK"],"violationCount":1}
 ```
-taskId: "task-1"
-```
+
+즉 **무엇이 얼마나 실패하는지는 Elasticsearch, 왜 실패했는지의 원문은 컨테이너
+로그, AI 실행 과정은 Langfuse**입니다. 세 곳을 잇는 상관키는 `taskId` 하나입니다.
 
 조회 예시와 필드 계약은 [docs/operational-logging.md](operational-logging.md)에
-정리돼 있습니다. 프롬프트·LLM 응답·draft 본문은 운영 로그에 남지 않으며, 그 수준의
-추적은 Langfuse가 담당합니다.
+정리돼 있습니다.
 
 ## 6. 새 코드를 추가할 때
 
@@ -202,8 +212,14 @@ taskId: "task-1"
 ## 7. 코드를 남기는 방법
 
 `except` 블록은 [`report_error`](../app/core/exceptions.py)만 호출합니다. 이 함수가
-실패를 **코드와 함께** 운영 로그에 남기는 유일한 통로입니다. 각자 로그를 찍으면
+실패에 **코드를 부여하고** 로컬 진단으로 남기는 통로입니다. 각자 로그를 찍으면
 언젠가 값이 갈리는데, 그때 갈렸다는 사실조차 알기 어렵습니다.
+
+돌려주는 코드는 호출부가 응답·콜백·운영 이벤트에 실어야 세 곳이 같은 값을 말합니다.
+Elasticsearch로 나가는 것은 최종 경계의 운영 이벤트뿐입니다(이슈 #53) — 그래서
+`report_error`는 **다시 던지는 중간 경계가 아니라 최종 경계나 흡수 지점**에서
+부릅니다. LLM → Agent → 노드 → runner 처럼 올라오는 길목마다 부르면 실패 하나가
+여러 건으로 집계됩니다.
 
 ```python
 except Exception as exc:
@@ -233,8 +249,12 @@ class SourceBatchError(AppError, ValueError):
 
 `context`에 넣는 값은 식별자·건수·상태 같은 진단 지표입니다. 프롬프트, LLM 응답,
 draft 전문, 사용자 원문, LLM이 만든 도구 인자 **값**은 넣지 않습니다. 그 수준의
-추적은 Langfuse가 담당하며, 운영 로그에 복제하면 Elasticsearch로 사용자 데이터가
-흘러갑니다.
+추적은 Langfuse가 담당합니다.
+
+운영 이벤트에는 `context`가 그대로 실리지 않습니다. 이벤트마다 허용 필드가 정해져
+있고([`app/core/operational_logging.py`](../app/core/operational_logging.py)),
+목록에 없는 이름은 버려집니다. 그래서 호출부 실수 하나로 사용자 데이터가
+Elasticsearch까지 가지는 않습니다 — 다만 로컬 로그에는 남으므로 여전히 조심합니다.
 
 ### 코드를 붙이지 않는 곳
 

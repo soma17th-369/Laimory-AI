@@ -581,7 +581,7 @@ def repair_draft(draft: TimelineDraft, request: TimelineDraftRequest) -> Timelin
     # 근거가 하나도 남지 않은 event는 이후 보정 단계로 넘기지 않는다.
     source_stats = filter_draft_sources(draft, request)
     if source_stats.changed:
-        logger.info(
+        logger.debug(
             "입력에 없는 rawId 참조 정리",
             extra=log_fields(
                 **source_stats.violation_log_fields(item_kind="TIMELINE_EVENT")
@@ -620,7 +620,7 @@ def repair_draft(draft: TimelineDraft, request: TimelineDraftRequest) -> Timelin
     renumber_events(draft)
     _polish_questions(draft)
 
-    logger.info(
+    logger.debug(
         "draft repair 완료: events=%d, questions=%d, warnings=%d",
         len(draft.events),
         len(draft.questions),

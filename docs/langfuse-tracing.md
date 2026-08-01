@@ -2,9 +2,9 @@
 
 Timeline 요청 한 건을 Langfuse trace 한 건으로 기록한다. 이 trace는 입력 조회부터
 정규화, 다중 Agent, LLM, Repair, 저장, 콜백까지 Main Agent의 전체 흐름을 보여 준다.
-Elasticsearch 관측은 오류 코드와 단계별 운영 이벤트의 정본으로 계속 사용하며,
-Langfuse는 Agent 계층, 입출력, 모델 지연 시간, 토큰과 비용을 분석하는 선택적
-관측 계층이다.
+Elasticsearch 는 FastAPI 서버 운영 이벤트(요청·작업 결과·외부 연동·오류 코드)의
+정본이고, Langfuse 는 Agent 계층, 입출력, 단계별·모델 지연 시간, 토큰과 비용을
+분석하는 관측 계층이다. AI 실행 상세는 이슈 #53 이후 Langfuse 에만 있다.
 
 프로젝트는 Langfuse Python SDK `4.14.1`을 사용한다.
 
@@ -189,13 +189,17 @@ metadata에는 이 기본 차단을 적용하지 않는다. metadata는 호출�
 두 저장소는 목적이 다르고 서로 대체하지 않는다(이슈 #47). 같은 실행을 양쪽에서 찾을
 때는 `taskId`를 쓴다(운영 로그는 `taskId` 필드, Langfuse는 `session`).
 
-| 항목 | Elasticsearch (운영 로그) | Langfuse |
+| 항목 | Elasticsearch (운영 이벤트) | Langfuse |
 |---|---|---|
-| 역할 | FastAPI 요청, 처리 결과, `errorCode`, 단계별 지연, 외부 API 연동, 배포·헬스체크 | Agent 계층, prompt/response, 중간 산출물, 모델 지연·토큰·비용, 품질 평가 |
-| 경로 | 앱 stdout(한 줄 JSON) → Filebeat 컨테이너 → `logs-laimory.ai-<env>` | 앱 → Langfuse SDK |
-| 단위 | 로그 줄. `taskId`/`stage`로 한 실행을 이어 본다 | trace → span/generation 계층 |
+| 역할 | HTTP 요청, 서버 시작·종료, 백그라운드 작업 결과·전체 소요시간, 외부 API 연동·재시도, `errorCode` | Agent 계층, prompt/response, 중간 산출물, **단계별 지연**, 모델 지연·토큰·비용, 품질 평가 |
+| 경로 | 앱 stdout(한 줄 JSON, `event.dataset=laimory.api`) → Filebeat 컨테이너 → `logs-laimory.ai-<env>` | 앱 → Langfuse SDK |
+| 단위 | 이벤트 줄. `event.action` 으로 종류를, `taskId` 로 한 실행을 이어 본다 | trace → span/generation 계층 |
 | 본문 | **담지 않는다** | `LANGFUSE_CONTENT_CAPTURE` 정책에 따라 |
 | 필수 여부 | 운영 필수 | 선택. 꺼도 Timeline 처리에 영향 없음 |
+
+**단계별 Agent 흐름과 토큰 사용량은 Elasticsearch에 없다(이슈 #53).** Event/Timeline/
+Repair Agent 의 시작·완료, repair 반복, guard 보정, LLM 토큰은 Langfuse 에서 본다.
+Langfuse 를 끄면 그 정보는 컨테이너 로컬 로그(DEBUG)에만 남는다.
 
 **애플리케이션은 Elasticsearch를 직접 호출하지 않는다.** 예전에는
 `app/core/observability/`가 관측 이벤트를 `_bulk`로 직접 보냈지만 이슈 #47에서

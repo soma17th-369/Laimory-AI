@@ -1,12 +1,15 @@
-"""운영 로그 계약 검증 (이슈 #47).
+"""로그 한 줄의 계약 검증 (이슈 #47, #53).
 
-Filebeat 가 stdout 을 줄 단위로 읽어 Elasticsearch 로 보내므로, 한 줄이 유효한 JSON
-하나가 아니면 그 이벤트를 통째로 잃는다. 여기서 지키는 것은 네 가지다.
+Filebeat 가 stdout 을 줄 단위로 읽으므로, 한 줄이 유효한 JSON 하나가 아니면 그
+이벤트를 통째로 잃는다. 여기서 지키는 것은 다섯 가지다.
 
 1. 한 줄 = 유효한 JSON 하나 (예외·개행 포함)
 2. 필수 필드가 항상 있다
 3. taskId·stage 가 실행 컨텍스트에서 자동으로 붙는다
 4. Secret·개인정보·taskToken 이 로그로 새지 않는다
+5. 일반 로그에는 수집 표식이 없다 — Elasticsearch 로 나가는 줄은
+   :mod:`app.core.operational_logging` 의 운영 이벤트뿐이다
+   (경계 자체는 ``tests/core/test_operational_logging.py`` 가 본다)
 """
 
 import json
@@ -189,14 +192,26 @@ def test_task_token_never_reaches_the_log_line(formatter) -> None:
     assert payload["tokenRefreshCount"] == 2
 
 
+def test_ordinary_log_line_has_no_collection_marker(formatter) -> None:
+    """표식이 없어야 Filebeat 가 버린다. 일반 로그가 늘어도 수집 범위는 그대로다."""
+
+    payload = _emitted(formatter, _record(fields={"durationMs": 12}))
+
+    assert "event.dataset" not in payload
+    assert "event.action" not in payload
+    assert "event.outcome" not in payload
+
+
 def test_log_fields_drops_none_values() -> None:
     assert log_fields(a=1, b=None, c="x") == {"fields": {"a": 1, "c": "x"}}
 
 
 def test_stage_span_logs_boundaries_with_duration(caplog) -> None:
+    """단계 경계는 DEBUG 로컬 진단이다(이슈 #53). 수집 대상은 운영 이벤트뿐이다."""
+
     logger = logging.getLogger("tests.logging.stage")
 
-    with caplog.at_level(logging.INFO, logger=logger.name):
+    with caplog.at_level(logging.DEBUG, logger=logger.name):
         with execution_context("task-span"):
             with stage_span(logger, ExecutionStage.STORAGE, dailyRecordId=7) as outcome:
                 outcome["eventCount"] = 3
@@ -215,7 +230,7 @@ def test_stage_span_closes_the_boundary_on_failure(caplog) -> None:
 
     logger = logging.getLogger("tests.logging.stage")
 
-    with caplog.at_level(logging.INFO, logger=logger.name):
+    with caplog.at_level(logging.DEBUG, logger=logger.name):
         with pytest.raises(RuntimeError):
             with stage_span(logger, ExecutionStage.MAIN_AGENT):
                 raise RuntimeError("boom")

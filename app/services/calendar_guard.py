@@ -81,7 +81,9 @@ def ensure_calendar_events(draft: TimelineDraft, request: TimelineDraftRequest) 
 
         start = parse_datetime(item.start_at, tz)
         if start is None:
-            logger.warning("캘린더 시작 시각을 읽지 못해 되살리지 못했습니다: %s", item.title)
+            # 일정 제목은 사용자 콘텐츠라 남기지 않는다. 어느 일정인지는 Langfuse 의
+            # 입력 스냅샷으로 되짚는다.
+            logger.debug("캘린더 시작 시각을 읽지 못해 되살리지 못했습니다.")
             continue
         end = parse_datetime(item.end_at, tz) if item.end_at else None
         if end is None or end < start:
@@ -122,4 +124,4 @@ def ensure_calendar_events(draft: TimelineDraft, request: TimelineDraftRequest) 
             ),
         )
     )
-    logger.info("누락된 캘린더 일정 %d건을 event 로 되살렸습니다.", len(restored))
+    logger.debug("누락된 캘린더 일정 %d건을 event 로 되살렸습니다.", len(restored))

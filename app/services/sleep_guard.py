@@ -190,9 +190,10 @@ def enforce_sleep_boundary(draft: TimelineDraft, request: TimelineDraftRequest) 
             )
         )
 
-    logger.info(
-        "수면 경계 강제: 기상=%s, 제거=%d, 클램프=%d",
-        wake.isoformat(),
+    # 기상 시각은 사용자 데이터라 남기지 않는다. 어떤 경계로 잘랐는지는 Langfuse 의
+    # 입력·결과 스냅샷에서 본다.
+    logger.debug(
+        "수면 경계 강제: 제거=%d, 클램프=%d",
         len(removed),
         len(clamped),
     )
