@@ -65,8 +65,20 @@ def test_app_code_has_no_elasticsearch_coupling(pattern: str, why: str) -> None:
     assert not hits, f"{why} 가 앱 코드에 남아 있습니다: {hits}"
 
 
-def test_httpx_is_only_used_for_the_app_server_and_langfuse() -> None:
-    """앱이 HTTP 로 말을 거는 상대는 App Server 하나뿐이어야 한다.
+#: 앱에서 httpx 를 직접 써도 되는 자리. 각 항목은 상대가 누구인지 분명해야 한다.
+#: 여기 없는 파일이 HTTP 를 열면 그 자체가 리뷰 대상이다 — ES 직접 전송을 다른
+#: HTTP 클라이언트로 재구현하는 것이 정확히 이 형태로 들어온다.
+_ALLOWED_HTTPX_USERS = [
+    # App Server 서버간 API(입력 조회·결과 저장·콜백).
+    "app/services/app_server_client.py",
+    # 사진 이미지 다운로드(#52). 상대는 allowlist 로 고정된 S3 이미지 호스트뿐이고,
+    # 정책은 같은 파일의 `_reject_url` 이 소유한다.
+    "app/agents/events/photo/image_source.py",
+]
+
+
+def test_httpx_is_only_used_by_known_integrations() -> None:
+    """앱이 HTTP 로 말을 거는 상대는 명시된 둘뿐이어야 한다.
 
     ES 직접 전송을 다른 HTTP 클라이언트로 재구현하는 것도 같은 결합이다(제외 범위).
     Langfuse SDK 는 자체 전송 계층을 쓰므로 여기 잡히지 않는다.
@@ -78,4 +90,4 @@ def test_httpx_is_only_used_for_the_app_server_and_langfuse() -> None:
         if re.search(r"^\s*import httpx|^\s*from httpx", path.read_text(encoding="utf-8"), re.M)
     ]
 
-    assert users == ["app/services/app_server_client.py"], users
+    assert sorted(users) == sorted(_ALLOWED_HTTPX_USERS), users

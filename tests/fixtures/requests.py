@@ -115,15 +115,16 @@ def notification_item(item_id, app_name, title, posted=WINDOW_START, raw_id=None
     )
 
 
-def photo_item(item_id, taken=WINDOW_START, lat=None, lon=None, raw_id=None) -> PhotoItem:
+def photo_item(
+    item_id, taken=WINDOW_START, lat=None, lon=None, raw_id=None, photo_url=None
+) -> PhotoItem:
     return PhotoItem(
         raw_id=fixture_raw_id(raw_id or f"photo-{item_id}"),
         taken_at=taken,
-        filename=f"{item_id}.jpg",
-        client_photo_uri=f"content://{item_id}",
         latitude=lat,
         longitude=lon,
         description="사진 설명",
+        photo_url=photo_url,
     )
 
 
@@ -219,6 +220,13 @@ def default_source_items() -> list[CollectedSourceItem]:
         source_item(
             107,
             ItemType.PHOTO,
-            {"filename": "p.jpg", "clientPhotoUri": "content://p", "description": "설명"},
+            {
+                # filename/clientPhotoUri 는 App Server 가 아직 보내지만 PhotoItem 에
+                # 필드가 없어 무시된다(#52). 무시가 실패로 번지지 않는지 함께 본다.
+                "filename": "p.jpg",
+                "clientPhotoUri": "content://p",
+                "photoUrl": "https://images.example.com/p.jpg",
+                "description": "설명",
+            },
         ),
     ]

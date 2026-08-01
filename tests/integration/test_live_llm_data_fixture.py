@@ -213,9 +213,6 @@ def test_live_llm_pipeline_matches_data_fixture_shape_and_writes_comparison(
     _prepare_live_llm_env()
 
     from app.agents.events import default_event_agents
-    from app.agents.events.photo import PhotoEventAgent
-    from app.agents.events.photo.describer import VisionPhotoDescriber
-    from app.agents.events.photo.image_source import LocalFilePhotoImageSource
     from app.agents.timeline.timeline_agent import TimelineAgent
     from app.agents.main import run_main_agent
     from app.services.normalizer import normalize
@@ -234,18 +231,10 @@ def test_live_llm_pipeline_matches_data_fixture_shape_and_writes_comparison(
         f"photos={len(request.photos)}"
     )
 
-    # 기본 파이프라인의 Photo Agent 를 data/input 실제 이미지를 vision 으로 보는
-    # 것으로 교체한다(입력 JSON 의 photoFile=clientPhotoUri 가 실제 파일명과 일치).
-    photo_image_source = LocalFilePhotoImageSource(DATA_DIR / "input")
-    raw_agents = [
-        PhotoEventAgent(
-            describer=VisionPhotoDescriber(image_source=photo_image_source)
-        )
-        if getattr(agent, "name", None) == "photo"
-        else agent
-        for agent in default_event_agents()
-    ]
-    event_agents = [_TracedEventAgent(agent) for agent in raw_agents]
+    # Photo Agent 도 기본 조립을 그대로 쓴다. 이미지 소스는 `photoUrl` 다운로드
+    # 하나이고(#52), data/input 스냅샷에는 `photoUrl` 이 없어 사진 설명은 메타데이터
+    # fallback 으로 채워진다. 나머지 event 추론 경로는 그대로 검증된다.
+    event_agents = [_TracedEventAgent(agent) for agent in default_event_agents()]
     timeline_agent = _TracedTimelineAgent(TimelineAgent())
 
     _trace("main agent start")

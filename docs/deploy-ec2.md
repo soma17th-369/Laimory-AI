@@ -252,6 +252,16 @@ APP_SERVER_TIMEOUT_SEC=10
 APP_SERVER_MAX_ATTEMPTS=3
 APP_SERVER_RETRY_BACKOFF_SEC=0.5
 
+# 사진 이미지 다운로드(이슈 #52). 값을 비우면 다운로드를 하지 않고 사진 설명이
+# 메타데이터 추정으로만 만들어진다 — 운영에서는 반드시 채운다.
+PHOTO_URL_ALLOWED_HOSTS=<이미지 호스트 suffix, 예: <버킷>.s3.ap-northeast-2.amazonaws.com>
+PHOTO_DOWNLOAD_TIMEOUT_SEC=5
+PHOTO_MAX_IMAGE_BYTES=5242880
+PHOTO_MAX_IMAGES=20
+PHOTO_MAX_TOTAL_IMAGE_BYTES=20971520
+PHOTO_DOWNLOAD_MAX_WORKERS=4
+PHOTO_DOWNLOAD_BUDGET_SEC=30
+
 # 선택: Langfuse. 키는 이 파일의 0600 권한과 EC2 접근 정책으로 보호한다.
 LANGFUSE_ENABLED=false
 LANGFUSE_PUBLIC_KEY=
@@ -260,6 +270,18 @@ LANGFUSE_BASE_URL=https://jp.cloud.langfuse.com
 LANGFUSE_SAMPLE_RATE=1.0
 LANGFUSE_MAX_PAYLOAD_BYTES=65536
 ```
+
+`PHOTO_URL_ALLOWED_HOSTS`는 **비워 두면 사진 이미지를 내려받지 않는다**(fail closed).
+설정을 깜빡한 배포에서 임의 URL로 요청이 나가는 것보다 설명 품질이 떨어지는 편이
+안전하기 때문이다. 값은 호스트 suffix 목록이며 쉼표로 여러 개를 넣을 수 있다.
+`example.com`을 넣으면 `example.com`과 `*.example.com`이 허용된다. `https`가 아니거나
+allowlist 밖인 URL은 요청조차 보내지 않고, redirect도 따라가지 않는다.
+
+`PHOTO_MAX_TOTAL_IMAGE_BYTES`는 App Server에는 없는 **AI 서버 고유 제한**이다.
+App Server는 장당 5MB·요청당 20장을 허용하되 총합을 제한하지 않아 이론상 100MB가
+가능한데, 사진 설명은 배치 1회 vision 호출이라 그 전부가 한 요청에 실린다. 실사용
+이미지 크기는 Langfuse의 `download-photo-images` 스팬에 남는 `byteLength`로 확인하고
+값을 조정한다.
 
 `LANGFUSE_CONTENT_CAPTURE`는 넣지 않는다. 비워 두면 `APP_ENV` 기준으로 local/dev는
 `SANITIZED`, 그 밖은 `NONE`이 적용된다. 이 파일에 값을 적으면 그 값이 코드 기본값을

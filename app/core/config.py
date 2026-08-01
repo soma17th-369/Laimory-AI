@@ -85,11 +85,66 @@ class Settings(BaseSettings):
     bedrock_region: str = "ap-northeast-2"
     bedrock_model: str = ""
 
-    # 사진 vision describe 에서 실제 이미지를 읽어올 로컬 디렉터리.
-    # 값이 있으면 `LocalFilePhotoImageSource` 로 해당 디렉터리의 실제 파일을 읽고,
-    # 비어 있으면(기본) 이미지 없이 메타데이터 기반 fallback 으로 동작한다.
-    # (S3 가 연결되면 별도 이미지 소스로 교체한다.)
-    photo_image_dir: str | None = None
+    # --- 사진 이미지 다운로드 (이슈 #52) ---
+    # App Server 가 PHOTO payload 에 실어 주는 `photoUrl` 에서 실제 이미지를 내려받아
+    # vision 모델에 넘기기 위한 정책이다. 장당 크기·형식·장수 기본값은 App Server 의
+    # 업로드 제한(장당 5MB, 요청당 20장, JPEG/PNG/WebP)과 맞춘다.
+
+    #: 다운로드를 허용할 호스트 suffix 목록(쉼표 구분). **비어 있으면 URL 다운로드를
+    #: 하지 않는다**(fail closed) — 그 경우 모든 사진이 메타데이터 fallback 으로 간다.
+    #: SSRF 방어의 1차 방어선이라 기본값을 열어 두지 않는다.
+    photo_url_allowed_hosts: str = ""
+
+    #: 이미지 하나를 받는 데 허용할 시간(초).
+    photo_download_timeout_sec: float = 5.0
+
+    #: 이미지 한 장의 최대 크기. App Server 업로드 상한과 같다. 정확히 이 값인 파일은
+    #: 통과해야 하므로 **초과**일 때만 거부한다.
+    photo_max_image_bytes: int = 5 * 1024 * 1024
+
+    #: 한 번에 내려받을 최대 장수. App Server 요청당 상한과 같다.
+    photo_max_images: int = 20
+
+    #: 한 배치에서 받을 이미지 bytes 총합 상한. **AI 서버 고유 제한이다.**
+    #: App Server 는 총합을 제한하지 않아 이론상 20장 × 5MB = 100MB 가 가능한데,
+    #: describer 가 배치 1회 vision 호출이라 그 전부가 한 요청에 실린다. base64 로
+    #: 약 1.33배 부풀어 provider 요청 한도를 넘고 토큰 비용도 함께 뛴다.
+    photo_max_total_image_bytes: int = 20 * 1024 * 1024
+
+    #: 이미지를 동시에 받을 스레드 수.
+    photo_download_max_workers: int = 4
+
+    #: 배치 전체 다운로드에 허용할 시간(초). 넘기면 못 받은 사진은 fallback 으로 간다.
+    photo_download_budget_sec: float = 30.0
+
+    @property
+    def photo_allowed_host_suffixes(self) -> tuple[str, ...]:
+        """`photo_url_allowed_hosts` 를 비교 가능한 소문자 suffix 튜플로 돌려준다."""
+
+        return tuple(
+            host.strip().lower().lstrip(".")
+            for host in self.photo_url_allowed_hosts.split(",")
+            if host.strip()
+        )
+
+    @field_validator(
+        "photo_max_image_bytes",
+        "photo_max_images",
+        "photo_max_total_image_bytes",
+        "photo_download_max_workers",
+    )
+    @classmethod
+    def validate_photo_positive_int(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("사진 다운로드 상한 설정은 1 이상이어야 합니다.")
+        return value
+
+    @field_validator("photo_download_timeout_sec", "photo_download_budget_sec")
+    @classmethod
+    def validate_photo_positive_sec(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("사진 다운로드 시간 설정은 0보다 커야 합니다.")
+        return value
 
     # 타임라인 메인 에이전트 전체 실행 timeout(초). 초과 시 task 를 FAILED 로 처리한다.
     # Repair Agent 가 분석·개선을 반복하며 LLM 을 여러 번 부르므로 넉넉히 잡는다.
