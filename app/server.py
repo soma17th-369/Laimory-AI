@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from time import perf_counter
 
 import uvicorn
 from fastapi import FastAPI
@@ -8,9 +9,8 @@ from app.api.error_handlers import register_error_handlers
 from app.api.request_logging import RequestLoggingMiddleware
 from app.api.v1.router import router as v1_router
 from app.core.config import settings
-from app.core.logging import align_uvicorn_loggers, get_logger, log_fields
-
-logger = get_logger(__name__)
+from app.core.logging import align_uvicorn_loggers
+from app.core.operational_logging import OperationalEvent, emit_event
 
 
 # uvicorn 은 앱을 import 하기 전에 자기 로거에 직접 핸들러를 붙인다. 그래서 여기 —
@@ -25,11 +25,22 @@ async def lifespan(app: FastAPI):
     # `uvicorn.run()` 처럼 앱을 먼저 import 하고 나서 로깅을 설정하는 경로도 있다.
     # 그때는 위 호출이 덮여 버리므로 여기서 한 번 더 맞춘다(멱등).
     align_uvicorn_loggers()
-    logger.info(
-        "서버 초기화 완료",
-        extra=log_fields(appEnv=settings.app_env, logFormat=settings.log_format),
+    started = perf_counter()
+    # 배포·재시작·비정상 종료의 기준선이다. 컨테이너가 언제 올라오고 언제 내려갔는지
+    # 를 알아야 "요청이 끊긴 구간" 을 설명할 수 있다.
+    emit_event(
+        OperationalEvent.SERVER_STARTED,
+        appEnv=settings.app_env,
+        logFormat=settings.log_format,
     )
-    yield
+    try:
+        yield
+    finally:
+        emit_event(
+            OperationalEvent.SERVER_STOPPED,
+            appEnv=settings.app_env,
+            uptimeMs=round((perf_counter() - started) * 1000, 3),
+        )
 
 
 app = FastAPI(lifespan=lifespan)

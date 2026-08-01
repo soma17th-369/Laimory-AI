@@ -104,11 +104,9 @@ def resolve_window_bounds(request: TimelineDraftRequest) -> WindowBounds | None:
     start = parse_datetime(request.window.start, tz)
     end = parse_datetime(request.window.end, tz)
     if start is None or end is None:
-        logger.warning(
-            "window 파싱 실패로 범위 검증을 건너뜁니다: start=%s, end=%s",
-            request.window.start,
-            request.window.end,
-        )
+        # window 원문은 요청이 준 값이라 남기지 않는다. 파싱에 실패했다는 사실만으로
+        # 어디를 봐야 하는지는 정해진다(요청 body 는 App Server 쪽에 있다).
+        logger.warning("window 파싱 실패로 범위 검증을 건너뜁니다.")
         return None
     if end < start:
         logger.warning("window.end 가 start 보다 앞서 범위 검증을 건너뜁니다.")

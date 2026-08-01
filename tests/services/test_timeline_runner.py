@@ -9,6 +9,7 @@ import logging
 
 from app.core.error_codes import ErrorCode, message_for
 from app.core.execution_context import ExecutionStage
+from app.core.operational_logging import OperationalEvent
 from app.core.structured import StructuredOutputError
 from app.schemas import TaskStatus, TimelineDraft
 from app.services import timeline_runner
@@ -113,37 +114,144 @@ def test_task_token_never_appears_in_logs(monkeypatch, caplog):
     assert "tok-rotated" not in caplog.text
 
 
-def test_logs_stage_boundaries_for_operational_tracing(monkeypatch, caplog):
-    """운영자가 taskId 로 단계별 소요시간과 진행 지점을 따라갈 수 있어야 한다."""
+def _task_events(caplog) -> list[dict]:
+    """백그라운드 작업 완료 운영 이벤트(이슈 #53)."""
+
+    return [
+        payload
+        for record in caplog.records
+        if (payload := getattr(record, "operational_event", None)) is not None
+        and payload.get("event.action")
+        == OperationalEvent.TIMELINE_TASK_COMPLETED.value
+    ]
+
+
+def test_success_closes_the_task_with_one_operational_event(monkeypatch, caplog):
+    """작업 하나 = 이벤트 하나. 백그라운드 전체 소요시간이 여기 있다."""
 
     _patch_agent(monkeypatch)
 
-    with caplog.at_level(logging.INFO, logger="app.services.timeline_runner"):
+    with caplog.at_level(logging.DEBUG):
         status = _run(_client())
 
     assert status is TaskStatus.SUCCESS
-    messages = [record.getMessage() for record in caplog.records]
-    assert f"단계 시작: {ExecutionStage.REQUEST.value}" in messages
-    assert f"단계 완료: {ExecutionStage.REQUEST.value}" in messages
-    assert f"단계 시작: {ExecutionStage.STORAGE.value}" in messages
-    assert f"단계 완료: {ExecutionStage.STORAGE.value}" in messages
+    events = _task_events(caplog)
+    assert len(events) == 1
+    event = events[0]
+    assert event["event.outcome"] == "success"
+    assert event["taskId"] == _TASK_ID
+    assert event["status"] == TaskStatus.SUCCESS.value
+    assert event["callbackSent"] is True
+    # 202 접수 응답시간과 달리 여기 durationMs 는 백그라운드 처리 전체다.
+    assert event["durationMs"] >= 0
+    assert "errorCode" not in event
+    assert "failureStage" not in event
 
-    storage_done = next(
+
+def test_agent_stage_details_are_not_collected(monkeypatch, caplog):
+    """단계·Agent 추적은 Langfuse 담당이다. 수집 대상이 되면 경계가 무너진다."""
+
+    _patch_agent(monkeypatch)
+
+    with caplog.at_level(logging.DEBUG):
+        _run(_client())
+
+    collected = [
+        payload
+        for record in caplog.records
+        if (payload := getattr(record, "operational_event", None)) is not None
+    ]
+    actions = {payload.get("event.action") for payload in collected}
+    assert OperationalEvent.TIMELINE_TASK_COMPLETED.value in actions
+
+    stage_lines = [
         record
         for record in caplog.records
-        if record.getMessage() == f"단계 완료: {ExecutionStage.STORAGE.value}"
+        if record.getMessage().startswith("단계 ")
+    ]
+    # 단계 경계는 남되(로컬 진단) 수집 표식은 없다.
+    assert stage_lines
+    assert all(
+        not hasattr(record, "operational_event") for record in stage_lines
     )
-    assert storage_done.fields["durationMs"] >= 0
 
-    final = next(
-        record
-        for record in caplog.records
-        if record.getMessage() == "타임라인 처리 종료"
+
+def test_failure_event_carries_the_code_and_the_broken_stage(monkeypatch, caplog):
+    _patch_agent(monkeypatch)
+    client = _client(
+        submit_error=AppServerError(
+            "재시도 소진",
+            code=ErrorCode.TIMELINE_RESULT_SUBMIT_FAILED,
+        )
     )
-    assert final.fields["stage"] == ExecutionStage.FINAL.value
-    assert final.fields["status"] == TaskStatus.SUCCESS.value
-    assert final.fields["callbackSent"] is True
-    assert "errorCode" not in final.fields
+
+    with caplog.at_level(logging.DEBUG):
+        status = _run(client)
+
+    assert status is TaskStatus.FAILED
+    event = _task_events(caplog)[-1]
+    assert event["event.outcome"] == "failure"
+    assert event["errorCode"] == int(ErrorCode.TIMELINE_RESULT_SUBMIT_FAILED)
+    assert event["failureStage"] == ExecutionStage.STORAGE.value
+    assert event["callbackSent"] is True
+    assert event["status"] == TaskStatus.FAILED.value
+
+
+def test_timeout_is_also_closed_by_one_event(monkeypatch, caplog):
+    async def slow(request):
+        await asyncio.sleep(5)
+        return _draft()
+
+    monkeypatch.setattr(timeline_runner, "run_main_agent", slow)
+    monkeypatch.setattr(timeline_runner.settings, "pipeline_timeout_sec", 0.05)
+
+    with caplog.at_level(logging.DEBUG):
+        _run(_client())
+
+    events = _task_events(caplog)
+    assert len(events) == 1
+    assert events[0]["errorCode"] == int(ErrorCode.PIPELINE_TIMEOUT)
+    assert events[0]["failureStage"] == ExecutionStage.MAIN_AGENT.value
+
+
+def test_aborted_task_reports_that_no_callback_was_sent(monkeypatch, caplog):
+    _patch_agent(monkeypatch)
+    client = _client(
+        fetch_error=AppServerError(
+            "401",
+            code=ErrorCode.APP_SERVER_UNAUTHORIZED,
+            abort=True,
+        )
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        _run(client)
+
+    event = _task_events(caplog)[-1]
+    assert event["callbackSent"] is False
+    assert event["errorCode"] == int(ErrorCode.APP_SERVER_UNAUTHORIZED)
+
+
+def test_task_event_never_carries_user_content(monkeypatch, caplog):
+    """이벤트 필드는 emitter 의 allowlist 가 정한다."""
+
+    _patch_agent(monkeypatch)
+
+    with caplog.at_level(logging.DEBUG):
+        _run(_client())
+
+    event = _task_events(caplog)[-1]
+    assert set(event) <= {
+        "event.dataset",
+        "event.action",
+        "event.outcome",
+        "taskId",
+        "status",
+        "durationMs",
+        "callbackSent",
+        "errorCode",
+        "failureStage",
+    }
 
 
 def test_missing_input_fails_without_callback(monkeypatch):

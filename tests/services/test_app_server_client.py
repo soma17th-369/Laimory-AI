@@ -4,14 +4,18 @@
 `MockTransport` 로 갈아 끼워 실제 네트워크 없이 확인한다.
 """
 
+import json
+
 import httpx
 import pytest
 
 from app.core.error_codes import ErrorCode
+from app.core.operational_logging import OperationalEvent
 from app.schemas import TaskStatus, TimelineCallbackPayload
 from app.schemas.timeline_result import TimelineResultEvent, TimelineResultRequest
 from app.services import app_server_client as module
 from app.services.app_server_client import (
+    DEPENDENCY_NAME,
     TASK_TOKEN_HEADER,
     AppServerError,
     HttpAppServerClient,
@@ -355,3 +359,125 @@ async def test_callback_payload_never_carries_the_token():
     assert "tok-secret" not in body
     assert "tok-secret" not in str(seen[0].url)
     assert TaskStatus.FAILED.value in body
+
+
+# --- 운영 이벤트 (이슈 #53) --------------------------------------------
+
+
+def _dependency_events(caplog, action: str) -> list[dict]:
+    return [
+        payload
+        for record in caplog.records
+        if (payload := getattr(record, "operational_event", None)) is not None
+        and payload.get("event.action") == action
+    ]
+
+
+async def test_successful_call_emits_one_terminal_event(caplog):
+    """재시도가 몇 번이든 논리적 호출 하나는 종료 이벤트 한 건이다."""
+
+    with caplog.at_level("DEBUG"):
+        await _client(lambda request: httpx.Response(200, json=_input_body())).fetch_input(
+            _TASK_ID, TaskToken("tok-1")
+        )
+
+    events = _dependency_events(caplog, OperationalEvent.DEPENDENCY_REQUEST_COMPLETED.value)
+    assert len(events) == 1
+    event = events[0]
+    assert event["event.outcome"] == "success"
+    assert event["dependency"] == DEPENDENCY_NAME
+    assert event["operation"] == "input"
+    assert event["httpStatus"] == 200
+    assert event["attempts"] == 1
+    assert event["durationMs"] >= 0
+    assert event["taskId"] == _TASK_ID
+    assert "errorCode" not in event
+
+
+async def test_retries_are_recorded_with_safe_reason_fields(caplog):
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        return httpx.Response(503)
+
+    with caplog.at_level("DEBUG"):
+        with pytest.raises(AppServerError):
+            await _client(handler).fetch_input(_TASK_ID, TaskToken("tok-1"))
+
+    retries = _dependency_events(caplog, OperationalEvent.DEPENDENCY_REQUEST_RETRY.value)
+    assert len(retries) == len(attempts) - 1 == 2
+    assert retries[0]["attempt"] == 1
+    assert retries[0]["maxAttempts"] == 3
+    assert retries[0]["reason"] == "server_error"
+    assert retries[0]["httpStatus"] == 503
+    assert retries[0]["delayMs"] >= 0
+
+    terminal = _dependency_events(
+        caplog, OperationalEvent.DEPENDENCY_REQUEST_COMPLETED.value
+    )
+    assert len(terminal) == 1
+    assert terminal[0]["event.outcome"] == "failure"
+    assert terminal[0]["attempts"] == 3
+    assert terminal[0]["errorCode"] == int(ErrorCode.SOURCE_FETCH_FAILED)
+
+
+async def test_transport_failure_records_the_exception_class_not_the_message(caplog):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("connect to 10.0.0.5:8443 timed out")
+
+    with caplog.at_level("DEBUG"):
+        with pytest.raises(AppServerError):
+            await _client(handler).fetch_input(_TASK_ID, TaskToken("tok-1"))
+
+    retries = _dependency_events(caplog, OperationalEvent.DEPENDENCY_REQUEST_RETRY.value)
+    assert retries[0]["reason"] == "ConnectTimeout"
+    assert "httpStatus" not in retries[0]
+    serialized = json.dumps(
+        _dependency_events(
+            caplog, OperationalEvent.DEPENDENCY_REQUEST_COMPLETED.value
+        ),
+        ensure_ascii=False,
+    )
+    assert "10.0.0.5" not in serialized
+
+
+async def test_terminal_event_reports_token_refresh_count_without_the_value(caplog):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_input_body(taskToken="tok-rotated"))
+
+    with caplog.at_level("DEBUG"):
+        await _client(handler).fetch_input(_TASK_ID, TaskToken("tok-1"))
+
+    event = _dependency_events(
+        caplog, OperationalEvent.DEPENDENCY_REQUEST_COMPLETED.value
+    )[-1]
+    assert event["tokenRefreshCount"] == 1
+    assert "tok-rotated" not in json.dumps(event, ensure_ascii=False)
+
+
+async def test_dependency_events_never_carry_url_or_body(caplog):
+    with caplog.at_level("DEBUG"):
+        await _client(lambda request: httpx.Response(200)).submit_result(
+            _TASK_ID, TaskToken("tok-1"), _result_request()
+        )
+
+    event = _dependency_events(
+        caplog, OperationalEvent.DEPENDENCY_REQUEST_COMPLETED.value
+    )[-1]
+    assert set(event) <= {
+        "event.dataset",
+        "event.action",
+        "event.outcome",
+        "dependency",
+        "operation",
+        "httpStatus",
+        "attempts",
+        "durationMs",
+        "errorCode",
+        "taskId",
+        "tokenRefreshCount",
+    }
+    serialized = json.dumps(event, ensure_ascii=False)
+    assert "app.example" not in serialized
+    assert "점심" not in serialized

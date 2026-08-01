@@ -131,7 +131,7 @@ def test_event_agent_logs_recovered_source_violation_without_raw_ids(caplog):
         }
     )
 
-    with caplog.at_level(logging.INFO, logger="app.agents.events.base_event_agent"):
+    with caplog.at_level(logging.DEBUG, logger="app.agents.events.base_event_agent"):
         _IntegrityEventAgent(result).generate(_request())
 
     record = _violation_record(caplog)
@@ -154,7 +154,7 @@ def test_repair_logs_dropped_event_without_raw_ids(caplog):
         events=[_event("전부 환각", [UNKNOWN_RAW_ID])],
     )
 
-    with caplog.at_level(logging.INFO, logger="app.services.draft_repair"):
+    with caplog.at_level(logging.DEBUG, logger="app.services.draft_repair"):
         with execution_scope(ExecutionStage.REPAIR_AGENT, agent="repair"):
             repair_draft(draft, _request())
 

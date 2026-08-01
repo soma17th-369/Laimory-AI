@@ -45,11 +45,15 @@ FAILED 콜백을 보낸다 — 결과 저장이 재시도까지 실패한 경우
 처리 전 구간은 task 단위 실행 컨텍스트(`execution_context`)로 감싼다. 상관키는
 `taskId` 하나이며, `contextvars` 로 열려 있어 `asyncio.to_thread` 로 도는 Event/
 Timeline/Repair Agent 와 그 안의 LLM 호출까지 같은 taskId 로 이어진다. 이 컨텍스트가
-모든 운영 로그 줄에 `taskId`/`stage` 를 붙이고, Langfuse generation 이름도 여기서
-정해진다.
+모든 로그 줄에 `taskId`/`stage` 를 붙이고, Langfuse generation 이름도 여기서 정해진다.
+
+작업 하나는 **운영 이벤트 한 건**(`timeline.task.completed`)으로 닫는다(이슈 #53).
+202 접수의 응답시간은 HTTP 요청 이벤트가, 백그라운드 전체 소요시간은 이 이벤트가
+답한다. 단계별 진행과 Agent 판단은 Langfuse 담당이라 Elasticsearch 로 보내지 않는다.
 """
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from time import perf_counter
 
@@ -71,6 +75,11 @@ from app.core.execution_context import (
     execution_scope,
 )
 from app.core.logging import get_logger, log_fields, stage_span
+from app.core.operational_logging import (
+    EventOutcome,
+    OperationalEvent,
+    emit_event,
+)
 from app.schemas import (
     TaskStatus,
     TimelineCallbackPayload,
@@ -96,6 +105,8 @@ class _TimelineRunResult:
     request: TimelineDraftRequest | None
     draft: TimelineDraft | None
     failure_code: ErrorCode | None
+    #: 실패로 끊긴 단계. 성공이면 None. 운영 이벤트의 `failureStage` 로 나간다.
+    failure_stage: ExecutionStage | None
     callback_sent: bool
 
 
@@ -122,6 +133,11 @@ async def process_timeline_task(
         # 갈아 끼워지고, 다음 요청부터 갱신된 값이 헤더로 나간다.
         token = TaskToken(task_token)
         started = perf_counter()
+        # 어느 경로로 빠져나가든 아래 finally 가 운영 이벤트 한 건을 남긴다. 여기서
+        # 실패를 기본값으로 두는 이유는, 값을 채우지 못하고 끝난 경우가 곧 실패라서다.
+        status = TaskStatus.FAILED
+        result: _TimelineRunResult | None = None
+        unexpected_code: ErrorCode | None = None
         try:
             with (
                 token_usage_scope() as token_usage,
@@ -205,12 +221,49 @@ async def process_timeline_task(
                         else "Timeline 처리가 실패했습니다."
                     ),
                 )
+        except Exception as exc:  # noqa: BLE001 - 백그라운드 최후 방어선
+            # `_process_observed` 는 처리 실패를 스스로 흡수한다. 여기까지 오는 것은
+            # 콜백·관측 경계처럼 그 바깥에서 깨진 경우다. 삼키지 않으면 백그라운드
+            # task 가 우리 계약 밖에서 죽어 이벤트 없이 사라진다.
+            status = TaskStatus.FAILED
+            unexpected_code = report_error(
+                logger,
+                code_of(exc),
+                "타임라인 작업이 처리 경계 밖에서 실패",
+                exc=exc,
+                context={"taskId": task_id},
+                stage=ExecutionStage.FINAL,
+                exc_info=True,
+            )
         finally:
             # AgentCore/EC2 컨테이너가 작업 직후 회수돼도 trace가 유실되지 않도록
             # 비동기 worker queue를 task 경계에서 비운다. 동기 flush는 event loop를
             # 막지 않도록 worker thread에서 실행한다.
             if settings.langfuse_enabled:
                 await asyncio.to_thread(flush_langfuse)
+
+            failure_code = result.failure_code if result is not None else unexpected_code
+            emit_event(
+                OperationalEvent.TIMELINE_TASK_COMPLETED,
+                outcome=(
+                    EventOutcome.SUCCESS
+                    if status is TaskStatus.SUCCESS
+                    else EventOutcome.FAILURE
+                ),
+                level=(
+                    logging.INFO if status is TaskStatus.SUCCESS else logging.ERROR
+                ),
+                taskId=task_id,
+                status=status.value,
+                durationMs=round((perf_counter() - started) * 1000, 3),
+                callbackSent=result.callback_sent if result is not None else False,
+                errorCode=int(failure_code) if failure_code is not None else None,
+                failureStage=(
+                    result.failure_stage.value
+                    if result is not None and result.failure_stage is not None
+                    else (ExecutionStage.FINAL.value if unexpected_code else None)
+                ),
+            )
 
     return status
 
@@ -225,9 +278,9 @@ async def _process_observed(
 ) -> _TimelineRunResult:
     """실행 컨텍스트가 열린 상태에서 실제 처리·저장·콜백을 수행한다.
 
-    단계 경계를 운영 로그로 남긴다: REQUEST(입력 조회·정규화) → (MAIN_AGENT 이하는
-    하위에서) → STORAGE(결과 저장 API) → CALLBACK(콜백) → FINAL(성공/실패/timeout).
-    남기는 값은 건수·소요시간·errorCode 뿐이고, 실행 본문은 Langfuse 로만 나간다.
+    단계 경계(REQUEST → MAIN_AGENT → STORAGE → CALLBACK)는 실행 컨텍스트를 좁히고
+    로컬 진단으로만 남긴다. Elasticsearch 로 나가는 것은 호출부가 마지막에 남기는
+    `timeline.task.completed` 한 건이고, 단계별 추적은 Langfuse 담당이다(이슈 #53).
     """
 
     status = TaskStatus.SUCCESS
@@ -431,7 +484,8 @@ async def _process_observed(
     callback_sent = False
     if abort_callback:
         # 여기까지 오면 실패 코드는 위에서 이미 로그에 남았다. 콜백을 건너뛴
-        # 사실만 한 줄 더 남긴다.
+        # 사실만 로컬 진단으로 한 줄 더 남긴다. 통보 여부 자체는 최종 운영 이벤트의
+        # `callbackSent` 가 답한다.
         logger.warning(
             "완료 콜백 생략: App Server 가 토큰/task/순서를 거절해 통보 대상이 없습니다.",
             extra=log_fields(
@@ -449,20 +503,12 @@ async def _process_observed(
             failure_code,
         )
 
-    logger.info(
-        "타임라인 처리 종료",
-        extra=log_fields(
-            stage=ExecutionStage.FINAL.value,
-            status=status.value,
-            callbackSent=callback_sent,
-            errorCode=int(failure_code) if failure_code is not None else None,
-        ),
-    )
     return _TimelineRunResult(
         status=status,
         request=request,
         draft=draft,
         failure_code=failure_code,
+        failure_stage=active_stage if status is not TaskStatus.SUCCESS else None,
         callback_sent=callback_sent,
     )
 
@@ -522,7 +568,9 @@ async def _send_completion_callback(
         )
 
     if sent:
-        logger.info(
+        # 전송 자체의 결과·소요시간은 App Server 클라이언트가 외부 연동 이벤트로
+        # 남긴다. 여기 줄은 로컬에서 흐름을 따라갈 때만 쓰는 진단이다.
+        logger.debug(
             "완료 콜백 전송 완료",
             extra=log_fields(
                 stage=ExecutionStage.CALLBACK.value,

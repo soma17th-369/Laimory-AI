@@ -172,9 +172,9 @@ def enforce_meal_duration(draft: TimelineDraft, request: TimelineDraftRequest) -
                 source_refs=list(event.source_refs),
             )
         )
-        logger.info(
-            "식사 event 지속시간 조정: title=%s, %d분 -> %d분",
-            event.title,
+        logger.debug(
+            "식사 event 지속시간 조정: event=%s, %d분 -> %d분",
+            event.client_event_id,
             _minutes(before),
             _minutes(after),
         )

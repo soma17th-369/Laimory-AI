@@ -166,7 +166,7 @@ def test_openai_complete_returns_text_and_logs_token_usage(caplog) -> None:
     )
     provider = _openai_provider(_FakeOpenAIClient(response=_fake_response("hello", usage)))
 
-    with caplog.at_level(logging.INFO, logger="app.core.llm"):
+    with caplog.at_level(logging.DEBUG, logger="app.core.llm"):
         text = provider.complete("hi", system="sys")
 
     assert text == "hello"  # 공개 계약(str 반환) 유지

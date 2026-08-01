@@ -207,7 +207,7 @@ class RepairAgent(Agent):
             )
 
         if self._max_iterations <= 0:
-            logger.info("Repair Agent 반복 상한이 0 이라 코드 확정만 수행했습니다.")
+            logger.debug("Repair Agent 반복 상한이 0 이라 코드 확정만 수행했습니다.")
             return ctx.draft
 
         # 마지막으로 확정에 성공한 draft. 개선이 실패하면 이것을 돌려준다.
@@ -238,7 +238,7 @@ class RepairAgent(Agent):
             )
             return restored
 
-        logger.info(
+        logger.debug(
             "Repair Agent 완료: events=%d, tools=%d",
             len(ctx.draft.events),
             len(ctx.log),
@@ -300,7 +300,7 @@ class RepairAgent(Agent):
                     },
                     level="DEFAULT" if plan.done else "WARNING",
                 )
-            logger.info(
+            logger.debug(
                 "Repair 분석 완료",
                 extra=log_fields(
                     iteration=iteration,
@@ -342,7 +342,7 @@ class RepairAgent(Agent):
                 ) as observation,
             ):
                 results = execute_tool_calls(ctx, state["plan"].tool_calls)
-                logger.info(
+                logger.debug(
                     "Repair 도구 실행 완료",
                     extra=log_fields(
                         iteration=iteration,
@@ -401,7 +401,7 @@ class RepairAgent(Agent):
                     },
                 )
             last_good[0] = ctx.draft.model_copy(deep=True)
-            logger.info(
+            logger.debug(
                 "Repair 반복 draft 확정",
                 extra=log_fields(
                     iteration=iteration,

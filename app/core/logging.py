@@ -1,14 +1,23 @@
-"""운영 로그 설정.
+"""로그 출력 설정.
 
 로컬에서는 rich 핸들러로, 운영에서는 **한 줄 JSON** 으로 초기화한다. 포맷은
 `settings.log_format`("rich" | "json") 으로 고른다.
 
-운영(EC2)에서는 컨테이너 stdout 을 별도 Filebeat 컨테이너가 읽어 Elasticsearch 로
-보낸다(이슈 #47). 그래서 로그 한 줄은 **반드시 유효한 JSON 하나**여야 한다. 예외도
+운영(EC2)에서는 컨테이너 stdout 을 별도 Filebeat 컨테이너가 읽는다(이슈 #47).
+그래서 로그 한 줄은 **반드시 유효한 JSON 하나**여야 한다. 예외도
 `error.stack_trace` 필드에 담아 한 줄 안에 넣는다 — 여러 줄로 흘리면 Filebeat 가
 줄마다 다른 이벤트로 쪼개고, multiline 규칙을 맞춰도 스택 모양이 바뀌면 다시 깨진다.
 
-한 줄에 들어가는 필드는 세 층이다.
+## 두 종류의 줄 (이슈 #53)
+
+- **운영 이벤트** — :mod:`app.core.operational_logging` 의 emitter 만 만든다.
+  ``event.dataset``/``event.action``/``event.outcome`` 표식을 달고 나가며,
+  필드는 emitter 가 이벤트별 allowlist 로 조립한 것뿐이다. Filebeat 는 이 표식이
+  있는 줄만 Elasticsearch 로 보낸다.
+- **일반 로그** — 그 밖의 모든 줄. 로컬·컨테이너 진단용이다. 표식이 없으므로
+  수집되지 않는다. 여기에 무엇을 남기든 Elasticsearch 수집 범위는 넓어지지 않는다.
+
+일반 로그 한 줄에 들어가는 필드는 세 층이다.
 
 1. 고정: ``timestamp``, ``log.level``, ``logger``, ``message``, ``service``,
    ``environment``, ``version``
@@ -16,7 +25,10 @@
    ``iteration``. 호출부가 넘기지 않아도 자동으로 붙는다.
 3. 호출부 지정: ``extra=log_fields(errorCode=..., durationMs=...)``
 
-AI 실행 본문(프롬프트·LLM 응답·draft·사용자 원문)은 운영 로그에 남기지 않는다.
+운영 이벤트에는 위 2·3 층을 자동으로 붙이지 않는다. 표식이 달린 줄의 필드는
+emitter 가 통제하는 것이 계약이다.
+
+AI 실행 본문(프롬프트·LLM 응답·draft·사용자 원문)은 어느 쪽에도 남기지 않는다.
 그 수준의 관측은 Langfuse 가 담당한다.
 """
 
@@ -45,8 +57,14 @@ from app.core.redaction import redact_text, redact_value
 #: 같은 값을 써야 두 시스템에서 같은 서비스로 보인다.
 SERVICE_NAME = "laimory-ai"
 
+#: 운영 이벤트 payload 를 실어 나르는 LogRecord 속성 이름. emitter 만 채운다.
+#: (:mod:`app.core.operational_logging` 이 이 이름으로 ``extra`` 를 넘긴다.)
+OPERATIONAL_ATTR = "operational_event"
+
 #: 호출부 필드가 덮어쓸 수 없는 고정 필드. 이 이름들이 흔들리면 Elasticsearch 매핑과
-#: 저장된 검색이 통째로 깨진다.
+#: 저장된 검색이 통째로 깨진다. 수집 표식(``event.*``)도 여기 있다 — 일반 로그가
+#: ``log_fields(**{"event.dataset": ...})`` 같은 식으로 표식을 위조해 수집 대상이
+#: 되는 길을 막는다.
 _RESERVED_FIELDS = frozenset(
     {
         "timestamp",
@@ -59,6 +77,9 @@ _RESERVED_FIELDS = frozenset(
         "error.type",
         "error.message",
         "error.stack_trace",
+        "event.dataset",
+        "event.action",
+        "event.outcome",
     }
 )
 
@@ -100,6 +121,16 @@ def _record_fields(record: logging.LogRecord) -> dict[str, Any]:
     return {key: value for key, value in safe.items() if key not in _RESERVED_FIELDS}
 
 
+def _operational_fields(record: logging.LogRecord) -> dict[str, Any] | None:
+    """emitter 가 조립한 운영 이벤트 payload. 일반 로그면 ``None``."""
+
+    payload = getattr(record, OPERATIONAL_ATTR, None)
+    if not isinstance(payload, Mapping):
+        return None
+    # emitter 가 이미 allowlist 로 걸렀다. 마스킹은 마지막 방어선으로 한 번 더 건다.
+    return dict(redact_value(dict(payload)))
+
+
 class JsonLogFormatter(logging.Formatter):
     """로그 레코드를 Filebeat 가 그대로 읽을 수 있는 한 줄 JSON 으로 직렬화한다."""
 
@@ -116,6 +147,13 @@ class JsonLogFormatter(logging.Formatter):
             "environment": settings.app_env,
             "version": settings.agent_version,
         }
+        operational = _operational_fields(record)
+        if operational is not None:
+            # 운영 이벤트는 emitter 가 조립한 필드가 전부다. 주변 컨텍스트도,
+            # 호출부 임의 필드도, 예외 원문·traceback 도 붙이지 않는다(이슈 #53).
+            payload.update(operational)
+            return json.dumps(payload, ensure_ascii=False, default=str)
+
         # 컨텍스트 → 호출부 순서로 덮어쓴다. 호출부가 명시한 taskId 가 주변 컨텍스트를
         # 이기는 게 맞다(다른 task 를 대신 기록하는 경로가 있다).
         payload.update(execution_log_fields())
@@ -141,7 +179,12 @@ class _RichLogFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         message = record.getMessage()
-        fields = {**execution_log_fields(), **_record_fields(record)}
+        operational = _operational_fields(record)
+        fields = (
+            operational
+            if operational is not None
+            else {**execution_log_fields(), **_record_fields(record)}
+        )
         if not fields:
             return message
         rendered = ", ".join(f"{key}={value}" for key, value in fields.items())
@@ -236,12 +279,16 @@ def stage_span(
     iteration: int | None = None,
     **fields: Any,
 ) -> Iterator[dict[str, Any]]:
-    """단계 경계를 구조화 로그로 남기고 그 동안 실행 컨텍스트를 좁힌다.
+    """단계 경계를 남기고 그 동안 실행 컨텍스트를 좁힌다.
 
-    본문은 남기지 않는다. 남는 것은 ``taskId``/``stage``/``agent``/``durationMs`` 와
-    호출부가 명시한 진단 값뿐이라, 운영자가 Elasticsearch 에서 한 task 의 단계별
-    소요시간과 중단 지점을 따라갈 수 있다. 프롬프트·응답·draft 수준의 추적은
-    Langfuse 담당이다.
+    이 컨텍스트 매니저의 주된 일은 :func:`~app.core.execution_context.execution_scope`
+    로 ``stage``/``agent``/``iteration`` 을 좁히는 것이다 — Langfuse generation 이름과
+    로그 상관 필드가 여기서 정해진다.
+
+    단계 경계 줄은 **DEBUG 로컬 진단**이다(이슈 #53). AI 실행의 단계별 소요시간과
+    중단 지점은 Langfuse 가 담당하고, Elasticsearch 로 나가는 것은
+    :mod:`app.core.operational_logging` 의 운영 이벤트뿐이다. 본문은 어느 쪽에도
+    남기지 않는다.
 
     ``yield`` 하는 dict 에 값을 넣으면 종료 로그에 함께 실린다. 결과 건수처럼 단계를
     마쳐야 아는 값을 줄 하나 더 쓰지 않고 남기기 위한 자리다::
@@ -257,11 +304,11 @@ def stage_span(
     outcome: dict[str, Any] = {}
     with execution_scope(stage, agent=agent, iteration=iteration):
         started = perf_counter()
-        logger.info("단계 시작: %s", stage.value, extra=log_fields(**fields))
+        logger.debug("단계 시작: %s", stage.value, extra=log_fields(**fields))
         try:
             yield outcome
         except BaseException:
-            logger.info(
+            logger.debug(
                 "단계 중단: %s",
                 stage.value,
                 extra=log_fields(
@@ -273,7 +320,7 @@ def stage_span(
                 ),
             )
             raise
-        logger.info(
+        logger.debug(
             "단계 완료: %s",
             stage.value,
             extra=log_fields(

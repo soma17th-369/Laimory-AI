@@ -137,5 +137,5 @@ def mergeable_stay_groups(
         frozenset(stay.identifier for stay in group) for group in groups if len(group) > 1
     ]
     if merged:
-        logger.info("이동 없이 이어진 체류 묶음 %d건을 찾았습니다.", len(merged))
+        logger.debug("이동 없이 이어진 체류 묶음 %d건을 찾았습니다.", len(merged))
     return merged

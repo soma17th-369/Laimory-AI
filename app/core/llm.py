@@ -197,14 +197,15 @@ class LLMProvider(ABC):
     def _log_usage(
         self, input_tokens: int | None, output_tokens: int | None
     ) -> None:
-        """호출에 사용한 provider/model 과 토큰 사용량(입력/출력)을 로그로 남긴다.
+        """호출에 사용한 provider/model 과 토큰 사용량(입력/출력)을 남긴다.
 
-        모델 비교는 코드가 하지 않는다. 설정을 바꿔 실행한 뒤 이 로그의 토큰 양을
-        읽어 사람이 판단한다(비용 계산도 로그의 토큰으로 외부에서 한다). usage 를
-        제공하지 않는 응답이면 토큰은 ``None`` 으로 남는다.
+        토큰 사용량의 정본은 Langfuse 다(이슈 #53) — generation 마다 usage 가 붙고
+        task 단위 합계도 거기서 본다. 이 줄은 Langfuse 없이 로컬에서 돌릴 때를 위한
+        DEBUG 진단이라 Elasticsearch 로 나가지 않는다. usage 를 제공하지 않는
+        응답이면 토큰은 ``None`` 으로 남는다.
         """
 
-        logger.info(
+        logger.debug(
             "LLM 토큰 사용량",
             extra=log_fields(
                 provider=self.name,

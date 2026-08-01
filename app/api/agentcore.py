@@ -16,7 +16,7 @@ AgentCore Runtime 은 컨테이너에 두 개의 경로를 고정으로 요구�
 
 from enum import StrEnum
 
-from fastapi import APIRouter, BackgroundTasks, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, status
 
 from app.api.error_handlers import ERROR_RESPONSES
 from app.api.v1.timeline import (
@@ -64,10 +64,11 @@ def ping() -> PingResponse:
     tags=["agentcore"],
 )
 async def invocations(
-    request: TimelineTriggerRequest,
+    payload: TimelineTriggerRequest,
     background_tasks: BackgroundTasks,
+    http_request: Request,
     client: AppServerClient = Depends(get_app_server_client),
 ) -> TimelineDispatchResponse:
     """AgentCore Runtime 호출 진입점. `POST /v1/timeline` 과 동일하게 처리한다."""
 
-    return await create_timeline_draft(request, background_tasks, client)
+    return await create_timeline_draft(payload, background_tasks, http_request, client)

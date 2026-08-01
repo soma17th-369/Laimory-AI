@@ -1,6 +1,7 @@
 """예외 → 코드 매핑과, 실패를 구조화 로그로 남기는 공통 헬퍼를 검증한다."""
 
 import asyncio
+import json
 import logging
 
 import pytest
@@ -15,6 +16,7 @@ from app.core.exceptions import (
     safe_message,
 )
 from app.core.execution_context import ExecutionStage, execution_context
+from app.core.logging import JsonLogFormatter
 from app.core.structured import StructuredOutputError
 from app.services.draft_edit import DraftEditError
 from app.services.source_contract import SourceBatchError
@@ -111,8 +113,12 @@ def test_report_error_puts_code_in_a_structured_field(caplog):
     assert record.fields["taskId"] == "task-1"
 
 
-def test_report_error_keeps_original_message_in_logs(caplog):
-    """원본 예외 메시지는 진단에 필요하므로 로그에는 남아야 한다."""
+def test_report_error_keeps_original_message_in_local_logs(caplog):
+    """원본 예외 메시지는 진단에 필요하므로 **로컬** 로그에는 남아야 한다.
+
+    이 줄은 Elasticsearch 로 가지 않는다(이슈 #53). 수집 대상은 운영 이벤트뿐이고,
+    거기에는 코드와 안전한 enum 만 실린다.
+    """
 
     with caplog.at_level(logging.WARNING, logger=logger.name):
         report_error(
@@ -126,6 +132,23 @@ def test_report_error_keeps_original_message_in_logs(caplog):
         caplog.records[-1].fields["errorMessage"]
         == "connection to 10.0.0.5:3306 refused"
     )
+
+
+def test_report_error_output_is_not_collected(caplog):
+    """report_error 는 코드 부여와 로컬 진단이다. 수집 표식을 만들지 않는다."""
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        report_error(
+            logger,
+            ErrorCode.INTERNAL_ERROR,
+            "미처리 예외",
+            exc=RuntimeError("boom"),
+        )
+
+    record = caplog.records[-1]
+    assert not hasattr(record, "operational_event")
+    payload = json.loads(JsonLogFormatter().format(record))
+    assert "event.dataset" not in payload
 
 
 def test_report_error_records_stage_and_agent_fields(caplog):

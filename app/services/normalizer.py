@@ -156,7 +156,7 @@ def normalize(snapshot: CollectedSnapshot) -> TimelineDraftRequest:
         user_memory=snapshot.user_memory,
         **domains,
     )
-    logger.info(
+    logger.debug(
         "정규화 완료: taskId=%s, stays=%d, movements=%d, calendars=%d, "
         "healths=%d, notifications=%d, photos=%d",
         request.task_id,

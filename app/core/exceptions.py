@@ -5,11 +5,17 @@
 1. :class:`AppError` — 자기 :class:`~app.core.error_codes.ErrorCode` 를 아는 예외의
    기반. 도메인 예외는 모두 이걸 상속해서, 잡는 쪽이 예외 클래스명을 알아보지
    않고도 코드를 꺼낼 수 있게 한다.
-2. :func:`report_error` — **실패를 정수 코드와 함께 운영 로그에 남기는 유일한 통로**.
-   모든 ``except`` 블록이 이것만 호출하면 로그·API 응답·콜백이 같은 실패에 다른 값을
+2. :func:`report_error` — **실패에 정수 코드를 부여하고 로컬 진단으로 남기는 통로**.
+   ``except`` 블록이 이것만 호출하면 로그·API 응답·콜백이 같은 실패에 다른 값을
    쓸 수가 없다. 각자 로그를 찍으면 언젠가 갈리는데, 그때 갈렸다는 사실조차 알기 어렵다.
 
-원본 예외 메시지(``str(exc)``)와 traceback 은 **로그에만** 남는다. 외부(API 응답·
+여기서 남는 줄은 **Elasticsearch 로 가지 않는다**(이슈 #53). 수집 대상은
+:mod:`app.core.operational_logging` 의 운영 이벤트뿐이고, 실패는 그 이벤트의
+``errorCode`` 로 확인한다 — HTTP 요청은 `http.request.completed`, 백그라운드 작업은
+`timeline.task.completed`, 외부 연동은 `dependency.request.completed` 다.
+그래서 이 함수는 다시 던지는 중간 경계가 아니라 **최종 경계나 흡수 지점**에서 부른다.
+
+원본 예외 메시지(``str(exc)``)와 traceback 은 **로컬 로그에만** 남는다. 외부(API 응답·
 콜백)로는 :func:`~app.core.error_codes.message_for` 의 안전 메시지만 나간다.
 """
 
@@ -104,16 +110,17 @@ def report_error(
     level: int = logging.WARNING,
     exc_info: bool = False,
 ) -> ErrorCode:
-    """실패 하나를 정수 ``errorCode`` 와 함께 운영 로그에 기록한다.
+    """실패 하나에 정수 ``errorCode`` 를 부여하고 로컬 진단 로그로 남긴다.
 
     ``message`` 는 사람이 읽을 한 줄이고, 기계가 읽을 값은 전부 구조화 필드로 나간다::
 
         {"message": "타임라인 처리 실패", "errorCode": 1201,
          "errorType": "TimeoutError", "taskId": "abc-1", "stage": "MAIN_AGENT"}
 
-    Elasticsearch 에서 ``errorCode`` 로 필터·집계하려면 값이 메시지 문자열 안이 아니라
-    필드에 있어야 한다. ``taskId``/``stage``/``agent`` 는 실행 컨텍스트가 자동으로
-    붙이므로 ``context`` 에 다시 넣지 않아도 된다.
+    이 줄에는 수집 표식이 없어 Elasticsearch 로 가지 않는다(이슈 #53). 돌려주는 코드를
+    호출부가 응답·콜백·운영 이벤트에 실어야 세 곳이 같은 값을 말한다.
+    ``taskId``/``stage``/``agent`` 는 실행 컨텍스트가 자동으로 붙이므로 ``context`` 에
+    다시 넣지 않아도 된다.
 
     Args:
         logger: 호출 지점 모듈의 로거.
