@@ -252,9 +252,8 @@ APP_SERVER_TIMEOUT_SEC=10
 APP_SERVER_MAX_ATTEMPTS=3
 APP_SERVER_RETRY_BACKOFF_SEC=0.5
 
-# 사진 이미지 다운로드(이슈 #52). 값을 비우면 다운로드를 하지 않고 사진 설명이
-# 메타데이터 추정으로만 만들어진다 — 운영에서는 반드시 채운다.
-PHOTO_URL_ALLOWED_HOSTS=<이미지 호스트 suffix, 예: <버킷>.s3.ap-northeast-2.amazonaws.com>
+# 사진 이미지 다운로드(이슈 #52, #59). 다운로드는 설정 없이 항상 켜져 있고,
+# 아래는 전부 상한값이라 안 넣으면 코드 기본값이 쓰인다.
 PHOTO_DOWNLOAD_TIMEOUT_SEC=5
 PHOTO_MAX_IMAGE_BYTES=5242880
 PHOTO_MAX_IMAGES=20
@@ -271,11 +270,14 @@ LANGFUSE_SAMPLE_RATE=1.0
 LANGFUSE_MAX_PAYLOAD_BYTES=65536
 ```
 
-`PHOTO_URL_ALLOWED_HOSTS`는 **비워 두면 사진 이미지를 내려받지 않는다**(fail closed).
-설정을 깜빡한 배포에서 임의 URL로 요청이 나가는 것보다 설명 품질이 떨어지는 편이
-안전하기 때문이다. 값은 호스트 suffix 목록이며 쉼표로 여러 개를 넣을 수 있다.
-`example.com`을 넣으면 `example.com`과 `*.example.com`이 허용된다. `https`가 아니거나
-allowlist 밖인 URL은 요청조차 보내지 않고, redirect도 따라가지 않는다.
+사진 이미지 다운로드에는 **호스트 allowlist가 없다**(이슈 #59). 예전에는
+`PHOTO_URL_ALLOWED_HOSTS`가 비어 있으면 아예 내려받지 않는 fail closed였는데, 그 설정이
+실제 배포에 들어간 적이 없어 사진 vision이 한 번도 돌지 않았다. `photoUrl`은 App
+Server가 주는 값이라 신뢰하고 설정 없이 항상 요청한다. **이 항목을 `runtime.env`에
+다시 넣지 않는다** — 이제 읽지 않는 이름이라 넣어도 아무 효과가 없다.
+
+요청 전에 막는 것은 형식 검사뿐이다. 파싱되지 않는 URL, `http`/`https`가 아닌 scheme,
+`user:pass@host` 형태, 호스트 없는 URL. redirect는 따라가지 않는다.
 
 `PHOTO_MAX_TOTAL_IMAGE_BYTES`는 App Server에는 없는 **AI 서버 고유 제한**이다.
 App Server는 장당 5MB·요청당 20장을 허용하되 총합을 제한하지 않아 이론상 100MB가

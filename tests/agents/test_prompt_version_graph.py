@@ -103,23 +103,20 @@ def test_v2_runs_single_structured_call(
     assert len(llm.calls) == 1, "v2 는 단일 structured 호출이어야 합니다."
 
 
-def test_v1_uses_llm_metadata_describer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """v1 롤백은 사진 메타데이터 fallback 동작까지 되돌려야 한다."""
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_photo_fallback_is_prompt_based_in_every_version(
+    monkeypatch: pytest.MonkeyPatch, version: str
+) -> None:
+    """사진 fallback 은 버전을 가리지 않고 `describe_prompt.md` 다(#59).
 
-    describer = _reload_agents(monkeypatch, "v1")["photo_describer"]
+    한때 v2 만 코드 기반 `MetadataPhotoDescriber` 였다(#56 §12). 그런데 vision 경로가
+    설정 때문에 아예 돌지 않아, "이미지를 못 구했을 때" 가 아니라 **모든** 사진이 그
+    고정 문장을 받고 있었다. vision 을 기본으로 되돌리면서 fallback 도 통일했다.
+    """
 
-    assert describer._USE_LLM_METADATA_DESCRIBER is True
+    describer = _reload_agents(monkeypatch, version)["photo_describer"]
+
     assert describer._DESCRIBE_PROMPT is not None
+    assert not hasattr(describer, "_USE_LLM_METADATA_DESCRIBER")
     fallback = describer.VisionPhotoDescriber(llm=FakeLLM([result_json()])).fallback
     assert isinstance(fallback, describer.LLMPhotoDescriber)
-
-
-def test_v2_uses_code_metadata_describer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """v2 의 메타데이터 설명은 코드가 만든다(#56 §12). LLM 을 부르지 않는다."""
-
-    describer = _reload_agents(monkeypatch, "v2")["photo_describer"]
-
-    assert describer._USE_LLM_METADATA_DESCRIBER is False
-    assert describer._DESCRIBE_PROMPT is None
-    fallback = describer.VisionPhotoDescriber(llm=FakeLLM([result_json()])).fallback
-    assert isinstance(fallback, describer.MetadataPhotoDescriber)

@@ -31,10 +31,10 @@ _REQUIRED_PROMPTS: dict[str, dict[str, set[str]]] = {
         "v2": {"prompt.md"},
     },
     "agents/events/photo": {
-        # v1 은 메타데이터 fallback 도 LLM 으로 돌려 `describe_prompt.md` 를 읽는다.
-        # v2 는 그 자리를 코드 생성으로 바꿔(#56 §12) 파일이 필요 없다.
+        # 두 파일 다 버전 무관 필수다(#59). 모든 사진이 describe_vision_prompt.md 로
+        # 가고, 이미지를 못 구한 사진만 describe_prompt.md 로 간다.
         "v1": {"prompt.md", "describe_prompt.md", "describe_vision_prompt.md"},
-        "v2": {"prompt.md", "describe_vision_prompt.md"},
+        "v2": {"prompt.md", "describe_prompt.md", "describe_vision_prompt.md"},
     },
 }
 
@@ -69,14 +69,19 @@ def test_prompt_files_are_not_empty(agent_dir: str, version: str) -> None:
         assert path.read_text(encoding="utf-8").strip(), f"{path} 가 비어 있습니다."
 
 
-def test_v2_has_no_metadata_describe_prompt() -> None:
-    """v2 의 메타데이터 fallback 은 코드가 만든다. 프롬프트가 있으면 안 쓰이는 파일이 된다."""
+@pytest.mark.parametrize("version", _VERSIONS)
+def test_every_version_has_metadata_describe_prompt(version: str) -> None:
+    """모든 버전이 `describe_prompt.md` 를 가져야 한다(#59).
 
-    path = APP_ROOT / "agents/events/photo/prompts/v2/describe_prompt.md"
+    이미지를 못 구한 사진의 fallback 이 버전과 무관하게 이 파일을 읽는다. 없으면
+    `load_prompt` 가 import 시점에 터져 그 버전으로 기동조차 못 한다.
+    """
 
-    assert not path.exists(), (
-        "photo v2 세트에 describe_prompt.md 가 있습니다. "
-        "v2 의 메타데이터 description 은 MetadataPhotoDescriber 가 만듭니다(#56 §12)."
+    path = APP_ROOT / "agents/events/photo/prompts" / version / "describe_prompt.md"
+
+    assert path.is_file(), (
+        f"photo {version} 세트에 describe_prompt.md 가 없습니다. "
+        "vision 실패 시 채울 프롬프트라 버전마다 있어야 합니다(#59)."
     )
 
 

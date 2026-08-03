@@ -25,9 +25,9 @@ def vision_photo_event_agent() -> PhotoEventAgent:
     """기본 조립을 쓰는 Photo Event Agent.
 
     이슈 #52 이후 이미지 소스는 `photoUrl` 다운로드 하나다. `data/input` 스냅샷에는
-    `photoUrl` 이 없으므로 사진 설명은 메타데이터 fallback 으로 채워지고, 나머지
-    event 추론은 그대로 검증된다. 실제 이미지로 vision 경로를 보려면 스냅샷에
-    `photoUrl` 을 넣고 `PHOTO_URL_ALLOWED_HOSTS` 를 지정한다.
+    `photoUrl` 이 없으므로 사진 설명은 `describe_prompt.md` fallback 으로 채워지고,
+    나머지 event 추론은 그대로 검증된다. 실제 이미지로 vision 경로를 보려면 스냅샷에
+    유효한 `photoUrl` 을 넣기만 하면 된다 — 별도 설정은 없다(#59).
     """
 
     return PhotoEventAgent()

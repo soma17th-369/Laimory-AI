@@ -4,24 +4,30 @@
 필요하다. 운영에서는 App Server 가 PHOTO payload 에 실어 주는 `photoUrl`(S3 이미지
 URL)에서 내려받는다.
 
-- `PhotoUrlImageSource`: 운영 경로. `photo.photo_url` 을 검증하고 내려받는다.
-- `NullPhotoImageSource`: 항상 이미지 없음(None). allowlist 가 비어 있을 때의 기본값이며,
-  이 경우 describer 는 메타데이터 기반으로 대체한다.
+- `PhotoUrlImageSource`: 운영 경로이자 **기본값**. `photo.photo_url` 을 그대로 내려받는다.
+- `NullPhotoImageSource`: 항상 이미지 없음(None). 테스트에서 다운로드를 끄고 fallback
+  경로만 볼 때 주입한다. 제품 코드가 기본값으로 고르는 일은 없다.
 
 ## URL 정책
 
-`photoUrl` 은 외부에서 온 값이라 그대로 요청하면 SSRF 통로가 된다. 요청을 보내기
-**전에** 세 가지를 막는다.
+호스트 allowlist 는 **없다**(#59). 예전에는 `PHOTO_URL_ALLOWED_HOSTS` 가 비어 있으면
+아예 내려받지 않는 fail-closed 였는데, 그 설정이 실제 배포에 들어간 적이 없어 사진
+vision 이 한 번도 돌지 못했다. `photoUrl` 은 App Server 가 주는 값이라 신뢰하고,
+설정 없이 항상 요청한다.
 
-1. `https` 가 아닌 scheme (`file://`, `http://`, `gopher://` …)
-2. userinfo(`user:pass@host`) — 실제 목적지를 호스트 이름 뒤에 숨기는 형태
-3. `PHOTO_URL_ALLOWED_HOSTS` 에 없는 호스트
+남아 있는 것은 `.env` 와 무관한 **형식 검사**뿐이다. 요청을 보내기 전에 막는다.
 
-그리고 요청에서는 redirect 를 따라가지 않는다. allowlist 를 통과한 호스트가 302 로
-내부 주소를 가리키면 앞의 검사가 무의미해지기 때문이다.
+1. 파싱되지 않는 URL (잘못 닫힌 IPv6 literal, 범위를 벗어난 port …)
+2. `http`/`https` 가 아닌 scheme (`file://`, `gopher://` …)
+3. userinfo(`user:pass@host`) — 실제 목적지를 호스트 이름 뒤에 숨기는 형태
+4. 호스트가 없는 URL
 
-사설 IP 대역 검사는 하지 않는다. allowlist 가 이미 목적지를 고정하고, DNS 해석 기반
-검사는 rebinding(TOCTOU)에 원칙적으로 취약해 복잡도 대비 이득이 적다.
+전부 "이 URL 로는 이미지를 받을 수 없다" 가 자명한 경우다. 외부 입력 하나 때문에
+Photo Agent 전체가 실패하지 않도록 예외 대신 거부 사유로 바꿔 fallback 으로 보낸다.
+
+요청에서 redirect 는 따라가지 않는다(`follow_redirects=False`). presigned S3 는
+redirect 를 쓰지 않으므로 정상 경로에 영향이 없고, 필요해지면 `http_status` 3xx 로
+로그에 바로 드러난다.
 
 ## 로그에 남기지 않는 것
 
@@ -54,6 +60,9 @@ logger = get_logger(__name__)
 #: 받아들일 이미지 MIME type. App Server 가 업로드를 허용하는 3종과 같다.
 ALLOWED_IMAGE_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 
+#: 이미지를 받을 수 있는 scheme. `file://` 같은 로컬 접근을 막는 최소 형식 검사다.
+_ALLOWED_SCHEMES = frozenset({"https", "http"})
+
 #: Content-Type 헤더가 없을 때 본문 앞부분으로 형식을 판별하는 시그니처.
 _MAGIC_SIGNATURES: tuple[tuple[bytes, str], ...] = (
     (b"\xff\xd8\xff", "image/jpeg"),
@@ -70,23 +79,10 @@ class PhotoImageSource(ABC):
 
 
 class NullPhotoImageSource(PhotoImageSource):
-    """항상 이미지 없음을 반환하는 소스."""
+    """항상 이미지 없음을 반환하는 소스 (테스트 주입용)."""
 
     def load(self, photo: PhotoItem) -> ImageInput | None:
         return None
-
-
-def _is_allowed_host(host: str, suffixes: tuple[str, ...]) -> bool:
-    """호스트가 allowlist suffix 중 하나에 속하는지 본다.
-
-    `example.com` 은 `example.com` 자신과 `*.example.com` 을 허용한다. 부분 문자열
-    비교(`endswith`)만 쓰면 `evil-example.com` 이 통과하므로 경계를 점으로 확인한다.
-    """
-
-    host = host.lower()
-    return any(
-        host == suffix or host.endswith(f".{suffix}") for suffix in suffixes
-    )
 
 
 def _normalized_mime(content_type: str | None, body: bytes) -> str | None:
@@ -117,16 +113,10 @@ class PhotoUrlImageSource(PhotoImageSource):
     def __init__(
         self,
         *,
-        allowed_host_suffixes: tuple[str, ...] | None = None,
         timeout_sec: float | None = None,
         max_image_bytes: int | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        self._allowed_hosts = (
-            allowed_host_suffixes
-            if allowed_host_suffixes is not None
-            else settings.photo_allowed_host_suffixes
-        )
         self._timeout_sec = (
             timeout_sec
             if timeout_sec is not None
@@ -166,10 +156,11 @@ class PhotoUrlImageSource(PhotoImageSource):
     # --- 내부 ----------------------------------------------------------
 
     def _reject_url(self, url: str) -> str | None:
-        """요청을 보내기 전에 URL 정책을 확인한다. 통과하면 None."""
+        """요청을 보내기 전에 URL 형식을 확인한다. 통과하면 None.
 
-        if not self._allowed_hosts:
-            return "allowlist_empty"
+        호스트는 보지 않는다(#59). 여기 남은 것은 "이 URL 로는 애초에 이미지를 받을
+        수 없다" 가 자명한 경우뿐이다.
+        """
 
         try:
             parsed = urlsplit(url)
@@ -181,15 +172,13 @@ class PhotoUrlImageSource(PhotoImageSource):
             # 잘못 닫힌 IPv6 literal 등은 urlsplit/hostname 접근에서 ValueError가 난다.
             # 외부 입력 하나 때문에 Photo Agent 전체가 실패하지 않게 거부 사유로 바꾼다.
             return "url_invalid"
-        if parsed.scheme != "https":
-            return "scheme_not_https"
+        if parsed.scheme not in _ALLOWED_SCHEMES:
+            return "scheme_not_supported"
         if "@" in parsed.netloc:
             return "userinfo_present"
 
         if not host:
             return "host_missing"
-        if not _is_allowed_host(host, self._allowed_hosts):
-            return "host_not_allowed"
         return None
 
     def _download(self, url: str, started: float) -> ImageInput | None:
@@ -448,15 +437,11 @@ def load_images(
 
 
 def default_photo_image_source() -> PhotoImageSource:
-    """설정 기반 기본 이미지 소스를 만든다.
+    """기본 이미지 소스를 만든다. 언제나 `photoUrl` 다운로드다.
 
-    `PHOTO_URL_ALLOWED_HOSTS` 가 지정돼 있으면 `photoUrl` 에서 내려받고, 비어 있으면
-    이미지 없음(Null)으로 두어 describer 가 메타데이터 기반으로 대체한다.
-
-    allowlist 없이 URL 소스를 만들지 않는 것이 요점이다. 설정을 깜빡한 배포에서
-    임의 URL 로 요청이 나가는 것보다, 사진 설명 품질이 떨어지는 편이 안전하다.
+    설정으로 켜고 끄지 않는다(#59). 예전에는 `PHOTO_URL_ALLOWED_HOSTS` 가 있어야
+    URL 소스를 만들고 없으면 Null 이었는데, 그 설정이 실제 배포에 들어간 적이 없어
+    사진 vision 이 한 번도 돌지 못했다. 조건을 없애 켜져 있는 것이 기본이 되게 한다.
     """
 
-    if settings.photo_allowed_host_suffixes:
-        return PhotoUrlImageSource()
-    return NullPhotoImageSource()
+    return PhotoUrlImageSource()

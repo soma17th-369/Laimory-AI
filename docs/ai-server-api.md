@@ -267,10 +267,10 @@ Task-Token: {taskToken}
 | `sourceItems[].payload` | `object` | `itemType`별 원본 데이터입니다. |
 
 `itemType=PHOTO`의 `payload.photoUrl`은 S3 이미지 URL입니다. AI 서버가 이 URL에서
-이미지를 내려받아 멀티모달 LLM으로 사진 설명을 만듭니다(이슈 #52).
+이미지를 내려받아 멀티모달 LLM으로 사진 설명을 만듭니다(이슈 #52, #59).
 
-- 다운로드 대상은 `PHOTO_URL_ALLOWED_HOSTS`에 등록된 호스트의 `https` URL뿐입니다.
-  redirect는 따라가지 않습니다.
+- 호스트 allowlist는 없습니다. `http`/`https` URL이면 호스트와 무관하게 내려받되,
+  redirect는 따라가지 않습니다(이슈 #59).
 - 형식은 JPEG·PNG·WebP, 장당 5MB, 한 번에 최대 20장까지 받습니다. 한 배치의 이미지
   총합은 20MB로 제한합니다.
 - presigned URL이면 **입력 조회부터 이미지 다운로드까지가 유효 시간 안에** 끝나야
