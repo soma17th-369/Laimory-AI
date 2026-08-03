@@ -23,14 +23,29 @@ _AGENT_MODULES = {
 
 
 def _reload_agents(monkeypatch: pytest.MonkeyPatch, version: str) -> dict:
-    """`PROMPT_VERSION` 을 바꿔 두 agent 모듈을 다시 import 한다.
+    """`PROMPT_VERSION` 을 바꿔 agent 모듈을 다시 import 한다.
 
     `_USE_REVIEW` 는 모듈 로드 시점에 정해지므로 reload 없이는 버전을 바꿀 수 없다.
+
+    `prompt_loader` 를 **먼저** 다시 읽는 것이 중요하다. `load_prompt` 는
+    `from app.core.config import settings` 로 settings 를 자기 이름에 묶어 두므로,
+    `config.settings` 만 patch 하면 loader 에는 닿지 않는다. 그러면 agent 모듈은 v1 이라
+    믿고 `review.md` 를 요청하는데 loader 는 실제 `PROMPT_VERSION` 을 보고 v2 세트에서
+    찾다가 죽는다 — v2 에 `review.md` 가 없는 것은 설계대로이므로(#56) 어긋난 쪽은
+    하네스다. 실행 환경이 `PROMPT_VERSION=v2` 일 때만 드러났다.
     """
 
     monkeypatch.setenv("PROMPT_VERSION", version)
     config.get_settings.cache_clear()
     monkeypatch.setattr(config, "settings", config.get_settings())
+
+    return _reload_prompt_modules()
+
+
+def _reload_prompt_modules() -> dict:
+    """`prompt_loader` → agent 순서로 다시 읽는다. 순서를 바꾸면 위 docstring 의 문제가 난다."""
+
+    importlib.reload(importlib.import_module("app.agents.prompt_loader"))
 
     reloaded = {}
     for name, module_path in _AGENT_MODULES.items():
@@ -46,8 +61,9 @@ def _restore_default_prompt_version():
     yield
     config.get_settings.cache_clear()
     config.settings = config.get_settings()
-    for module_path in _AGENT_MODULES.values():
-        importlib.reload(importlib.import_module(module_path))
+    # 되돌릴 때도 `prompt_loader` 를 함께 읽어야 한다. 안 그러면 직전 테스트가 남긴
+    # 버전을 loader 가 계속 들고 있어, agent 는 기본 버전인데 loader 는 아니게 된다.
+    _reload_prompt_modules()
 
 
 def _location_request():

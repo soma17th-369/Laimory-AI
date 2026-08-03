@@ -83,6 +83,20 @@ Timeline Agent는 서로 다른 source의 candidate와 fragment를 결합해 최
 - 예약 또는 교통 알림의 장소와 시간은 Location 및 Calendar candidate와 연결할 수 있도록 `title`, `description`, `timeRange`에 보존합니다.
 - 공지성 알림은 `appPolicy.timelineUse`와 내용에 따라 다른 일정이나 활동의 주제·목적을 보강하는 fragment로 요약합니다.
 
+#### 예약 날짜
+
+`postedAt`은 알림을 받은 시각일 뿐, 알림이 말하는 일정의 날짜가 아닙니다. 둘을 같다고 가정하지 않습니다.
+
+- 알림이 말하는 일정 날짜가 `draft metadata`의 대상 날짜와 **다르면** 그 일정을 candidate로 만들지 않습니다.
+- 일정 날짜를 알 수 없는 예약 알림도 candidate로 만들지 않고 `timeRange` 없는 fragment로 보존합니다.
+- 대상 날짜에 예약을 확정·변경·취소했다는 직접 표현이 있을 때만 그 **예약 행위**를 candidate로 만듭니다. `timeRange`는 `postedAt` 기준이며, 미래의 방문·참석을 오늘 수행한 것처럼 쓰지 않습니다.
+
+내일 저녁 식당 예약 알림을 오늘 받았다면 이렇게 갈립니다.
+
+- 금지 — `title: 레스토랑에서 저녁 식사` / 오늘 식사한 event로 구성
+- 허용 — `title: 내일 저녁 식당 예약` / 오늘 예약을 확정했다는 근거가 있을 때만
+- 근거가 없으면 — `timeRange` 없는 fragment로만 보존
+
 ## Timeline 병합 정보
 
 각 candidate의 `title`과 `description`에는 앱 유형, 상대·대화방, 주제, 시각과 결제·예약·이동 의미를 담습니다. candidate를 구성한 모든 알림 rawId는 `sourceRefs`에 보존하고, 사용자 응답 여부, 관계, 실제 행동 여부 등 근거의 한계는 `uncertainty`에 담습니다.

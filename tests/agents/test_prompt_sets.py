@@ -99,6 +99,74 @@ def test_v2_has_no_review_prompt(agent_dir: str) -> None:
     )
 
 
+# --- v2 결과 품질 계약 (#61) -------------------------------------------
+#
+# 아래는 전부 **v2 를 명시**해서 읽는다. `load_prompt` 는 버전을 생략하면
+# `PROMPT_VERSION` 을 따르는데, 이 저장소의 `.env` 는 v1 이라 그대로 두면 v2 프롬프트가
+# 한 번도 검사되지 않는다. #61 에서 바꾼 것은 v2 세트뿐이므로 버전을 고정한다.
+
+_TIMELINE_V2 = APP_ROOT / "agents/timeline/prompts/v2/timeline.md"
+_REPAIR_V2 = APP_ROOT / "agents/repair/prompts/v2/prompt.md"
+_NOTIFICATION_V2 = APP_ROOT / "agents/events/notification/prompts/v2/prompt.md"
+
+
+def _text(path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("marker", "why"),
+    [
+        ("1인칭", "말투가 1인칭임을 명시해야 합니다."),
+        ("해요체", "종결어미를 해요체로 고정해야 합니다."),
+        ("100자", "description 길이 기준이 있어야 합니다."),
+        ("30자", "title 길이 기준이 있어야 합니다."),
+        ("듯해요", "헤지 표현을 금지 대상으로 보여 줘야 합니다."),
+        ("원본 수치", "분 단위 시각·걸음 수 같은 raw 값 금지가 있어야 합니다."),
+    ],
+)
+def test_timeline_v2_states_tone_and_length(marker: str, why: str) -> None:
+    assert marker in _text(_TIMELINE_V2), f"timeline v2 에 '{marker}' 가 없습니다. {why}"
+
+
+def test_timeline_v2_puts_tone_rules_before_input_section() -> None:
+    """말투 규정은 프롬프트 **앞쪽**에 둔다 (#61).
+
+    앞 지시가 더 세게 작동하므로 「결과 문장의 말투」를 「입력 의미」보다 먼저 둔다.
+    뒤쪽 「제목과 설명」은 규정이 아니라 예시 자리다 — 같은 문장을 두 번 쓰지 않는다.
+    """
+
+    text = _text(_TIMELINE_V2)
+    tone = text.index("## 결과 문장의 말투")
+    inputs = text.index("## 입력 의미")
+    examples = text.index("## 제목과 설명")
+
+    assert tone < inputs < examples
+
+
+def test_timeline_v2_keeps_future_reservation_out_of_today() -> None:
+    assert "대상 날짜와 다르면" in _text(_TIMELINE_V2)
+
+
+def test_notification_v2_separates_posted_at_from_schedule_date() -> None:
+    """알림 수신 시각과 알림이 말하는 일정 날짜는 다르다 (#61).
+
+    이 구분이 없으면 내일 예약 알림이 오늘 window 안 시각에 붙어 검증을 통과한다.
+    """
+
+    text = _text(_NOTIFICATION_V2)
+    assert "`postedAt`은 알림을 받은 시각" in text
+    assert "대상 날짜와 **다르면**" in text
+    assert "예약 행위" in text
+
+
+def test_repair_v2_checks_tone_and_length() -> None:
+    text = _text(_REPAIR_V2)
+    assert "VERBOSE_NARRATION" in text, "문장 길이 초과를 잡는 문제 유형이 있어야 합니다."
+    assert "해요체" in text, "Repair 가 목표 말투를 알아야 다시 쓸 수 있습니다."
+    assert "헤지" in text, "추정 표현을 문제로 잡아야 합니다."
+
+
 @pytest.mark.parametrize(
     "agent_dir", ["agents/events/location", "agents/events/sleep_activity"]
 )
