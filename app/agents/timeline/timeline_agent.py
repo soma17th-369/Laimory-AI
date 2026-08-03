@@ -12,7 +12,6 @@ draft used when the LLM response is unusable.
 """
 
 import json
-from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -23,6 +22,7 @@ from app.agents.parsing import (
     items_to_text,
     user_memory_to_text,
 )
+from app.agents.prompt_loader import load_prompt
 from app.core.error_codes import ErrorCode, message_for
 from app.core.exceptions import code_of_or, report_error
 from app.core.logging import get_logger
@@ -38,9 +38,7 @@ from app.schemas import (
 )
 logger = get_logger(__name__)
 
-_SYSTEM_PROMPT = (
-    Path(__file__).parent / "timeline.md"
-).read_text(encoding="utf-8")
+_SYSTEM_PROMPT = load_prompt(__file__, "timeline.md")
 
 _DEFAULT_USER_ID = "user-1234"
 _DEFAULT_TIMEZONE = "Asia/Seoul"

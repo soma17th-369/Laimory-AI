@@ -15,7 +15,6 @@ bytes 가 그대로 provider 요청 크기가 된다(`image_source.load_images` 
 
 import json
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Protocol
 
 from app.agents.events.photo.image_source import (
@@ -24,6 +23,7 @@ from app.agents.events.photo.image_source import (
     load_images,
 )
 from app.agents.parsing import SupportsComplete, default_llm
+from app.agents.prompt_loader import load_prompt
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import report_error
 from app.core.langfuse_tracing import trace_observation, update_observation
@@ -37,12 +37,8 @@ logger = get_logger(__name__)
 # 두 프롬프트를 나눠 두는 이유: 메타데이터용 프롬프트는 "실제 이미지 픽셀은 제공되지
 # 않는다" 를 전제로 추정을 억제한다. 이미지를 첨부하고도 같은 system 을 쓰면 모델이
 # 보이는 것까지 안 적는다 — vision 경로를 켜는 의미가 사라진다.
-_DESCRIBE_PROMPT = (Path(__file__).parent / "describe_prompt.md").read_text(
-    encoding="utf-8"
-)
-_VISION_DESCRIBE_PROMPT = (
-    Path(__file__).parent / "describe_vision_prompt.md"
-).read_text(encoding="utf-8")
+_DESCRIBE_PROMPT = load_prompt(__file__, "describe_prompt.md")
+_VISION_DESCRIBE_PROMPT = load_prompt(__file__, "describe_vision_prompt.md")
 
 
 class SupportsVision(Protocol):

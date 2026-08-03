@@ -35,12 +35,15 @@ def test_photo_payload_treats_taken_at_as_shooting_time() -> None:
     assert "id" not in payload[0]
     assert payload[0]["rawId"] == fixture_raw_id("photo-1")
     assert payload[0]["dateTaken"] is None
+    assert payload[0]["takenAt"] == "2026-06-20T12:00:00"
+    assert payload[0]["description"] == "음식이 놓인 식탁 사진이다."
     assert "isDownloaded" not in payload[0]
     assert "timelineTimeUsable" not in payload[0]
-    assert payload[0]["recommendedUse"] == "MERGE_WITH_STAY_OR_CALENDAR"
-    assert "actual shooting time" in payload[0]["timePolicy"]
-    assert payload[0]["photoMeaning"]["description"] == "음식이 놓인 식탁 사진이다."
-    assert payload[0]["photoMeaning"]["useForActivityInference"] is True
+    # 파생 지시 필드는 붙이지 않는다(#56). 이 agent 는 STAY·CALENDAR 를 보지 못하므로
+    # "그쪽에 병합하라" 는 지시를 따를 방법이 없었고, 자기 candidate 억제만 남았다.
+    assert "recommendedUse" not in payload[0]
+    assert "timePolicy" not in payload[0]
+    assert "photoMeaning" not in payload[0]
 
 
 def test_photo_description_semantics_are_accepted_in_candidate_contract() -> None:
@@ -98,4 +101,4 @@ def test_photo_description_semantics_are_accepted_in_candidate_contract() -> Non
     assert "sourceId" not in dumped_ref
     assert '"timelineTimeUsable"' not in llm.calls[0].prompt
     assert '"isDownloaded"' not in llm.calls[0].prompt
-    assert "MERGE_WITH_STAY_OR_CALENDAR" in llm.calls[0].prompt
+    assert "MERGE_WITH_STAY_OR_CALENDAR" not in llm.calls[0].prompt

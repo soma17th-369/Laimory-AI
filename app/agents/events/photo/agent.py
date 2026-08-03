@@ -9,12 +9,10 @@ infer** 2단계 agentic workflow(LangGraph)로 처리한다.
        배치 1회 호출로 채운다(`describer.py`).
     2. infer: 채워진 description 을 활동 근거로 삼아 event 후보를 추론한다.
 
-프롬프트는 같은 폴더의 `prompt.md`(infer system) 과 `describe_prompt.md`
-(describe system, describer 안에서 사용)에서 읽는다.
+프롬프트는 이 Agent의 `prompts/{PROMPT_VERSION}/` 아래 `prompt.md`(infer system)와
+describe 프롬프트(describer 안에서 사용)에서 읽는다.
 """
 
-import json
-from pathlib import Path
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -30,11 +28,13 @@ from app.agents.parsing import (
     SupportsComplete,
     build_infer_prompt,
     default_llm,
+    items_to_text,
     user_memory_to_text,
 )
+from app.agents.prompt_loader import load_prompt
 from app.schemas import AgentEventResult, TimelineDraftRequest
 
-_SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text(encoding="utf-8")
+_SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
 
 
 class _State(TypedDict, total=False):
@@ -122,21 +122,12 @@ class PhotoEventAgent(EventAgent):
 
 
 def _photo_items_to_text(items: list) -> str:
-    payload = [_enrich_photo_item(item) for item in items]
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    """사진 항목을 프롬프트용 JSON 으로 직렬화한다.
 
+    파생 필드를 붙이지 않는다. 이전에는 `recommendedUse`/`timePolicy` 로 "독립 사진
+    event 를 만들지 말고 STAY·CALENDAR 에 병합하라" 를 실었는데, 이 agent 의 입력은
+    `request.photos` 뿐이라 STAY·CALENDAR 를 볼 수 없었다. 따를 수 없는 지시라
+    자기 candidate 억제만 남았다. 병합 판단은 Timeline Agent 소관이다(#56).
+    """
 
-def _enrich_photo_item(item) -> dict:
-    payload = item.model_dump(by_alias=True, mode="json")
-    description = (getattr(item, "description", None) or "").strip()
-    payload["recommendedUse"] = "MERGE_WITH_STAY_OR_CALENDAR"
-    payload["photoMeaning"] = {
-        "description": description,
-        "useForActivityInference": bool(description),
-    }
-    payload["timePolicy"] = (
-        "Input excludes downloaded images. takenAt/startAt is the actual shooting time. "
-        "Prefer using the photo as supporting evidence merged with STAY or CALENDAR "
-        "instead of creating a standalone photo-taking event."
-    )
-    return payload
+    return items_to_text(items)

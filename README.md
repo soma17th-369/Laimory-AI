@@ -23,7 +23,7 @@ app/
 ├── server.py                  # FastAPI 앱 생성 + 라우터 등록만 (얇게)
 │
 ├── core/                      # 공통 인프라
-│   ├── config.py              # 설정 (pydantic-settings, LLM_PROVIDER/API 키 등)
+│   ├── config.py              # 설정 (LLM_PROVIDER, PROMPT_VERSION, API 키 등)
 │   ├── logging.py             # 로그 출력 설정 (rich | 한 줄 JSON)
 │   ├── operational_logging.py # Elasticsearch 로 나가는 운영 이벤트의 유일한 통로 (#53).
 │   │                          #   event.dataset 표식 + 이벤트별 필드 allowlist
@@ -49,13 +49,14 @@ app/
 ├── agents/                    # AI 에이전트
 │   ├── base.py                # 공통 에이전트 인터페이스
 │   ├── parsing.py             # LLM 호출/프롬프트/응답 파싱 유틸
+│   ├── prompt_loader.py       # PROMPT_VERSION에 맞는 Agent 프롬프트 로드
 │   ├── events/                # 데이터별 이벤트 에이전트
 │   │   └── base_event_agent.py
 │   ├── timeline/timeline_agent.py # 후보 → 초안 병합
 │   ├── repair/                # 초안 검토·개선 (LLM 분석 + 도구 호출)
 │   │   ├── repair_agent.py    # 확정 → 분석 → 도구 실행 → 재확정 반복
 │   │   ├── tools.py           # 도구 카탈로그 (서비스·상류 Agent 를 도구로)
-│   │   └── prompt.md          # 분석·계획 system prompt
+│   │   └── prompts/v1/prompt.md # 분석·계획 system prompt v1
 │   └── main/main_agent.py     # events → timeline → repair 조율(LangGraph)
 │
 └── services/
@@ -163,6 +164,9 @@ SERVER_PORT=8000
 # 사용할 LLM provider (openai | gemini | bedrock)
 LLM_PROVIDER=openai
 
+# 모든 Agent가 사용할 프롬프트 세트
+PROMPT_VERSION=v1
+
 # OpenAI
 OPENAI_API_KEY=your-api-key
 OPENAI_MODEL=gpt-4o-mini
@@ -200,6 +204,13 @@ LOG_FORMAT=rich              # 운영은 json (stdout JSON → CloudWatch Logs I
 ```
 
 `.env` 파일은 민감 정보를 포함할 수 있으므로 Git에 올리지 않습니다.
+
+`PROMPT_VERSION`은 Event/Timeline/Repair Agent가 사용할 프롬프트 세트를 한 번에
+선택합니다. 현재 `v1`, `v2`를 지원하며 기본값은 `v1`입니다. 각 Agent의 프롬프트는
+`prompts/{version}/` 아래에 있습니다.
+지원하지 않는 버전이나 파일이 빠진 버전은 `v1`로 자동 대체하지 않고 기동 단계에서
+오류로 처리합니다. 새 버전을 추가할 때는 모든 Agent의 프롬프트 세트를 준비한 뒤
+`Settings.prompt_version`의 지원 목록을 함께 확장합니다.
 
 ---
 

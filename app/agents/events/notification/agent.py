@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
-
 from app.agents.events.base_event_agent import EventAgent
 from app.agents.events.notification.app_dictionary import (
     app_dictionary_for_prompt,
@@ -17,9 +15,10 @@ from app.agents.parsing import (
     default_llm,
     user_memory_to_text,
 )
+from app.agents.prompt_loader import load_prompt
 from app.schemas import AgentEventResult, TimelineDraftRequest
 
-_SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text(encoding="utf-8")
+_SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
 
 _DIRECT_MEETING_PATTERNS = [
     re.compile(pattern)

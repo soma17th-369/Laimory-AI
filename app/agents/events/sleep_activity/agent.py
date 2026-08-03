@@ -1,11 +1,15 @@
 """Sleep/Activity Event Agent.
 
-수면·활동은 이질적 데이터를 조합하고(수면+심박) 하루 집계의 과한 추론을 걸러야
-하므로 **infer → review** 2단계 LangGraph 를 이 agent 안에서 직접 구성한다.
-프롬프트는 같은 폴더의 `prompt.md`(system) 과 `review.md`(검토)에서 읽어 연결한다.
+v1 은 하루 집계의 과한 추론을 걸러야 해서 **infer → review** 2단계 LangGraph 였다.
+
+v2 부터는 review 를 두지 않는다(#56). Location 과 같은 이유이며, 이 agent 는 입력이
+수면·걸음 수 두 지표뿐이라 걸러 낼 여지도 작다. review 가 없으면 `infer` 가 직접
+구조화해야 하므로 `complete_structured` 로 부른다.
+
+분기 기준은 프롬프트 버전이다. `PROMPT_VERSION=v1` 롤백이 2단계 동작까지 그대로
+되돌리도록 하기 위해서다.
 """
 
-from pathlib import Path
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -18,11 +22,15 @@ from app.agents.parsing import (
     items_to_text,
     user_memory_to_text,
 )
+from app.agents.prompt_loader import load_prompt
+from app.core.config import settings
 from app.schemas import AgentEventResult, TimelineDraftRequest
 
-_DIR = Path(__file__).parent
-_SYSTEM_PROMPT = (_DIR / "prompt.md").read_text(encoding="utf-8")
-_REVIEW_PROMPT = (_DIR / "review.md").read_text(encoding="utf-8")
+_SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
+
+#: review 단계는 v1 프롬프트 세트 전용이다. v2 세트에는 `review.md` 가 없다.
+_USE_REVIEW = settings.prompt_version == "v1"
+_REVIEW_PROMPT = load_prompt(__file__, "review.md") if _USE_REVIEW else None
 
 
 class _State(TypedDict, total=False):
@@ -56,6 +64,13 @@ class SleepActivityEventAgent(EventAgent):
             window_start=request.window.start if request.window else None,
             window_end=request.window.end if request.window else None,
         )
+        if _REVIEW_PROMPT is None:
+            return self.llm.complete_structured(
+                infer_prompt,
+                AgentEventResult,
+                system=_SYSTEM_PROMPT,
+                temperature=0.2,
+            )
         return self._run_graph(infer_prompt)
 
     def _run_graph(self, infer_prompt: str) -> AgentEventResult:
