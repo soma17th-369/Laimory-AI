@@ -8,14 +8,24 @@ from app.core.exceptions import code_of_or, report_error
 from app.core.execution_context import ExecutionStage
 from app.core.logging import get_logger, log_fields, stage_span
 from app.schemas import AgentEventResult, AgentWarning, TimelineDraftRequest
+from app.services.fragment_guard import verify_agent_coverage
 from app.services.source_integrity import filter_agent_result_sources
+from app.services.source_lookup import raw_id_of
 from app.services.validator import filter_result_to_window, resolve_window_bounds
 
 logger = get_logger(__name__)
 
 
 class EventAgent(Agent):
-    """source type 별 입력을 해석해 event 후보와 불확실한 event 단서를 반환하는 Agent."""
+    """source type 별 입력을 해석해 event 후보와 불확실한 event 단서를 반환하는 Agent.
+
+    ``source_attrs`` 는 그 Agent 가 읽는 요청 필드 이름이다. 보존 검사(#56 §8.5)가
+    "이 Agent 에 전달된 raw item 이 후보나 단서로 남았는가" 를 판정하는 데 쓴다.
+    비워 두면 그 Agent 는 검사에서 빠진다.
+    """
+
+    #: 이 Agent 가 소비하는 `TimelineDraftRequest` 필드 이름들.
+    source_attrs: tuple[str, ...] = ()
 
     def generate(self, request: TimelineDraftRequest) -> AgentEventResult:
         """요청에서 해당 source를 읽어 ``AgentEventResult``를 반환한다.
@@ -80,10 +90,27 @@ class EventAgent(Agent):
                     )
                 )
             filtered = self._enforce_window(request, filtered)
+            # window 밖 항목을 걷어 낸 **뒤에** 보존을 본다. 범위 밖 raw 가 빠진 것은
+            # 유실이 아니라 정상이므로, 순서가 바뀌면 매번 거짓 경고가 붙는다.
+            verify_agent_coverage(
+                filtered,
+                self._input_raw_ids(request),
+                agent_name=self._agent_name(),
+            )
             outcome["candidateCount"] = len(filtered.candidates)
             outcome["fragmentCount"] = len(filtered.fragments)
             outcome["warningCount"] = len(filtered.warnings)
             return filtered
+
+    def _input_raw_ids(self, request: TimelineDraftRequest) -> set[str]:
+        """이 Agent 가 실제로 받은 raw item 의 rawId 집합."""
+
+        raw_ids: set[str] = set()
+        for attr in self.source_attrs:
+            for item in getattr(request, attr, None) or []:
+                if (raw_id := raw_id_of(item)) is not None:
+                    raw_ids.add(raw_id)
+        return raw_ids
 
     def _agent_name(self) -> str:
         return self.name or self.__class__.__name__

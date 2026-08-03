@@ -23,6 +23,7 @@ class CalendarEventAgent(EventAgent):
     """캘린더 source 를 해석하는 추론 Agent (단일 호출)."""
 
     name = "calendar"
+    source_attrs = ("calendars",)
 
     def __init__(self, llm: SupportsComplete | None = None) -> None:
         self._llm = llm

@@ -13,6 +13,7 @@ v2 부터는 review 를 두지 않는다(#56). v2 의 목표가 상위 여정 �
 쓰지 않는다.
 """
 
+import json
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -28,6 +29,8 @@ from app.agents.parsing import (
 from app.agents.prompt_loader import load_prompt
 from app.core.config import settings
 from app.schemas import AgentEventResult, TimelineDraftRequest
+from app.services.location_guard import verify_location_result
+from app.services.location_metrics import build_location_metrics
 
 _SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
 
@@ -45,6 +48,7 @@ class LocationEventAgent(EventAgent):
     """위치 source 를 해석하는 추론 Agent (infer → review graph)."""
 
     name = "location"
+    source_attrs = ("stays", "movements")
 
     def __init__(self, llm: SupportsComplete | None = None) -> None:
         self._llm = llm
@@ -62,19 +66,21 @@ class LocationEventAgent(EventAgent):
 
         infer_prompt = build_infer_prompt(
             user_memory_to_text(request.user_memory),
-            items_to_text(items),
+            _location_data_text(request, items),
             date=request.date,
             window_start=request.window.start if request.window else None,
             window_end=request.window.end if request.window else None,
         )
         if _REVIEW_PROMPT is None:
-            return self.llm.complete_structured(
+            result = self.llm.complete_structured(
                 infer_prompt,
                 AgentEventResult,
                 system=_SYSTEM_PROMPT,
                 temperature=0.2,
             )
-        return self._run_graph(infer_prompt)
+        else:
+            result = self._run_graph(infer_prompt)
+        return verify_location_result(result, request)
 
     def _run_graph(self, infer_prompt: str) -> AgentEventResult:
         llm = self.llm
@@ -97,3 +103,20 @@ class LocationEventAgent(EventAgent):
         graph.add_edge("infer", "review")
         graph.add_edge("review", END)
         return graph.compile().invoke({})["result"]
+
+
+def _location_data_text(request: TimelineDraftRequest, items: list) -> str:
+    """raw 항목 + 코드가 계산한 파생 지표를 함께 직렬화한다.
+
+    프롬프트가 평균 속도·구간 공백·마지막 관측 같은 값을 근거로 판단하라고 하는데,
+    입력 DTO 에는 그 필드가 없다. LLM 이 매 구간 암산하는 대신 코드가 계산해 준다(#56 §4.4).
+    raw 항목의 형태는 그대로 두고 파생값을 별도 블록으로 덧붙인다.
+    """
+
+    payload = json.loads(items_to_text(items))
+    metrics = build_location_metrics(request).as_prompt_dict()
+    return json.dumps(
+        {"locationItems": payload, "derivedMetrics": metrics},
+        ensure_ascii=False,
+        indent=2,
+    )

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import timezone
+
 from app.agents.events.base_event_agent import EventAgent
 from app.agents.events.notification.app_dictionary import (
     app_dictionary_for_prompt,
@@ -17,6 +19,8 @@ from app.agents.parsing import (
 )
 from app.agents.prompt_loader import load_prompt
 from app.schemas import AgentEventResult, TimelineDraftRequest
+from app.services.notification_guard import verify_notification_result
+from app.services.validator import parse_datetime
 
 _SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
 
@@ -50,11 +54,16 @@ _LOW_PRIORITY_KEYWORDS = (
 )
 _CONTEXT_ONLY_KEYWORDS = ("ssafy", "싸피", "설문", "채용설명회", "공지")
 
+#: 메시지 사이 간격이 이보다 크면 이어진 대화로 보지 않는다. 하나의 긴 시간 구간으로
+#: 묶으면 그 사이의 다른 활동이 대화에 덮인다(#56 §5.4).
+_NON_CONTIGUOUS_GAP_MINUTES = 60.0
+
 
 class NotificationEventAgent(EventAgent):
     """알림 source를 해석하는 추론 Agent."""
 
     name = "notification"
+    source_attrs = ("notifications",)
 
     def __init__(self, llm: SupportsComplete | None = None) -> None:
         self._llm = llm
@@ -78,9 +87,10 @@ class NotificationEventAgent(EventAgent):
             window_start=request.window.start if request.window else None,
             window_end=request.window.end if request.window else None,
         )
-        return self.llm.complete_structured(
+        result = self.llm.complete_structured(
             infer_prompt, AgentEventResult, system=_SYSTEM_PROMPT, temperature=0.2
         )
+        return verify_notification_result(result, request)
 
 
 def _notification_items_to_text(items: list) -> str:
@@ -142,6 +152,7 @@ def _messenger_analysis(items: list[dict]) -> dict:
                 "speaker": speaker,
                 "count": 0,
                 "rawIds": [],
+                "postedAt": [],
                 "hasDirectMeetingMention": False,
                 "explicitPlaceMention": None,
                 "placeLabelAllowed": False,
@@ -151,6 +162,10 @@ def _messenger_analysis(items: list[dict]) -> dict:
         conversation["count"] += 1
         if item.get("rawId"):
             conversation["rawIds"].append(item["rawId"])
+        # 각 메시지의 실제 수신 시각을 보존한다(#56 §5.4). 시각 없이 rawId 만 모으면
+        # 몇 시간 간격으로 흩어진 메시지가 "이어진 대화" 로 뭉쳐 하나의 긴 구간이 된다.
+        if item.get("postedAt"):
+            conversation["postedAt"].append(item["postedAt"])
 
         direct_meeting = _has_direct_meeting_mention(content)
         explicit_place = _extract_meeting_place(content)
@@ -172,6 +187,8 @@ def _messenger_analysis(items: list[dict]) -> dict:
         }
 
     for conversation in conversations.values():
+        conversation["postedAt"].sort()
+        conversation["maxGapMinutes"] = _max_gap_minutes(conversation["postedAt"])
         if conversation["hasDirectMeetingMention"]:
             conversation["interpretation"] = (
                 "직접적인 만남/시간/장소 언급이 있어 약속 단서로 사용할 수 있다."
@@ -185,7 +202,31 @@ def _messenger_analysis(items: list[dict]) -> dict:
                 "한두 개의 메신저 알림은 일정 후보가 아니라 fragment 또는 무시 대상으로 둔다."
             )
 
+        gap = conversation["maxGapMinutes"]
+        if gap is not None and gap >= _NON_CONTIGUOUS_GAP_MINUTES:
+            conversation["interpretation"] += (
+                f" 다만 메시지 사이 최대 간격이 {gap:.0f}분이라 이어진 대화가 아니다. "
+                "하나의 긴 시간 구간으로 묶지 말고 각 시각을 유지한다."
+            )
+
     return {"conversations": list(conversations.values())}
+
+
+def _max_gap_minutes(posted_at: list[str]) -> float | None:
+    """정렬된 수신 시각들 사이의 최대 간격(분). 계산할 수 없으면 None."""
+
+    parsed = [
+        dt
+        for value in posted_at
+        if (dt := parse_datetime(value, timezone.utc)) is not None
+    ]
+    if len(parsed) < 2:
+        return None
+    parsed.sort()
+    return max(
+        (later - earlier).total_seconds() / 60.0
+        for earlier, later in zip(parsed, parsed[1:])
+    )
 
 
 def _searchable_text(item: dict) -> str:

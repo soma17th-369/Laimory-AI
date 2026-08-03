@@ -1,63 +1,84 @@
 """Photo describe → infer agentic workflow 검증.
 
-- description 이 null 인 사진은 describe 단계에서 배치로 채운다.
-- 이미 description 이 있는 사진은 describe LLM 호출을 하지 않는다.
+- description 이 null 인 사진은 describe 단계에서 채운다.
+- 이미지를 구하지 못하면 **코드가** 메타데이터로 채운다(#56 §12). LLM 을 부르지 않는다.
 - 채워진 description 이 infer 단계 프롬프트에 반영된다.
 """
 
-import json
-
 from app.agents.events.photo.agent import PhotoEventAgent
-from app.agents.events.photo.describer import LLMPhotoDescriber
+from app.agents.events.photo.describer import MetadataPhotoDescriber
 from app.schemas import PhotoItem
 from tests.fixtures.fake_llm import FakeLLM, candidate, result_json
-from tests.fixtures.requests import fixture_raw_id, make_request
+from tests.fixtures.requests import fixture_raw_id, make_request, stay_item
 
 PHOTO_1 = fixture_raw_id("photo-1")
 PHOTO_2 = fixture_raw_id("photo-2")
 
-_DESCRIBE_RESPONSE = json.dumps(
-    {"descriptions": [{"rawId": PHOTO_1, "description": "저녁 무렵 야외에서 남긴 사진으로 보인다."}]},
-    ensure_ascii=False,
-)
 _INFER_RESPONSE = result_json(
     candidates=[candidate("PHOTO_MOMENT", [("PHOTO", PHOTO_1)])]
 )
 
 
-def test_describer_fills_only_missing_descriptions():
+def test_metadata_describer_fills_only_missing_descriptions():
     photos = [
         PhotoItem(rawId=PHOTO_1, takenAt="2026-06-20T18:00:00", dateTaken=None),
         PhotoItem(rawId=PHOTO_2, takenAt="2026-06-20T19:00:00", description="이미 있는 설명"),
     ]
-    llm = FakeLLM([_DESCRIBE_RESPONSE])
 
-    out = LLMPhotoDescriber(llm).describe(photos)
+    out = MetadataPhotoDescriber().describe(photos)
 
-    assert out == {PHOTO_1: "저녁 무렵 야외에서 남긴 사진으로 보인다."}
-    assert len(llm.calls) == 1  # 대상은 사진 1장뿐이라도 배치 1회 호출
+    assert set(out) == {PHOTO_1}
+    assert "18:00" in out[PHOTO_1]
+    # 이미지를 못 봤다는 사실을 숨기지 않는다. 이후 추론이 이 한계를 알아야 한다.
+    assert "알 수 없다" in out[PHOTO_1]
 
 
-def test_describer_no_call_when_all_present():
+def test_metadata_describer_uses_stay_place_at_shooting_time():
+    """§12 "기존 장소 정보" — 촬영 시각을 덮는 체류가 있으면 그 장소를 적는다."""
+
+    photos = [PhotoItem(rawId=PHOTO_1, takenAt="2026-06-20T12:30:00", dateTaken=None)]
+    stays = [
+        stay_item(
+            "stay-1",
+            start="2026-06-20T12:00:00",
+            end="2026-06-20T13:00:00",
+            place="두꺼비 감자탕 지산점",
+        )
+    ]
+
+    out = MetadataPhotoDescriber(stays).describe(photos)
+
+    assert "두꺼비 감자탕 지산점" in out[PHOTO_1]
+
+
+def test_metadata_describer_does_not_invent_place_without_stay():
+    photos = [PhotoItem(rawId=PHOTO_1, takenAt="2026-06-20T12:30:00", dateTaken=None)]
+
+    out = MetadataPhotoDescriber().describe(photos)
+
+    assert "에서 촬영된 것으로 보인다" not in out[PHOTO_1]
+
+
+def test_metadata_describer_returns_nothing_when_all_present():
     photos = [PhotoItem(rawId=PHOTO_1, takenAt="2026-06-20T18:00:00", description="있음")]
-    llm = FakeLLM([_DESCRIBE_RESPONSE])
 
-    assert LLMPhotoDescriber(llm).describe(photos) == {}
-    assert llm.calls == []  # 채울 사진이 없으면 LLM 을 호출하지 않는다.
+    assert MetadataPhotoDescriber().describe(photos) == {}
 
 
-def test_agent_describes_then_infers_with_filled_description():
+def test_agent_describes_with_code_then_infers():
+    """코드 describer 를 쓰면 describe 단계에서 LLM 호출이 없다. infer 만 남는다."""
+
     request = make_request(
         photos=[PhotoItem(rawId=PHOTO_1, takenAt="2026-06-20T18:00:00", dateTaken=None)]
     )
-    llm = FakeLLM([_DESCRIBE_RESPONSE, _INFER_RESPONSE])
+    llm = FakeLLM([_INFER_RESPONSE])
 
-    result = PhotoEventAgent(llm=llm).generate(request)
+    result = PhotoEventAgent(llm=llm, describer=MetadataPhotoDescriber()).generate(
+        request
+    )
 
-    # 호출 순서: describe → infer
-    assert len(llm.calls) == 2
-    # 생성된 description 이 infer 프롬프트(2번째 호출)에 반영된다.
-    assert "저녁 무렵 야외에서 남긴 사진" in llm.calls[1].prompt
+    assert len(llm.calls) == 1
+    assert "18:00" in llm.calls[0].prompt
     assert result.candidates and result.candidates[0].source_refs[0].raw_id == PHOTO_1
 
 

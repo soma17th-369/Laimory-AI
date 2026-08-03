@@ -74,6 +74,11 @@ app/
     ├── calendar_guard.py      # 누락된 캘린더 일정 복원
     ├── calendar_location.py   # 캘린더와 STAY 장소 일치 보강
     ├── meal_guard.py          # MEAL 지속시간 강제
+    ├── photo_guard.py         # 사진 단일 귀속 검사 (누락·중복 검출, 자동 해소는 안 함)
+    ├── location_metrics.py    # Location raw 파생 지표 계산 (속도·구간 공백·수집 공백)
+    ├── location_guard.py      # Location 결과 검증 (상위 여정 누락·공백 표시·rawId 보존)
+    ├── fragment_guard.py      # candidate·fragment 보존 검사
+    ├── notification_guard.py  # 알림·최종 draft의 민감정보·근거 없는 관계명 검사
     ├── place_resolver.py      # 장소 확정
     ├── place_text.py          # 장소 문자열 정규화·비교
     └── timeline_runner.py     # 백그라운드 파이프라인 (입력 조회→추론→결과 저장→콜백)

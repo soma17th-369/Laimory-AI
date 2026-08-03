@@ -82,14 +82,19 @@ def stay_item(
 
 
 def movement_item(
-    item_id, start=WINDOW_START, end=WINDOW_END, distance=1000.0, raw_id=None
+    item_id,
+    start=WINDOW_START,
+    end=WINDOW_END,
+    distance=1000.0,
+    raw_id=None,
+    transports=None,
 ) -> MovementItem:
     return MovementItem(
         raw_id=fixture_raw_id(raw_id or f"movement-{item_id}"),
         start_at=start,
         end_at=end,
         distance_meters=distance,
-        transports=["WALKING"],
+        transports=["WALKING"] if transports is None else list(transports),
     )
 
 

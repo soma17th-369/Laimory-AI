@@ -56,6 +56,7 @@ from app.services.draft_repair import (
     sort_events,
 )
 from app.services.meal_guard import enforce_meal_duration
+from app.services.photo_guard import inspect_photo_assignment
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import AppError, code_of, report_error
 from app.services.place_resolver import resolve_places
@@ -228,6 +229,36 @@ def _merge_stay_events(ctx: RepairContext) -> None:
     merge_stay_events(ctx.draft, ctx.request)
 
 
+def _check_photo_assignment(ctx: RepairContext, args: dict) -> str:
+    """사진 귀속 상태를 사람이 읽을 문장으로 돌려준다.
+
+    draft 를 바꾸지 않는다. 어느 event 가 그 사진의 주인인지는 시각만으로 정할 수 없어
+    (시각이 가깝다고 의미까지 맞지는 않는다) Repair Agent 가 `update_event` 로 정한다.
+    """
+
+    assignment = inspect_photo_assignment(ctx.draft, ctx.request)
+    if not assignment.input_raw_ids:
+        return "입력에 사진이 없습니다."
+
+    missing = sorted(assignment.missing)
+    duplicated = assignment.duplicated
+    if not missing and not duplicated:
+        return (
+            f"사진 {len(assignment.input_raw_ids)}장이 모두 정확히 하나의 event 에 "
+            "연결돼 있습니다."
+        )
+
+    lines = [
+        f"사진 {len(assignment.input_raw_ids)}장 중 "
+        f"{assignment.assigned_count}장이 정상 연결됐습니다."
+    ]
+    if missing:
+        lines.append(f"어느 event 에도 없는 사진: {', '.join(missing)}")
+    for raw_id, event_ids in sorted(duplicated.items()):
+        lines.append(f"중복 연결된 사진 {raw_id}: {', '.join(event_ids)}")
+    return "\n".join(lines)
+
+
 # --- 상류 Agent 재실행 ---------------------------------------------------------
 
 
@@ -339,6 +370,16 @@ _TOOLS: dict[str, RepairTool] = {
             "reinforce_calendar_location",
             "캘린더 장소와 체류 장소가 일치하면 confidence 를 올린다.",
             lambda ctx: reinforce_calendar_location(ctx.draft, ctx.request),
+        ),
+        RepairTool(
+            name="check_photo_assignment",
+            usage="check_photo_assignment()",
+            description=(
+                "선택한 사진이 최종 event 에 어떻게 연결됐는지 대조한다. 어느 event 에도 "
+                "없는 사진과 여러 event 에 중복으로 들어간 사진을 알려 준다. 고치지는 "
+                "않는다 — 어느 event 가 그 사진의 주인인지는 update_event 로 정한다."
+            ),
+            run=_check_photo_assignment,
         ),
         RepairTool(
             name="rerun_event_agent",
