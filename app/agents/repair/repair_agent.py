@@ -56,6 +56,7 @@ from app.schemas import (
     TimelineWarningSeverity,
 )
 from app.services.draft_repair import repair_draft
+from app.services.fragment_guard import verify_fragment_usage
 
 logger = get_logger(__name__)
 
@@ -116,10 +117,23 @@ def _dedupe_warnings(draft: TimelineDraft) -> None:
     draft.warnings = kept
 
 
+def _fragment_raw_ids(ctx: RepairContext) -> set[str]:
+    """Event Agent 들이 fragment 로 남긴 rawId 전체."""
+
+    return {
+        str(fragment.raw_id)
+        for result in ctx.event_results.values()
+        for fragment in result.fragments
+    }
+
+
 def _confirm(ctx: RepairContext) -> None:
     """코드 확정 패스. 매 반복의 끝이자 다음 분석의 시작 상태를 만든다."""
 
     repair_draft(ctx.draft, ctx.request)
+    # 확정된 event 를 대상으로 본다. 병합·삭제로 구성이 바뀐 뒤라야 "이 event 의 근거가
+    # 정말 fragment 뿐인가" 를 옳게 판정한다.
+    verify_fragment_usage(ctx.draft, _fragment_raw_ids(ctx))
     _dedupe_warnings(ctx.draft)
 
 

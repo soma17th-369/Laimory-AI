@@ -31,8 +31,10 @@ _REQUIRED_PROMPTS: dict[str, dict[str, set[str]]] = {
         "v2": {"prompt.md"},
     },
     "agents/events/photo": {
+        # v1 은 메타데이터 fallback 도 LLM 으로 돌려 `describe_prompt.md` 를 읽는다.
+        # v2 는 그 자리를 코드 생성으로 바꿔(#56 §12) 파일이 필요 없다.
         "v1": {"prompt.md", "describe_prompt.md", "describe_vision_prompt.md"},
-        "v2": {"prompt.md", "describe_prompt.md", "describe_vision_prompt.md"},
+        "v2": {"prompt.md", "describe_vision_prompt.md"},
     },
 }
 
@@ -65,6 +67,17 @@ def test_prompt_files_are_not_empty(agent_dir: str, version: str) -> None:
         if not path.is_file():
             continue
         assert path.read_text(encoding="utf-8").strip(), f"{path} 가 비어 있습니다."
+
+
+def test_v2_has_no_metadata_describe_prompt() -> None:
+    """v2 의 메타데이터 fallback 은 코드가 만든다. 프롬프트가 있으면 안 쓰이는 파일이 된다."""
+
+    path = APP_ROOT / "agents/events/photo/prompts/v2/describe_prompt.md"
+
+    assert not path.exists(), (
+        "photo v2 세트에 describe_prompt.md 가 있습니다. "
+        "v2 의 메타데이터 description 은 MetadataPhotoDescriber 가 만듭니다(#56 §12)."
+    )
 
 
 @pytest.mark.parametrize(

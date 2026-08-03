@@ -14,7 +14,10 @@ import pytest
 from app.agents.events.photo import agent as agent_module
 from app.agents.events.photo import image_source as image_source_module
 from app.agents.events.photo.agent import PhotoEventAgent
-from app.agents.events.photo.describer import LLMPhotoDescriber, VisionPhotoDescriber
+from app.agents.events.photo.describer import (
+    MetadataPhotoDescriber,
+    VisionPhotoDescriber,
+)
 from app.agents.events.photo.image_source import (
     NullPhotoImageSource,
     PhotoImageSource,
@@ -70,42 +73,41 @@ def test_vision_describer_sends_image_bytes():
     assert sent[0].mime_type == "image/jpeg"
 
 
-def test_vision_and_metadata_paths_use_different_system_prompts():
-    """이미지를 첨부하는 호출에 메타데이터용 system 을 쓰면 안 된다.
+def test_metadata_fallback_does_not_call_llm():
+    """이미지를 못 구한 사진은 코드가 채운다(#56 §12). vision 호출만 남는다.
 
-    메타데이터 프롬프트는 "실제 이미지 픽셀은 제공되지 않습니다" 를 전제로 추정을
-    억제한다. 그대로 vision 에 쓰면 모델이 보이는 것까지 적지 않아 기능이 무의미해진다.
+    예전에는 이 자리에서도 LLM 을 불러 "메타데이터로 설명을 추정" 하게 했다. 이미지를
+    보지 못한 채 장면을 지어내는 구조였고, 그 문장이 event 추론의 근거가 됐다.
     """
 
     source = StubImageSource({PHOTO_1: ImageInput(data=JPEG, mime_type="image/jpeg")})
-    llm = FakeLLM([_VISION_RESPONSE, _META_RESPONSE])
+    llm = FakeLLM([_VISION_RESPONSE])
 
-    VisionPhotoDescriber(image_source=source, llm=llm).describe(
-        [photo(PHOTO_1), photo(PHOTO_2)]
-    )
+    out = VisionPhotoDescriber(
+        image_source=source, llm=llm, fallback=MetadataPhotoDescriber()
+    ).describe([photo(PHOTO_1), photo(PHOTO_2)])
 
-    vision_system, metadata_system = llm.calls[0].system, llm.calls[1].system
-    assert vision_system != metadata_system
-    assert "실제 이미지가 첨부됩니다" in vision_system
-    assert "실제 이미지 픽셀은 제공되지 않습니다" not in vision_system
-    assert "실제 이미지 픽셀은 제공되지 않습니다" in metadata_system
+    assert out[PHOTO_1] == "카페 테이블 위의 커피잔."
+    assert "알 수 없다" in out[PHOTO_2]
+    # 호출은 vision 한 번뿐이다. 메타데이터 경로는 LLM 을 쓰지 않는다.
+    assert len(llm.calls) == 1
+    assert llm.calls[0].images is not None
+    assert "실제 이미지가 첨부됩니다" in llm.calls[0].system
 
 
 def test_vision_describer_falls_back_to_metadata_without_image(caplog):
-    # 이미지 소스가 항상 None → 메타데이터 fallback 으로 채운다.
-    llm = FakeLLM([_META_RESPONSE])
+    # 이미지 소스가 항상 None → 코드 기반 메타데이터 fallback 으로 채운다.
+    llm = FakeLLM([_VISION_RESPONSE])
 
     with caplog.at_level("DEBUG"):
         out = VisionPhotoDescriber(
             image_source=NullPhotoImageSource(),
             llm=llm,
-            fallback=LLMPhotoDescriber(llm),
+            fallback=MetadataPhotoDescriber(),
         ).describe([photo(PHOTO_2)])
 
-    assert out == {PHOTO_2: "메타데이터로 추정한 사진."}
-    # vision 이 아니라 텍스트(complete) 호출로 처리됐다.
-    assert len(llm.calls) == 1
-    assert llm.calls[0].images is None
+    assert "알 수 없다" in out[PHOTO_2]
+    assert llm.calls == []  # LLM 을 전혀 부르지 않는다.
     assert not [
         record
         for record in caplog.records

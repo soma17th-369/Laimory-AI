@@ -23,7 +23,18 @@ Location candidate는 물리적인 이동·체류 흐름과 장소 역할을 설
 ## 입력 의미
 
 - `draft metadata`: 대상 날짜, timezone, `windowStart`, `windowEnd`입니다.
-- `location items`: STAY와 MOVEMENT 원본입니다.
+- `locationItems`: STAY와 MOVEMENT 원본입니다.
+- `derivedMetrics`: 코드가 원본에서 계산한 파생 지표입니다. 추정값이 아니라 계산값이므로
+  이동 수단·여정·공백 판단의 근거로 그대로 사용합니다. 계산할 수 없었던 항목은 아예 빠져
+  있습니다 — 없는 키를 추측으로 채우지 않습니다.
+  - `movements[]`: 이동별 `rawId`, `durationMinutes`, `distanceMeters`,
+    `averageSpeedKmh`, `transports`, 그리고 라벨과 속도가 어긋날 때만 `transportConflict`
+  - `movementGaps[]`: 연속한 두 이동 사이의 `gapMinutes`, 앞 도착지와 뒤 출발지의
+    `endpointDistanceMeters`, 그 사이를 설명하는 체류 기록이 있는지(`hasStayBetween`)
+  - `shortStayRawIds`: 20분 이하로 머문 STAY. 이동 중 위치 분절일 수 있습니다.
+  - `lastObservedAt`, `coverageGapMinutes`: 마지막 관측 시각과 그 이후 비어 있는 시간
+  - `originPlace`, `finalPlace`, `regionChanged`: 하루의 첫 지점과 마지막 지점, 그리고
+    둘이 서로 다른 장소를 가리키는지 여부
 - `user memory`: 집, 학교, 회사 등 사용자가 등록한 장소와 반복 생활 맥락입니다.
 
 ## 세부 산출 정보
@@ -50,9 +61,13 @@ Location candidate는 물리적인 이동·체류 흐름과 장소 역할을 설
 ### 연속 여정
 
 - 여러 MOVEMENT와 짧은 중간 STAY가 같은 방향의 연속된 이동을 가리키면 출발지와 주요 도착지를 중심으로 하나의 상위 여정 candidate를 생성합니다.
-- 도시·지역 변화, 거리, 소요시간, 평균 속도, 교통 거점, 전후 체류를 함께 사용합니다.
+- 거리, 소요시간, 평균 속도는 `derivedMetrics.movements[]`의 계산값을 사용합니다.
+  지역 변화 여부는 `derivedMetrics.regionChanged`와 `originPlace`·`finalPlace`를 사용합니다.
+  여기에 교통 거점과 전후 체류 맥락을 더해 판단합니다.
 - 장거리 이동 candidate에는 출발지, 주요 도착지, 도착 후 이어진 지역 내 이동을 설명합니다.
-- 교통수단은 센서 라벨과 계산된 속도 및 경로가 함께 지지하는 수준으로 표현합니다.
+- 교통수단은 센서 라벨(`transports`)과 계산된 `averageSpeedKmh`가 함께 지지하는 수준으로
+  표현합니다. `transportConflict`가 있으면 그 라벨은 속도로 설명되지 않는다는 뜻이므로
+  이동수단을 단정하지 말고 근거 한계를 `uncertainty`에 남깁니다.
 - 구체적인 열차·버스·노선 정보가 확인되는 경우에만 해당 명칭을 사용하고, 그 외에는 `장거리 교통수단`, `차량`, `도보`처럼 근거 범위에 맞는 표현을 사용합니다.
 - 상위 여정의 `sourceRefs`에는 관련된 모든 STAY와 MOVEMENT rawId를 포함합니다.
 
@@ -61,13 +76,15 @@ Location candidate는 물리적인 이동·체류 흐름과 장소 역할을 설
 - 같은 장소를 가리키는 STAY 사이에 실제 이동 근거가 없고 위치 오차 범위가 일치하면 하나의 체류 candidate로 연결할 수 있습니다.
 - 연결한 체류의 시간은 첫 관측과 마지막 관측을 기준으로 하고, 중간 수집 공백은 `uncertainty`에 명시합니다.
 - 이동 근거가 있는 구간은 외출 또는 장소 변화 흐름으로 구성합니다.
-- 짧은 STAY가 전체 이동 경로 안에 있고 독립 활동 근거가 약하면 이동 중 위치 분절로 상위 여정에 포함합니다.
+- 짧은 STAY가 전체 이동 경로 안에 있고 독립 활동 근거가 약하면 이동 중 위치 분절로 상위 여정에 포함합니다. `derivedMetrics.shortStayRawIds`가 20분 이하로 머문 STAY를 알려 줍니다.
 - 짧은 STAY에 명확한 장소명, 충분한 체류시간, 반복 방문 패턴이 있으면 실제 방문 가능성을 candidate 또는 fragment로 보존합니다.
 
 ### 이동 사이 공백
 
-서로 다른 MOVEMENT 사이에 시간 공백이 있고 그 구간에 명시적인 이동 기록이 없다면, 사람이 사라진 것이 아니라 **어딘가에 머물렀다는 뜻**입니다.
+서로 다른 MOVEMENT 사이에 시간 공백이 있고 그 구간에 명시적인 이동 기록이 없다면, 사람이 사라진 것이 아니라 **어딘가에 머물렀다는 뜻**입니다. `derivedMetrics.movementGaps[]`가 그 공백을 `gapMinutes`로 알려 줍니다.
 
+- `hasStayBetween`이 거짓인 공백을 우선 검토합니다. 그 구간을 설명하는 체류 기록이 없다는 뜻입니다.
+- `endpointDistanceMeters`가 작으면 앞 도착지와 뒤 출발지가 사실상 같은 지점이므로 그 장소에 머문 것으로 봅니다.
 - 이전 이동의 도착지 또는 다음 이동의 출발지에서 체류했을 가능성을 검토합니다.
 - 두 지점이 같은 장소를 가리키면 그 장소의 체류 candidate로 구성합니다.
 - 두 지점이 다르면 어느 쪽인지 확정하지 말고, 확인 가능한 범위를 `uncertainty`에 남긴 fragment 또는 낮은 confidence candidate로 전달합니다.
@@ -84,7 +101,7 @@ Location candidate는 물리적인 이동·체류 흐름과 장소 역할을 설
 
 ## 데이터 공백
 
-- 입력된 Location raw의 마지막 관측 시각과 기록 사이의 시간 간격을 사용해 위치 데이터가 끊긴 시점을 파악합니다.
+- `derivedMetrics.lastObservedAt`이 위치 기록이 끊긴 시점이고, `coverageGapMinutes`가 그 이후 window 끝까지 비어 있는 시간입니다. `coverageGapMinutes`가 있으면 그 구간은 확정할 수 없는 시간입니다.
 - 마지막으로 확인된 시각, 장소, 활동, 공백 시작 시점을 candidate 또는 fragment의 `description`과 `uncertainty`에 포함합니다.
 - 공백 이후의 장소, 활동, 귀가 여부는 Location raw와 User Memory가 제공하는 범위에서 confidence를 정합니다.
 - 마지막 이동이 User Memory의 집으로 이어지면 귀가 가능성을 표현할 수 있습니다.

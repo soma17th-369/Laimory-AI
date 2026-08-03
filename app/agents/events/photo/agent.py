@@ -32,7 +32,11 @@ from app.agents.parsing import (
     user_memory_to_text,
 )
 from app.agents.prompt_loader import load_prompt
+from app.core.langfuse_tracing import trace_observation, update_observation
+from app.core.logging import get_logger, log_fields
 from app.schemas import AgentEventResult, TimelineDraftRequest
+
+logger = get_logger(__name__)
 
 _SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
 
@@ -46,6 +50,7 @@ class PhotoEventAgent(EventAgent):
     """사진 source를 해석하는 추론 Agent (describe → infer graph)."""
 
     name = "photo"
+    source_attrs = ("photos",)
 
     def __init__(
         self,
@@ -61,18 +66,21 @@ class PhotoEventAgent(EventAgent):
             self._llm = default_llm()
         return self._llm
 
-    @property
-    def describer(self) -> PhotoDescriber:
-        # 기본 describer 는 실제 이미지를 vision 으로 보는 VisionPhotoDescriber 다.
-        # 이미지 소스는 설정 기반(default_photo_image_source)이며, 이미지를 못 구한
-        # 사진은 내부 fallback(메타데이터 기반)으로 자동 대체된다. agent 와 동일한
-        # LLM 을 공유한다.
-        if self._describer is None:
-            self._describer = VisionPhotoDescriber(
-                image_source=default_photo_image_source(),
-                llm=self._llm,
-            )
-        return self._describer
+    def _build_describer(self, request: TimelineDraftRequest) -> PhotoDescriber:
+        """기본 describer 는 실제 이미지를 vision 으로 보는 `VisionPhotoDescriber` 다.
+
+        이미지 소스는 설정 기반(`default_photo_image_source`)이며, 이미지를 못 구한
+        사진은 메타데이터 fallback 으로 자동 대체된다. fallback 이 촬영 시각의 장소를
+        적을 수 있도록 요청의 STAY 를 넘긴다(#56 §12).
+        """
+
+        if self._describer is not None:
+            return self._describer
+        return VisionPhotoDescriber(
+            image_source=default_photo_image_source(),
+            llm=self._llm,
+            stays=list(request.stays),
+        )
 
     def _generate(self, request: TimelineDraftRequest) -> AgentEventResult:
         items = list(getattr(request, "photos", None) or [])
@@ -81,7 +89,7 @@ class PhotoEventAgent(EventAgent):
         return self._run_graph(items, request)
 
     def _run_graph(self, items: list, request: TimelineDraftRequest) -> AgentEventResult:
-        describer = self.describer
+        describer = self._build_describer(request)
         llm = self.llm
 
         def describe_node(state: _State) -> _State:
@@ -110,6 +118,7 @@ class PhotoEventAgent(EventAgent):
             result = llm.complete_structured(
                 infer_prompt, AgentEventResult, system=_SYSTEM_PROMPT, temperature=0.2
             )
+            _observe_photo_counts(items, photos, result)
             return {"result": result}
 
         graph = StateGraph(_State)
@@ -119,6 +128,45 @@ class PhotoEventAgent(EventAgent):
         graph.add_edge("describe", "infer")
         graph.add_edge("infer", END)
         return graph.compile().invoke({"photos": items})["result"]
+
+
+def _observe_photo_counts(
+    selected: list, described: list, result: AgentEventResult
+) -> None:
+    """사진이 단계마다 몇 장씩 살아남았는지 남긴다 (#56 §7.3).
+
+    사진이 최종 타임라인에서 사라졌을 때 **어느 단계에서** 빠졌는지 알 수 있어야 한다.
+    선택 → 설명 생성 → candidate·fragment 로 이어지는 개수를 한 줄에 모아 둔다.
+
+    운영 이벤트(#53)에는 넣지 않는다. 수집 대상은 allowlist 로 고정돼 있고, 이건 AI 실행
+    관측이라 Langfuse 쪽이다. rawId 는 어느 쪽에도 남기지 않는다.
+    """
+
+    covered = {
+        str(ref.raw_id)
+        for candidate in result.candidates
+        for ref in candidate.source_refs
+    } | {str(fragment.raw_id) for fragment in result.fragments}
+
+    described_count = sum(1 for photo in described if not needs_description(photo))
+    covered_count = sum(1 for photo in described if str(photo.raw_id) in covered)
+    counts = {
+        "photoSelectedCount": len(selected),
+        "photoDescribedCount": described_count,
+        "photoAgentInputCount": len(described),
+        "photoInCandidateOrFragmentCount": covered_count,
+        "candidateCount": len(result.candidates),
+        "fragmentCount": len(result.fragments),
+    }
+    with trace_observation(
+        "photo-stage-counts", as_type="span", metadata=counts
+    ) as observation:
+        # 선택한 사진이 candidate·fragment 어디에도 못 들어갔으면 관측에서 눈에 띄어야 한다.
+        update_observation(
+            observation,
+            level="WARNING" if covered_count < len(described) else None,
+        )
+    logger.debug("사진 단계별 개수", extra=log_fields(**counts))
 
 
 def _photo_items_to_text(items: list) -> str:

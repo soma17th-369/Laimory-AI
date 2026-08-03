@@ -65,6 +65,8 @@ from app.schemas import (
 from app.services.calendar_guard import ensure_calendar_events
 from app.services.calendar_location import reinforce_calendar_location
 from app.services.meal_guard import enforce_meal_duration
+from app.services.notification_guard import verify_notification_draft
+from app.services.photo_guard import verify_photo_assignment
 from app.services.place_resolver import resolve_places
 from app.services.sleep_guard import enforce_sleep_boundary
 from app.services.source_lookup import normalize_source_types, raw_id_of
@@ -610,6 +612,14 @@ def repair_draft(draft: TimelineDraft, request: TimelineDraftRequest) -> Timelin
     sort_events(draft)
     merge_stay_events(draft, request)
     resolve_overlaps(draft)
+
+    # 사진 귀속 검사는 병합·겹침 정리 **뒤**여야 한다. 앞에 두면 곧 사라질 event 를
+    # 기준으로 판정해, 병합으로 event 가 합쳐지면서 생긴 중복을 놓친다.
+    verify_photo_assignment(draft, request)
+    # Notification Agent 결과를 통과한 뒤에도 Timeline/Repair가 문장을 다시 조립하면서
+    # 민감정보나 근거 없는 관계명을 만들 수 있어 최종 draft를 한 번 더 검사한다.
+    verify_notification_draft(draft, request)
+
     reinforce_calendar_location(draft, request)
     # source 하나를 여러 event가 근거로 사용할 수 있다. 현재는 timeline_items에
     # event별 source 스냅샷을 저장하고, 향후 N:M 연결 테이블이 이 관계를 맡는다.

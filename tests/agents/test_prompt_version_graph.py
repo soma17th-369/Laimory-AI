@@ -18,6 +18,7 @@ from tests.fixtures.requests import make_request, sleep_item, stay_item
 _AGENT_MODULES = {
     "location": "app.agents.events.location.agent",
     "sleep_activity": "app.agents.events.sleep_activity.agent",
+    "photo_describer": "app.agents.events.photo.describer",
 }
 
 
@@ -100,3 +101,25 @@ def test_v2_runs_single_structured_call(
     getattr(module, attr)(llm=llm).generate(build_request())
 
     assert len(llm.calls) == 1, "v2 는 단일 structured 호출이어야 합니다."
+
+
+def test_v1_uses_llm_metadata_describer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v1 롤백은 사진 메타데이터 fallback 동작까지 되돌려야 한다."""
+
+    describer = _reload_agents(monkeypatch, "v1")["photo_describer"]
+
+    assert describer._USE_LLM_METADATA_DESCRIBER is True
+    assert describer._DESCRIBE_PROMPT is not None
+    fallback = describer.VisionPhotoDescriber(llm=FakeLLM([result_json()])).fallback
+    assert isinstance(fallback, describer.LLMPhotoDescriber)
+
+
+def test_v2_uses_code_metadata_describer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v2 의 메타데이터 설명은 코드가 만든다(#56 §12). LLM 을 부르지 않는다."""
+
+    describer = _reload_agents(monkeypatch, "v2")["photo_describer"]
+
+    assert describer._USE_LLM_METADATA_DESCRIBER is False
+    assert describer._DESCRIBE_PROMPT is None
+    fallback = describer.VisionPhotoDescriber(llm=FakeLLM([result_json()])).fallback
+    assert isinstance(fallback, describer.MetadataPhotoDescriber)

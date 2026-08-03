@@ -42,6 +42,7 @@ class SleepActivityEventAgent(EventAgent):
     """수면·활동 source 를 해석하는 추론 Agent (infer → review graph)."""
 
     name = "sleep_activity"
+    source_attrs = ("healths",)
 
     def __init__(self, llm: SupportsComplete | None = None) -> None:
         self._llm = llm
