@@ -23,7 +23,6 @@ draft**(첫 확정 또는 마지막 성공 반복의 결과)를 돌려주고 war
 """
 
 import json
-from pathlib import Path
 from time import perf_counter
 from typing import TypedDict
 
@@ -32,6 +31,7 @@ from langgraph.graph import END, START, StateGraph
 from app.agents.base import Agent
 from app.agents.events.base_event_agent import EventAgent
 from app.agents.parsing import SupportsComplete, default_llm
+from app.agents.prompt_loader import load_prompt
 from app.agents.repair.tools import (
     RepairContext,
     execute_tool_calls,
@@ -59,7 +59,7 @@ from app.services.draft_repair import repair_draft
 
 logger = get_logger(__name__)
 
-_SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text(encoding="utf-8")
+_SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
 
 
 def parse_repair_plan(text: str) -> RepairPlan:

@@ -37,7 +37,8 @@ ENV PYTHONUNBUFFERED=1 \
 ENV APP_ENV=prod \
     LOG_LEVEL=INFO \
     LOG_FORMAT=json \
-    LLM_PROVIDER=bedrock
+    LLM_PROVIDER=bedrock \
+    PROMPT_VERSION=v1
 
 WORKDIR /app
 

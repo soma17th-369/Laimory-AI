@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     # 사용할 LLM provider (openai | gemini | ... )
     llm_provider: str
 
+    # 모든 Agent가 함께 사용할 프롬프트 세트 버전. 버전별 파일은 각 Agent의
+    # `prompts/{version}/` 아래에 두며, 일부 Agent만 다른 버전을 쓰지 않는다.
+    prompt_version: Literal["v1", "v2"] = "v1"
+
     # provider 별 자격 증명/모델.
     # 실제로 사용하는 provider 것만 채우면 되므로 기본값은 빈 값("")이며,
     # 값이 비어 있는지에 대한 검증은 해당 provider 를 생성하는 시점(app/core/llm.py)에서 한다.
@@ -172,6 +176,13 @@ class Settings(BaseSettings):
 
     # 재시도 간 대기 시간(초). 시도마다 2배씩 늘린다(0.5 → 1.0 → 2.0).
     app_server_retry_backoff_sec: float = 0.5
+
+    @field_validator("prompt_version", mode="before")
+    @classmethod
+    def normalize_prompt_version(cls, value: object) -> str:
+        """프롬프트 버전 표기를 정규화한다. 지원 여부는 Literal 검증이 맡는다."""
+
+        return str(value).strip().lower()
 
     @field_validator("app_server_api_url", mode="before")
     @classmethod

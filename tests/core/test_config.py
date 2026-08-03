@@ -65,6 +65,32 @@ def test_app_server_retry_defaults() -> None:
     assert configured.app_server_retry_backoff_sec == 0.5
 
 
+def test_prompt_version_defaults_to_v1(monkeypatch) -> None:
+    monkeypatch.delenv("PROMPT_VERSION", raising=False)
+
+    assert _settings().prompt_version == "v1"
+
+
+def test_prompt_version_is_normalized() -> None:
+    assert _settings(prompt_version=" V1 ").prompt_version == "v1"
+
+
+def test_prompt_version_is_read_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("PROMPT_VERSION", " V1 ")
+
+    assert _settings().prompt_version == "v1"
+
+
+def test_supported_prompt_versions_are_accepted() -> None:
+    assert _settings(prompt_version="v2").prompt_version == "v2"
+    assert _settings(prompt_version=" V2 ").prompt_version == "v2"
+
+
+def test_unknown_prompt_version_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        _settings(prompt_version="v3")
+
+
 def test_app_server_max_attempts_must_be_at_least_one() -> None:
     with pytest.raises(ValidationError):
         _settings(app_server_max_attempts=0)

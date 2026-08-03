@@ -1,10 +1,9 @@
 """Calendar Event Agent.
 
 캘린더 일정은 입력이 비교적 직접적이라 별도 graph 없이 **단일 LLM 호출**로
-후보를 추론한다. 프롬프트는 같은 폴더의 `prompt.md`(system)에서 읽어 연결한다.
+후보를 추론한다. system 프롬프트는 이 Agent의 `prompts/{PROMPT_VERSION}/prompt.md`
+에서 읽어 연결한다.
 """
-
-from pathlib import Path
 
 from app.agents.events.base_event_agent import EventAgent
 from app.agents.parsing import (
@@ -14,9 +13,10 @@ from app.agents.parsing import (
     items_to_text,
     user_memory_to_text,
 )
+from app.agents.prompt_loader import load_prompt
 from app.schemas import AgentEventResult, TimelineDraftRequest
 
-_SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text(encoding="utf-8")
+_SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
 
 
 class CalendarEventAgent(EventAgent):

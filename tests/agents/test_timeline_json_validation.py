@@ -8,6 +8,7 @@
 import json
 from pathlib import Path
 
+from app.agents.prompt_loader import load_prompt
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.schemas import AgentEventResult
 from tests.fixtures.fake_llm import FakeLLM, candidate
@@ -66,13 +67,14 @@ def _response(events) -> str:
 
 
 def test_timeline_prompt_allows_one_source_to_support_multiple_events():
-    prompt = (
+    module_file = (
         Path(__file__).resolve().parents[2]
         / "app"
         / "agents"
         / "timeline"
-        / "timeline.md"
-    ).read_text(encoding="utf-8")
+        / "timeline_agent.py"
+    )
+    prompt = load_prompt(module_file, "timeline.md")
 
     assert "각 event가 그 source를 함께 참조할 수 있습니다" in prompt
     assert "하나의 `rawId`는 오직 하나의 event" not in prompt
