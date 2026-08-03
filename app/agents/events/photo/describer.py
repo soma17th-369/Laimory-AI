@@ -3,10 +3,14 @@
 수집 입력의 사진 `description` 은 보통 `null` 로 온다. PhotoEventAgent 가 event
 를 추론하기 전에, description 이 비어 있는 사진들의 설명을 여기서 채운다.
 
-description 은 **실제 사진**을 vision 모델로 보고 만들어야 정확하다. 기본 구현인
-`VisionPhotoDescriber` 가 `PhotoImageSource`(운영에서는 App Server 가 준 `photoUrl`)
-에서 이미지를 내려받아 vision 호출에 싣는다. 이미지를 구하지 못한 사진은 v1에서
-`LLMPhotoDescriber`, v2에서 결정론적 `MetadataPhotoDescriber` 로 채운다.
+description 은 **실제 사진**을 vision 모델로 보고 만들어야 정확하다. 그래서 경로가
+두 단계뿐이다(#59).
+
+1. 모든 사진은 `VisionPhotoDescriber` 를 거친다. `PhotoImageSource`(운영에서는 App
+   Server 가 준 `photoUrl`)에서 이미지를 내려받아 `describe_vision_prompt.md` 와 함께
+   vision 호출에 싣는다.
+2. 이미지를 구하지 못했거나 vision 응답에서 빠진 사진만 `LLMPhotoDescriber` 가
+   `describe_prompt.md` 로 채운다. 프롬프트 버전과 무관하게 같은 순서다.
 
 호출 단위는 **배치 1회**다. description 이 필요한 사진 전부를 한 번의 LLM 호출로
 처리해 호출 수를 아낀다. 그래서 이미지 총량 상한이 중요하다 — 한 요청에 실리는
@@ -21,11 +25,11 @@ from typing import Protocol
 from app.agents.events.photo.image_source import (
     NullPhotoImageSource,
     PhotoImageSource,
+    default_photo_image_source,
     load_images,
 )
 from app.agents.parsing import SupportsComplete, default_llm
 from app.agents.prompt_loader import load_prompt
-from app.core.config import settings
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import report_error
 from app.core.langfuse_tracing import trace_observation, update_observation
@@ -39,18 +43,13 @@ logger = get_logger(__name__)
 
 _VISION_DESCRIBE_PROMPT = load_prompt(__file__, "describe_vision_prompt.md")
 
-#: 메타데이터 fallback 을 LLM 으로 돌리는 것은 v1 전용이다.
+#: 이미지를 구하지 못한 사진의 fallback 프롬프트. 프롬프트 버전과 무관하게 항상 쓴다(#59).
 #:
-#: v1 은 이미지를 보지 못한 채 촬영 시각·좌표만 주고 "설명을 추정하라" 고 시켰다. 모델은
-#: 시키는 대로 그럴듯한 장면을 만들었고 그 문장이 event 추론의 근거가 됐다. v2 부터는
-#: 코드가 아는 사실만 옮긴다(#56 §12).
-#:
-#: 버전으로 가르는 이유는 review 노드와 같다 — `PROMPT_VERSION=v1` 로 되돌리면 그때의
-#: 동작이 그대로 돌아와야 비교가 성립한다.
-_USE_LLM_METADATA_DESCRIBER = settings.prompt_version == "v1"
-_DESCRIBE_PROMPT = (
-    load_prompt(__file__, "describe_prompt.md") if _USE_LLM_METADATA_DESCRIBER else None
-)
+#: v2 는 한때 이 자리를 코드가 만드는 `MetadataPhotoDescriber` 로 바꿨었다(#56 §12).
+#: 이미지를 못 본 채 장면을 지어내는 걸 막으려는 의도였는데, 정작 vision 경로가 설정
+#: 때문에 한 번도 돌지 않아 **모든** 사진이 그 고정 문장을 받고 있었다. vision 을 기본으로
+#: 되돌리면서 fallback 도 다시 프롬프트 기반으로 통일했다.
+_DESCRIBE_PROMPT = load_prompt(__file__, "describe_prompt.md")
 
 
 class SupportsVision(Protocol):
@@ -123,15 +122,26 @@ class PhotoDescriber(ABC):
 
 
 class LLMPhotoDescriber(PhotoDescriber):
-    """메타데이터를 배치로 넣어 LLM 이 description 을 추정하는 fallback (v1 전용).
+    """메타데이터를 배치로 넣어 LLM 이 description 을 추정하는 fallback (#59).
 
-    이미지를 보지 못한 채 촬영 시각·좌표만으로 장면을 추정하므로 설명이 확정적이지 않다.
-    v2 는 이 자리를 `MetadataPhotoDescriber` 로 바꿨다(#56 §12). 이 클래스는
-    `PROMPT_VERSION=v1` 롤백이 그때의 동작을 그대로 되살리기 위해 남아 있다.
+    이미지를 보지 못한 채 촬영 시각·좌표만으로 추정하므로 설명이 확정적이지 않다.
+    그래서 **이미지를 구하지 못한 사진에만** 쓴다. 정상 경로는 언제나
+    `VisionPhotoDescriber` 의 vision 호출이다.
+
+    `stays` 를 주면 촬영 시각을 덮는 체류의 장소명을 프롬프트에 함께 싣는다.
+    `describe_prompt.md` 가 "입력에 장소명이나 주소가 함께 제공된 경우에만 해당 명칭을
+    사용" 하도록 쓰여 있어, 이 값이 있어야 그 문장이 의미를 갖는다.
     """
 
-    def __init__(self, llm: SupportsComplete | None = None) -> None:
+    def __init__(
+        self,
+        llm: SupportsComplete | None = None,
+        stays: list[StayItem] | None = None,
+        tz: tzinfo | None = None,
+    ) -> None:
         self._llm = llm
+        self._stays = list(stays or [])
+        self._tz = tz or timezone(timedelta(hours=9))
 
     @property
     def llm(self) -> SupportsComplete:
@@ -144,23 +154,52 @@ class LLMPhotoDescriber(PhotoDescriber):
         if not targets:
             return {}  # 채울 사진이 없으면 LLM 을 호출하지 않는다.
 
-        prompt = _metadata_prompt(targets)
+        prompt = _metadata_prompt(targets, self._stays, self._tz)
         text = self.llm.complete(prompt, system=_DESCRIBE_PROMPT, temperature=0.2)
         return parse_descriptions(text, {photo.raw_id for photo in targets})
 
 
-def _metadata_prompt(photos: list[PhotoItem]) -> str:
-    """이미지 없이 메타데이터만으로 설명을 요청하는 프롬프트(v1 전용)."""
+def _place_at(
+    stays: list[StayItem], taken_at: datetime | None, tz: tzinfo
+) -> str | None:
+    """촬영 시각을 덮는 체류의 장소명. 없으면 None."""
 
-    rows = [
-        {
+    if taken_at is None:
+        return None
+    for stay in stays:
+        start = parse_datetime(stay.start_at, tz)
+        end = parse_datetime(stay.end_at, tz) if stay.end_at else start
+        if start is None or end is None:
+            continue
+        if start <= taken_at <= end:
+            return stay.place or stay.address
+    return None
+
+
+def _metadata_prompt(
+    photos: list[PhotoItem],
+    stays: list[StayItem] | None = None,
+    tz: tzinfo | None = None,
+) -> str:
+    """이미지 없이 메타데이터만으로 설명을 요청하는 프롬프트.
+
+    `place` 는 근거가 있을 때만 넣는다. 값을 만들어 채우면 LLM 이 그걸 사실로 읽는다.
+    """
+
+    stays = list(stays or [])
+    tz = tz or timezone(timedelta(hours=9))
+    rows = []
+    for photo in photos:
+        row: dict[str, object] = {
             "rawId": photo.raw_id,
             "takenAt": photo.taken_at,
             "lat": photo.latitude,
             "lon": photo.longitude,
         }
-        for photo in photos
-    ]
+        place = _place_at(stays, parse_datetime(photo.taken_at, tz), tz)
+        if place:
+            row["place"] = place
+        rows.append(row)
     return (
         "아래 사진들의 description 을 각각 생성하세요. 실제 이미지는 제공되지 않으니 "
         "메타데이터로만 신중히 추정하고, 보이지 않는 구체 사물을 지어내지 말며 "
@@ -172,18 +211,17 @@ def _metadata_prompt(photos: list[PhotoItem]) -> str:
 
 
 class MetadataPhotoDescriber(PhotoDescriber):
-    """메타데이터만으로 description 을 **코드가** 만드는 fallback 구현 (#56 §12).
+    """메타데이터만으로 description 을 **코드가** 만드는 구현 (#56 §12).
 
-    이미지를 구하지 못했을 때 쓴다. 예전에는 이 자리에서도 LLM 을 한 번 더 불렀는데,
-    이미지를 보지 못한 채 촬영 시각과 좌표만 넘겨 주고 "설명을 지어내라" 고 시키는
-    구조였다. 모델은 시키는 대로 그럴듯한 장면을 만들어 냈고, 그 문장이 그대로 event
-    추론의 근거가 됐다.
+    LLM 없이 아는 사실(언제 찍혔는가, 좌표가 있는가, 그 시각 사용자가 어디에 있었는가)만
+    문장으로 옮긴다. 지어낼 여지가 없는 대신 사진마다 거의 같은 문장이 나온다.
 
-    코드가 만들면 지어낼 여지가 없다. 아는 사실(언제 찍혔는가, 좌표가 있는가, 그 시각
-    사용자가 어디에 있었는가)만 문장으로 옮기고, 모르는 것은 쓰지 않는다.
+    **기본 경로에서는 더 이상 쓰지 않는다(#59).** 한때 v2 의 fallback 이었는데, 정작
+    vision 이 설정 때문에 한 번도 돌지 않아 모든 사진이 이 고정 문장을 받고 있었다.
+    지금 fallback 은 `LLMPhotoDescriber` 다. 이 클래스는 LLM 호출 없이 결정론적 설명이
+    필요할 때(테스트·오프라인 검증) 주입해서 쓴다.
 
-    `stays` 를 주면 촬영 시각을 덮는 체류의 장소명을 함께 넣는다. §12 의 "기존 장소
-    정보" 가 이것이다.
+    `stays` 를 주면 촬영 시각을 덮는 체류의 장소명을 함께 넣는다.
     """
 
     def __init__(self, stays: list[StayItem] | None = None, tz: tzinfo | None = None) -> None:
@@ -203,7 +241,7 @@ class MetadataPhotoDescriber(PhotoDescriber):
         else:
             parts.append("촬영 시각을 알 수 없는 사진")
 
-        place = self._place_at(taken_at)
+        place = _place_at(self._stays, taken_at, self._tz)
         if place:
             parts.append(f"{place}에서 촬영된 것으로 보인다")
         elif photo.latitude is not None and photo.longitude is not None:
@@ -212,33 +250,19 @@ class MetadataPhotoDescriber(PhotoDescriber):
         parts.append("이미지를 확인하지 못해 무엇이 담겼는지는 알 수 없다")
         return ". ".join(parts) + "."
 
-    def _place_at(self, taken_at: datetime | None) -> str | None:
-        """촬영 시각을 덮는 체류의 장소명. 없으면 None."""
-
-        if taken_at is None:
-            return None
-        for stay in self._stays:
-            start = parse_datetime(stay.start_at, self._tz)
-            end = parse_datetime(stay.end_at, self._tz) if stay.end_at else start
-            if start is None or end is None:
-                continue
-            if start <= taken_at <= end:
-                return stay.place or stay.address
-        return None
-
 
 class VisionPhotoDescriber(PhotoDescriber):
     """이미지 소스에서 실제 사진을 불러와 vision 모델로 description 을 만드는 describer.
 
     `PhotoImageSource`(운영에서는 `photoUrl` 다운로드)에서 이미지를 모아 **배치 1회**
-    vision 호출로 처리한다. 이미지를 구하지 못한 사진은 메타데이터 기반
-    describer(`fallback`)로 대체해, 이미지가 일부만 있어도 최대한 채운다.
+    vision 호출로 처리한다. 이미지를 구하지 못했거나 vision 응답에서 빠진 사진만
+    `fallback`(기본 `LLMPhotoDescriber`)으로 대체해, 이미지가 일부만 있어도 최대한 채운다.
 
-    이미지 소스가 `NullPhotoImageSource` 면 모든 사진이 fallback 으로 가므로
-    `MetadataPhotoDescriber` 와 동일하게 동작한다. `PHOTO_URL_ALLOWED_HOSTS` 를 지정하지
-    않은 환경이 여기에 해당한다.
+    이미지 소스 기본값은 `default_photo_image_source()` 라 별도 설정 없이 곧바로
+    `photoUrl` 을 내려받는다(#59). `NullPhotoImageSource` 를 명시로 주입하면 모든 사진이
+    fallback 으로 가는데, 이건 테스트에서 다운로드를 끌 때 쓰는 경로다.
 
-    `stays` 는 fallback 이 촬영 시각의 장소를 적을 때 쓴다(#56 §12).
+    `stays` 는 fallback 이 촬영 시각의 장소를 프롬프트에 실을 때 쓴다.
     """
 
     def __init__(
@@ -248,7 +272,7 @@ class VisionPhotoDescriber(PhotoDescriber):
         fallback: PhotoDescriber | None = None,
         stays: list[StayItem] | None = None,
     ) -> None:
-        self._image_source = image_source or NullPhotoImageSource()
+        self._image_source = image_source or default_photo_image_source()
         self._llm = llm
         self._fallback = fallback
         self._stays = list(stays or [])
@@ -261,12 +285,10 @@ class VisionPhotoDescriber(PhotoDescriber):
 
     @property
     def fallback(self) -> PhotoDescriber:
+        """이미지를 못 구한 사진을 채우는 2단계. 프롬프트 버전과 무관하다(#59)."""
+
         if self._fallback is None:
-            self._fallback = (
-                LLMPhotoDescriber(self._llm)
-                if _USE_LLM_METADATA_DESCRIBER
-                else MetadataPhotoDescriber(self._stays)
-            )
+            self._fallback = LLMPhotoDescriber(self._llm, self._stays)
         return self._fallback
 
     def describe(self, photos: list[PhotoItem]) -> dict[str, str]:
@@ -274,8 +296,8 @@ class VisionPhotoDescriber(PhotoDescriber):
         if not targets:
             return {}
 
-        # allowlist 미설정 등으로 이미지 소스가 의도적으로 비활성인 경우다. 다운로드
-        # 실패가 아니므로 thread pool·WARNING 관측 없이 바로 메타데이터 fallback 한다.
+        # 이미지 소스를 명시로 꺼 둔 경우다(테스트). 다운로드 실패가 아니므로
+        # thread pool·WARNING 관측 없이 바로 fallback 한다.
         if isinstance(self._image_source, NullPhotoImageSource):
             return self.fallback.describe(targets)
 

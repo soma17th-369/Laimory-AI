@@ -94,11 +94,6 @@ class Settings(BaseSettings):
     # vision 모델에 넘기기 위한 정책이다. 장당 크기·형식·장수 기본값은 App Server 의
     # 업로드 제한(장당 5MB, 요청당 20장, JPEG/PNG/WebP)과 맞춘다.
 
-    #: 다운로드를 허용할 호스트 suffix 목록(쉼표 구분). **비어 있으면 URL 다운로드를
-    #: 하지 않는다**(fail closed) — 그 경우 모든 사진이 메타데이터 fallback 으로 간다.
-    #: SSRF 방어의 1차 방어선이라 기본값을 열어 두지 않는다.
-    photo_url_allowed_hosts: str = ""
-
     #: 이미지 하나를 받는 데 허용할 시간(초).
     photo_download_timeout_sec: float = 5.0
 
@@ -120,16 +115,6 @@ class Settings(BaseSettings):
 
     #: 배치 전체 다운로드에 허용할 시간(초). 넘기면 못 받은 사진은 fallback 으로 간다.
     photo_download_budget_sec: float = 30.0
-
-    @property
-    def photo_allowed_host_suffixes(self) -> tuple[str, ...]:
-        """`photo_url_allowed_hosts` 를 비교 가능한 소문자 suffix 튜플로 돌려준다."""
-
-        return tuple(
-            host.strip().lower().lstrip(".")
-            for host in self.photo_url_allowed_hosts.split(",")
-            if host.strip()
-        )
 
     @field_validator(
         "photo_max_image_bytes",

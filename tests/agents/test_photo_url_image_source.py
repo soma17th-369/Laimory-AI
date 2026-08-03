@@ -1,12 +1,13 @@
-"""`photoUrl` 이미지 다운로드 계약 (이슈 #52).
+"""`photoUrl` 이미지 다운로드 계약 (이슈 #52, #59).
 
 검증하는 것은 네 갈래다.
 
-1. **정상 경로** — allowlist 안의 https URL 에서 받은 bytes 와 MIME 이 `ImageInput` 이 된다.
+1. **정상 경로** — URL 에서 받은 bytes 와 MIME 이 `ImageInput` 이 된다. 호스트 allowlist 는
+   없다(#59) — 설정 없이 임의 호스트를 받는 것이 계약이다.
 2. **거부 경로** — HTTP 오류·timeout·형식·크기·빈 응답은 예외 없이 `None` 이고,
    그래서 타임라인이 실패하지 않는다.
-3. **URL 정책(SSRF)** — https 아님·userinfo·allowlist 밖·redirect 는 **요청을 보내기 전에**
-   또는 따라가기 전에 막힌다.
+3. **URL 형식 정책** — 파싱 불가·지원하지 않는 scheme·userinfo·호스트 없음은 **요청을
+   보내기 전에** 막히고, redirect 는 따라가지 않는다.
 4. **유출 금지** — 실패 로그 어디에도 URL 값과 query 가 남지 않는다.
 """
 
@@ -29,7 +30,6 @@ from app.core.llm import ImageInput
 from app.schemas import PhotoItem
 from tests.fixtures.requests import fixture_raw_id
 
-ALLOWED = ("images.example.com",)
 PHOTO_URL = "https://images.example.com/a.jpg?X-Amz-Signature=deadbeefcafe&X-Amz-Expires=900"
 JPEG = b"\xff\xd8\xff" + b"0" * 64
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
@@ -46,7 +46,6 @@ def source_returning(
     handler, *, max_image_bytes: int | None = None
 ) -> PhotoUrlImageSource:
     return PhotoUrlImageSource(
-        allowed_host_suffixes=ALLOWED,
         max_image_bytes=max_image_bytes,
         transport=httpx.MockTransport(handler),
     )
@@ -158,7 +157,7 @@ def test_declared_content_length_over_max_returns_none():
     assert source_returning(handler, max_image_bytes=1024).load(photo()) is None
 
 
-# --- URL 정책(SSRF) ----------------------------------------------------
+# --- URL 형식 정책 -----------------------------------------------------
 
 
 def _fail_if_called(request: httpx.Request) -> httpx.Response:  # pragma: no cover
@@ -168,17 +167,14 @@ def _fail_if_called(request: httpx.Request) -> httpx.Response:  # pragma: no cov
 @pytest.mark.parametrize(
     "url",
     [
-        "http://images.example.com/a.jpg",  # https 아님
         "file:///etc/passwd",
         "ftp://images.example.com/a.jpg",
         "https://images.example.com@169.254.169.254/latest/meta-data",  # userinfo
-        "https://evil.com/a.jpg",  # allowlist 밖
-        "https://evil-images.example.com.attacker.net/a.jpg",  # suffix 흉내
-        "https://169.254.169.254/latest/meta-data",  # 링크로컬 직접 지정
-        "https://localhost/a.jpg",
+        "https:///a.jpg",  # 호스트 없음
     ],
 )
-def test_rejects_unsafe_url_without_request(url):
+def test_rejects_unusable_url_without_request(url):
+    # 이 URL 들로는 애초에 이미지를 받을 수 없다. 요청 자체를 보내지 않는다.
     assert source_returning(_fail_if_called).load(photo(url)) is None
 
 
@@ -193,21 +189,25 @@ def test_malformed_url_is_rejected_without_raising_or_request(url):
     assert source_returning(_fail_if_called).load(photo(url)) is None
 
 
-def test_allows_subdomain_of_allowed_host():
-    source = PhotoUrlImageSource(
-        allowed_host_suffixes=("example.com",),
-        transport=httpx.MockTransport(respond(JPEG)),
-    )
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://images.example.com/a.jpg",
+        "https://any-other-bucket.s3.ap-northeast-2.amazonaws.com/a.jpg",
+        "http://10.0.4.78:9000/a.jpg",  # http 도 받는다(#59)
+    ],
+)
+def test_downloads_any_host_without_configuration(url):
+    """호스트 allowlist 는 없다(#59).
 
-    assert source.load(photo("https://images.example.com/a.jpg")) is not None
+    설정이 비어 있으면 아무것도 안 받던 fail-closed 를 뺐다. 그 설정이 실제 배포에
+    들어간 적이 없어 사진 vision 이 한 번도 돌지 못했기 때문이다. `photoUrl` 은
+    App Server 가 주는 값이라 신뢰한다.
+    """
 
+    source = PhotoUrlImageSource(transport=httpx.MockTransport(respond(JPEG)))
 
-def test_empty_allowlist_blocks_everything():
-    source = PhotoUrlImageSource(
-        allowed_host_suffixes=(), transport=httpx.MockTransport(_fail_if_called)
-    )
-
-    assert source.load(photo()) is None
+    assert source.load(photo(url)) == ImageInput(data=JPEG, mime_type="image/jpeg")
 
 
 def test_missing_photo_url_returns_none_quietly(caplog):
@@ -345,18 +345,18 @@ def test_outcome_metadata_has_no_content():
 # --- 기본 조립 ---------------------------------------------------------
 
 
-def test_default_source_is_url_when_allowlist_set(monkeypatch):
-    monkeypatch.setattr(
-        image_source_module.settings,
-        "photo_url_allowed_hosts",
-        "images.example.com",
-    )
+def test_default_source_always_downloads():
+    """기본 소스는 설정과 무관하게 언제나 `photoUrl` 다운로드다(#59).
+
+    이 단언이 회귀 방어의 핵심이다. 예전에는 설정 하나가 비어 있으면 조용히
+    `NullPhotoImageSource` 가 되어 vision 경로 전체가 죽었고, 그걸 알아챌 방법이
+    로그밖에 없었다.
+    """
 
     assert isinstance(default_photo_image_source(), PhotoUrlImageSource)
 
 
-def test_default_source_is_null_without_allowlist(monkeypatch):
-    # 설정을 깜빡한 배포에서 임의 URL 로 요청이 나가지 않도록 fail closed 다.
-    monkeypatch.setattr(image_source_module.settings, "photo_url_allowed_hosts", "")
-
-    assert isinstance(default_photo_image_source(), NullPhotoImageSource)
+def test_settings_has_no_photo_host_allowlist():
+    # 설정 항목이 되살아나면 그 순간 다시 켜고 끌 수 있는 스위치가 된다(#59).
+    assert not hasattr(image_source_module.settings, "photo_url_allowed_hosts")
+    assert not hasattr(image_source_module.settings, "photo_allowed_host_suffixes")

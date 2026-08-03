@@ -1,8 +1,10 @@
-"""Vision 기반 사진 description 생성 (이슈 #52).
+"""Vision 기반 사진 description 생성 (이슈 #52, #59).
 
-- `VisionPhotoDescriber` 가 이미지 소스에서 받은 bytes 를 vision 호출에 싣는다.
-- 이미지를 못 구한 사진은 메타데이터 fallback 으로 채워, 일부만 성공해도 설명이 비지 않는다.
-- `PhotoEventAgent` 기본 경로가 `photoUrl` 다운로드 소스로 조립된다.
+- 모든 사진은 `describe_vision_prompt.md` 로 간다. `VisionPhotoDescriber` 가 이미지
+  소스에서 받은 bytes 를 vision 호출에 싣는다.
+- 이미지를 못 구했거나 vision 응답에서 빠진 사진만 `describe_prompt.md` fallback 으로
+  채워, 일부만 성공해도 설명이 비지 않는다.
+- `PhotoEventAgent` 기본 경로가 설정 없이 `photoUrl` 다운로드 소스로 조립된다.
 - `photoUrl` 값은 LLM 프롬프트 어디에도 실리지 않는다.
 """
 
@@ -73,11 +75,11 @@ def test_vision_describer_sends_image_bytes():
     assert sent[0].mime_type == "image/jpeg"
 
 
-def test_metadata_fallback_does_not_call_llm():
-    """이미지를 못 구한 사진은 코드가 채운다(#56 §12). vision 호출만 남는다.
+def test_injected_code_fallback_does_not_call_llm():
+    """`MetadataPhotoDescriber` 를 주입하면 vision 호출만 남는다.
 
-    예전에는 이 자리에서도 LLM 을 불러 "메타데이터로 설명을 추정" 하게 했다. 이미지를
-    보지 못한 채 장면을 지어내는 구조였고, 그 문장이 event 추론의 근거가 됐다.
+    기본 fallback 은 `LLMPhotoDescriber` 다(#59). 이 클래스는 LLM 없이 결정론적
+    설명이 필요할 때 주입해 쓰는 경로로 남아 있고, 그 계약을 여기서 지킨다.
     """
 
     source = StubImageSource({PHOTO_1: ImageInput(data=JPEG, mime_type="image/jpeg")})
@@ -95,8 +97,8 @@ def test_metadata_fallback_does_not_call_llm():
     assert "실제 이미지가 첨부됩니다" in llm.calls[0].system
 
 
-def test_vision_describer_falls_back_to_metadata_without_image(caplog):
-    # 이미지 소스가 항상 None → 코드 기반 메타데이터 fallback 으로 채운다.
+def test_disabled_image_source_skips_download_observation(caplog):
+    # 이미지 소스를 명시로 꺼 두면(테스트 경로) 다운로드 시도 없이 바로 fallback 한다.
     llm = FakeLLM([_VISION_RESPONSE])
 
     with caplog.at_level("DEBUG"):
@@ -117,7 +119,12 @@ def test_vision_describer_falls_back_to_metadata_without_image(caplog):
 
 
 def test_vision_describer_mixes_vision_and_fallback():
-    # 한 장만 이미지를 구한 경우: vision 1회 + fallback 1회로 둘 다 채운다.
+    """기본 조립의 2단계 계약(#59): vision 먼저, 못 구한 사진만 describe_prompt.md.
+
+    fallback 을 주입하지 않았을 때 무엇이 오는지가 요점이다. 두 호출의 system 프롬프트로
+    각각 어느 파일을 탔는지 구분한다.
+    """
+
     source = StubImageSource({PHOTO_1: ImageInput(data=JPEG, mime_type="image/jpeg")})
     llm = FakeLLM([_VISION_RESPONSE, _META_RESPONSE])
 
@@ -131,7 +138,9 @@ def test_vision_describer_mixes_vision_and_fallback():
     }
     assert len(llm.calls) == 2
     assert llm.calls[0].images is not None  # vision
+    assert "실제 이미지가 첨부됩니다" in llm.calls[0].system  # describe_vision_prompt.md
     assert llm.calls[1].images is None  # fallback
+    assert "이미지 픽셀은" in llm.calls[1].system  # describe_prompt.md
 
 
 def test_vision_call_failure_falls_back_to_metadata():
@@ -191,13 +200,12 @@ def test_describer_skips_photos_that_already_have_description():
 
 
 def test_photo_agent_default_path_downloads_and_describes(monkeypatch):
-    """운영 기본 경로: PhotoEventAgent → VisionPhotoDescriber → photoUrl 다운로드."""
+    """운영 기본 경로: PhotoEventAgent → VisionPhotoDescriber → photoUrl 다운로드.
 
-    monkeypatch.setattr(
-        image_source_module.settings,
-        "photo_url_allowed_hosts",
-        "images.example.com",
-    )
+    설정을 아무것도 건드리지 않는다는 점이 계약이다(#59). 예전에는 이 테스트가
+    `photo_url_allowed_hosts` 를 monkeypatch 해서야 URL 소스를 얻었고, 그래서
+    "설정을 안 넣은 실제 배포에서는 이 경로가 죽는다" 를 못 잡았다.
+    """
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=JPEG, headers={"content-type": "image/jpeg"})
