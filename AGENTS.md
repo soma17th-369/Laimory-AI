@@ -112,6 +112,12 @@ app/
     ├── calendar_guard.py      # timeline 에서 통째로 빠진 캘린더 일정을 event 로 복원 (누락 방지)
     ├── calendar_location.py    # 캘린더 locationText ↔ STAY place/address 일치 시 confidence 보강
     ├── meal_guard.py           # MEAL event 지속시간 20~60분 강제 (긴 체류 전체를 식사로 잡지 않음)
+    ├── narrative_guard.py      # 사용자 노출 description 길이 검사 (#61). 120자 초과를 LOW
+    │                           #   warning 으로 남긴다. 문체·문장 수는 재지 않는다(의미 판단)
+    ├── duration_guard.py       # 비캘린더 event 지속시간 상한 검사 (#61). 3시간 초과를 LOW
+    │                           #   warning 으로 남기고 **자르거나 나누지 않는다** — 어디서
+    │                           #   끊을지는 Repair 의 판단이다. CALENDAR_EVENT·SLEEP·MOVEMENT
+    │                           #   ·MEAL 은 제외(지속 구간이 근거에 직접 있거나 meal_guard 담당)
     ├── place_resolver.py       # placeLabel을 근거 place로 확정, 근거 없는 address 제거
     ├── place_text.py           # 장소 문자열 정규화·비교 (calendar_location/place_resolver/stay_merge 공용)
     └── timeline_runner.py     # 백그라운드(무상태): 입력 조회→정규화→main agent→결과 저장→콜백. 최종 상태 반환
@@ -140,7 +146,18 @@ app/
 #   앞 3개는 LLM 이 의미를 판단하는 확률적 단계, repair_draft 는 코드가 확정하는 결정론적 단계다.
 # repair_draft 순서: sourceType 정정 → 캘린더 복원 → duration → 근거 구간 정렬 → MEAL
 #   → 수면 경계 → window → 장소 확정 → 정렬 → 체류 병합 → 겹침 정리 → confidence 보강
-#   → clientEventId 재부여
+#   → 문장 길이·event 지속시간 검사 → clientEventId 재부여
+#   길이 검사 두 개는 맨 뒤여야 한다. 병합·겹침 정리로 문장과 시간이 바뀌므로 앞에 두면
+#   곧 사라질 값을 재게 된다. 둘 다 Repair 반복마다 자기 이전 warning 을 지우고 다시 잰다.
+# 결과 문장 계약(#61): title·description 은 사용자가 읽는 일기다. 1인칭 해요체 과거형,
+#   description 1~2문장 100자 내외, title 30자 이내 명사구. 추정 표현(`듯해요`)과 원본
+#   수치(분 단위 시각·걸음 수)를 문장에 쓰지 않는다 — 모르는 것은 헤지하지 말고 문장에서
+#   뺀다. 불확실성은 confidence·inferenceLevel·uncertainty 가 담당한다.
+#   **이 규칙은 Timeline·Repair 에만 적용한다.** Event Agent 는 정확한 사실 보고가 임무라
+#   시각·수치를 그대로 쓴다. 변환은 Timeline 계층의 몫이다.
+# 프롬프트 동결본: 활성 프롬프트를 크게 바꿀 때 같은 디렉터리에 `<활성파일명>_v<버전>.md`
+#   로 직전 버전을 복사해 둔다(예: `timeline_v2.0.0.md`). load_prompt 는 정확한 파일명만
+#   읽으므로 동결본은 실행에 영향이 없다. **활성 파일은 `timeline.md`·`prompt.md` 뿐이다.**
 
 tests/
 ├── agents/                    # Event Agent live 입력 테스트(opt-in)

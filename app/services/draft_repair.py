@@ -64,7 +64,9 @@ from app.schemas import (
 )
 from app.services.calendar_guard import ensure_calendar_events
 from app.services.calendar_location import reinforce_calendar_location
+from app.services.duration_guard import verify_event_duration
 from app.services.meal_guard import enforce_meal_duration
+from app.services.narrative_guard import verify_narrative_length
 from app.services.notification_guard import verify_notification_draft
 from app.services.photo_guard import verify_photo_assignment
 from app.services.place_resolver import resolve_places
@@ -623,6 +625,12 @@ def repair_draft(draft: TimelineDraft, request: TimelineDraftRequest) -> Timelin
     reinforce_calendar_location(draft, request)
     # source 하나를 여러 event가 근거로 사용할 수 있다. 현재는 timeline_items에
     # event별 source 스냅샷을 저장하고, 향후 N:M 연결 테이블이 이 관계를 맡는다.
+
+    # 모든 병합·문장 수정이 끝난 결과를 잰다(#61). 두 guard 다 Repair 반복에서
+    # 자기 이전 warning 을 지우고 현재 draft 로 다시 계산하므로, Repair 가 문장을
+    # 줄이거나 event 를 나눈 뒤 stale warning 이 남지 않는다.
+    verify_narrative_length(draft)
+    verify_event_duration(draft)
 
     # 병합으로 event 구성이 바뀌었을 수 있어 한 번 더 정렬한 뒤
     # 최종 id 를 부여한다. renumber_events 는 제거된 event 의 질문 참조도 버린다.
