@@ -9,6 +9,11 @@
 ``questions``/``warnings`` 같은 내부 판단 값은 App Server 로 넘기지 않는다. 저장
 스키마는 App Server 소유이므로 AI 서버가 채울 수 있는 것만 계약에 둔다.
 
+여기서 나가지 않는 ``questions`` 는 **모호성 확인 질문**(:class:`~app.schemas.
+timeline.TimelineQuestion`)이다. 이름이 비슷한 :attr:`TimelineResultEvent.question`
+은 그것과 다른 값으로, 사용자가 읽고 답하는 **회고 유도 질문**이며 이 계약으로
+나간다(이슈 #66).
+
 ``TimelineDraft`` → 이 요청으로의 변환은
 :func:`app.services.timeline_result.build_result_request` 가 한다.
 """
@@ -24,6 +29,11 @@ class TimelineResultEvent(CamelModel):
 
     ``sourceRawIds`` 는 입력 조회로 받은 ``rawId`` 만 담는다. 입력에 없는 값은
     저장 전 자체검증(:mod:`app.services.timeline_validator`)에서 걸러진다.
+
+    ``question`` 은 이 event 하나에 붙는 회고 유도 질문이다. **event 를 가리키는
+    식별자를 따로 두지 않고 중첩으로 참조를 대신한다** — 이 계약에는
+    ``clientEventId`` 가 없어서 최상위 질문 목록은 event 를 안정적으로 가리킬 수
+    없다(이슈 #66).
     """
 
     event_type: EventType = Field(alias="eventType")
@@ -32,6 +42,7 @@ class TimelineResultEvent(CamelModel):
     start_at: AwareDatetime = Field(alias="startAt")
     end_at: AwareDatetime = Field(alias="endAt")
     source_raw_ids: list[RawId] = Field(alias="sourceRawIds", min_length=1)
+    question: str | None = None
 
     @model_validator(mode="after")
     def _validate_range(self) -> "TimelineResultEvent":

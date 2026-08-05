@@ -50,6 +50,36 @@ def test_maps_draft_event_to_contract_fields():
     assert event.source_raw_ids == [fixture_raw_id("result-1")]
 
 
+def test_carries_the_record_question_to_the_contract():
+    request = build_result_request(
+        _draft(_event(question="점심 자리에서 어떤 이야기가 기억에 남았나요?"))
+    )
+
+    [event] = request.events
+    assert event.question == "점심 자리에서 어떤 이야기가 기억에 남았나요?"
+
+
+def test_event_without_a_question_sends_null():
+    request = build_result_request(_draft(_event()))
+
+    [event] = request.events
+    assert event.question is None
+
+
+def test_blank_question_becomes_null():
+    request = build_result_request(_draft(_event(question="   ")))
+
+    [event] = request.events
+    assert event.question is None
+
+
+def test_question_is_truncated_at_the_column_limit():
+    request = build_result_request(_draft(_event(question="가" * 300)))
+
+    [event] = request.events
+    assert len(event.question) == 255
+
+
 def test_serialized_body_matches_the_contract_shape():
     body = build_result_request(_draft(_event())).model_dump(
         by_alias=True, mode="json"
@@ -63,6 +93,7 @@ def test_serialized_body_matches_the_contract_shape():
         "startAt",
         "endAt",
         "sourceRawIds",
+        "question",
     }
     assert body["events"][0]["startAt"] == "2026-07-22T12:00:00+09:00"
 
