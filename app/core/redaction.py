@@ -111,6 +111,12 @@ _DIAGNOSTIC_KEYS = {
     "tool",
     "usagedetails",
 }
+# User Memory 는 사용자의 관계·성향·관심사를 압축한 프로필이다(#65). 정책이
+# SANITIZED 여도 본문을 내보내지 않고 비식별 요약으로 바꾼다. 값을 지우는 대신
+# 요약을 남기는 이유는 `_summarize_user_memory` 에 적었다.
+_USER_MEMORY_KEY = "usermemory"
+# 요약에서 "채워진 필드" 로 세지 않는 메타데이터 키.
+_USER_MEMORY_META_KEYS = {"schemaversion", "updatedat", "customattributes"}
 # 접어 넣은 본문이 들어가는 자리. 진단 지표와 같은 depth 에 두어 화면에서 바로 구분된다.
 _SUPPRESSED_BODY_KEY = "body"
 _KEY_NORMALIZER = re.compile(r"[^a-z0-9]")
@@ -147,6 +153,41 @@ def _is_sensitive_key(key: Any) -> bool:
     return _normalized_key(key) in _SENSITIVE_KEYS
 
 
+def _is_user_memory_key(key: Any) -> bool:
+    return _normalized_key(key) == _USER_MEMORY_KEY
+
+
+def _summarize_user_memory(value: Any) -> Any:
+    """User Memory 본문을 비식별 요약으로 바꾼다(#65).
+
+    ``[REDACTED]`` 로 통째로 지우지 않는 이유는, 그러면 "메모리가 있었는지" 밖에
+    남지 않아 잘못된 해석의 원인을 좁힐 수 없기 때문이다. 계약 버전과 채워진 정도,
+    크기는 본문을 드러내지 않으면서 그 판단에 필요한 값이다.
+
+    필드 이름 목록을 여기 두지 않는다. 스키마(:mod:`app.schemas.user_memory`)가
+    필드를 더해도 이 함수는 그대로 동작해야 한다 — 새 필드가 목록에 없다는 이유로
+    본문이 새면 안 된다.
+    """
+
+    if not isinstance(value, Mapping):
+        # 형태를 모르는 값은 요약만 남긴다. 문자열이면 본문 그 자체일 수 있다.
+        return summarize_content(value)
+
+    custom = value.get("customAttributes")
+    return {
+        **summarize_content(value),
+        "schemaVersion": value.get("schemaVersion"),
+        "filledFieldCount": sum(
+            1
+            for key, item in value.items()
+            if _normalized_key(key) not in _USER_MEMORY_META_KEYS
+            and isinstance(item, str)
+            and item
+        ),
+        "customAttributeCount": len(custom) if isinstance(custom, Mapping) else 0,
+    }
+
+
 def redact_text(value: str) -> str:
     redacted = value
     for pattern, replacement in _TEXT_PATTERNS:
@@ -161,7 +202,15 @@ def redact_value(value: Any) -> Any:
         return redact_text(value)
     if isinstance(value, Mapping):
         return {
-            key: REDACTED if _is_sensitive_key(key) else redact_value(item)
+            key: (
+                REDACTED
+                if _is_sensitive_key(key)
+                else (
+                    _summarize_user_memory(item)
+                    if _is_user_memory_key(key)
+                    else redact_value(item)
+                )
+            )
             for key, item in value.items()
         }
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):

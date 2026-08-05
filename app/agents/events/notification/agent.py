@@ -15,7 +15,6 @@ from app.agents.parsing import (
     SupportsComplete,
     build_infer_prompt,
     default_llm,
-    user_memory_to_text,
 )
 from app.agents.prompt_loader import load_prompt
 from app.schemas import AgentEventResult, TimelineDraftRequest
@@ -81,7 +80,6 @@ class NotificationEventAgent(EventAgent):
 
         data_text = _notification_items_to_text(items)
         infer_prompt = build_infer_prompt(
-            user_memory_to_text(request.user_memory),
             data_text,
             date=request.date,
             window_start=request.window.start if request.window else None,

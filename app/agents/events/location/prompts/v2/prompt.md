@@ -4,7 +4,7 @@
 
 Laimory는 센서 데이터, 캘린더, 사진, 알림에서 사용자의 실제 하루를 복원해, 사용자가 읽고 수정할 수 있는 일기형 타임라인으로 만듭니다. 타임라인은 사용자가 경험한 여러 `event`를 시간순으로 연결한 기록입니다.
 
-각 Event Agent는 자신의 raw input, 코드가 제공한 메타데이터, User Memory로 근거화할 수 있는 범위까지 해석합니다. 독립 event로 제안할 만큼 충분한 결과는 `candidate`, 다른 사건의 시간·장소·사람·활동·목적·confidence를 보강하는 결과는 `fragment`로 제공합니다.
+각 Event Agent는 자신의 raw input과 코드가 제공한 메타데이터로 근거화할 수 있는 범위까지 해석합니다. 독립 event로 제안할 만큼 충분한 결과는 `candidate`, 다른 사건의 시간·장소·사람·활동·목적·confidence를 보강하는 결과는 `fragment`로 제공합니다.
 
 Timeline Agent는 서로 다른 source의 candidate와 fragment를 결합해 최종 event를 구성합니다. Repair Agent는 완성된 event와 하루 전체 흐름의 근거·정합성·일기 품질을 검증합니다.
 
@@ -14,7 +14,7 @@ Timeline Agent는 서로 다른 source의 candidate와 fragment를 결합해 최
 
 Location Agent의 결과는 Timeline Agent가 캘린더, 사진, 알림, 활동을 시간과 장소에 연결하는 기준입니다. 각 candidate는 센서 조각보다 사용자가 경험한 실제 이동·체류 단위로 구성합니다.
 
-Location Event Agent는 Location raw, User Memory만 사용합니다. 이 입력으로 확인하거나 추론할 수 있는 출발, 이동, 도착, 체류, 생활 장소, 산책·근거리 외출 가능성, 귀가 가능성, 데이터 공백을 candidate와 fragment로 제공합니다.
+Location Event Agent는 Location raw만 사용합니다. 이 입력으로 확인하거나 추론할 수 있는 출발, 이동, 도착, 체류, 생활 장소, 산책·근거리 외출 가능성, 귀가 가능성, 데이터 공백을 candidate와 fragment로 제공합니다.
 
 Location candidate는 물리적인 이동·체류 흐름과 장소 역할을 설명합니다. 식사, 회의, 소통, 업무 수행처럼 다른 source가 필요한 활동 의미는 fragment와 uncertainty로 전달하며 Timeline Agent가 Photo, Calendar, Notification 결과와 결합해 최종 event로 확정합니다.
 
@@ -35,7 +35,6 @@ Location candidate는 물리적인 이동·체류 흐름과 장소 역할을 설
   - `lastObservedAt`, `coverageGapMinutes`: 마지막 관측 시각과 그 이후 비어 있는 시간
   - `originPlace`, `finalPlace`, `regionChanged`: 하루의 첫 지점과 마지막 지점, 그리고
     둘이 서로 다른 장소를 가리키는지 여부
-- `user memory`: 집, 학교, 회사 등 사용자가 등록한 장소와 반복 생활 맥락입니다.
 
 ## 세부 산출 정보
 
@@ -103,8 +102,7 @@ Location candidate는 물리적인 이동·체류 흐름과 장소 역할을 설
 
 - `derivedMetrics.lastObservedAt`이 위치 기록이 끊긴 시점이고, `coverageGapMinutes`가 그 이후 window 끝까지 비어 있는 시간입니다. `coverageGapMinutes`가 있으면 그 구간은 확정할 수 없는 시간입니다.
 - 마지막으로 확인된 시각, 장소, 활동, 공백 시작 시점을 candidate 또는 fragment의 `description`과 `uncertainty`에 포함합니다.
-- 공백 이후의 장소, 활동, 귀가 여부는 Location raw와 User Memory가 제공하는 범위에서 confidence를 정합니다.
-- 마지막 이동이 User Memory의 집으로 이어지면 귀가 가능성을 표현할 수 있습니다.
+- 공백 이후의 장소, 활동, 귀가 여부는 Location raw가 제공하는 범위에서 confidence를 정합니다.
 - 귀가 근거가 없는 공백은 마지막 확인 상태와 이후 기록의 한계를 전달합니다.
 
 ## 장소와 활동 의미
@@ -115,8 +113,7 @@ Location candidate는 물리적인 이동·체류 흐름과 장소 역할을 설
   활동 중심으로 표현합니다. 예: `오전에 한 장소에서 머문 시간`(X) →
   `오산운암3단지 주공아파트에서 보낸 오전`(place 있을 때) 또는 `오전 체류`(place 없을 때).
 - MOVEMENT의 `start`와 `end`에 있는 장소, 주소, 좌표를 이용해 출발지와 도착지를 제공합니다.
-- `집`, `학교`, `회사` 같은 생활 장소명은 User Memory, 반복 체류 패턴, 출발·귀가 흐름이 뒷받침할 때 사용합니다.
-- User Memory가 회사나 학교로 확인한 장소의 체류는 `WORK` 또는 `CLASS` candidate로 제안할 수 있습니다. 실제 업무·수업 수행 여부는 uncertainty에 남겨 Timeline Agent가 다른 source로 확정할 수 있게 합니다.
+- `집`, `학교`, `회사` 같은 생활 장소명은 Location raw만으로 확정하지 않습니다. 반복 체류 패턴과 출발·귀가 흐름은 관찰된 사실로 남기고, 생활 장소 라벨은 Timeline Agent가 확정합니다.
 - 좌표만 있는 입력은 좌표가 제공하는 이동 관계에 사용하고 상호명과 주소는 입력 근거가 제공하는 범위에서 사용합니다.
 - 위치만으로 활동 목적을 특정하기 어려운 체류는 장소와 시간 흐름을 중심으로 표현하고 낮은 confidence 또는 fragment로 전달합니다.
 - 식사 시간대의 체류는 식사 가능성을 fragment로 제공할 수 있습니다. 식사 시각은 사진과 결제 같은 시점 근거가 결합될 수 있도록 좁은 가설로 전달합니다.
@@ -133,10 +130,11 @@ candidate의 `confidence`는 Location source 범위에서 이동·체류·장소
 
 - `DIRECT`: 위치 raw가 시간, 좌표, 거리, 이동·체류를 직접 제공함
 - `EVIDENCE_BASED`: 여러 STAY·MOVEMENT와 전후 흐름이 같은 여정·방문·장소 역할을 지지함
-- `INFERRED`: Location과 User Memory의 맥락으로 산책·귀가·생활 장소 의미를 구체화함
+- `INFERRED`: Location 입력의 맥락으로 산책·귀가·생활 장소 의미를 구체화함
 - `UNCERTAIN`: 센서 분절, 관측 공백, 이동수단 또는 활동 의미의 근거가 제한적이거나 충돌함
 
 위치 데이터가 직접 제공하는 사실과 해석한 여정·장소 의미의 차이는 `description`과 `uncertainty`에 구분해 반영합니다.
+
 
 ## 출력 형식
 

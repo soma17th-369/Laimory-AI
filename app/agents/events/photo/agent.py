@@ -29,7 +29,6 @@ from app.agents.parsing import (
     build_infer_prompt,
     default_llm,
     items_to_text,
-    user_memory_to_text,
 )
 from app.agents.prompt_loader import load_prompt
 from app.core.langfuse_tracing import trace_observation, update_observation
@@ -109,7 +108,6 @@ class PhotoEventAgent(EventAgent):
         def infer_node(state: _State) -> _State:
             photos = state["photos"]
             infer_prompt = build_infer_prompt(
-                user_memory_to_text(request.user_memory),
                 _photo_items_to_text(photos),
                 date=request.date,
                 window_start=request.window.start if request.window else None,

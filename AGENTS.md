@@ -116,7 +116,13 @@ app/
 │   ├── error.py               # 공통 오류 응답 ErrorResponse(errorCode:int, error:str)
 │   ├── task.py                # TaskStatus + 완료 콜백 payload(errorCode:int|None, 성공/실패 필드 짝 강제)
 │   ├── source_snapshot.py     # 수집 원본(taskId/sourceItems) 파이프라인 내부 계약
-│   ├── timeline_input.py      # App Server 입력 조회 응답 계약 (#40). window.startAt/endAt → CollectedSnapshot 변환
+│   ├── timeline_input.py      # App Server 입력 조회 응답 계약 (#40, #65). window.startAt/endAt →
+│   │                          #   CollectedSnapshot 변환. userMemory 는 원본 dict 로 느슨하게 받고
+│   │                          #   parse_user_memory() 가 따로 검증한다 — 여기서 엄격히 선언하면
+│   │                          #   보조 context 하나가 응답 전체를 1102 로 죽인다
+│   ├── user_memory.py         # 사용자 압축 프로필 v1.0 (#65). 고정 자연어 10필드(각 200자) +
+│   │                          #   customAttributes(5개·150자). extra="forbid". prompt_payload() 가
+│   │                          #   projection 규칙(빈 필드·메타데이터 제외, 선언 순서)을 소유한다
 │   ├── timeline_result.py     # App Server 결과 저장 요청 계약 (#40, #66). eventType/title/subtitle/
 │   │                          #   startAt/endAt/sourceRawIds/question. question 은 event 안에 중첩한다 —
 │   │                          #   계약에 clientEventId 가 없어 최상위 목록은 event 를 가리킬 수 없다
@@ -134,7 +140,9 @@ app/
 │   ├── question/question_agent.py   # 확정 event → 회고 유도 질문 (#66). Repair 뒤 배치 호출.
 │   │                          #   confidence·sourceRefs·분 단위 시각을 프롬프트에 주지 않는다 —
 │   │                          #   주지 않으면 질문에 샐 수 없다. 모든 event 에 하나씩이며,
-│   │                          #   빠진 event 는 1회 재요청한다. 길이·형식 검사는 코드가 한다
+│   │                          #   빠진 event 는 1회 재요청한다. 길이·형식 검사는 코드가 한다.
+│   │                          #   User Memory 를 받는다(#65) — 무엇을 물을지가 아니라 어떻게
+│   │                          #   물을지(문체·결)를 고르는 자료다
 │   └── main/main_agent.py     # events → timeline → repair → question 조율(LangGraph)
 │
 └── services/
@@ -208,6 +216,24 @@ app/
 #   다시 매기므로 그전에 만든 질문은 사라진 event 를 가리킨다.
 #   실패는 흡수한다(1209) — 질문이 없다고 하루 기록을 버리지 않는다.
 #   이것은 TimelineDraft.questions(모호성 확인, 내부 전용)와 **다른 값**이다.
+# User Memory 계약(#65): 입력 조회 응답의 선택 필드 `userMemory` 는 사용자 압축 프로필
+#   v1.0 이다. 전달 경로는 입력 조회 → CollectedSnapshot → normalize → TimelineDraftRequest
+#   → user_memory_to_text 하나뿐이고, **Timeline Agent 와 Question Agent 가 같은 문자열을
+#   본다** — Agent 별로 필드를 골라 쓰거나 다시 접지 않는다.
+#   **Event Agent 와 Repair Agent 에는 주입하지 않는다.** Event Agent 는 자기 source 에 대한
+#   사실 보고가 임무이고(#61 의 계층 경계와 같다), 다섯이 병렬로 돌며 같은 프로필을 읽으면
+#   Timeline 이 그 합의를 서로 다른 source 의 독립 근거로 잘못 센다. 생활 장소명(집·회사)과
+#   관계 호칭처럼 프로필이 있어야 하는 판단은 Timeline 프롬프트가 갖는다. Repair 는 Timeline
+#   이 이미 메모리를 보고 문장을 만든 뒤이고 반복 호출이라 제외한다.
+#   **사건 데이터가 아니라 해석·표현용 보조 context 다.** User Memory 만으로 사건 발생·일정
+#   참석·장소·이동 목적·실명/정확한 관계를 확정하지 않고, 수집 원본과 충돌하면 원본이 이긴다.
+#   이 경계는 프롬프트가 지킨다. 결정론 코드는 자연어 필드 내용이나 customAttributes 키에
+#   구조적으로 의존하지 않는다(notification_guard 는 통째 문자열 검색이라 키에 무관하다).
+#   계약 위반은 흡수한다(1106) — 보조 context 하나 때문에 하루치 수집 원본을 버리지 않는다.
+#   본문은 운영 로그·관측 어디에도 남기지 않는다. redact_value 가 `userMemory` 키를
+#   비식별 요약(schemaVersion·채워진 필드 수·크기)으로 바꾸므로 호출부가 스냅샷이나 요청을
+#   통째로 덤프해도 본문이 새지 않는다. Langfuse generation input(프롬프트 본문)에는 값이
+#   들어가지만 운영은 콘텐츠 정책이 NONE 이다.
 # 프롬프트 동결본: 활성 프롬프트를 크게 바꿀 때 같은 디렉터리에 `<활성파일명>_v<버전>.md`
 #   로 직전 버전을 복사해 둔다(예: `timeline_v2.0.0.md`). load_prompt 는 정확한 파일명만
 #   읽으므로 동결본은 실행에 영향이 없다. **활성 파일은 `timeline.md`·`prompt.md`·

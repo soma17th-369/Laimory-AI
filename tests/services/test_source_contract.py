@@ -1,6 +1,7 @@
 """입력 조회 응답의 묶음 단위 계약 검증."""
 
 import pytest
+from pydantic import ValidationError
 
 from app.core.error_codes import ErrorCode
 from app.schemas import ItemType, TimelineInputResponse
@@ -115,3 +116,60 @@ def test_input_response_maps_window_to_snapshot():
     assert snapshot.timeline_window.start_time == "2026-07-22T00:00:00+09:00"
     assert snapshot.user_memory is None
     assert snapshot.source_items[0].item_type is ItemType.PHOTO
+
+
+# --- userMemory (#65) ---------------------------------------------------
+
+
+def _input_response(**overrides) -> TimelineInputResponse:
+    body = {
+        "taskId": _TASK_ID,
+        "recordDate": "2026-07-22",
+        "recordTimeZone": "Asia/Seoul",
+        "sourceItems": [],
+    }
+    body.update(overrides)
+    return TimelineInputResponse.model_validate(body)
+
+
+def test_user_memory_is_parsed_and_carried_into_snapshot():
+    response = _input_response(
+        userMemory={"schemaVersion": "1.0", "basicProfile": "30대 개발자"}
+    )
+
+    memory = response.parse_user_memory()
+    snapshot = response.to_snapshot(user_memory=memory)
+
+    assert snapshot.user_memory is not None
+    assert snapshot.user_memory.basic_profile == "30대 개발자"
+
+
+@pytest.mark.parametrize("body", [{}, {"userMemory": None}])
+def test_missing_or_null_user_memory_keeps_previous_behavior(body):
+    """계약상 선택 필드다. 없다고 실패로 보지 않는다(하위 호환)."""
+
+    response = _input_response(**body)
+
+    assert response.parse_user_memory() is None
+    assert response.to_snapshot().user_memory is None
+
+
+@pytest.mark.parametrize(
+    "user_memory",
+    [
+        pytest.param({"favoriteColor": "파랑"}, id="unknown-field"),
+        pytest.param({"schemaVersion": "2.0"}, id="unsupported-version"),
+        pytest.param({"basicProfile": "가" * 201}, id="over-length"),
+        pytest.param(
+            {"customAttributes": {f"k{i}": "v" for i in range(6)}},
+            id="too-many-custom-attributes",
+        ),
+    ],
+)
+def test_contract_violation_is_raised_for_the_caller_to_absorb(user_memory):
+    """스키마는 애매하게 받아 주지 않는다. 흡수 여부는 호출 경계가 정한다."""
+
+    response = _input_response(userMemory=user_memory)
+
+    with pytest.raises(ValidationError):
+        response.parse_user_memory()

@@ -27,6 +27,10 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - 잘못된 sourceType label은 rawId로 찾은 실제 입력 type으로 정정한다.
 - 유효한 sourceRef가 하나도 없는 candidate/event는 결과로 유지하지 않는다.
 - source 하나가 여러 event의 근거가 되는 것은 허용한다.
+- user memory는 근거가 아니라 해석·표현용 보조 context다. user memory만으로 사건 발생, 일정 참석, 장소, 이동 목적, 사람의 실명이나 정확한 관계를 확정하지 않고, 수집 원본과 충돌하면 원본이 이긴다. 이 경계는 prompt가 지키며 코드가 의미로 판정하지 않는다.
+- user memory는 rawId를 갖지 않으므로 `sourceRefs`에 넣지 않는다.
+- user memory는 해석·표현 계층(Timeline Agent, Question Agent)에만 주입한다. Event Agent와 Repair Agent는 받지 않는다. Event Agent 5종은 병렬로 돌고 Timeline이 결과를 병합하므로, 다섯이 같은 프로필을 읽으면 같은 근거 하나가 독립된 근거 다섯으로 세어진다.
+- 소비 Agent 2종은 공용 projection 하나를 쓴다. Agent별로 필드를 골라 쓰거나 다르게 직렬화하지 않는다.
 
 ### 시간
 
@@ -92,7 +96,8 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - 최종 문체의 1인칭·해요체·문장 수는 코드가 의미적으로 판정하지 않고 prompt와 live 품질 검증에 의존한다.
 - App Server DB constraint와 callback/result idempotency는 이 저장소에서 확인할 수 없다.
 - inbound 인증·인가가 없어 호출 주체 불변식은 코드로 강제되지 않는다.
-- user memory는 schema와 prompt 경로가 있지만 현재 input API에서 채워지지 않는다.
+- user memory 소비 경로는 input API 응답까지 열려 있으나, App Server가 실제로 값을 채워 보내는지는 이 저장소에서 확인할 수 없다.
+- user memory 최대 1,000토큰 상한은 소비 측에서 강제하지 않는다. 코드가 강제하는 것은 필드별 길이(200자)와 `customAttributes` 개수·길이(5개·150자)뿐이다.
 
 ## Update When
 

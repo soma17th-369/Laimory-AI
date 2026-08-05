@@ -36,7 +36,11 @@ input response는 taskId, record date/timezone, optional window, 평평한 `sour
 - source item이 한 건 이상임
 - 한 task 안에서 rawId가 유일함
 
-접수 request window가 뒤에서 input response window를 덮어쓴다. `userMemory`는 현재 input 계약에 없어 내부 snapshot에 `None`으로 설정한다.
+접수 request window가 뒤에서 input response window를 덮어쓴다.
+
+`userMemory`는 input 계약의 선택 필드다(#65). 응답에서는 원본 dict로 받고 `parse_user_memory()`가 `UserMemory` v1.0으로 따로 검증한다. 검증에 성공한 값만 `to_snapshot(user_memory=...)`으로 내부 snapshot에 들어간다. 필드가 없거나 `null`이면 `None`이다.
+
+계약 위반(모르는 최상위 필드, 지원하지 않는 `schemaVersion`, 길이·개수 초과)은 묶음 규칙과 달리 **task를 실패시키지 않는다**. client가 code 1106으로 기록하고 memory 없이 진행한다. 응답 model에 `UserMemory`를 직접 선언하지 않는 이유가 이것이다 — 직접 선언하면 보조 context 하나가 응답 전체를 1102로 만든다.
 
 result request는 내부 draft보다 좁다. App Server에는 event type, title, subtitle, 시작·종료, source rawId 목록과 optional event question만 보낸다. confidence, inference level, uncertainty, 내부 questions/warnings, address/place/tags, clientEventId는 보내지 않는다. title/subtitle/question은 mapper에서 최대 255자로 방어하고, source rawId는 순서를 유지해 중복 제거하며, datetime은 draft timezone offset으로 보낸다. event가 0건이어도 결과 request를 전송한다.
 
@@ -57,7 +61,7 @@ callback body는 terminal status와 오류 필드뿐이다. taskId는 URL, token
 
 - App Server 측 DB schema, transaction, idempotency key, task state machine은 이 저장소에 없어 검증할 수 없다.
 - POST result/callback은 transport timeout 뒤 같은 body로 retry하지만 별도 idempotency header는 없다. 서버 측 중복 안전성은 이 저장소에서 확인할 수 없다.
-- input response `userMemory` 지원이 없어 현재 main Agent 입력에는 memory가 전달되지 않는다.
+- input response `userMemory`를 소비할 준비는 됐지만, App Server가 실제로 이 필드를 채워 보내는지는 이 저장소에서 확인할 수 없다.
 - callback 실패를 영속적으로 재시도하는 queue가 없다.
 
 ## Update When

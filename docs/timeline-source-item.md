@@ -22,7 +22,8 @@ timeline_draft_source_items
 - 모든 source item의 유일한 식별자는 UUID `rawId`다.
 - DB PK는 repository 내부 행 식별·진단에만 사용하며 snapshot과 Agent 요청에는 넣지 않는다.
 - 시각은 epoch 숫자로 변환하지 않고 수집 원본의 ISO 문자열을 유지한다.
-- `userMemory`는 rawId를 가진 source item이 아니라 해석용 보조 context다.
+- `userMemory`는 rawId를 가진 source item이 아니라 해석용 보조 context다. 형태는
+  고정 스키마 v1.0이며 계약은 [ai-server-api.md §5.1](ai-server-api.md#51-입력-조회)에 있다.
 
 ## 1. CollectedSnapshot
 
@@ -33,7 +34,7 @@ timeline_draft_source_items
 | `recordTimeZone` | string | 선택 | 기본값 `Asia/Seoul` |
 | `timelineWindow.startTime` / `endTime` | string | 선택 | 처리 대상 ISO 시간 경계 |
 | `sourceItems` | array | 선택 | 평평한 수집 항목 목록 |
-| `userMemory` | object | 선택 | 비정형 보조 context |
+| `userMemory` | object | 선택 | 사용자 압축 프로필 v1.0 (보조 context) |
 
 ### CollectedSourceItem 공통 필드
 
@@ -63,7 +64,7 @@ rawId가 task 안에서 중복되지 않는지 확인한다. normalizer는 itemT
 | `healths` | `HealthItem[]` | 선택 | 기본 빈 배열 |
 | `notifications` | `NotificationItem[]` | 선택 | 기본 빈 배열 |
 | `photos` | `PhotoItem[]` | 선택 | 기본 빈 배열 |
-| `userMemory` | object | 선택 | 비정형 보조 context |
+| `userMemory` | object | 선택 | 사용자 압축 프로필 v1.0 (보조 context) |
 
 ## 도메인 항목
 

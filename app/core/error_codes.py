@@ -79,6 +79,9 @@ class ErrorCode(IntEnum):
     TIMEZONE_RESOLUTION_FAILED = 1104
     #: 입력 조회 API 호출이 실패했다(5xx/timeout 을 재시도까지 소진).
     SOURCE_FETCH_FAILED = 1105
+    #: 입력 조회 응답의 ``userMemory`` 가 v1.0 계약을 어겼다. User Memory 는 보조
+    #: context 라 이 실패로 타임라인을 멈추지 않는다 — 값 없이 진행한다(흡수 경로).
+    USER_MEMORY_CONTRACT_VIOLATION = 1106
 
     # --- 1200~1299 AI/LLM ------------------------------------------------
     #: 메인 에이전트가 제한 시간 안에 끝나지 않았다.
@@ -157,6 +160,9 @@ _MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.SOURCE_ITEM_NORMALIZE_FAILED: "일부 수집 항목을 처리하지 못했습니다.",
     ErrorCode.TIMEZONE_RESOLUTION_FAILED: "요청 시간대를 해석하지 못했습니다.",
     ErrorCode.SOURCE_FETCH_FAILED: "수집 데이터를 가져오지 못했습니다.",
+    ErrorCode.USER_MEMORY_CONTRACT_VIOLATION: (
+        "사용자 메모리를 사용하지 못했습니다."
+    ),
     ErrorCode.PIPELINE_TIMEOUT: "타임라인 생성이 제한 시간을 초과했습니다.",
     ErrorCode.STRUCTURED_OUTPUT_INVALID: "AI 응답을 해석하지 못했습니다.",
     ErrorCode.LLM_CALL_FAILED: "AI 모델 호출에 실패했습니다.",
