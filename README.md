@@ -67,9 +67,10 @@ app/
     ├── normalizer.py          # 수집 스냅샷 분리·정규화
     ├── draft_repair.py        # draft 확정 repair
     ├── draft_edit.py          # event 수정·삭제 (Repair 계획의 결정론 적용)
-    ├── validator.py           # 요청 시간 범위(window) 강제
+    ├── validator.py           # 요청 시간 범위(window) 강제 (조건 없이 항상, #67)
     ├── source_lookup.py       # sourceRef → 입력 항목 역참조, sourceType 정정
-    ├── sleep_guard.py         # 수면 경계 강제 (기상 이전 event 제거)
+    ├── sleep_exclusion.py     # 수면·기상 비노출 경계 (#67)
+    ├── sleep_guard.py         # 수면 경계 강제 (파이프라인에서 빠짐, 보존용 #67)
     ├── stay_merge.py          # 이동 없이 이어진 STAY 묶기
     ├── calendar_guard.py      # 누락된 캘린더 일정 복원
     ├── calendar_location.py   # 캘린더와 STAY 장소 일치 보강
@@ -110,9 +111,13 @@ LLM 이 `done` 을 내거나 `settings.repair_max_iterations`(기본 3)에서 �
 파싱이 실패하면 마지막으로 확정된 초안을 그대로 돌려주고 warning 을 남깁니다.
 
 Repair Agent 는 초안을 직접 다시 쓰지 않고 **결정론 서비스와 상류 Agent 를 도구로 호출**합니다
-(`lookup_source`, `update_event`/`delete_event`, `enforce_sleep_boundary` 같은 서비스 재적용,
-`rerun_event_agent`/`rerun_timeline_agent`). 정렬·`clientEventId` 재부여·window 강제는 도구가
-아니며, 매 반복 끝의 `repair_draft` 가 항상 코드로 확정합니다.
+(`lookup_source`, `update_event`/`delete_event`, `resolve_places` 같은 서비스 재적용,
+`rerun_event_agent`/`rerun_timeline_agent`). 정렬·`clientEventId` 재부여·window 강제·수면 비노출은
+도구가 아니며, 매 반복 끝의 `repair_draft` 가 항상 코드로 확정합니다. Repair 프롬프트의
+「코드가 이미 보장하는 것」 절이 그 목록이고, 도구로 되돌리려 하지 말라고 명시합니다(#67).
+
+분석 단계에는 `[Event Agent 후보]` 인덱스가 함께 들어갑니다. Timeline 이 상대·주제·정산 금액 같은
+사실을 잃었는지 판단하려면 **원래 무엇을 읽어 냈는지** 비교 기준이 있어야 하기 때문입니다.
 
 ---
 
