@@ -40,6 +40,14 @@ class TimelineEventDraft(CamelModel):
     inference_level: InferenceLevel = Field(alias="inferenceLevel")
     source_refs: list[SourceRef] = Field(alias="sourceRefs", min_length=1)
     uncertainty: list[str] = Field(default_factory=list)
+    question: str | None = Field(
+        default=None,
+        description=(
+            "이 event 를 두고 사용자에게 던지는 회고 유도 질문(이슈 #66). Repair 가 "
+            "끝난 뒤 Question Agent 가 채우며, 저장 계약의 `question` 으로 나간다. "
+            "상위 TimelineDraft.questions(모호성 확인 질문)와 목적도 수신자도 다르다."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_range(self) -> "TimelineEventDraft":
@@ -53,7 +61,12 @@ TimelineDraftEvent = TimelineEventDraft
 
 
 class TimelineQuestion(CamelModel):
-    """Question that asks the user to resolve an uncertain time range."""
+    """Question that asks the user to resolve an uncertain time range.
+
+    **내부 전용이다.** 시간·장소가 모호할 때 그 사실을 남기는 확인 질문이며 App
+    Server 로 나가지 않는다. 사용자가 읽는 회고 유도 질문은 이것이 아니라
+    :attr:`TimelineEventDraft.question` 이다(이슈 #66).
+    """
 
     question_id: str = Field(alias="questionId", min_length=1)
     time_range: dict[str, AwareDatetime] = Field(alias="timeRange")

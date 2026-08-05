@@ -19,6 +19,7 @@ APP_ROOT = Path(__file__).resolve().parents[2] / "app"
 _REQUIRED_PROMPTS: dict[str, dict[str, set[str]]] = {
     "agents/timeline": {"v1": {"timeline.md"}, "v2": {"timeline.md"}},
     "agents/repair": {"v1": {"prompt.md"}, "v2": {"prompt.md"}},
+    "agents/question": {"v1": {"question.md"}, "v2": {"question.md"}},
     "agents/events/calendar": {"v1": {"prompt.md"}, "v2": {"prompt.md"}},
     "agents/events/notification": {"v1": {"prompt.md"}, "v2": {"prompt.md"}},
     "agents/events/location": {
