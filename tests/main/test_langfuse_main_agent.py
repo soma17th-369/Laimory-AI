@@ -16,7 +16,11 @@ from app.core.llm import OpenAIProvider
 from app.core.execution_context import execution_context
 from app.schemas import AgentEventResult
 from tests.fixtures.fake_llm import candidate
-from tests.fixtures.pipeline import StubEventAgent, confirm_only_repair_agent
+from tests.fixtures.pipeline import (
+    StubEventAgent,
+    confirm_only_repair_agent,
+    silent_question_agent,
+)
 from tests.fixtures.requests import fixture_raw_id, make_request, stay_item
 
 
@@ -124,6 +128,7 @@ def test_main_agent_trace_has_full_recursive_hierarchy_and_rollups(
                 ],
                 timeline_agent=TimelineAgent(llm=_provider(draft_json)),
                 repair_agent=confirm_only_repair_agent(),
+                question_agent=silent_question_agent(),
             )
 
     asyncio.run(run())

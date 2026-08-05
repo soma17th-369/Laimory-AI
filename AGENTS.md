@@ -9,6 +9,33 @@
 - 사용자가 명시하지 않은 파일 삭제, git reset, checkout 같은 파괴적 작업은 하지 않습니다.
 - 기존 변경사항이 있으면 사용자 작업으로 보고 되돌리지 않습니다.
 
+## Knowledge Workflow
+
+- 구현 전에 [Knowledge Index](.agents/knowledge/README.md)의 Router에서 변경 경로와
+  `Read when`이 맞는 문서만 골라 읽습니다. 전체 knowledge를 매번 읽지 않습니다.
+- 도메인 이름·필드·모델·API 용어를 만들거나 바꿀 때는
+  [공통 언어](.agents/knowledge/domain/ubiquitous-language.md)를 따릅니다.
+- 코드 수정 후 변경 경로를 Router의 `Related paths`와 대조하고, 후보 문서의
+  `Update when`에 해당하는 의미 변화가 있는지 확인합니다.
+- 파일이 바뀌었다는 이유만으로 문서를 갱신하지 않습니다. 계약·동작·불변식·운영
+  방식의 의미가 달라진 knowledge 문서만 같은 변경에서 갱신합니다.
+- 코드·설정·스키마·테스트·CI workflow가 knowledge 문서보다 우선합니다. 서로
+  다르면 권위 원천을 기준으로 구현을 판단하고, 의미가 바뀐 경우 문서를 맞춥니다.
+- 새 knowledge 문서는 여러 작업에서 반복해 읽을 가치가 있고 기존 문서의 Scope로
+  설명하기 어려울 때만 추가합니다. 작업 로그·session memory·raw note는 넣지 않습니다.
+- 실제 secret, credential, token, 사용자 원문은 knowledge에 기록하지 않습니다.
+
+## 커밋과 PR
+
+- commit·push·PR은 사용자가 요청하거나 승인한 경우에만 수행합니다.
+- PR을 준비할 때는 [커밋 관례](.agents/knowledge/conventions/commit.md)에 따라 변경을
+  독립적으로 검토하고 되돌릴 수 있는 작은 작업 단위로 최대한 자세히 나눕니다.
+- commit 하나에는 하나의 주된 목적만 두고 unrelated refactor·formatting을 섞지
+  않습니다. 다만 code와 필수 test를 억지로 분리해 중간 commit을 실패 상태로 만들지는
+  않습니다.
+- commit message는 관찰된 `type : 한글 설명` 형식을 따르고, 무엇의 어떤 계약이나
+  동작을 바꿨는지 구체적으로 적습니다.
+
 ## Python 환경
 
 - Python 버전은 `.python-version`과 `pyproject.toml` 기준을 따릅니다.
@@ -81,7 +108,9 @@ app/
 │   ├── task.py                # TaskStatus + 완료 콜백 payload(errorCode:int|None, 성공/실패 필드 짝 강제)
 │   ├── source_snapshot.py     # 수집 원본(taskId/sourceItems) 파이프라인 내부 계약
 │   ├── timeline_input.py      # App Server 입력 조회 응답 계약 (#40). window.startAt/endAt → CollectedSnapshot 변환
-│   ├── timeline_result.py     # App Server 결과 저장 요청 계약 (#40). eventType/title/subtitle/startAt/endAt/sourceRawIds 만
+│   ├── timeline_result.py     # App Server 결과 저장 요청 계약 (#40, #66). eventType/title/subtitle/
+│   │                          #   startAt/endAt/sourceRawIds/question. question 은 event 안에 중첩한다 —
+│   │                          #   계약에 clientEventId 가 없어 최상위 목록은 event 를 가리킬 수 없다
 │   ├── location.py/calendar.py/health.py/notification.py/photo.py  # 분리된 도메인 항목
 │   ├── event_candidate.py     # AI 이벤트 후보 모델
 │   ├── timeline_request.py    # 정규화된 요청(main agent 입력)
@@ -93,14 +122,19 @@ app/
 │   ├── events/                # 데이터별 이벤트 에이전트 (source별 폴더)
 │   │   └── base_event_agent.py
 │   ├── timeline/timeline_agent.py   # 후보 → 초안 병합 (LLM 병합/파싱까지만)
-│   └── main/main_agent.py     # events → timeline → repair 조율(LangGraph)
+│   ├── question/question_agent.py   # 확정 event → 회고 유도 질문 (#66). Repair 뒤 배치 호출.
+│   │                          #   confidence·sourceRefs·분 단위 시각을 프롬프트에 주지 않는다 —
+│   │                          #   주지 않으면 질문에 샐 수 없다. 모든 event 에 하나씩이며,
+│   │                          #   빠진 event 는 1회 재요청한다. 길이·형식 검사는 코드가 한다
+│   └── main/main_agent.py     # events → timeline → repair → question 조율(LangGraph)
 │
 └── services/
     ├── app_server_client.py   # App Server 서버간 API 클라이언트 (#40). 입력 조회/결과 저장/콜백 3종을 소유.
     │                          #   TaskToken 홀더(응답 body 로 갱신, Task-Token 헤더로만 전송, 로그 금지),
     │                          #   재시도(timeout·5xx)와 중단(401/404/409) 정책의 유일한 자리
     ├── source_contract.py     # 입력 조회 응답의 묶음 계약 검증 (taskId 일치/0건/rawId 중복) + SourceBatchError
-    ├── timeline_result.py     # TimelineDraft → 결과 저장 요청 변환 (subtitle←description, rawId 디듀프, 255자 절단, tz 정렬)
+    ├── timeline_result.py     # TimelineDraft → 결과 저장 요청 변환 (subtitle←description, question 그대로,
+    │                          #   rawId 디듀프, 255자 절단, tz 정렬)
     ├── timeline_validator.py  # 저장 전 자체검증 (task source 소속/시간 등)
     ├── normalizer.py          # 수집 스냅샷을 itemType별로 분리·정규화
     ├── draft_repair.py        # draft 확정 repair (아래 순서대로 조립)
@@ -143,6 +177,7 @@ app/
 #   APP_SERVER_API_URL 은 필수 설정이다(없으면 기동 실패). dailyRecordId 는 접수 요청에
 #   남아 있지만 저장 연결은 App Server 담당이라 AI 는 관측 상관값으로만 쓴다.
 # main agent 그래프: run_event_agents → merge_results → run_timeline_agent → repair_draft
+#   → run_question_agent
 #   앞 3개는 LLM 이 의미를 판단하는 확률적 단계, repair_draft 는 코드가 확정하는 결정론적 단계다.
 # repair_draft 순서: sourceType 정정 → 캘린더 복원 → duration → 근거 구간 정렬 → MEAL
 #   → 수면 경계 → window → 장소 확정 → 정렬 → 체류 병합 → 겹침 정리 → confidence 보강
@@ -155,9 +190,19 @@ app/
 #   뺀다. 불확실성은 confidence·inferenceLevel·uncertainty 가 담당한다.
 #   **이 규칙은 Timeline·Repair 에만 적용한다.** Event Agent 는 정확한 사실 보고가 임무라
 #   시각·수치를 그대로 쓴다. 변환은 Timeline 계층의 몫이다.
+# 기록 질문 계약(#66): 결과의 event 마다 회고 유도 질문 하나가 붙는다(`question`). 사용자가
+#   답하면 그대로 기록이 되는 질문이며, 해요체 의문문·40자 내외·event 당 1개다.
+#   **모든 event 에 하나씩이고 종류에 따른 예외는 없다** — SLEEP·MOVEMENT 처럼 밋밋해 보여도
+#   남길 말이 있는지는 사용자가 판단한다. 1차 응답에서 빠진 event 는 그것만 모아 한 번 더
+#   묻고, 그래도 비면 null 로 두고 warning 을 남긴다(질문 하나로 저장을 막지 않는다).
+#   질문 단계는 **반드시 Repair 뒤**다. Repair 가 event 를 병합·삭제하고 clientEventId 를
+#   다시 매기므로 그전에 만든 질문은 사라진 event 를 가리킨다.
+#   실패는 흡수한다(1209) — 질문이 없다고 하루 기록을 버리지 않는다.
+#   이것은 TimelineDraft.questions(모호성 확인, 내부 전용)와 **다른 값**이다.
 # 프롬프트 동결본: 활성 프롬프트를 크게 바꿀 때 같은 디렉터리에 `<활성파일명>_v<버전>.md`
 #   로 직전 버전을 복사해 둔다(예: `timeline_v2.0.0.md`). load_prompt 는 정확한 파일명만
-#   읽으므로 동결본은 실행에 영향이 없다. **활성 파일은 `timeline.md`·`prompt.md` 뿐이다.**
+#   읽으므로 동결본은 실행에 영향이 없다. **활성 파일은 `timeline.md`·`prompt.md`·
+#   `question.md` 뿐이다.**
 
 tests/
 ├── agents/                    # Event Agent live 입력 테스트(opt-in)

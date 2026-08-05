@@ -14,6 +14,7 @@ import asyncio
 
 from app.agents.events.base_event_agent import EventAgent
 from app.agents.main import run_main_agent
+from app.agents.question import QuestionAgent
 from app.agents.repair import RepairAgent
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.schemas import AgentEventResult, TimelineDraft, TimelineDraftRequest
@@ -37,6 +38,28 @@ def confirm_only_repair_agent() -> RepairAgent:
     return RepairAgent(max_iterations=0)
 
 
+class _SilentQuestionAgent(QuestionAgent):
+    """LLM 을 부르지 않고 draft 를 그대로 돌려주는 Question Agent."""
+
+    def generate(self, request: TimelineDraftRequest, draft: TimelineDraft) -> TimelineDraft:
+        return draft
+
+
+def silent_question_agent() -> QuestionAgent:
+    """질문 단계를 통째로 비활성화한 Question Agent.
+
+    질문과 무관한 테스트가 이 단계 때문에 흔들리지 않게 한다. 빈 응답을 주는 가짜
+    LLM 을 꽂지 않는 이유는, 지금 Agent 가 빠진 event 를 한 번 더 묻고 그래도 비면
+    draft 에 warning 을 남기기 때문이다 — warning 개수를 보는 테스트가 깨진다.
+    질문 생성 자체의 동작은 `tests/agents/test_question_agent.py` 가 본다.
+
+    `run_main_agent` 는 주입이 없으면 **실제 LLM 을 부르는** Question Agent 를 만든다
+    — 그래프를 직접 태우는 테스트는 이 헬퍼를 반드시 함께 넘긴다.
+    """
+
+    return _SilentQuestionAgent()
+
+
 def run_timeline_pipeline(
     request: TimelineDraftRequest,
     agent_result: AgentEventResult,
@@ -50,5 +73,6 @@ def run_timeline_pipeline(
             event_agents=[StubEventAgent(agent_result)],
             timeline_agent=TimelineAgent(llm=FakeLLM([llm_response])),
             repair_agent=confirm_only_repair_agent(),
+            question_agent=silent_question_agent(),
         )
     )

@@ -6,11 +6,15 @@
     2. `merge_results`: 각 Agent 의 반환(`AgentEventResult`)을 하나로 취합한다.
     3. `run_timeline_agent`: Timeline Agent 가 취합 결과로 `TimelineDraft` 를 만든다.
     4. `run_repair_agent`: Repair Agent 가 draft 를 확정하고 개선해 최종 draft 를 만든다.
+    5. `run_question_agent`: 확정된 event 에 사용자용 회고 질문을 붙인다(이슈 #66).
 
 3번까지는 LLM 이 의미를 판단하는 확률적 단계다. 4번은 그 둘이 섞여 있다. Repair Agent
 안에서 **코드가 draft 를 확정하고(`draft_repair`), LLM 이 남은 문제를 도구로 고친다.**
 정렬이나 `clientEventId` 처럼 반드시 맞아야 하는 것은 그 안에서도 여전히 코드가 한다
 (`app/agents/repair/` 참고).
+
+5번이 Repair 뒤인 것은 순서 취향이 아니다. Repair 가 event 를 병합·삭제하고
+`clientEventId` 를 다시 매기므로, 그전에 만든 질문은 사라진 event 를 가리키게 된다.
 
 Event Agent 결과는 **Agent 이름을 키로** 들고 다닌다. Repair Agent 가 특정 Event Agent
 만 다시 돌린 뒤 Timeline Agent 를 재실행할 때, 다시 돌린 Agent 의 결과만 갈아 끼우고
@@ -18,8 +22,9 @@ Event Agent 결과는 **Agent 이름을 키로** 들고 다닌다. Repair Agent 
 
 각 Event Agent 의 실행 실패는 이미 `EventAgent.generate()` 가 warning 으로
 흡수하고, Timeline Agent 의 실패도 빈 draft + warning 으로 흡수하며, Repair Agent 의
-개선 실패도 직전 draft 를 유지한다. 그래서 이 메인 에이전트는 개별 Agent 실패로
-중단되지 않는다. 전체 흐름은 LangGraph 로 구성해 단계별 상태를 명시하고, timeout 은
+개선 실패도 직전 draft 를 유지한다. Question Agent 의 실패는 이 모듈이 흡수한다 —
+질문은 타임라인에 얹는 부가 가치라 없다고 해서 하루 기록을 버릴 이유가 없다. 그래서
+이 메인 에이전트는 개별 Agent 실패로 중단되지 않는다. 전체 흐름은 LangGraph 로 구성해 단계별 상태를 명시하고, timeout 은
 호출자가 `run_main_agent` 을 `asyncio.wait_for` 로 감싸 처리한다.
 """
 
@@ -31,9 +36,12 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agents.events import default_event_agents, merge_event_results
 from app.agents.events.base_event_agent import EventAgent
+from app.agents.question.question_agent import QuestionAgent
 from app.agents.repair.repair_agent import RepairAgent
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.core.config import settings
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import code_of_or, report_error
 from app.core.langfuse_tracing import (
     token_usage_scope,
     trace_observation,
@@ -41,7 +49,13 @@ from app.core.langfuse_tracing import (
 )
 from app.core.execution_context import ExecutionStage
 from app.core.logging import get_logger, log_fields, stage_span
-from app.schemas import AgentEventResult, TimelineDraft, TimelineDraftRequest
+from app.schemas import (
+    AgentEventResult,
+    TimelineDraft,
+    TimelineDraftRequest,
+    TimelineWarning,
+    TimelineWarningSeverity,
+)
 
 logger = get_logger(__name__)
 
@@ -51,6 +65,7 @@ class _MainAgentState(TypedDict, total=False):
     event_agents: dict[str, EventAgent]
     timeline_agent: TimelineAgent
     repair_agent: RepairAgent
+    question_agent: QuestionAgent
     event_results: dict[str, AgentEventResult]
     merged_result: AgentEventResult
     draft: TimelineDraft
@@ -73,6 +88,16 @@ def _name_agents(agents: list[EventAgent]) -> dict[str, EventAgent]:
             suffix += 1
         named[name] = agent
     return named
+
+
+def _record_question_count(draft: TimelineDraft) -> int:
+    """회고 질문이 붙은 event 수(이슈 #66).
+
+    관측의 `questionCount` 와 **다른 값이다**. 그쪽은 `draft.questions`, 즉 모호성
+    확인 질문 개수이며 기존 대시보드가 보는 뜻을 유지한다.
+    """
+
+    return sum(1 for event in draft.events if event.question)
 
 
 def _request_trace_input(request: TimelineDraftRequest) -> dict[str, object]:
@@ -285,16 +310,95 @@ def _build_graph():
             outcome["warningCount"] = len(draft.warnings)
         return {"draft": draft}
 
+    async def run_question_agent_node(state: _MainAgentState) -> _MainAgentState:
+        # 질문 생성은 실패해도 타임라인을 버리지 않는다. 다른 Agent 와 달리 흡수를
+        # 여기서 하는 이유는, Question Agent 자신은 "질문 없는 draft" 라는 대체
+        # 산출물을 갖고 있지 않아서다 — 원본 draft 는 호출부인 여기에 있다.
+        draft = state["draft"]
+        with (
+            stage_span(
+                logger,
+                ExecutionStage.QUESTION_AGENT,
+                agent="question",
+            ) as outcome,
+            token_usage_scope() as token_usage,
+            trace_observation(
+                "question-agent",
+                as_type="agent",
+                input={
+                    "date": state["request"].date,
+                    "timeline": draft.model_dump(by_alias=True, mode="json"),
+                },
+                metadata={"agent": "question"},
+            ) as langfuse_observation,
+        ):
+            started = perf_counter()
+            try:
+                draft = await asyncio.to_thread(
+                    state["question_agent"].generate,
+                    state["request"],
+                    draft,
+                )
+            except Exception as exc:  # noqa: BLE001 - 질문 실패는 흡수한다
+                failure_code = code_of_or(exc, ErrorCode.QUESTION_GENERATION_FAILED)
+                report_error(
+                    logger,
+                    failure_code,
+                    "Question Agent 실행 실패",
+                    exc=exc,
+                    context={"fallback": "draft_without_questions"},
+                    stage=ExecutionStage.QUESTION_AGENT,
+                    exc_info=True,
+                )
+                draft.warnings.append(
+                    TimelineWarning(
+                        warning_id="warning-question-001",
+                        severity=TimelineWarningSeverity.LOW,
+                        message="기록 질문을 만들지 못해 질문 없이 진행했습니다.",
+                    )
+                )
+                update_observation(
+                    langfuse_observation,
+                    output={
+                        "recordQuestionCount": 0,
+                        "errorCode": int(failure_code),
+                        "durationMs": (perf_counter() - started) * 1000,
+                        "tokenUsage": token_usage.summary(),
+                    },
+                    level="ERROR",
+                    status_message="기록 질문 생성에 실패했습니다.",
+                )
+                outcome["recordQuestionCount"] = 0
+                outcome["errorCode"] = int(failure_code)
+                return {"draft": draft}
+
+            record_questions = _record_question_count(draft)
+            update_observation(
+                langfuse_observation,
+                output={
+                    "eventCount": len(draft.events),
+                    "recordQuestionCount": record_questions,
+                    "durationMs": (perf_counter() - started) * 1000,
+                    "tokenUsage": token_usage.summary(),
+                    "timeline": draft.model_dump(by_alias=True, mode="json"),
+                },
+            )
+            outcome["eventCount"] = len(draft.events)
+            outcome["recordQuestionCount"] = record_questions
+        return {"draft": draft}
+
     graph = StateGraph(_MainAgentState)
     graph.add_node("run_event_agents", run_event_agents_node)
     graph.add_node("merge_results", merge_results_node)
     graph.add_node("run_timeline_agent", run_timeline_agent_node)
     graph.add_node("run_repair_agent", run_repair_agent_node)
+    graph.add_node("run_question_agent", run_question_agent_node)
     graph.add_edge(START, "run_event_agents")
     graph.add_edge("run_event_agents", "merge_results")
     graph.add_edge("merge_results", "run_timeline_agent")
     graph.add_edge("run_timeline_agent", "run_repair_agent")
-    graph.add_edge("run_repair_agent", END)
+    graph.add_edge("run_repair_agent", "run_question_agent")
+    graph.add_edge("run_question_agent", END)
     return graph.compile()
 
 
@@ -304,6 +408,7 @@ async def run_main_agent(
     event_agents: list[EventAgent] | None = None,
     timeline_agent: TimelineAgent | None = None,
     repair_agent: RepairAgent | None = None,
+    question_agent: QuestionAgent | None = None,
 ) -> TimelineDraft:
     """요청을 받아 확정된 `TimelineDraft` 를 생성한다.
 
@@ -312,6 +417,7 @@ async def run_main_agent(
         event_agents: 사용할 Event Agent 목록. 기본값은 `default_event_agents()`.
         timeline_agent: 사용할 Timeline Agent. 기본값은 새 `TimelineAgent()`.
         repair_agent: 사용할 Repair Agent. 기본값은 새 `RepairAgent()`.
+        question_agent: 사용할 Question Agent. 기본값은 새 `QuestionAgent()`.
 
     Event Agent 들은 각각 블로킹 LLM 호출을 하므로 `asyncio.to_thread` 로
     스레드에 올려 동시에 실행한다. Timeline/Repair Agent 역시 블로킹이라 스레드에서
@@ -323,6 +429,7 @@ async def run_main_agent(
     )
     timeline = timeline_agent if timeline_agent is not None else TimelineAgent()
     repair = repair_agent if repair_agent is not None else RepairAgent()
+    question = question_agent if question_agent is not None else QuestionAgent()
 
     # 이 타임라인을 "어떤 provider/model 로 만들었는지" 를 로그에 남긴다. 모든 하위
     # 에이전트는 설정된 provider(`settings.llm_provider`)와 그 provider 의 모델을 쓰므로
@@ -358,14 +465,17 @@ async def run_main_agent(
                 "event_agents": agents,
                 "timeline_agent": timeline,
                 "repair_agent": repair,
+                "question_agent": question,
             }
         )
         draft = final_state["draft"]
+        record_questions = _record_question_count(draft)
         update_observation(
             langfuse_observation,
             output={
                 "eventCount": len(draft.events),
                 "questionCount": len(draft.questions),
+                "recordQuestionCount": record_questions,
                 "warningCount": len(draft.warnings),
                 "durationMs": (perf_counter() - started) * 1000,
                 "tokenUsage": token_usage.summary(),
@@ -375,5 +485,6 @@ async def run_main_agent(
         )
         outcome["eventCount"] = len(draft.events)
         outcome["questionCount"] = len(draft.questions)
+        outcome["recordQuestionCount"] = record_questions
         outcome["warningCount"] = len(draft.warnings)
     return draft

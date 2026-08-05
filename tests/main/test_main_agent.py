@@ -11,6 +11,7 @@ import asyncio
 import json
 
 from app.agents.events.base_event_agent import EventAgent
+from app.agents.question import QuestionAgent
 from app.agents.repair import RepairAgent
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.agents.main import run_main_agent
@@ -24,7 +25,7 @@ from app.schemas import (
     SourceRef,
 )
 from tests.fixtures.fake_llm import FakeLLM
-from tests.fixtures.pipeline import confirm_only_repair_agent
+from tests.fixtures.pipeline import confirm_only_repair_agent, silent_question_agent
 from tests.fixtures.requests import fixture_raw_id, make_request, stay_item
 
 
@@ -145,6 +146,7 @@ def test_repair_node_sorts_events_and_reassigns_ids():
             event_agents=[_StubAgent("a", AgentEventResult(candidates=[_candidate("s-1")]))],
             timeline_agent=_timeline_agent_returning_unsorted_events(),
             repair_agent=confirm_only_repair_agent(),
+            question_agent=silent_question_agent(),
         )
     )
 
@@ -164,6 +166,7 @@ def test_main_agent_merges_and_builds_draft():
             event_agents=agents,
             timeline_agent=_timeline_agent_returning_one_event(),
             repair_agent=confirm_only_repair_agent(),
+            question_agent=silent_question_agent(),
         )
     )
 
@@ -198,6 +201,7 @@ def test_repair_agent_receives_draft_sources_and_reruns():
             event_agents=[_StubAgent("a", AgentEventResult(candidates=[_candidate("s-1")]))],
             timeline_agent=_timeline_agent_returning_one_event(),
             repair_agent=RepairAgent(llm=repair_llm, max_iterations=2),
+            question_agent=silent_question_agent(),
         )
     )
 
@@ -222,6 +226,7 @@ def test_main_agent_isolates_failing_event_agent():
             event_agents=agents,
             timeline_agent=_timeline_agent_returning_one_event(),
             repair_agent=confirm_only_repair_agent(),
+            question_agent=silent_question_agent(),
         )
     )
 
@@ -229,5 +234,61 @@ def test_main_agent_isolates_failing_event_agent():
     assert len(draft.events) == 1
     # 실패는 upstream warning 으로 draft 에 남는다.
     assert any("boom" in w.message for w in draft.warnings)
+    assert all("의도된 실패" not in w.message for w in draft.warnings)
+
+
+def test_question_node_attaches_questions_after_repair():
+    """질문은 Repair 가 id 를 다시 매긴 **뒤에** 붙는다(이슈 #66).
+
+    Timeline Agent 가 뒤집힌 순서를 돌려주므로 repair 전후의 `clientEventId` 가
+    다르다. 질문이 repair 이후의 id 를 기준으로 붙는지 여기서 갈린다.
+    """
+
+    question_json = json.dumps(
+        {
+            "questions": [
+                {"clientEventId": "event-001", "question": "오전은 어떻게 보내셨나요?"}
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    draft = asyncio.run(
+        run_main_agent(
+            _request(),
+            event_agents=[_StubAgent("a", AgentEventResult(candidates=[_candidate("s-1")]))],
+            timeline_agent=_timeline_agent_returning_unsorted_events(),
+            repair_agent=confirm_only_repair_agent(),
+            question_agent=QuestionAgent(llm=FakeLLM([question_json])),
+        )
+    )
+
+    # repair 가 시간 순으로 정렬하고 id 를 다시 매긴 뒤의 event-001 은 "오전" 이다.
+    assert draft.events[0].title == "오전"
+    assert draft.events[0].question == "오전은 어떻게 보내셨나요?"
+    assert draft.events[1].question is None
+
+
+def test_question_failure_keeps_the_timeline():
+    """질문 생성이 깨져도 타임라인은 그대로 남고 warning 만 붙는다."""
+
+    class _BoomQuestionAgent(QuestionAgent):
+        def generate(self, request, draft):
+            raise RuntimeError("의도된 실패")
+
+    draft = asyncio.run(
+        run_main_agent(
+            _request(),
+            event_agents=[_StubAgent("a", AgentEventResult(candidates=[_candidate("s-1")]))],
+            timeline_agent=_timeline_agent_returning_one_event(),
+            repair_agent=confirm_only_repair_agent(),
+            question_agent=_BoomQuestionAgent(),
+        )
+    )
+
+    assert len(draft.events) == 1
+    assert draft.events[0].question is None
+    assert any("기록 질문" in w.message for w in draft.warnings)
+    # 원본 예외 메시지는 draft 로 새지 않는다.
     assert all("의도된 실패" not in w.message for w in draft.warnings)
 
