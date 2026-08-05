@@ -1,0 +1,71 @@
+# 관측성·오류 추적
+
+## Scope
+
+운영 이벤트, 로컬 진단, Filebeat/Elasticsearch, Langfuse trace, 오류 코드와 redaction 경계를 설명한다.
+
+## Read When
+
+- 로그·metric·trace·ErrorCode를 추가하거나 바꿀 때
+- 사용자 본문·secret이 관측으로 나갈 가능성이 있을 때
+- HTTP/task/dependency 실패를 운영에서 추적할 때
+
+## Authoritative Sources
+
+- `app/core/logging.py`, `operational_logging.py`, `langfuse_tracing.py`, `redaction.py`, `error_codes.py`, `exceptions.py`, `execution_context.py`
+- `app/api/request_logging.py`, `app/api/error_handlers.py`
+- `app/services/timeline_runner.py`, `app/services/app_server_client.py`
+- `docs/observability/filebeat.example.yml`, `scripts/deploy-ec2.sh`
+- `tests/core/test_logging.py`, `test_operational_logging.py`, `test_langfuse_tracing.py`, `test_redaction.py`, `test_no_direct_elasticsearch.py`
+
+## Current Implementation
+
+관측은 세 경계로 나뉜다.
+
+| 경계 | 목적 | persistence |
+|---|---|---|
+| 일반/local 진단 로그 | exception 원문, stage 디버깅 | container stdout; Filebeat 표식이 없어 ES에서 drop |
+| 운영 이벤트 | HTTP/server/task/dependency 집계 | stdout 한 줄 JSON → Filebeat → Elasticsearch data stream |
+| Langfuse | Agent tree, LLM generation, token, 선택적 본문 | Langfuse SDK; 비활성·오류 시 no-op |
+
+`LOG_FORMAT=rich`는 local console, `json`은 운영용 한 줄 JSON이다. JSON formatter는 multiline traceback을 한 record의 구조화 필드로 넣고 secret/PII를 마스킹한다. Uvicorn logger는 앱 formatter에 맞추고 기본 access log는 요청 middleware가 대체한다.
+
+Elasticsearch 수집 대상은 `emit_event`만 붙일 수 있는 `event.dataset=laimory.api` 표식으로 제한한다. 현재 event action은 HTTP request 완료, server 시작·종료, Timeline task 완료, App Server logical request 완료·retry다. 이벤트별 field allowlist가 있으며 allowlist 밖 값은 값 자체를 기록하지 않고 field name만 local DEBUG로 알린다.
+
+HTTP request는 response start 시점에 요청당 한 건, Timeline background task는 finally에서 task당 한 건, App Server logical call은 retry 횟수와 무관하게 완료 한 건을 남긴다. 개별 retry는 별도 retry event다. 같은 `taskId`와 `errorCode`로 경계를 연결한다.
+
+`ErrorCode`는 영역별 정수 대역, 외부 안전 메시지, 필요한 HTTP status의 단일 카탈로그다. 예약된 과거 번호는 재사용하지 않는다. `report_error`는 최종/흡수 경계의 local 진단이며 외부 response·callback·운영 event는 같은 code를 참조한다. 원본 exception message와 traceback은 외부 안전 메시지로 변환된다.
+
+Langfuse는 설정이 활성이고 public/secret key가 모두 있을 때 지연 생성한다. release는 `AGENT_VERSION`, environment는 `APP_ENV`를 쓴다. content policy는 명시 설정이 우선하며 미지정 시 local/dev는 `SANITIZED`, 그 밖은 `NONE`이다. `NONE`도 duration, token, count, errorCode 같은 diagnostics는 보존하고 사용자 본문은 byte/hash summary로 접는다. payload size를 제한하고 export 직전 OTel attribute를 다시 마스킹한다.
+
+Langfuse client 생성·span 시작/종료·flush 실패와 운영 event 조립·handler 실패는 주 요청을 실패시키지 않는다. 앱 코드의 Elasticsearch 직접 호출과 알려지지 않은 `httpx` 사용자는 정적 테스트가 막는다.
+
+## Invariants
+
+- 일반 로그를 추가해도 자동으로 Elasticsearch 수집 범위가 넓어지지 않아야 한다.
+- 운영 이벤트에는 사용자 title, 장소, 주소, filename, prompt/response, URL, token, exception 원문을 넣지 않는다.
+- event action 이름과 field 의미는 dashboard/search 계약이므로 임의 변경하지 않는다.
+- 같은 실패는 API/callback/운영 event에서 같은 정수 code를 쓴다.
+- 관측 실패가 Timeline 결과를 바꾸지 않는다.
+- `taskToken` 값은 Langfuse와 모든 로그에서 금지하고 갱신 횟수만 허용한다.
+
+## Known Gaps
+
+- Elasticsearch index template·dashboard·retention 설정은 저장소에 없고 배포 환경이 소유한다.
+- Filebeat가 실패해도 앱 배포는 계속되므로 운영 이벤트 전달 보장은 없다.
+- Langfuse는 optional이고 sampling이 1 미만이면 모든 task trace가 존재하지 않는다.
+- local 진단 stdout의 보존·접근 통제는 container host 운영 설정에 의존한다.
+- 새로운 operational event field와 downstream dashboard 호환성을 자동 검증하는 외부 contract test는 없다.
+
+## Update When
+
+log format, operational marker/action/allowlist, 수집 sink, request/task/dependency cardinality, ErrorCode 규칙, Langfuse tree/content policy, redaction, failure isolation이 바뀔 때 갱신한다.
+
+## Validation
+
+- `uv run pytest tests/core/test_logging.py tests/core/test_operational_logging.py tests/core/test_redaction.py -q`
+- `uv run pytest tests/core/test_langfuse_tracing.py tests/core/test_no_direct_elasticsearch.py tests/core/test_error_codes.py -q`
+- `uv run pytest tests/api/test_request_logging.py tests/api/test_error_handlers.py tests/services/test_timeline_runner.py tests/services/test_app_server_client.py -q`
+- `uv run pytest tests/scripts/test_filebeat_config.py -q`
+- `rg -n "emit_event|report_error|event.dataset|capture_langfuse" app tests`
+

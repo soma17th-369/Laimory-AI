@@ -25,9 +25,15 @@
   설명하기 어려울 때만 추가합니다. 작업 로그·session memory·raw note는 넣지 않습니다.
 - 실제 secret, credential, token, 사용자 원문은 knowledge에 기록하지 않습니다.
 
-## 커밋과 PR
+## 이슈·커밋·PR
 
 - commit·push·PR은 사용자가 요청하거나 승인한 경우에만 수행합니다.
+- 이슈를 만들거나 제목을 고칠 때는 [이슈 관례](.agents/knowledge/conventions/issue.md)를
+  따릅니다. 기존 템플릿과 이력에서 확인된 `아이콘 Type - 한글 요약`
+  형식을 사용하고 `🐛 Bug`, `✨ Feature`, `🎨 Refactor`, `🔧 Task` 아이콘을
+  생략하지 않습니다. 문서에 없는 Type과 아이콘은 임의로 만들지 않고 확인합니다.
+- PR을 작성·검토할 때는 [PR 관례](.agents/knowledge/conventions/pull-request.md)와
+  `.github/pull_request_template.md`를 따릅니다.
 - PR을 준비할 때는 [커밋 관례](.agents/knowledge/conventions/commit.md)에 따라 변경을
   독립적으로 검토하고 되돌릴 수 있는 작은 작업 단위로 최대한 자세히 나눕니다.
 - commit 하나에는 하나의 주된 목적만 두고 unrelated refactor·formatting을 섞지
