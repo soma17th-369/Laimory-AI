@@ -245,6 +245,74 @@ async def test_input_abort_statuses_are_not_retried(status_code, expected):
     assert len(seen) == 1
 
 
+# --- userMemory 흡수 (#65) ---------------------------------------------
+
+
+_VALID_MEMORY = {
+    "schemaVersion": "1.0",
+    "basicProfile": "경기도에 사는 개발자",
+    "customAttributes": {"반려동물": "고양이"},
+}
+
+
+async def test_valid_user_memory_reaches_the_snapshot():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_input_body(userMemory=_VALID_MEMORY))
+
+    snapshot = await _client(handler).fetch_input(_TASK_ID, TaskToken("tok-1"))
+
+    assert snapshot.user_memory is not None
+    assert snapshot.user_memory.basic_profile == "경기도에 사는 개발자"
+
+
+async def test_broken_user_memory_is_absorbed_without_failing_the_timeline(caplog):
+    """보조 context 하나 때문에 하루치 수집 원본을 버리지 않는다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_input_body(userMemory={"favoriteColor": "파랑", "schemaVersion": "1.0"}),
+        )
+
+    with caplog.at_level("WARNING"):
+        snapshot = await _client(handler).fetch_input(_TASK_ID, TaskToken("tok-1"))
+
+    assert snapshot.user_memory is None
+    assert snapshot.source_items  # 수집 원본은 그대로 살아 있다.
+
+    reported = [
+        getattr(record, "fields", {})
+        for record in caplog.records
+        if getattr(record, "fields", {}).get("errorCode")
+        == int(ErrorCode.USER_MEMORY_CONTRACT_VIOLATION)
+    ]
+    assert len(reported) == 1
+    assert reported[0]["userMemoryErrorFields"] == ["favoriteColor"]
+    assert reported[0]["userMemoryErrorTypes"] == ["extra_forbidden"]
+
+
+async def test_absorbed_user_memory_failure_does_not_log_the_body(caplog):
+    """pydantic 오류 문자열에는 걸린 값이 그대로 인용된다. 그 경로를 막았는지 본다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_input_body(
+                userMemory={"basicProfile": "엄마와 매주 통화하는 개발자" * 20}
+            ),
+        )
+
+    with caplog.at_level("WARNING"):
+        await _client(handler).fetch_input(_TASK_ID, TaskToken("tok-1"))
+
+    logged = "\n".join(
+        [record.getMessage() for record in caplog.records]
+        + [str(record.__dict__) for record in caplog.records]
+    )
+    assert "엄마" not in logged
+    assert "개발자" not in logged
+
+
 async def test_result_404_uses_task_not_found_code():
     """입력 조회 404(1101)와 그 밖의 404(1405)를 구분한다."""
 

@@ -65,6 +65,7 @@ AI 서버가 밖으로 내보내는 실패는 **정수 하나로 식별**합니�
 | 1103 | `SOURCE_ITEM_NORMALIZE_FAILED` | 개별 수집 항목 정규화에 실패해 그 항목만 건너뛰었습니다. | | ✓ |
 | 1104 | `TIMEZONE_RESOLUTION_FAILED` | 요청 timezone을 해석하지 못해 KST로 진행했습니다. | | ✓ |
 | 1105 | `SOURCE_FETCH_FAILED` | 입력 조회 API 호출이 재시도까지 실패했습니다(5xx/timeout). | | |
+| 1106 | `USER_MEMORY_CONTRACT_VIOLATION` | 입력 조회 응답의 `userMemory`가 v1.0 계약을 어겨 User Memory 없이 진행했습니다. | | ✓ |
 
 ### 1200~1299 AI/LLM
 
