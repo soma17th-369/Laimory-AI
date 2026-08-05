@@ -381,6 +381,9 @@ async def _process_observed(
             request_outcome["sourceItemCount"] = len(snapshot.source_items)
             request_outcome["inputItemCounts"] = request.source_item_counts()
             request_outcome["hasUserMemory"] = request.user_memory is not None
+            if request.user_memory is not None:
+                # 본문은 넣지 않는다. 계약 버전·채워진 필드 수·직렬화 크기만 남긴다(#65).
+                request_outcome["userMemory"] = request.user_memory.trace_summary()
 
         active_stage = ExecutionStage.MAIN_AGENT
         draft = await asyncio.wait_for(
