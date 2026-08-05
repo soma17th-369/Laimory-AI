@@ -122,11 +122,26 @@ def _text(path) -> str:
         ("100자", "description 길이 기준이 있어야 합니다."),
         ("30자", "title 길이 기준이 있어야 합니다."),
         ("듯해요", "헤지 표현을 금지 대상으로 보여 줘야 합니다."),
-        ("원본 수치", "분 단위 시각·걸음 수 같은 raw 값 금지가 있어야 합니다."),
+        ("센서 수치", "분 단위 시각·걸음 수 같은 센서 값 금지가 있어야 합니다."),
     ],
 )
 def test_timeline_v2_states_tone_and_length(marker: str, why: str) -> None:
     assert marker in _text(_TIMELINE_V2), f"timeline v2 에 '{marker}' 가 없습니다. {why}"
+
+
+def test_timeline_v2_keeps_meaningful_numbers_while_dropping_sensor_values(
+) -> None:
+    """수치 금지는 센서 값에 한정한다 (#67).
+
+    포괄적으로 `원본 수치` 를 금지하면 정산 금액·인원처럼 사건의 의미를 이루는
+    사실까지 문장에서 빠진다. 실제 로그에서 상대 이름과 정산 금액이 `정산 연락` 으로
+    뭉개진 원인이다.
+    """
+
+    text = _text(_TIMELINE_V2)
+    assert "센서 수치" in text
+    assert "금액" in text, "정산 금액을 남기라는 지시가 있어야 합니다."
+    assert "인원수" in text, "정산 인원수를 남기라는 지시가 있어야 합니다."
 
 
 def test_timeline_v2_puts_tone_rules_before_input_section() -> None:

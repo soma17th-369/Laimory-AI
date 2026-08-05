@@ -5,6 +5,10 @@ App Server 결과 저장 API 를 호출하기 전에 각 이벤트의 필수값�
 
 입력에 없는 ``rawId``는 App Server 도 거절하지만, 여기서 먼저 막는다. 거절될 것이
 뻔한 요청을 왕복시키면 실패 원인이 네트워크 계층으로 밀려 진단이 어려워진다.
+
+window 이탈과 수면 event 도 여기서 다시 본다(#67). `repair_draft` 가 이미 강제하지만
+그것은 **repair 를 거쳤을 때의 이야기**다. 저장 직전의 이 지점이 마지막 관문이라,
+앞 단계가 어떻게 바뀌어도 범위 밖 event 와 수면이 저장되지 않게 한다.
 """
 
 from dataclasses import dataclass
@@ -13,6 +17,9 @@ from enum import StrEnum
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import AppError
 from app.schemas.timeline import TimelineDraft
+from app.schemas.timeline_request import TimelineDraftRequest
+from app.services.sleep_exclusion import HIDDEN_EVENT_TYPES
+from app.services.validator import WindowBounds, resolve_window_bounds
 
 
 class TimelineViolationCode(StrEnum):
@@ -23,6 +30,8 @@ class TimelineViolationCode(StrEnum):
     INVALID_TIME_RANGE = "INVALID_TIME_RANGE"
     SOURCE_REFS_EMPTY = "SOURCE_REFS_EMPTY"
     SOURCE_RAW_ID_NOT_IN_TASK = "SOURCE_RAW_ID_NOT_IN_TASK"
+    OUTSIDE_WINDOW = "OUTSIDE_WINDOW"
+    HIDDEN_EVENT_TYPE = "HIDDEN_EVENT_TYPE"
 
 
 @dataclass(frozen=True)
@@ -44,13 +53,36 @@ class TimelineValidationError(AppError):
 
 
 def _collect_timeline_violations(
-    draft: TimelineDraft, valid_raw_ids: set[str]
+    draft: TimelineDraft,
+    valid_raw_ids: set[str],
+    window: WindowBounds | None = None,
 ) -> list[TimelineViolation]:
     """저장 위반 코드와 진단 문자열을 함께 만든다."""
 
     violations: list[TimelineViolation] = []
     for event in draft.events:
         event_id = event.client_event_id
+
+        if event.event_type in HIDDEN_EVENT_TYPES:
+            violations.append(
+                TimelineViolation(
+                    TimelineViolationCode.HIDDEN_EVENT_TYPE,
+                    f"이벤트 {event_id}: {event.event_type.value} 은 저장하지 않습니다",
+                )
+            )
+
+        if (
+            window is not None
+            and event.start_time is not None
+            and (event.start_time < window.start or event.end_time > window.end)
+        ):
+            # 시각 원문은 사용자 데이터라 남기지 않는다. 어느 event 인지만 남긴다.
+            violations.append(
+                TimelineViolation(
+                    TimelineViolationCode.OUTSIDE_WINDOW,
+                    f"이벤트 {event_id}: 요청 window 밖입니다",
+                )
+            )
 
         if not (event.title or "").strip():
             violations.append(
@@ -100,21 +132,36 @@ def _collect_timeline_violations(
 
 
 def validate_timeline_for_storage(
-    draft: TimelineDraft, valid_raw_ids: set[str]
+    draft: TimelineDraft,
+    valid_raw_ids: set[str],
+    request: TimelineDraftRequest | None = None,
 ) -> list[str]:
-    """저장 위반 사유를 반환한다. 빈 리스트면 저장할 수 있다."""
+    """저장 위반 사유를 반환한다. 빈 리스트면 저장할 수 있다.
+
+    `request` 를 주면 요청 window 이탈까지 검사한다. 운영 경로는 항상 준다.
+    """
 
     return [
         violation.message
-        for violation in _collect_timeline_violations(draft, valid_raw_ids)
+        for violation in _collect_timeline_violations(
+            draft, valid_raw_ids, _window_of(request)
+        )
     ]
 
 
 def ensure_timeline_valid_for_storage(
-    draft: TimelineDraft, valid_raw_ids: set[str]
+    draft: TimelineDraft,
+    valid_raw_ids: set[str],
+    request: TimelineDraftRequest | None = None,
 ) -> None:
     """저장 계약을 검증하고 위반 시 ``TimelineValidationError``를 던진다."""
 
-    violations = _collect_timeline_violations(draft, valid_raw_ids)
+    violations = _collect_timeline_violations(
+        draft, valid_raw_ids, _window_of(request)
+    )
     if violations:
         raise TimelineValidationError(violations)
+
+
+def _window_of(request: TimelineDraftRequest | None) -> WindowBounds | None:
+    return resolve_window_bounds(request) if request is not None else None

@@ -5,7 +5,7 @@ Repair Agent 는 draft 를 직접 다시 쓰지 않는다. **이미 있는 결�
 
     1. 조회   : `lookup_source` 로 근거 원본을 되짚는다.
     2. 편집   : `update_event` / `delete_event` 로 event 를 고치거나 지운다.
-    3. 재적용 : `enforce_sleep_boundary`, `resolve_places` 같은 결정론 서비스를 다시 돌린다.
+    3. 재적용 : `resolve_places`, `enforce_meal_duration` 같은 결정론 서비스를 다시 돌린다.
     4. 재실행 : `rerun_event_agent` / `rerun_timeline_agent` 로 상류 Agent 를 다시 돌린다.
 
 3번이 도구인 이유: 이 서비스들은 `repair_draft` 가 이미 한 번 돌린 것들이다. 하지만
@@ -60,7 +60,7 @@ from app.services.photo_guard import inspect_photo_assignment
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import AppError, code_of, report_error
 from app.services.place_resolver import resolve_places
-from app.services.sleep_guard import enforce_sleep_boundary
+from app.services.sleep_exclusion import sleep_excluded_raw_ids
 from app.services.source_lookup import raw_id_of
 
 logger = get_logger(__name__)
@@ -88,6 +88,16 @@ class RepairContext:
     event_agents: dict[str, EventAgent] = field(default_factory=dict)
     timeline_agent: TimelineAgent | None = None
     log: list[RepairToolResult] = field(default_factory=list)
+
+
+def sleep_excluded_raw_ids_for(ctx: RepairContext) -> frozenset[str]:
+    """이 컨텍스트의 현재 수면 제외 rawId 집합(#67).
+
+    `event_results` 는 `rerun_event_agent` 가 갈아 끼우므로 매번 다시 계산한다. 고정된
+    집합을 들고 다니면 Event Agent 를 다시 돌린 뒤 정책이 옛 결과를 가리킨다.
+    """
+
+    return sleep_excluded_raw_ids(ctx.event_results.values(), ctx.request)
 
 
 @dataclass(frozen=True)
@@ -159,6 +169,43 @@ def source_index_text(request: TimelineDraftRequest) -> str:
         span = f"{start}~{end}" if end else str(start)
         label = _item_label(item)
         lines.append(f"- {source_type.value} rawId={raw_id} {span} {label}".rstrip())
+    return "\n".join(lines) if lines else "없음"
+
+
+#: 후보 인덱스 한 줄에 담을 근거 요약 길이. 전체 JSON 을 실으면 프롬프트가 배로 는다.
+_CANDIDATE_SUMMARY_MAX = 80
+
+
+def candidate_index_text(ctx: RepairContext) -> str:
+    """Event Agent 후보를 한 줄씩 압축한 인덱스(프롬프트용, #67).
+
+    Timeline 이 Event Agent 의 해석을 잃었는지 Repair 가 판단하려면 **원래 무엇을
+    읽어 냈는지**를 알아야 한다. 실제 로그에서 Notification Agent 가 보존한 상대
+    이름·정산 인원·금액이 Timeline 결과에서 일반적인 `정산 연락` 으로 축약됐는데,
+    Repair 는 비교 대상이 없어 그 유실을 볼 수 없었다.
+
+    후보 JSON 전체가 아니라 비교에 필요한 것만 싣는다. 자세한 값이 필요하면 rawId 로
+    `lookup_source` 를 부른다.
+    """
+
+    lines: list[str] = []
+    for agent_name, result in ctx.event_results.items():
+        for candidate in result.candidates:
+            summary = (candidate.evidence_summary or candidate.description or "").strip()
+            summary = summary.replace("\n", " ")[:_CANDIDATE_SUMMARY_MAX]
+            raw_ids = ",".join(
+                sorted({str(ref.raw_id) for ref in candidate.source_refs})
+            )
+            tags = ",".join(candidate.semantic_tags[:5])
+            lines.append(
+                f"- [{agent_name}] {candidate.event_type.value} "
+                f"{candidate.time_range.start_time.isoformat()}"
+                f"~{candidate.time_range.end_time.isoformat()} "
+                f"conf={candidate.confidence:.2f} "
+                f"title={candidate.title} "
+                f"evidence={summary} "
+                f"tags={tags} rawIds={raw_ids}".rstrip()
+            )
     return "\n".join(lines) if lines else "없음"
 
 
@@ -342,11 +389,6 @@ _TOOLS: dict[str, RepairTool] = {
             lambda ctx: enforce_meal_duration(ctx.draft, ctx.request),
         ),
         _service_tool(
-            "enforce_sleep_boundary",
-            "기상 이전 event 를 지우고, 수면 구간에 걸친 event 를 잘라 낸다.",
-            lambda ctx: enforce_sleep_boundary(ctx.draft, ctx.request),
-        ),
-        _service_tool(
             "resolve_places",
             "placeLabel 을 근거의 장소명으로 확정하고, 근거에 없는 address 를 지운다.",
             lambda ctx: resolve_places(ctx.draft, ctx.request),
@@ -354,7 +396,9 @@ _TOOLS: dict[str, RepairTool] = {
         _service_tool(
             "ensure_calendar_events",
             "timeline 에서 통째로 빠진 캘린더 일정을 event 로 되살린다.",
-            lambda ctx: ensure_calendar_events(ctx.draft, ctx.request),
+            lambda ctx: ensure_calendar_events(
+                ctx.draft, ctx.request, sleep_excluded_raw_ids_for(ctx)
+            ),
         ),
         _service_tool(
             "merge_stay_events",

@@ -57,7 +57,11 @@ def referenced_calendar_ids(draft: TimelineDraft) -> set[str]:
     }
 
 
-def ensure_calendar_events(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
+def ensure_calendar_events(
+    draft: TimelineDraft,
+    request: TimelineDraftRequest,
+    excluded_raw_ids: frozenset[str] = frozenset(),
+) -> None:
     """어느 event 도 참조하지 않은 캘린더 일정을 event 로 되살린다(in-place).
 
     되살린 event 는 임시 `clientEventId` 를 갖는다. repair 마지막의 `renumber_events` 가
@@ -65,6 +69,9 @@ def ensure_calendar_events(draft: TimelineDraft, request: TimelineDraftRequest) 
 
     호출 위치는 repair 앞쪽이다. 되살린 event 도 window 클램프·장소 확정·정렬을 똑같이
     거쳐야 하기 때문이다.
+
+    `excluded_raw_ids` 는 수면 비노출 정책이 걷어 낸 rawId 다(#67). 이 문이 열려 있으면
+    Timeline 이 뺀 수면 일정이 "누락된 캘린더"로 다시 살아나므로 여기서 막는다.
     """
 
     if not request.calendars:
@@ -77,6 +84,8 @@ def ensure_calendar_events(draft: TimelineDraft, request: TimelineDraftRequest) 
     for index, item in enumerate(request.calendars, start=1):
         identifier = raw_id_of(item)
         if not identifier or identifier in referenced:
+            continue
+        if identifier in excluded_raw_ids:
             continue
 
         start = parse_datetime(item.start_at, tz)

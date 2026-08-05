@@ -13,7 +13,11 @@
     - 장소가 같다. `place` 를 정규화해 완전히 일치하거나, 둘 다 `place` 가 없으면
       `address` 가 일치한다.
     - 사이에 MOVEMENT 기록이 없다.
-    - 사이에 수면 구간이 없다. 자고 일어난 것은 이어진 체류가 아니라 하루의 경계다.
+
+수면 구간은 더 이상 병합 차단 근거가 아니다(#67). 수면 기록을 믿을 수 없다고 판단해
+사용자 결과에서 수면을 제외했는데, 그 못 믿을 구간이 체류 병합 결과를 계속 바꾸면
+숨긴 정보가 뒤에서 결과를 만드는 셈이다. 자고 일어난 뒤의 같은 장소 체류가 하나로
+합쳐지는 것은 감수한다 — 사용자가 보는 것은 "집에 있었다" 하나이고, 그 사실은 맞다.
 
 장소 비교에 `places_match()` 를 쓰지 않는 이유가 있다. 그 함수는 토큰이 하나만 겹쳐도
 참이라 `오산시` 수준에서 서로 다른 장소를 묶어 버린다(함수 docstring 이 스스로
@@ -31,7 +35,6 @@ from datetime import datetime, tzinfo
 from app.core.logging import get_logger
 from app.schemas import TimelineDraftRequest
 from app.services.place_text import normalize_place_text
-from app.services.sleep_guard import sleep_spans
 from app.services.source_lookup import raw_id_of
 from app.services.validator import parse_datetime
 
@@ -115,7 +118,7 @@ def mergeable_stay_groups(
     if len(stays) < 2:
         return []
 
-    blockers = [*_movement_spans(request, tz), *sleep_spans(request, tz)]
+    blockers = _movement_spans(request, tz)
 
     groups: list[list[_Stay]] = [[stays[0]]]
     for stay in stays[1:]:

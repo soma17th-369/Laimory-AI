@@ -111,8 +111,11 @@ AgentCore Runtime에 배포한 환경에서는 `POST /invocations`가 동일한 
 | `taskToken` | `string` | O | 이 작업의 최초 토큰입니다. AI 서버가 App Server를 호출할 때 `Task-Token` 헤더로 사용합니다. |
 | `dailyRecordId` | `integer` | O | 생성된 타임라인 이벤트를 연결할 Daily Record ID입니다. |
 | `window` | `object` | O | 타임라인 생성 범위입니다. |
-| `window.startAt` | `datetime` | O | 생성 범위 시작 시각입니다. |
-| `window.endAt` | `datetime` | O | 생성 범위 종료 시각입니다. |
+| `window.startAt` | `datetime` | O | 생성 범위 시작 시각입니다. offset을 포함해야 합니다. |
+| `window.endAt` | `datetime` | O | 생성 범위 종료 시각입니다. **`startAt`보다 뒤여야 합니다.** 같거나 앞서면 `422`로 거절합니다. |
+
+`window`는 결과 이벤트가 벗어날 수 없는 시간 범위입니다. 기상·취침 같은 생활 의미는 없습니다.
+AI 서버는 이 범위를 **조건 없이 항상** 강제하며, 범위를 세울 수 없으면 타임라인을 만들지 않습니다.
 
 ### Request Example
 
@@ -257,6 +260,7 @@ Task-Token: {taskToken}
 |---|---|---|
 | `taskId` | `string` | 요청한 작업 ID와 같아야 합니다. |
 | `taskToken` | `string \| null` | 갱신 토큰입니다. 있으면 이후 요청에 사용합니다. |
+| `userMemory` | `object \| null` | 선택 필드입니다. 사용자가 등록한 장소·사람·관계 등 비정형 JSON이며, `집`·`회사`·`학교` 같은 생활 장소명을 결과 `placeLabel`에 쓰는 데 사용합니다. 없으면 상호명이나 주소를 씁니다. |
 | `recordDate` | `string` | 대상 날짜입니다. |
 | `recordTimeZone` | `string` | 시간대입니다. 기본값은 `Asia/Seoul`입니다. |
 | `window` | `object` | 수집 범위입니다. 실제 생성 범위는 접수 요청의 `window`가 정본입니다. |
@@ -301,6 +305,8 @@ Task-Token: {taskToken}
       "subtitle": null,
       "startAt": "2026-07-22T12:00:00+09:00",
       "endAt": "2026-07-22T13:00:00+09:00",
+      "placeLabel": "두꺼비 감자탕 지산점",
+      "address": "대구 수성구 지산로 12",
       "sourceRawIds": ["b1f0b6d5-5c3e-4a4e-9a37-2f1f0d2f3b71"]
     }
   ]
@@ -309,12 +315,25 @@ Task-Token: {taskToken}
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
-| `eventType` | `string` | 아래 13종 중 하나입니다. |
-| `title` | `string` | 이벤트 제목입니다. 255자로 자릅니다. |
-| `subtitle` | `string \| null` | 부제입니다. 내용이 없으면 `null`입니다. 255자로 자릅니다. |
+| `eventType` | `string` | 아래 13종 중 하나입니다. `SLEEP`·`WAKE_UP`은 보내지 않습니다. |
+| `title` | `string` | 이벤트 제목입니다. **30자**를 넘지 않습니다. |
+| `subtitle` | `string \| null` | 부제입니다. 내용이 없으면 `null`입니다. **120자**를 넘지 않습니다. |
 | `startAt` | `datetime` | 시작 시각입니다. `recordTimeZone` 기준 offset으로 보냅니다. |
-| `endAt` | `datetime` | 종료 시각입니다. `startAt` 이상입니다. |
+| `endAt` | `datetime` | 종료 시각입니다. `startAt` 이상이며 요청 `window` 안입니다. |
+| `placeLabel` | `string \| null` | 표시 장소명입니다. 근거가 없으면 `null`입니다. |
+| `address` | `string \| null` | 정확한 주소입니다. 입력 근거에 실제 주소가 있을 때만 채웁니다. |
 | `sourceRawIds` | `string[]` | 근거 원본의 `rawId`입니다. 1개 이상이며 중복은 제거합니다. |
+
+`title`·`subtitle` 길이는 저장 컬럼 한도(255자)가 아니라 제품이 사용자에게 약속한 값입니다.
+자를 때는 문장·단어 경계를 우선합니다.
+
+`placeLabel`은 이 우선순위로 정합니다.
+
+1. 사용자 생활 장소명 — `집`, `회사`, `학교` (입력의 `userMemory` 기준)
+2. 직접 확인된 상호·건물·시설명
+3. 정확한 주소
+
+장소 근거가 전혀 없으면 만들어 내지 않고 `null`입니다. `MOVEMENT`의 장소는 최종 도착지입니다.
 
 `eventType` 값:
 

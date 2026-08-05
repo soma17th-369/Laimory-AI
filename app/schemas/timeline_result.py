@@ -31,6 +31,10 @@ class TimelineResultEvent(CamelModel):
     subtitle: str | None = None
     start_at: AwareDatetime = Field(alias="startAt")
     end_at: AwareDatetime = Field(alias="endAt")
+    # 내부에서 확정한 장소를 저장까지 가져간다(#67). 예전에는 draft 에 실제 장소가
+    # 있어도 이 계약이 버렸다. 근거가 없으면 지어내지 않고 ``null`` 을 보낸다.
+    place_label: str | None = Field(default=None, alias="placeLabel")
+    address: str | None = None
     source_raw_ids: list[RawId] = Field(alias="sourceRawIds", min_length=1)
 
     @model_validator(mode="after")

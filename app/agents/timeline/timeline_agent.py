@@ -50,31 +50,26 @@ def build_timeline_prompt(
     candidates_text: str,
     fragments_text: str,
 ) -> str:
-    """Build the user prompt for timeline merging."""
+    """Build the user prompt for timeline merging.
 
-    window_start = request.window.start if request.window else "정보 없음"
-    window_end = request.window.end if request.window else "정보 없음"
+    동적 데이터와 짧은 수행 요청만 담는다(#67). 병합 기준·문체·길이 같은 안정적인
+    제품 정책은 시스템 프롬프트 한 곳에 있다. 예전에는 이 문자열이 시스템 정책을 다시
+    강조하면서 `시간 겹침 또는 같은 장소` 와 `최초부터 최후까지 확장` 을 더 강하게
+    지시해, 시스템 프롬프트가 금지한 느슨한 장시간 병합을 오히려 유도했다.
+    """
+
     return (
         "[draft metadata]\n"
         f"userId: {_DEFAULT_USER_ID}\n"
         f"date: {request.date}\n"
         f"timezone: {_DEFAULT_TIMEZONE}\n"
-        f"windowStart: {window_start}\n"
-        f"windowEnd: {window_end}\n\n"
+        f"windowStart: {request.window.start}\n"
+        f"windowEnd: {request.window.end}\n\n"
         f"[user memory]\n{user_memory_text}\n\n"
         f"[AI Event candidates]\n{candidates_text}\n\n"
         f"[Source fragments]\n{fragments_text}\n\n"
-        "Create a user-reviewable TimelineDraft JSON. "
-        "Merge candidates and fragments from different sources that point to the same "
-        "real-life event into ONE timeline event when they share overlapping time, the "
-        "same place, the same activity meaning, or repeatedly indicate the same situation "
-        "(e.g. movement + photo + notification + activity in the same window). "
-        "Preserve every merged sourceRef, span the merged event from earliest startTime to "
-        "latest endTime, and prefer a human event type over raw types. Do not force-merge "
-        "unrelated activities; when sources conflict, use questions or warnings instead. "
-        "Sort events by actual candidate time, and expose uncertain or missing context "
-        "through questions, warnings, and uncertainty. "
-        "Do not copy example dates; use the metadata date and the provided candidate times."
+        "시스템 프롬프트의 규칙에 따라 이 입력으로 TimelineDraft JSON 하나를 만드세요. "
+        "예시 날짜를 복사하지 말고 metadata 의 날짜와 주어진 후보 시각을 쓰세요."
     )
 
 

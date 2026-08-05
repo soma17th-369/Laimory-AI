@@ -96,8 +96,13 @@ class NotificationEventAgent(EventAgent):
 def _notification_items_to_text(items: list) -> str:
     enriched_items = [enrich_notification_item(item) for item in items]
     _annotate_notification_use(enriched_items)
+    # 이번 요청에서 실제로 매치된 정책만 싣는다(#67). 사전 전체를 매번 보내면 알림
+    # 두세 건짜리 하루에도 등장하지 않은 앱의 정책까지 입력 토큰을 차지한다.
+    used_keys = {
+        item["appPolicy"]["key"] for item in enriched_items if item.get("appPolicy")
+    }
     payload = {
-        "appDictionary": app_dictionary_for_prompt(),
+        "appDictionary": app_dictionary_for_prompt(used_keys),
         "messengerAnalysis": _messenger_analysis(enriched_items),
         "notifications": enriched_items,
     }
@@ -133,6 +138,9 @@ def _annotate_notification_use(items: list[dict]) -> None:
             "lowConfidenceFragmentOnly": is_low_priority or is_context_only,
             "placeLabelAllowedFromNotification": bool(explicit_place and direct_meeting),
             "explicitPlaceMention": explicit_place,
+            # 억제 판정의 출처를 남긴다(#67). 잘못 붙은 정책 하나가 알림을 조용히
+            # 지우는 일을 사후에 되짚을 수 있어야 한다.
+            "suppressionBasis": item.get("appPolicyMatch"),
         }
 
 

@@ -9,8 +9,11 @@ import json
 from pathlib import Path
 from uuid import UUID
 
+import pytest
+
 from app.schemas import HealthMetric, ItemType, TimelineDraftRequest
 from app.services.normalizer import normalize, split_source_items
+from app.services.source_contract import SourceBatchError
 from tests.fixtures.requests import (
     default_source_items,
     make_snapshot,
@@ -91,10 +94,11 @@ def test_bad_item_is_skipped_not_fatal():
     assert request.calendars[0].title == "정상"
 
 
-def test_no_window_yields_none():
-    request = normalize(make_snapshot(source_items=[], timeline_window=None))
-    assert request.window is None
-    assert request.iter_source_items() == []
+def test_no_window_is_rejected():
+    # window 없이 만든 타임라인은 어느 범위를 벗어나면 안 되는지 검증할 수 없다(#67).
+    # 검증을 조용히 건너뛰는 대신 정규화 단계에서 멈춘다.
+    with pytest.raises(SourceBatchError):
+        normalize(make_snapshot(source_items=[], timeline_window=None))
 
 
 def test_documented_timeline_request_sample_matches_current_contract():

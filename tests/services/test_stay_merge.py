@@ -1,7 +1,9 @@
 """이동 없이 이어진 체류 묶기 검증.
 
 위치 수집이 끊겨 같은 장소의 STAY 가 조각으로 들어와도, 사이에 이동이 없으면 사람은
-그 자리에 계속 있었던 것이다. 반대로 사이에 이동이나 수면이 있으면 이어진 체류가 아니다.
+그 자리에 계속 있었던 것이다. 반대로 사이에 이동이 있으면 이어진 체류가 아니다.
+
+수면 구간은 더 이상 차단 근거가 아니다(#67).
 """
 
 from app.services.stay_merge import mergeable_stay_groups
@@ -109,8 +111,10 @@ def test_a_movement_in_the_gap_blocks_the_merge():
     assert groups == []
 
 
-def test_sleep_in_the_gap_blocks_the_merge():
-    # 자고 일어난 것은 이어진 체류가 아니라 하루의 경계다.
+def test_sleep_in_the_gap_no_longer_blocks_the_merge():
+    # #67 이전에는 수면 구간이 병합을 막았다. 수면 기록을 믿을 수 없다고 판단해
+    # 사용자 결과에서 뺀 이상, 그 구간이 뒤에서 체류 병합 결과를 바꾸게 두지 않는다.
+    # 이동 기록이 없으면 사람은 그 자리에 있었고, "집에 있었다"는 사실은 그대로다.
     groups = _groups(
         stays=[
             _stay(1, "stay-a", "00:35", "00:53"),
@@ -121,7 +125,9 @@ def test_sleep_in_the_gap_blocks_the_merge():
         ],
     )
 
-    assert groups == []
+    assert groups == [
+        frozenset({fixture_raw_id("stay-a"), fixture_raw_id("stay-b")})
+    ]
 
 
 def test_a_nearby_place_is_not_the_same_place():

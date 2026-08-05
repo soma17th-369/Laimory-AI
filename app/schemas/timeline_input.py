@@ -23,6 +23,7 @@ from app.schemas.source_snapshot import (
     CollectedSourceItem,
     TimelineWindow,
 )
+from app.schemas.user_memory import UserMemory
 
 
 class TimelineInputWindow(CamelModel):
@@ -44,6 +45,9 @@ class TimelineInputResponse(CamelModel):
     record_date: str = Field(alias="recordDate")
     record_time_zone: str = Field(default="Asia/Seoul", alias="recordTimeZone")
     window: TimelineInputWindow | None = None
+    # 집·회사·학교 같은 생활 장소명을 판별하는 데 쓴다(#67). App Server 가 아직 주지
+    # 않을 수 있으므로 선택값이다 — 없으면 없는 대로 동작한다.
+    user_memory: UserMemory | None = Field(default=None, alias="userMemory")
     source_items: list[CollectedSourceItem] = Field(
         default_factory=list, alias="sourceItems"
     )
@@ -51,8 +55,8 @@ class TimelineInputResponse(CamelModel):
     def to_snapshot(self) -> CollectedSnapshot:
         """파이프라인 내부 계약(`CollectedSnapshot`)으로 옮긴다.
 
-        ``userMemory`` 는 이 API 가 주지 않으므로 ``None`` 이다(DB 경로에서도
-        없었으므로 동작은 같다). 시간 창은 뒤에서 요청 ``window`` 로 덮어쓰지만,
+        ``userMemory`` 는 응답이 주면 그대로 넘긴다(#67). 주지 않으면 ``None`` 이라
+        기존 입력과의 동작은 같다. 시간 창은 뒤에서 요청 ``window`` 로 덮어쓰지만,
         요청 window 가 정본이라는 규칙이 깨졌을 때 응답 값이 남아 있어야 관측에서
         원인을 볼 수 있으므로 여기서도 채워 둔다.
         """
@@ -68,7 +72,7 @@ class TimelineInputResponse(CamelModel):
             task_id=self.task_id,
             record_date=self.record_date,
             record_time_zone=self.record_time_zone,
-            user_memory=None,
+            user_memory=self.user_memory,
             timeline_window=window,
             source_items=list(self.source_items),
         )
