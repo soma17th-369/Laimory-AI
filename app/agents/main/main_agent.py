@@ -90,16 +90,6 @@ def _name_agents(agents: list[EventAgent]) -> dict[str, EventAgent]:
     return named
 
 
-def _record_question_count(draft: TimelineDraft) -> int:
-    """회고 질문이 붙은 event 수(이슈 #66).
-
-    관측의 `questionCount` 와 **다른 값이다**. 그쪽은 `draft.questions`, 즉 모호성
-    확인 질문 개수이며 기존 대시보드가 보는 뜻을 유지한다.
-    """
-
-    return sum(1 for event in draft.events if event.question)
-
-
 def _request_trace_input(request: TimelineDraftRequest) -> dict[str, object]:
     """Agent가 실제로 판단에 사용한 정규화 요청 전체와 요약을 반환한다."""
 
@@ -360,7 +350,6 @@ def _build_graph():
                 update_observation(
                     langfuse_observation,
                     output={
-                        "recordQuestionCount": 0,
                         "errorCode": int(failure_code),
                         "durationMs": (perf_counter() - started) * 1000,
                         "tokenUsage": token_usage.summary(),
@@ -368,23 +357,19 @@ def _build_graph():
                     level="ERROR",
                     status_message="기록 질문 생성에 실패했습니다.",
                 )
-                outcome["recordQuestionCount"] = 0
                 outcome["errorCode"] = int(failure_code)
                 return {"draft": draft}
 
-            record_questions = _record_question_count(draft)
             update_observation(
                 langfuse_observation,
                 output={
                     "eventCount": len(draft.events),
-                    "recordQuestionCount": record_questions,
                     "durationMs": (perf_counter() - started) * 1000,
                     "tokenUsage": token_usage.summary(),
                     "timeline": draft.model_dump(by_alias=True, mode="json"),
                 },
             )
             outcome["eventCount"] = len(draft.events)
-            outcome["recordQuestionCount"] = record_questions
         return {"draft": draft}
 
     graph = StateGraph(_MainAgentState)
@@ -469,13 +454,11 @@ async def run_main_agent(
             }
         )
         draft = final_state["draft"]
-        record_questions = _record_question_count(draft)
         update_observation(
             langfuse_observation,
             output={
                 "eventCount": len(draft.events),
                 "questionCount": len(draft.questions),
-                "recordQuestionCount": record_questions,
                 "warningCount": len(draft.warnings),
                 "durationMs": (perf_counter() - started) * 1000,
                 "tokenUsage": token_usage.summary(),
@@ -485,6 +468,5 @@ async def run_main_agent(
         )
         outcome["eventCount"] = len(draft.events)
         outcome["questionCount"] = len(draft.questions)
-        outcome["recordQuestionCount"] = record_questions
         outcome["warningCount"] = len(draft.warnings)
     return draft
