@@ -38,6 +38,8 @@ HTTP request는 response start 시점에 요청당 한 건, Timeline background 
 
 Langfuse는 설정이 활성이고 public/secret key가 모두 있을 때 지연 생성한다. release는 `AGENT_VERSION`, environment는 `APP_ENV`를 쓴다. content policy는 명시 설정이 우선하며 미지정 시 local/dev는 `SANITIZED`, 그 밖은 `NONE`이다. `NONE`도 duration, token, count, errorCode 같은 diagnostics는 보존하고 사용자 본문은 byte/hash summary로 접는다. payload size를 제한하고 export 직전 OTel attribute를 다시 마스킹한다.
 
+`userMemory` 키의 값은 정책과 무관하게 `redact_value`가 비식별 요약(`schemaVersion`, 채워진 필드 수, `customAttributeCount`, byte/hash)으로 바꾼다(#65). 사용자 profile 문장은 마스킹 pattern에 걸릴 형태가 아니므로 key 이름으로 접는다. 이 치환이 log·Langfuse input/output·metadata의 공용 경로에 있어, 호출부가 snapshot이나 정규화 request를 통째로 dump해도 본문이 나가지 않는다. prompt 본문(generation input)에는 값이 들어가며 그것은 content policy가 통제한다.
+
 Langfuse client 생성·span 시작/종료·flush 실패와 운영 event 조립·handler 실패는 주 요청을 실패시키지 않는다. 앱 코드의 Elasticsearch 직접 호출과 알려지지 않은 `httpx` 사용자는 정적 테스트가 막는다.
 
 ## Invariants
@@ -48,6 +50,7 @@ Langfuse client 생성·span 시작/종료·flush 실패와 운영 event 조립�
 - 같은 실패는 API/callback/운영 event에서 같은 정수 code를 쓴다.
 - 관측 실패가 Timeline 결과를 바꾸지 않는다.
 - `taskToken` 값은 Langfuse와 모든 로그에서 금지하고 갱신 횟수만 허용한다.
+- user memory 본문은 로그·관측 어디에도 남기지 않고 `hasUserMemory`와 비식별 요약만 남긴다. 계약 위반을 기록할 때도 pydantic 오류 문자열을 그대로 넘기지 않는다(걸린 값을 인용한다).
 
 ## Known Gaps
 

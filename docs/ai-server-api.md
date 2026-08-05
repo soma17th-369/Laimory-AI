@@ -239,6 +239,15 @@ Task-Token: {taskToken}
     "startAt": "2026-07-22T00:00:00+09:00",
     "endAt": "2026-07-23T00:00:00+09:00"
   },
+  "userMemory": {
+    "schemaVersion": "1.0",
+    "updatedAt": "2026-07-20T21:00:00+09:00",
+    "basicProfile": "경기도에 사는 20대 후반 개발자입니다.",
+    "routines": "평일 아침에 출근하고 저녁에는 회고를 적습니다.",
+    "customAttributes": {
+      "자주 가는 카페": "회사 근처 1층 카페"
+    }
+  },
   "sourceItems": [
     {
       "rawId": "b1f0b6d5-5c3e-4a4e-9a37-2f1f0d2f3b71",
@@ -260,6 +269,7 @@ Task-Token: {taskToken}
 | `recordDate` | `string` | 대상 날짜입니다. |
 | `recordTimeZone` | `string` | 시간대입니다. 기본값은 `Asia/Seoul`입니다. |
 | `window` | `object` | 수집 범위입니다. 실제 생성 범위는 접수 요청의 `window`가 정본입니다. |
+| `userMemory` | `object \| null` | **선택**입니다. 사용자 압축 프로필 v1.0이며, 없으면 User Memory 없이 생성합니다. |
 | `sourceItems[].rawId` | `string` | 원본 식별자(UUID)입니다. 결과의 `sourceRawIds`가 참조합니다. |
 | `sourceItems[].itemType` | `string` | `PHOTO`, `CALENDAR`, `STAY`, `MOVEMENT`, `HEALTH`, `NOTIFICATION` |
 | `sourceItems[].startAt` | `datetime` | 항목 시각입니다. |
@@ -284,6 +294,31 @@ Task-Token: {taskToken}
 - `sourceItems`가 비어 있음
 - 같은 `rawId`가 두 번 이상 나옴
 - `rawId`가 UUID가 아니거나 `startAt`이 없음
+
+#### `userMemory` (선택, 이슈 #65)
+
+사용자의 생활 단계·관계·성향·관심사·기억 방식을 담은 압축 프로필입니다. 하루치
+수집 원본과 달리 **사건 데이터가 아니라 해석과 표현을 돕는 보조 context**입니다.
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `schemaVersion` | `string` | `"1.0"`만 지원합니다. |
+| `updatedAt` | `string \| null` | 마지막 갱신 시각입니다. 프롬프트에는 싣지 않습니다. |
+| `basicProfile`, `lifeContext`, `relationships`, `personality`, `values`, `preferences`, `routines`, `currentFocus`, `emotionalPatterns`, `memoryStyle` | `string` | 자연어 필드이며 각 **최대 200자**입니다. 비어 있으면 프롬프트에서 생략합니다. |
+| `customAttributes` | `object` | 고정 필드로 담기지 않는 값입니다. **최대 5개**, 값당 **최대 150자**입니다. |
+
+최상위 필드는 고정입니다. 위 목록에 없는 최상위 필드, 지원하지 않는
+`schemaVersion`, 길이·개수 초과는 계약 위반입니다.
+
+**계약 위반은 타임라인을 실패시키지 않습니다.** 오류 코드 `1106`으로 기록하고
+User Memory 없이 생성을 계속합니다(흡수). 보조 context 하나 때문에 하루치 수집
+원본을 버리지 않기 위해서입니다. 필드가 없거나 `null`이어도 같은 경로로,
+User Memory 없이 처리합니다.
+
+User Memory 본문은 운영 로그와 관측에 남기지 않습니다. 남는 것은 `hasUserMemory`,
+`schemaVersion`, 채워진 필드 수, 직렬화 크기 같은 비식별 메타데이터뿐입니다.
+Langfuse `generation input`(프롬프트 본문)에는 값이 들어가는데, 운영 환경의
+콘텐츠 정책이 `NONE`이라 본문이 밖으로 나가지 않습니다.
 
 ### 5.2 결과 저장
 

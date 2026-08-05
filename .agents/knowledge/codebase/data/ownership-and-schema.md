@@ -64,9 +64,9 @@ Photo의 `photoUrl`은 image fetch에만 사용하며 Pydantic serialization에�
 ## Known Gaps
 
 - App Server의 실제 DB table, column, transaction, retention, unique constraint는 이 저장소에 없다. 255자 절단은 mapper 코드와 기존 계약에 근거하지만 DB DDL로 직접 검증할 수 없다.
-- `TimelineInputResponse`는 user memory를 제공하지 않아 `CollectedSnapshot.userMemory`가 현재 항상 `None`이다.
+- `TimelineInputResponse.userMemory`는 선택 필드다. App Server가 실제로 값을 채우는지는 이 저장소에서 확인할 수 없고, 없으면 `CollectedSnapshot.userMemory`가 `None`이다.
 - source의 시각은 boundary schema에서 문자열로 유지하고 여러 형식을 관대하게 parse한다. 모든 source timestamp가 schema 단계에서 timezone-aware임을 강제하지 않는다.
-- `UserMemory` 모델은 자유형 JSON이지만 현재 input path가 값을 채우지 않는다.
+- `UserMemory`는 고정 schema v1.0이다(#65). 자유도는 `customAttributes`(최대 5개, 값당 150자) 안에만 있고, 최상위는 `extra="forbid"`다. AI가 만드는 `customAttributes` 키에 결정론 코드가 의존하지 않는다.
 - 코드 일부에 과거 DB table·향후 N:M 연결을 설명하는 stale 주석이 남아 있으나 현재 구현 계약은 아니다.
 
 ## Update When
