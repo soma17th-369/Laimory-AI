@@ -140,7 +140,9 @@ app/
 │   ├── question/question_agent.py   # 확정 event → 회고 유도 질문 (#66). Repair 뒤 배치 호출.
 │   │                          #   confidence·sourceRefs·분 단위 시각을 프롬프트에 주지 않는다 —
 │   │                          #   주지 않으면 질문에 샐 수 없다. 모든 event 에 하나씩이며,
-│   │                          #   빠진 event 는 1회 재요청한다. 길이·형식 검사는 코드가 한다
+│   │                          #   빠진 event 는 1회 재요청한다. 길이·형식 검사는 코드가 한다.
+│   │                          #   User Memory 를 받는다(#65) — 무엇을 물을지가 아니라 어떻게
+│   │                          #   물을지(문체·결)를 고르는 자료다
 │   └── main/main_agent.py     # events → timeline → repair → question 조율(LangGraph)
 │
 └── services/
@@ -216,8 +218,13 @@ app/
 #   이것은 TimelineDraft.questions(모호성 확인, 내부 전용)와 **다른 값**이다.
 # User Memory 계약(#65): 입력 조회 응답의 선택 필드 `userMemory` 는 사용자 압축 프로필
 #   v1.0 이다. 전달 경로는 입력 조회 → CollectedSnapshot → normalize → TimelineDraftRequest
-#   → user_memory_to_text 하나뿐이고, **5개 Event Agent 와 Timeline Agent 가 같은 문자열을
+#   → user_memory_to_text 하나뿐이고, **Timeline Agent 와 Question Agent 가 같은 문자열을
 #   본다** — Agent 별로 필드를 골라 쓰거나 다시 접지 않는다.
+#   **Event Agent 와 Repair Agent 에는 주입하지 않는다.** Event Agent 는 자기 source 에 대한
+#   사실 보고가 임무이고(#61 의 계층 경계와 같다), 다섯이 병렬로 돌며 같은 프로필을 읽으면
+#   Timeline 이 그 합의를 서로 다른 source 의 독립 근거로 잘못 센다. 생활 장소명(집·회사)과
+#   관계 호칭처럼 프로필이 있어야 하는 판단은 Timeline 프롬프트가 갖는다. Repair 는 Timeline
+#   이 이미 메모리를 보고 문장을 만든 뒤이고 반복 호출이라 제외한다.
 #   **사건 데이터가 아니라 해석·표현용 보조 context 다.** User Memory 만으로 사건 발생·일정
 #   참석·장소·이동 목적·실명/정확한 관계를 확정하지 않고, 수집 원본과 충돌하면 원본이 이긴다.
 #   이 경계는 프롬프트가 지킨다. 결정론 코드는 자연어 필드 내용이나 customAttributes 키에

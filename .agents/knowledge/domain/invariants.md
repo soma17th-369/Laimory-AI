@@ -29,7 +29,8 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - source 하나가 여러 event의 근거가 되는 것은 허용한다.
 - user memory는 근거가 아니라 해석·표현용 보조 context다. user memory만으로 사건 발생, 일정 참석, 장소, 이동 목적, 사람의 실명이나 정확한 관계를 확정하지 않고, 수집 원본과 충돌하면 원본이 이긴다. 이 경계는 prompt가 지키며 코드가 의미로 판정하지 않는다.
 - user memory는 rawId를 갖지 않으므로 `sourceRefs`에 넣지 않는다.
-- 소비 Agent 6종(Event 5 + Timeline)은 공용 projection 하나를 쓴다. Agent별로 필드를 골라 쓰거나 다르게 직렬화하지 않는다.
+- user memory는 해석·표현 계층(Timeline Agent, Question Agent)에만 주입한다. Event Agent와 Repair Agent는 받지 않는다. Event Agent 5종은 병렬로 돌고 Timeline이 결과를 병합하므로, 다섯이 같은 프로필을 읽으면 같은 근거 하나가 독립된 근거 다섯으로 세어진다.
+- 소비 Agent 2종은 공용 projection 하나를 쓴다. Agent별로 필드를 골라 쓰거나 다르게 직렬화하지 않는다.
 
 ### 시간
 
