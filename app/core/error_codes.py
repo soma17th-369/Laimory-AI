@@ -97,6 +97,8 @@ class ErrorCode(IntEnum):
     REPAIR_TOOL_FAILED = 1207
     #: draft 편집이 실패했다(대상 event 없음·필드 없음·스키마 위반).
     DRAFT_EDIT_FAILED = 1208
+    #: 회고 유도 질문 생성이 실패했다. 질문 없이 타임라인을 저장한다(흡수 경로).
+    QUESTION_GENERATION_FAILED = 1209
 
     # --- 1300~1399 결과 저장 ----------------------------------------------
     #: 저장 전 자체검증에서 계약 위반이 나왔다(TimelineValidationError).
@@ -163,6 +165,7 @@ _MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.REPAIR_AGENT_FAILED: "타임라인 보정에 실패했습니다.",
     ErrorCode.REPAIR_TOOL_FAILED: "타임라인 보정 작업에 실패했습니다.",
     ErrorCode.DRAFT_EDIT_FAILED: "타임라인 수정에 실패했습니다.",
+    ErrorCode.QUESTION_GENERATION_FAILED: "기록 질문 생성에 실패했습니다.",
     ErrorCode.TIMELINE_STORAGE_VALIDATION_FAILED: "타임라인 저장 검증에 실패했습니다.",
     ErrorCode.DATABASE_ERROR: "데이터 저장 중 오류가 발생했습니다.",
     ErrorCode.TIMELINE_RESULT_SUBMIT_FAILED: "타임라인 결과 저장에 실패했습니다.",

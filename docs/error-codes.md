@@ -78,6 +78,11 @@ AI 서버가 밖으로 내보내는 실패는 **정수 하나로 식별**합니�
 | 1206 | `REPAIR_AGENT_FAILED` | Repair Agent가 실패해 직전 정상 draft로 진행했습니다. | | ✓ |
 | 1207 | `REPAIR_TOOL_FAILED` | Repair 도구 실행이 실패했습니다. | | ✓ |
 | 1208 | `DRAFT_EDIT_FAILED` | draft 편집을 적용할 수 없습니다. | | ✓ |
+| 1209 | `QUESTION_GENERATION_FAILED` | 회고 유도 질문 생성이 실패해 질문 없이 진행했습니다. | | ✓ |
+
+1209는 질문 단계 하나의 흡수 코드입니다. 질문은 타임라인에 얹는 부가 가치이므로,
+실패해도 event 본문은 그대로 저장되고 task는 SUCCESS로 끝납니다. 결과의 `question`이
+전부 `null`인 것으로 나타납니다.
 
 ### 1300~1399 결과 저장
 
