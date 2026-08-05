@@ -55,11 +55,24 @@ def items_to_text(items: list) -> str:
 
 
 def user_memory_to_text(user_memory: UserMemory | None) -> str:
-    """user memory를 프롬프트용 문자열로 직렬화한다."""
+    """user memory를 프롬프트용 문자열로 직렬화한다 (#65).
+
+    **5개 Event Agent 와 Timeline Agent 가 모두 이 함수를 쓴다.** Agent 마다 필드를
+    골라 쓰거나 다른 형태로 바꾸지 않는다 — 같은 메모리를 보고 서로 다른 문자열을
+    읽으면 어느 Agent 가 무엇을 근거로 판단했는지 재현할 수 없다.
+
+    projection 규칙(무엇을 싣고 무엇을 빼는지)은 스키마가 갖는다
+    (:meth:`~app.schemas.user_memory.UserMemory.prompt_payload`). 여기서는 직렬화만
+    한다. 채워진 필드가 하나도 없으면 User Memory 가 아예 없을 때와 **같은 문자열**을
+    돌려준다. 그 둘은 Agent 에게 구분할 이유가 없는 상태다.
+    """
 
     if user_memory is None:
         return "정보 없음"
-    return json.dumps(user_memory.model_dump(by_alias=True), ensure_ascii=False)
+    payload = user_memory.prompt_payload()
+    if not payload:
+        return "정보 없음"
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def build_infer_prompt(
