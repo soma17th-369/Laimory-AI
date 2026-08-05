@@ -47,6 +47,9 @@
 - Python 버전은 `.python-version`과 `pyproject.toml` 기준을 따릅니다.
 - 이 프로젝트는 `uv`와 `.venv`를 사용합니다.
 - 의존성 설치는 프로젝트 루트에서 `uv sync`를 사용합니다.
+- pytest는 가능하면 `-p no:cacheprovider`로 실행합니다. `--basetemp`나 임시 캐시
+  디렉터리를 만들어도 되지만, 검증이 끝나면 해당 작업에서 만든 `.pytest-*`,
+  `.test-tmp-*`, `pytest-cache-files-*`를 저장소에 남기지 않고 삭제합니다.
 - Windows에서 기본 uv 캐시 권한 문제가 있으면 다음처럼 로컬 캐시를 사용합니다.
 
 ```powershell

@@ -13,6 +13,8 @@ __pycache__/
 # pytest 임시 산출물 (--basetemp 로 만든 검증용 디렉터리 포함)
 .pytest_cache/
 .pytest-*/
+.test-tmp-*/
+pytest-cache-files-*/
 
 # IDE 설정 (로컬 전용, DB 접속정보 등 노출 방지)
 .idea/
