@@ -57,9 +57,12 @@ def items_to_text(items: list) -> str:
 def user_memory_to_text(user_memory: UserMemory | None) -> str:
     """user memory를 프롬프트용 문자열로 직렬화한다 (#65).
 
-    **5개 Event Agent 와 Timeline Agent 가 모두 이 함수를 쓴다.** Agent 마다 필드를
-    골라 쓰거나 다른 형태로 바꾸지 않는다 — 같은 메모리를 보고 서로 다른 문자열을
-    읽으면 어느 Agent 가 무엇을 근거로 판단했는지 재현할 수 없다.
+    **Timeline Agent 와 Question Agent 가 이 함수를 쓴다.** Agent 마다 필드를 골라
+    쓰거나 다른 형태로 바꾸지 않는다 — 같은 메모리를 보고 서로 다른 문자열을 읽으면
+    어느 Agent 가 무엇을 근거로 판단했는지 재현할 수 없다.
+
+    Event Agent 에는 주입하지 않는다. 자기 source 에 대한 사실 보고가 임무이고,
+    다섯이 같은 프로필을 읽으면 Timeline 이 그 합의를 독립된 근거로 착각한다.
 
     projection 규칙(무엇을 싣고 무엇을 빼는지)은 스키마가 갖는다
     (:meth:`~app.schemas.user_memory.UserMemory.prompt_payload`). 여기서는 직렬화만
@@ -76,14 +79,16 @@ def user_memory_to_text(user_memory: UserMemory | None) -> str:
 
 
 def build_infer_prompt(
-    user_memory_text: str,
     data_text: str,
     *,
     date: str | None = None,
     window_start: str | None = None,
     window_end: str | None = None,
 ) -> str:
-    """추론 요청(user prompt): 사용자 정보 + 분석 데이터.
+    """추론 요청(user prompt): 요청 메타데이터 + 분석 데이터.
+
+    User Memory 는 여기 들어가지 않는다(#65). Event Agent 는 자기 source 가 말해 주는
+    사실을 보고하는 자리이고, 프로필로 하는 해석은 Timeline 계층의 몫이다.
 
     시각은 수집 원본이 ISO 문자열이므로 window 도 문자열로 받는다.
     """
@@ -99,7 +104,6 @@ def build_infer_prompt(
 
     return (
         f"[요청 메타데이터]\n{metadata_text}\n\n"
-        f"[사용자 정보]\n{user_memory_text}\n\n"
         f"[분석할 데이터]\n{data_text}\n\n"
         "이 데이터가 생긴 원인이 되었을 법한 사용자의 일상 event 후보(candidates)와, "
         "후보보다 불확실하지만 하루 event일 가능성이 있는 단서(fragments)를 과감하게 추론해 "

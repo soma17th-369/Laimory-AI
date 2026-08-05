@@ -49,7 +49,7 @@ import json
 from pydantic import Field, ValidationError
 
 from app.agents.base import Agent
-from app.agents.parsing import SupportsComplete, default_llm
+from app.agents.parsing import SupportsComplete, default_llm, user_memory_to_text
 from app.agents.prompt_loader import load_prompt
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import report_error
@@ -96,6 +96,11 @@ def build_question_prompt(
 
     ``retry`` 는 1차 응답에서 질문을 받지 못한 event 만 다시 묻는 경우다. 같은
     지시를 반복하는 대신 "빠뜨렸다" 는 사실을 알려 준다.
+
+    User Memory 를 함께 준다(#65). 무엇을 물을지가 아니라 **어떻게 물을지**를 고르는
+    자료다 — 같은 event 라도 사람마다 남기고 싶은 말이 다르고, 그 결이
+    ``memoryStyle``·``emotionalPatterns``·``preferences`` 에 있다. Timeline 과 같은
+    projection 을 쓴다.
     """
 
     tail = (
@@ -106,6 +111,7 @@ def build_question_prompt(
     )
     return (
         f"[date]\n{request.date}\n\n"
+        f"[user memory]\n{user_memory_to_text(request.user_memory)}\n\n"
         f"[events]\n{json.dumps(events, ensure_ascii=False, indent=2)}\n\n"
         f"{tail} "
         "**모든 event 에 질문을 하나씩** 만드세요. 건너뛰는 event 가 있으면 안 됩니다. "
