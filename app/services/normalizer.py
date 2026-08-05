@@ -21,6 +21,7 @@ from app.schemas import (
     TimelineDraftRequest,
     TimeWindow,
 )
+from app.services.source_contract import SourceBatchError
 
 logger = get_logger(__name__)
 
@@ -141,12 +142,17 @@ def normalize(snapshot: CollectedSnapshot) -> TimelineDraftRequest:
                     stage=ExecutionStage.REQUEST,
                 )
 
-    window = None
-    if snapshot.timeline_window is not None:
-        window = TimeWindow(
-            start=snapshot.timeline_window.start_time,
-            end=snapshot.timeline_window.end_time,
+    # window 는 접수 요청이 정본으로 주고 runner 가 스냅샷에 덮어쓴다. 여기까지 비어
+    # 있다면 호출 경로가 잘못된 것이므로 검증 없는 타임라인을 만들지 않고 멈춘다(#67).
+    if snapshot.timeline_window is None:
+        raise SourceBatchError(
+            "timelineWindow 가 없어 결과 범위를 강제할 수 없습니다",
+            code=ErrorCode.SOURCE_CONTRACT_VIOLATION,
         )
+    window = TimeWindow(
+        start=snapshot.timeline_window.start_time,
+        end=snapshot.timeline_window.end_time,
+    )
 
     request = TimelineDraftRequest(
         task_id=snapshot.task_id,

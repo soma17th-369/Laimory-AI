@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from zoneinfo import ZoneInfo
 
 from app.core.error_codes import ErrorCode
-from app.core.exceptions import report_error
+from app.core.exceptions import AppError, report_error
 from app.core.logging import get_logger
 from app.core.execution_context import ExecutionStage
 from app.schemas import (
@@ -95,22 +95,33 @@ def parse_datetime(value: str, tz: tzinfo) -> datetime | None:
     return dt
 
 
-def resolve_window_bounds(request: TimelineDraftRequest) -> WindowBounds | None:
-    """요청에서 window 경계를 구한다. window 가 없거나 파싱 실패면 None."""
+class WindowBoundsError(AppError):
+    """요청 window 로 경계를 세울 수 없음.
 
-    if request.window is None:
-        return None
+    이 예외가 나면 결과 event 가 어느 범위를 벗어나면 안 되는지 알 수 없다. 예전에는
+    이 경우 범위 검증을 조용히 건너뛰었지만(#67 이전), 검증되지 않은 타임라인을 만들어
+    저장하는 것보다 만들지 않는 편이 낫다.
+    """
+
+    default_code = ErrorCode.SOURCE_CONTRACT_VIOLATION
+
+
+def resolve_window_bounds(request: TimelineDraftRequest) -> WindowBounds:
+    """요청에서 window 경계를 구한다. 세울 수 없으면 ``WindowBoundsError``.
+
+    `window` 자체는 스키마가 필수로 강제하므로 여기서 남은 실패는 파싱 불가와 역전된
+    구간뿐이다. 접수 API 가 `AwareDatetime` 으로 받고 `endAt > startAt` 을 검증하므로
+    정상 경로에서는 발생하지 않는다.
+    """
+
     tz = resolve_timezone(request.timezone)
     start = parse_datetime(request.window.start, tz)
     end = parse_datetime(request.window.end, tz)
+    # window 원문은 요청이 준 값이라 남기지 않는다. 어느 요청인지는 taskId 로 되짚는다.
     if start is None or end is None:
-        # window 원문은 요청이 준 값이라 남기지 않는다. 파싱에 실패했다는 사실만으로
-        # 어디를 봐야 하는지는 정해진다(요청 body 는 App Server 쪽에 있다).
-        logger.warning("window 파싱 실패로 범위 검증을 건너뜁니다.")
-        return None
+        raise WindowBoundsError("window 시각을 파싱하지 못했습니다")
     if end < start:
-        logger.warning("window.end 가 start 보다 앞서 범위 검증을 건너뜁니다.")
-        return None
+        raise WindowBoundsError("window.end 가 start 보다 앞섭니다")
     return WindowBounds(start=start, end=end)
 
 

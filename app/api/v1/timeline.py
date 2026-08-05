@@ -15,7 +15,7 @@ AI 서버는 task 상태를 보관하지 않으며(상태는 App Server 소유),
 """
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, status
-from pydantic import AwareDatetime, Field
+from pydantic import AwareDatetime, Field, model_validator
 
 from app.api.error_handlers import ERROR_RESPONSES
 from app.api.request_logging import annotate_request_task
@@ -28,10 +28,22 @@ router = APIRouter()
 
 
 class TimelineWindowPayload(CamelModel):
-    """초안 생성 대상 시간 창. 수집 원본에서 파생하지 않고 요청이 정본으로 준다."""
+    """초안 생성 대상 시간 창. 수집 원본에서 파생하지 않고 요청이 정본으로 준다.
+
+    경계에 기상·취침 같은 생활 의미는 없다(#67). 결과 event 가 벗어날 수 없는 범위이며,
+    이 값이 뒤 단계 전체의 검증 기준이 된다.
+    """
 
     start_at: AwareDatetime = Field(alias="startAt")
     end_at: AwareDatetime = Field(alias="endAt")
+
+    @model_validator(mode="after")
+    def _validate_order(self) -> "TimelineWindowPayload":
+        # 역전된 window 는 예전에 범위 검증을 통째로 끄는 입구였다(#67). 이제는 접수
+        # 단계에서 거절한다 — 검증할 수 없는 요청을 202 로 받아 두는 것이 더 나쁘다.
+        if self.end_at <= self.start_at:
+            raise ValueError("window.endAt 은 startAt 보다 뒤여야 합니다")
+        return self
 
 
 class TimelineTriggerRequest(CamelModel):

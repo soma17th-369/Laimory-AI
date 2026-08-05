@@ -4,7 +4,7 @@ Timeline Agent 가 만든 draft 를 **검토하고 개선해 최종 draft 를 �
 결정론 repair 단계(`app/services/draft_repair.py`)를 없애지 않고 이 Agent 안으로
 들여왔다. 한 번의 실행은 이렇게 흐른다.
 
-    1. `repair_draft`         : 코드가 draft 를 확정한다(정렬·겹침·수면·window·id).
+    1. `repair_draft`         : 코드가 draft 를 확정한다(정렬·겹침·수면 비노출·window·id).
     2. `analyze`              : LLM 이 확정된 draft 를 근거 원본과 대조해 문제를 찾고
                                 도구 호출 계획(`RepairPlan`)을 낸다.
     3. `execute`              : 계획의 도구를 순서대로 실행한다(수정·삭제·서비스 재적용·
@@ -34,7 +34,9 @@ from app.agents.parsing import SupportsComplete, default_llm
 from app.agents.prompt_loader import load_prompt
 from app.agents.repair.tools import (
     RepairContext,
+    candidate_index_text,
     execute_tool_calls,
+    sleep_excluded_raw_ids_for,
     source_index_text,
     tool_catalog_text,
     tool_log_text,
@@ -57,6 +59,7 @@ from app.schemas import (
 )
 from app.services.draft_repair import repair_draft
 from app.services.fragment_guard import verify_fragment_usage
+from app.services.narrative_guard import enforce_narrative_length
 
 logger = get_logger(__name__)
 
@@ -91,6 +94,9 @@ def build_repair_prompt(ctx: RepairContext, remaining: int) -> str:
     return (
         f"[draft]\n{draft_text}\n\n"
         f"[근거 원본]\n{source_index_text(ctx.request)}\n\n"
+        # Event Agent 가 원래 무엇을 읽어 냈는지(#67). draft 와 대조해 사람·주제·
+        # 금액 같은 핵심 사실이 사라졌는지 판단하는 근거다.
+        f"[Event Agent 후보]\n{candidate_index_text(ctx)}\n\n"
         f"[사용 가능한 도구]\n{tool_catalog_text(ctx)}\n\n"
         f"[지금까지 실행한 도구]\n{tool_log_text(ctx)}\n\n"
         f"[남은 반복 횟수] 이번 차례를 포함해 {remaining}번\n\n"
@@ -130,11 +136,24 @@ def _fragment_raw_ids(ctx: RepairContext) -> set[str]:
 def _confirm(ctx: RepairContext) -> None:
     """코드 확정 패스. 매 반복의 끝이자 다음 분석의 시작 상태를 만든다."""
 
-    repair_draft(ctx.draft, ctx.request)
+    # 제외 집합은 매 패스마다 현재 Event Agent 결과로 다시 계산한다(#67). 그래야
+    # `rerun_event_agent`·`rerun_timeline_agent` 뒤에도 수면 비노출이 유지된다.
+    repair_draft(ctx.draft, ctx.request, sleep_excluded_raw_ids_for(ctx))
     # 확정된 event 를 대상으로 본다. 병합·삭제로 구성이 바뀐 뒤라야 "이 event 의 근거가
     # 정말 fragment 뿐인가" 를 옳게 판정한다.
     verify_fragment_usage(ctx.draft, _fragment_raw_ids(ctx))
     _dedupe_warnings(ctx.draft)
+
+
+def _finalize(draft: TimelineDraft) -> TimelineDraft:
+    """Repair 반복이 끝난 뒤의 마지막 손질.
+
+    길이 강제는 여기서만 한다(#67). 반복 중에 잘라 버리면 LLM 이 문장을 자연스럽게
+    다시 쓸 기회가 사라진다. 반복이 끝나고도 넘친 문장만 결정론적으로 줄인다.
+    """
+
+    enforce_narrative_length(draft)
+    return draft
 
 
 class _State(TypedDict, total=False):
@@ -222,7 +241,7 @@ class RepairAgent(Agent):
 
         if self._max_iterations <= 0:
             logger.debug("Repair Agent 반복 상한이 0 이라 코드 확정만 수행했습니다.")
-            return ctx.draft
+            return _finalize(ctx.draft)
 
         # 마지막으로 확정에 성공한 draft. 개선이 실패하면 이것을 돌려준다.
         last_good: list[TimelineDraft] = [ctx.draft.model_copy(deep=True)]
@@ -250,14 +269,14 @@ class RepairAgent(Agent):
                     ),
                 )
             )
-            return restored
+            return _finalize(restored)
 
         logger.debug(
             "Repair Agent 완료: events=%d, tools=%d",
             len(ctx.draft.events),
             len(ctx.log),
         )
-        return ctx.draft
+        return _finalize(ctx.draft)
 
     def _run_graph(self, ctx: RepairContext, last_good: list[TimelineDraft]) -> None:
         """analyze → execute → confirm 를 `done` 이나 반복 상한까지 되풀이한다.

@@ -20,7 +20,11 @@ from app.schemas.user_memory import UserMemory
 
 
 class TimeWindow(CamelModel):
-    """타임라인 생성 대상 시간 창 (ISO 문자열)."""
+    """타임라인 생성 대상 시간 창 (ISO 문자열).
+
+    경계에 기상·취침 같은 생활 의미는 없다(#67). 결과 event 가 벗어날 수 없는 시간
+    범위일 뿐이며, 그 강제는 `validate_draft_to_window` 가 무조건 수행한다.
+    """
 
     start: str
     end: str
@@ -36,7 +40,10 @@ class TimelineDraftRequest(CamelModel):
     task_id: str = Field(alias="taskId", min_length=1)
     date: str = Field(description="수집 대상 날짜 (YYYY-MM-DD)")
     timezone: str = "Asia/Seoul"
-    window: TimeWindow | None = None
+    # 접수 요청이 정본으로 항상 주므로 선택값이 아니다(#67). 값이 없으면 결과 event 가
+    # 어느 범위를 벗어나면 안 되는지 알 수 없고, 그 상태로 만든 타임라인은 검증되지
+    # 않은 결과다. 검증을 조용히 끄는 것보다 만들지 않는 편이 낫다.
+    window: TimeWindow
     user_memory: UserMemory | None = Field(default=None, alias="userMemory")
 
     stays: list[StayItem] = Field(default_factory=list)

@@ -120,10 +120,9 @@ class EventAgent(Agent):
     ) -> AgentEventResult:
         """요청 window 밖 후보/단서를 제거하고, 제거가 있으면 warning 을 남긴다."""
 
+        # 경계를 세우지 못하면 예외가 오른다(#67). 여기서 흡수하지 않는다 — window 를
+        # 모르는 채로 만든 후보는 뒤 단계도 검증할 수 없다.
         bounds = resolve_window_bounds(request)
-        if bounds is None:
-            return result
-
         filtered, dropped = filter_result_to_window(result, bounds)
         if dropped:
             filtered.warnings.append(

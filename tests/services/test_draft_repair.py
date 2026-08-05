@@ -24,6 +24,7 @@ from app.services.draft_repair import (
     resolve_overlaps,
     sort_events,
 )
+from app.services.sleep_exclusion import sleep_excluded_raw_ids
 from tests.fixtures.requests import (
     calendar_item,
     fixture_raw_id,
@@ -41,6 +42,12 @@ DAY = "2026-06-20"
 
 def _t(clock: str) -> str:
     return f"{DAY}T{clock}:00+09:00"
+
+
+def _sleep_excluded(request) -> frozenset[str]:
+    """Event Agent 결과 없이 입력만으로 계산한 수면 제외 집합(#67)."""
+
+    return sleep_excluded_raw_ids([], request)
 
 
 def _event(
@@ -592,10 +599,11 @@ def test_stays_separated_by_a_movement_stay_separate():
     assert _titles(draft) == ["나가기 전", "돌아온 뒤"]
 
 
-# --- 수면 경계 ---------------------------------------------------------------
+# --- 수면 비노출 (#67) --------------------------------------------------------
 
 
-def test_repair_pushes_an_event_started_by_a_sleeping_notification_to_the_wake_time():
+def test_sleep_events_are_removed_from_the_result():
+    # 수면 기록을 믿을 수 없어 사용자 결과에서 뺀다. 다른 event 는 그대로 남는다.
     request = make_request(
         healths=[sleep_item(1, f"{DAY}T01:10:00", f"{DAY}T06:50:00", 340, raw_id="sleep-1")],
         notifications=[notification_item(2, "카카오톡", "메시지", posted=f"{DAY}T02:32:00", raw_id="notif-1")],
@@ -605,10 +613,60 @@ def test_repair_pushes_an_event_started_by_a_sleeping_notification_to_the_wake_t
         _event("event-002", "01:10", "06:50", SLEEP_REF, event_type=EventType.SLEEP, title="수면"),
     )
 
-    repair_draft(draft, request)
+    repair_draft(draft, request, _sleep_excluded(request))
 
-    assert _titles(draft) == ["수면", "아침부터 이어진 연락"]
-    morning = draft.events[1]
-    assert morning.start_time.isoformat() == _t("06:50")
-    # 수면 ↔ 아침 event 의 가짜 충돌 경고가 남지 않는다.
-    assert not any("서로 겹치는 event" in w.message for w in draft.warnings)
+    assert _titles(draft) == ["아침부터 이어진 연락"]
+
+
+def test_sleep_evidence_is_stripped_from_other_events():
+    # 수면 rawId 가 다른 event 에 섞여 있으면 걷어 낸다. 남은 근거로 event 는 살아남는다.
+    request = make_request(
+        healths=[sleep_item(1, f"{DAY}T01:10:00", f"{DAY}T06:50:00", 340, raw_id="sleep-1")],
+        notifications=[notification_item(2, "카카오톡", "메시지", posted=f"{DAY}T07:35:00", raw_id="notif-1")],
+    )
+    draft = _draft(
+        _event(
+            "event-001",
+            "07:35",
+            "07:52",
+            (EventSourceType.NOTIFICATION, "notif-1"),
+            SLEEP_REF,
+            title="아침부터 이어진 연락",
+        ),
+    )
+
+    repair_draft(draft, request, _sleep_excluded(request))
+
+    morning = draft.events[0]
+    assert [ref.source_type for ref in morning.source_refs] == [
+        EventSourceType.NOTIFICATION
+    ]
+
+
+def test_an_event_left_without_evidence_is_removed():
+    # 수면 근거만으로 서 있던 event 는 근거가 사라지면 함께 사라진다.
+    request = make_request(
+        healths=[sleep_item(1, f"{DAY}T01:10:00", f"{DAY}T06:50:00", 340, raw_id="sleep-1")],
+    )
+    draft = _draft(
+        _event("event-001", "01:10", "06:50", SLEEP_REF, event_type=EventType.REST, title="잘 잔 밤"),
+    )
+
+    repair_draft(draft, request, _sleep_excluded(request))
+
+    assert draft.events == []
+
+
+def test_a_sleep_calendar_entry_is_not_restored_as_a_calendar_event():
+    # `수면 zzz` 같은 캘린더 일정이 "누락된 캘린더"로 되살아나면 안 된다.
+    request = make_request(
+        calendars=[
+            calendar_item(1, "수면 zzz", start=f"{DAY}T01:10:00", end=f"{DAY}T06:50:00", raw_id="cal-sleep"),
+            calendar_item(2, "팀 회의", start=f"{DAY}T10:00:00", end=f"{DAY}T11:00:00", raw_id="cal-meet"),
+        ],
+    )
+    draft = _draft()
+
+    repair_draft(draft, request, _sleep_excluded(request))
+
+    assert _titles(draft) == ["팀 회의"]

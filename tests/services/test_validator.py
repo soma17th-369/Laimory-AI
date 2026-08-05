@@ -2,7 +2,12 @@
 
 Event Agent 후보 단계 필터(`filter_result_to_window`)와 최종 draft 검증
 (`validate_draft_to_window`)이 window 밖 event 를 제거/경고하는지 확인한다.
+
+경계를 세우지 못하는 요청은 검증을 건너뛰지 않고 예외로 멈춘다(#67).
 """
+
+import pytest
+from pydantic import ValidationError
 
 from app.schemas import (
     AgentEventResult,
@@ -16,8 +21,10 @@ from app.schemas import (
     TimelineEventDraft,
     TimelineQuestion,
     TimelineWarningSeverity,
+    TimeWindow,
 )
 from app.services.validator import (
+    WindowBoundsError,
     filter_result_to_window,
     resolve_window_bounds,
     validate_draft_to_window,
@@ -31,9 +38,7 @@ PARTIAL = ("2026-06-19T23:00:00+09:00", "2026-06-20T01:00:00+09:00")
 
 
 def _bounds():
-    bounds = resolve_window_bounds(make_request())
-    assert bounds is not None
-    return bounds
+    return resolve_window_bounds(make_request())
 
 
 def _candidate(start, end) -> AiEventCandidate:
@@ -72,8 +77,28 @@ def _event(cid, start, end) -> TimelineEventDraft:
     )
 
 
-def test_no_window_returns_none():
-    assert resolve_window_bounds(make_request(window=None)) is None
+def test_window_is_required_by_the_request_schema():
+    # window 는 더 이상 선택값이 아니다(#67). 없는 요청은 만들어지지 않는다.
+    with pytest.raises(ValidationError):
+        make_request(window=None)
+
+
+def test_unparseable_window_raises_instead_of_skipping_validation():
+    # 예전에는 None 을 돌려주어 범위 검증이 통째로 꺼졌다. 이제는 멈춘다.
+    with pytest.raises(WindowBoundsError):
+        resolve_window_bounds(make_request(window=TimeWindow(start="?", end="?")))
+
+
+def test_reversed_window_raises():
+    with pytest.raises(WindowBoundsError):
+        resolve_window_bounds(
+            make_request(
+                window=TimeWindow(
+                    start="2026-06-21T00:00:00+09:00",
+                    end="2026-06-20T00:00:00+09:00",
+                )
+            )
+        )
 
 
 def test_filter_drops_only_outside_candidates():

@@ -8,31 +8,48 @@
 코드가 정할 수 없다. 분할은 Repair 가 `OVEREXTENDED_EVENT` 로 잡아
 `update_event`·`rerun_timeline_agent` 로 처리한다.
 
-지속 구간이 근거에 직접 있는 event 는 제외한다(`_EXEMPT_EVENT_TYPES`). 이 목록은
-프롬프트의 예외 목록과 같은 기준이며, `MEAL` 은 `meal_guard` 가 20~60분으로 이미
-전담하므로 여기서 두 번 경고하지 않는다.
+지속 구간이 근거에 직접 있는 event 는 제외한다. 판단 기준은 **enum 이 아니라 실제
+근거**다(#67). `eventType` 이 `CALENDAR_EVENT` 라고 적혀 있다는 것과 그 event 가 정말
+캘린더 일정을 근거로 든다는 것은 다르다. LLM 이 라벨만 붙인 event 까지 상한에서
+빼 주면, 근거 없는 장시간 event 가 조용히 통과한다.
+
+`MEAL` 은 `meal_guard` 가 20~60분으로 이미 전담하므로 여기서 두 번 경고하지 않는다.
 """
 
 from datetime import timedelta
 
 from app.schemas import (
+    EventSourceType,
     EventType,
     TimelineDraft,
+    TimelineEventDraft,
     TimelineWarning,
     TimelineWarningSeverity,
 )
 
 MAX_EVENT_DURATION = timedelta(hours=3)
 
-#: 지속시간이 근거에 직접 있어 상한을 적용하지 않는 event 종류.
+#: 근거 종류와 무관하게 상한을 적용하지 않는 event 종류.
 _EXEMPT_EVENT_TYPES = frozenset(
     {
-        EventType.CALENDAR_EVENT,  # 시작·종료가 일정에 명시돼 있다
-        EventType.SLEEP,  # 수면은 직접 기록된 구간이다
         EventType.MOVEMENT,  # 실제 이동 구간은 통째로 품는다
         EventType.MEAL,  # meal_guard 가 20~60분으로 전담한다
     }
 )
+
+#: 지속 구간을 직접 제공하는 근거 종류. 이 근거를 실제로 인용한 event 만 면제한다.
+_SPAN_EVIDENCE_TYPES = frozenset(
+    {
+        EventSourceType.CALENDAR,  # 시작·종료가 일정에 명시돼 있다
+        EventSourceType.SLEEP,  # 수면은 직접 기록된 구간이다
+    }
+)
+
+
+def _has_span_evidence(event: TimelineEventDraft) -> bool:
+    """지속 구간을 직접 제공하는 근거를 실제로 인용하는가."""
+
+    return any(ref.source_type in _SPAN_EVIDENCE_TYPES for ref in event.source_refs)
 
 _WARNING_ID_PREFIX = "warning-event-duration-"
 
@@ -48,7 +65,7 @@ def verify_event_duration(draft: TimelineDraft) -> None:
 
     sequence = 0
     for event in draft.events:
-        if event.event_type in _EXEMPT_EVENT_TYPES:
+        if event.event_type in _EXEMPT_EVENT_TYPES or _has_span_evidence(event):
             continue
 
         duration = event.end_time - event.start_time
@@ -62,8 +79,9 @@ def verify_event_duration(draft: TimelineDraft) -> None:
                 severity=TimelineWarningSeverity.LOW,
                 message=(
                     f"'{event.title}' event 가 {_hours(duration)}시간으로 "
-                    f"비캘린더 event 권장 상한 {_hours(MAX_EVENT_DURATION)}시간을 "
-                    "넘었습니다. 하나의 활동이 계속됐다는 근거가 없으면 나눠야 합니다."
+                    f"권장 상한 {_hours(MAX_EVENT_DURATION)}시간을 넘었습니다. "
+                    "지속 구간을 직접 제공하는 근거가 없으므로 하나의 활동이 계속됐다는 "
+                    "근거가 없으면 나눠야 합니다."
                 ),
                 source_refs=list(event.source_refs),
             )

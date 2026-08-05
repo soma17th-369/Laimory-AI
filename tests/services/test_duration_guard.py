@@ -36,6 +36,7 @@ def _event(
     start: str = "09:00:00",
     end: str = "12:00:00",
     title: str = "마포에서 보낸 하루",
+    source_type: str = "STAY",
 ) -> dict:
     return {
         "clientEventId": "event-001",
@@ -46,7 +47,7 @@ def _event(
         "endTime": f"2026-06-20T{end}+09:00",
         "confidence": 0.7,
         "inferenceLevel": "INFERRED",
-        "sourceRefs": [{"sourceType": "STAY", "rawId": STAY_1, "reason": "체류"}],
+        "sourceRefs": [{"sourceType": source_type, "rawId": STAY_1, "reason": "체류"}],
     }
 
 
@@ -85,13 +86,12 @@ def test_guard_does_not_modify_event_times():
     assert len(draft.events) == 1
 
 
-@pytest.mark.parametrize(
-    "event_type", ["CALENDAR_EVENT", "SLEEP", "MOVEMENT", "MEAL"]
-)
+@pytest.mark.parametrize("event_type", ["MOVEMENT", "MEAL"])
 def test_exempt_event_types_are_not_warned(event_type):
-    """지속 구간이 근거에 직접 있는 종류는 상한을 적용하지 않는다.
+    """근거 종류와 무관하게 상한을 적용하지 않는 종류.
 
-    `MEAL` 은 `meal_guard` 가 20~60분으로 이미 전담하므로 여기서 두 번 경고하지 않는다.
+    `MOVEMENT` 는 실제 이동 구간을 통째로 품고, `MEAL` 은 `meal_guard` 가 20~60분으로
+    이미 전담하므로 여기서 두 번 경고하지 않는다.
     """
 
     draft = _draft([_event(event_type=event_type, start="09:00:00", end="21:00:00")])
@@ -99,6 +99,37 @@ def test_exempt_event_types_are_not_warned(event_type):
     verify_event_duration(draft)
 
     assert _duration_warnings(draft) == []
+
+
+@pytest.mark.parametrize("source_type", ["CALENDAR", "SLEEP"])
+def test_span_evidence_exempts_by_actual_source_not_label(source_type):
+    """지속 구간을 직접 제공하는 근거를 인용하면 면제한다(#67)."""
+
+    draft = _draft(
+        [_event(start="09:00:00", end="21:00:00", source_type=source_type)]
+    )
+
+    verify_event_duration(draft)
+
+    assert _duration_warnings(draft) == []
+
+
+@pytest.mark.parametrize("event_type", ["CALENDAR_EVENT", "SLEEP"])
+def test_a_label_without_span_evidence_is_still_warned(event_type):
+    """라벨만 캘린더·수면인 event 는 면제하지 않는다(#67).
+
+    LLM 이 `eventType` 을 그렇게 적었다는 것과 그 event 가 정말 일정·수면 기록을
+    근거로 든다는 것은 다르다. 라벨만으로 빼 주면 근거 없는 12시간짜리 event 가
+    조용히 통과한다.
+    """
+
+    draft = _draft(
+        [_event(event_type=event_type, start="09:00:00", end="21:00:00")]
+    )
+
+    verify_event_duration(draft)
+
+    assert len(_duration_warnings(draft)) == 1
 
 
 def test_repeated_runs_do_not_accumulate():

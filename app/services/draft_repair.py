@@ -11,13 +11,13 @@ repair 순서와 이유:
 
    -1. `rawId 검증`     : 입력에 없는 참조를 제거하고 근거 없는 event 를 제외한다.
     0. `sourceType 정정` : LLM 이 붙인 근거 타입 라벨을 입력의 실제 타입으로 맞춘다.
+    0.3 `수면 비노출`    : SLEEP/WAKE_UP event 를 빼고 수면 근거를 걷어 낸다.
     0.5 `캘린더 복원`    : timeline 에서 통째로 빠진 캘린더 일정을 event 로 되살린다.
-    1. `duration repair` : WAKE_UP 은 순간으로 되돌리고, 지속시간이 0 인 구간 event 는
-                           근거 원본의 시간으로 복원한다.
+    1. `duration repair` : 지속시간이 0 인 구간 event 를 근거 원본의 시간으로 복원한다.
     2. `근거 구간 스냅`  : 위치 근거만 가진 event 의 시간을 근거 원본 구간에 맞춘다.
     3. `MEAL repair`     : 과장된 식사 시간을 20~60분으로 되돌린다.
-    4. `수면 경계 강제`  : 기상 이전 event 를 제거하고, 수면에 걸친 event 를 잘라 낸다.
     5. `window 강제`     : 요청 시간 범위 밖 event 를 제거하고 경계를 클램프한다.
+                           **조건 없이 항상 돈다.** 경계를 세우지 못하면 예외로 멈춘다.
     6. `장소 확정`       : placeLabel 을 근거의 장소명으로 채우고, 근거에 없는 주소를 지운다.
     7. `정렬`            : startTime → endTime → confidence(내림차순) → eventType → title.
     8. `체류 병합`       : 이동 없이 같은 장소에서 이어진 체류 event 를 하나로 합친다.
@@ -28,9 +28,11 @@ repair 순서와 이유:
 `장소 확정`이 `겹침 정리`보다 앞에 있는 이유: 중복 판별이 placeLabel 을 쓰므로,
 장소가 확정되기 전에 겹침을 보면 같은 곳의 두 event 를 다른 곳으로 오인한다.
 
-`수면 경계 강제`가 `겹침 정리`보다 앞에 있는 이유: 수면 중 event 를 먼저 걷어 내지
-않으면 `수면 ↔ 새벽에 시작된 아침 event` 가 "모순되는 겹침" 경고로 남는다. 그 겹침은
-사실 충돌이 아니라 잘못된 event 하나가 만든 것이다.
+`수면 경계 강제`(`sleep_guard.enforce_sleep_boundary`)는 이 파이프라인에서 빠졌다(#67).
+수면 기록을 믿을 수 없다고 판단해 사용자 결과에서 수면을 뺐는데, 그 못 믿을 구간이
+다른 event 를 계속 지우고 자르면 숨긴 정보가 뒤에서 결과를 만드는 셈이다. 기상 이전
+event 를 막는 일은 `window 강제`가 대신한다. 서비스 파일 자체는 정확한 수면 데이터가
+복구될 때를 위해 남겨 두었다.
 
 `endTime < startTime` 은 `TimelineEventDraft` 스키마가 이미 거르므로(파싱 단계에서
 해당 event 만 제외) 여기서 다시 다루지 않는다.
@@ -70,7 +72,7 @@ from app.services.narrative_guard import verify_narrative_length
 from app.services.notification_guard import verify_notification_draft
 from app.services.photo_guard import verify_photo_assignment
 from app.services.place_resolver import resolve_places
-from app.services.sleep_guard import enforce_sleep_boundary
+from app.services.sleep_exclusion import apply_sleep_exclusion
 from app.services.source_lookup import normalize_source_types, raw_id_of
 from app.services.source_integrity import filter_draft_sources
 from app.services.stay_merge import mergeable_stay_groups
@@ -344,8 +346,20 @@ def align_location_events(draft: TimelineDraft, request: TimelineDraftRequest) -
 # --- 겹침 정리 ----------------------------------------------------------------
 
 
-def _place_key(event: TimelineEventDraft) -> tuple[str, str]:
-    return (event.place_label or "", event.address or "")
+def _place_key(event: TimelineEventDraft) -> tuple[str, str] | None:
+    """중복 판별에 쓸 장소 열쇠. 장소를 모르면 ``None``.
+
+    빈 장소 두 개를 같은 장소로 보면 안 된다(#67). 실제 로그에서 서로 다른 상대와
+    주고받은 두 `SOCIAL` event 가 `같은 eventType + 빈 장소 + 시간 겹침` 만으로
+    합쳐져, 다른 사람과의 대화가 한 사건이 됐다. 장소를 모른다는 것은 같은 곳이라는
+    뜻이 아니라 **판단할 근거가 없다**는 뜻이다.
+    """
+
+    label = (event.place_label or "").strip()
+    address = (event.address or "").strip()
+    if not label and not address:
+        return None
+    return (label, address)
 
 
 def _overlaps(left: TimelineEventDraft, right: TimelineEventDraft) -> bool:
@@ -360,14 +374,31 @@ def _contains(outer: TimelineEventDraft, inner: TimelineEventDraft) -> bool:
     return outer.start_time <= inner.start_time and inner.end_time <= outer.end_time
 
 
-def _is_duplicate(left: TimelineEventDraft, right: TimelineEventDraft) -> bool:
-    """같은 종류 + 같은 장소 + 시간이 겹치면 같은 사건을 두 번 쓴 것으로 본다."""
+def _shares_raw_id(left: TimelineEventDraft, right: TimelineEventDraft) -> bool:
+    """같은 근거 원본을 가리키는가. 같은 사건이라는 가장 강한 신호다."""
 
-    return (
-        left.event_type is right.event_type
-        and _place_key(left) == _place_key(right)
-        and _overlaps(left, right)
+    return bool(
+        {ref.raw_id for ref in left.source_refs}
+        & {ref.raw_id for ref in right.source_refs}
     )
+
+
+def _is_duplicate(left: TimelineEventDraft, right: TimelineEventDraft) -> bool:
+    """같은 사건을 두 번 쓴 것인가.
+
+    같은 종류 + 시간 겹침은 필요조건이지 충분조건이 아니다. 그 위에 **같은 장소**이거나
+    **같은 근거 원본을 공유**해야 병합한다(#67). 장소를 둘 다 모르는 event 두 개는
+    근거를 공유할 때만 같은 사건이다 — 애매하면 분리해 두고 Repair 의 판단에 맡긴다.
+    잘못 합쳐 사실이 섞이는 쪽이 중복이 남는 쪽보다 나쁘다.
+    """
+
+    if left.event_type is not right.event_type or not _overlaps(left, right):
+        return False
+
+    place = _place_key(left)
+    if place is not None and place == _place_key(right):
+        return True
+    return _shares_raw_id(left, right)
 
 
 def _dedupe_refs(refs: list[SourceRef]) -> list[SourceRef]:
@@ -578,8 +609,17 @@ def _korean_time_text(value) -> str:
 # --- 진입점 ------------------------------------------------------------------
 
 
-def repair_draft(draft: TimelineDraft, request: TimelineDraftRequest) -> TimelineDraft:
-    """LLM 이 만든 draft 를 코드로 확정한다(in-place, 같은 객체를 돌려준다)."""
+def repair_draft(
+    draft: TimelineDraft,
+    request: TimelineDraftRequest,
+    excluded_raw_ids: frozenset[str] = frozenset(),
+) -> TimelineDraft:
+    """LLM 이 만든 draft 를 코드로 확정한다(in-place, 같은 객체를 돌려준다).
+
+    `excluded_raw_ids` 는 수면 비노출 정책이 걷어 낼 rawId 집합이다(#67). Repair 는
+    매 확정 패스마다 현재 Event Agent 결과로 이 집합을 다시 계산해 넘긴다. 그래서
+    Timeline 을 다시 돌리거나 Event Agent 를 다시 돌린 뒤에도 정책이 유지된다.
+    """
 
     # 입력에 없는 rawId는 LLM 환각으로 본다. 잘못된 참조를 먼저 제거하고 유효한
     # 근거가 하나도 남지 않은 event는 이후 보정 단계로 넘기지 않는다.
@@ -596,17 +636,20 @@ def repair_draft(draft: TimelineDraft, request: TimelineDraftRequest) -> Timelin
     # 입력의 실제 타입으로 먼저 맞춘다. 라벨이 틀리면 근거를 영영 찾지 못한다.
     normalize_source_types(draft, request)
 
+    # 수면 근거를 먼저 걷어 낸다. 뒤의 지속시간 복원·정렬·병합이 수면 rawId 를 근거로
+    # 잡으면, 숨기기로 한 정보가 다른 event 의 시간을 만든다(#67).
+    apply_sleep_exclusion(draft, excluded_raw_ids)
+
     # 되살린 캘린더 event 도 window·장소·정렬을 똑같이 거쳐야 하므로 여기서 채운다.
-    ensure_calendar_events(draft, request)
+    ensure_calendar_events(draft, request, excluded_raw_ids)
 
     repair_durations(draft, request)
     align_location_events(draft, request)
     enforce_meal_duration(draft, request)
-    enforce_sleep_boundary(draft, request)
 
-    bounds = resolve_window_bounds(request)
-    if bounds is not None:
-        validate_draft_to_window(draft, bounds)
+    # 조건 없이 항상 강제한다(#67). 경계를 세우지 못하면 `resolve_window_bounds` 가
+    # 예외를 올린다 — 검증하지 못한 타임라인을 저장하는 것보다 멈추는 편이 낫다.
+    validate_draft_to_window(draft, resolve_window_bounds(request))
 
     # 겹침 정리가 장소로 중복을 판별하므로, 그 전에 placeLabel 을 확정한다.
     resolve_places(draft, request)
