@@ -40,7 +40,7 @@
 - 결과 저장 성공을 확인하기 전에는 SUCCESS callback을 보내지 않는다.
 - 결과 저장 성공 뒤 callback 실패가 나도 task 결과를 FAILED로 되돌리지 않는다.
 - User Memory 갱신에는 callback이 없다. 성공·실패 어느 경로로 끝나도 결과 저장을 정확히 1회 호출한다. 빠뜨리면 실패를 알릴 수단이 없다.
-- User Memory 접수는 입력 크기로 4xx를 내지 않는다. App Server가 4xx를 "미접수 확정"으로 읽어 앱에 502를 주므로, 이벤트가 많은 정상적인 하루가 사용자에게 일기 저장 실패로 보인다. 크기는 prompt 조립 단계에서 자른다.
+- User Memory 접수의 `dailyTimelines`는 App Server 재시도 배치 계약에 따라 최대 5건이며 초과하면 422/1001이다. 그 안에서 이벤트가 많은 정상적인 하루는 거절하지 않고 prompt 조립 단계에서 자른다.
 - User Memory 갱신 실패를 `DailyRecord`의 `DRAFT → SAVED` 전이와 묶지 않는다. 묶으면 AI 실패가 사용자의 일기 저장을 되돌린다.
 
 ### 오류·로그·관측

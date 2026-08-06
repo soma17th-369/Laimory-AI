@@ -15,11 +15,10 @@ E2   ``POST {app}/user-memory/updates/{taskId}/result``           이 모듈의 
 ## 접수 계약을 느슨하게 받는 이유
 
 ``eventType`` 은 enum 이 아니라 자유 문자열이고, ``endAt``·``subtitle``·``question``·
-``memo``·``emotionType`` 은 모두 nullable 이며, 길이 상한은 여기서 강제하지 않는다.
-App Server 는 **4xx 를 "미접수 확정"** 으로 읽고 작업을 폐기한 뒤 앱에 502 를 준다.
-즉 우리가 422 를 내면 사용자에게는 *일기 저장 실패*로 보인다. 이벤트가 많은 정상적인
-하루가 그렇게 되면 안 되므로, 크기는 거절 사유가 아니라 프롬프트 조립 단계의
-잘라내기로 다룬다(:mod:`app.services.user_memory_limits`).
+``memo``·``emotionType`` 은 모두 nullable 이며, 개별 event 수와 본문 길이는 여기서
+강제하지 않는다. 다만 App Server 와 합의한 재시도 배치 계약에 따라
+``dailyTimelines`` 는 최대 5건만 받는다. 그 안에서 이벤트가 많거나 본문이 길면
+프롬프트 조립 단계에서 잘라낸다(:mod:`app.services.user_memory_limits`).
 
 ## `SAVED` 전이와 분리된다
 
@@ -37,6 +36,9 @@ from app.core.error_codes import RESERVED_CODES, ErrorCode, message_for
 from app.schemas.common import CamelModel
 from app.schemas.task import TaskStatus
 from app.schemas.user_memory import UserMemory
+
+#: 한 갱신 요청이 담을 수 있는 확정 하루 타임라인 수. App Server 재시도 배치 계약이다.
+MAX_DAILY_TIMELINE_COUNT = 5
 
 
 class DailyTimelineEvent(CamelModel):
@@ -85,7 +87,9 @@ class UserMemoryUpdateRequest(CamelModel):
     #: 하고 실패는 접수 경계가 흡수한다(#65 의 입력 조회와 같은 구조다).
     user_memory: dict[str, Any] | None = Field(default=None, alias="userMemory")
     daily_timelines: list[DailyTimeline] = Field(
-        default_factory=list, alias="dailyTimelines"
+        default_factory=list,
+        alias="dailyTimelines",
+        max_length=MAX_DAILY_TIMELINE_COUNT,
     )
 
     def parse_user_memory(self) -> UserMemory | None:

@@ -204,7 +204,7 @@ AI → App Server   POST /user-memory/updates/{taskId}/result       (성공·실
 | `taskId` | `string` | O | 작업 식별자입니다. 형식은 검증하지 않습니다. |
 | `taskToken` | `string` | O | 이 작업의 토큰입니다. **갱신되지 않습니다** — 결과 저장이 유일한 호출이라 갱신 기회가 없습니다. |
 | `userMemory` | `object \| null` | O | 기존 User Memory입니다. 최초 생성이면 `null`입니다. |
-| `dailyTimelines` | `object[]` | O | 확정된 하루 타임라인입니다. 비어 있어도 됩니다. |
+| `dailyTimelines` | `object[]` | O | 확정된 하루 타임라인입니다. 비어 있어도 되며 최대 5건입니다. |
 | `dailyTimelines[].recordDate` | `string` | O | 대상 날짜(`YYYY-MM-DD`)입니다. |
 | `dailyTimelines[].recordTimeZone` | `string` | | 시간대입니다. 기본값은 `Asia/Seoul`입니다. |
 | `dailyTimelines[].emotionType` | `string \| null` | | 현재 항상 `null`입니다. 받아만 두고 사용하지 않습니다. |
@@ -257,17 +257,17 @@ AI → App Server   POST /user-memory/updates/{taskId}/result       (성공·실
 }
 ```
 
-### 크기로 거절하지 않습니다
+### 접수 상한과 내부 잘라내기
 
-접수는 **스키마만 맞으면 항상 202**입니다. 이벤트가 많은 하루도 거절하지 않습니다.
+`dailyTimelines`는 App Server 재시도 배치 계약에 따라 **최대 5건**입니다. 6건 이상은
+`422`/`1001`로 거절합니다.
 
-AI 서버가 4xx를 내면 App Server는 이를 "미접수 확정"으로 보고 작업을 폐기한 뒤 앱에
-502를 돌려줍니다. 즉 사용자에게는 *일기 저장 실패*로 보입니다. 정상적인 하루가 그렇게
-보이면 안 되므로, 입력이 크면 거절 대신 **프롬프트 조립 단계에서 자릅니다.**
+5건 안에서는 이벤트가 많은 정상적인 하루를 크기로 거절하지 않습니다. event 수와
+본문 길이는 **프롬프트 조립 단계에서 자릅니다.**
 
 | 대상 | 상한 | 초과 시 |
 |---|---|---|
-| `dailyTimelines` | 5일 | 오래된 날부터 제외 |
+| `dailyTimelines` | 5건 | 6건 이상은 422/1001 |
 | `events` | **하루당** 20개 | **메모 있는 event를 남기고** 오래된 것부터 제외 |
 | `memo` | 500자 | 잘라서 사용 |
 | `title`, `subtitle` | 255자 | 잘라서 사용 |
@@ -275,7 +275,8 @@ AI 서버가 4xx를 내면 App Server는 이를 "미접수 확정"으로 보고 
 무엇을 얼마나 잘랐는지는 운영 이벤트(`usermemory.task.completed`)의
 `droppedDailyTimelineCount`/`droppedEventCount`에 남습니다.
 
-422는 계약 위반일 때만 나갑니다 — 필수 필드 누락, `startAt` 파싱 실패 등입니다.
+422는 계약 위반일 때만 나갑니다 — `dailyTimelines` 6건 이상, 필수 필드 누락,
+`startAt` 파싱 실패 등입니다.
 
 ### 처리 시간
 

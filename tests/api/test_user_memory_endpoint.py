@@ -1,8 +1,7 @@
 """POST /v1/user-memory 엔드포인트 검증 (#64).
 
-접수는 **스키마만 맞으면 항상 202** 다. 크기로 거절하지 않는다 — App Server 는 4xx 를
-"미접수 확정" 으로 읽고 앱에 502 를 주므로, 이벤트가 많은 정상적인 하루가 사용자에게
-저장 실패로 보이게 된다.
+``dailyTimelines`` 는 재시도 배치 계약에 따라 최대 5건이다. 그 안에서 event가 많은
+정상적인 하루는 거절하지 않고 프롬프트 조립 단계에서 자른다.
 """
 
 import pytest
@@ -11,7 +10,11 @@ from fastapi.testclient import TestClient
 from app.core.error_codes import ErrorCode
 from app.schemas import TaskStatus
 from app.schemas.user_memory import UserMemory
-from app.schemas.user_memory_update import DailyTimeline, UserMemoryUpdateRequest
+from app.schemas.user_memory_update import (
+    MAX_DAILY_TIMELINE_COUNT,
+    DailyTimeline,
+    UserMemoryUpdateRequest,
+)
 from app.server import app
 from app.services import user_memory_runner
 from app.services.app_server_client import get_app_server_client
@@ -109,7 +112,7 @@ def test_a_big_day_is_accepted_not_rejected(client):
 
     response = http.post(
         "/v1/user-memory",
-        json=update_body(dailyTimelines=[daily_timeline(events=events)] * 10),
+        json=update_body(dailyTimelines=[daily_timeline(events=events)]),
     )
 
     assert response.status_code == 202
@@ -155,8 +158,12 @@ def test_wire_key_is_daily_timelines():
     """
 
     field = UserMemoryUpdateRequest.model_fields["daily_timelines"]
+    properties = UserMemoryUpdateRequest.model_json_schema(by_alias=True)[
+        "properties"
+    ]
 
     assert field.alias == "dailyTimelines"
+    assert properties["dailyTimelines"]["maxItems"] == MAX_DAILY_TIMELINE_COUNT
 
 
 def test_daily_timeline_wire_key_is_record_date():
@@ -182,6 +189,31 @@ def test_record_date_is_accepted(client):
 
     assert response.status_code == 202
     assert client.last_user_memory.status is TaskStatus.SUCCESS
+
+
+def test_daily_timeline_batch_accepts_at_most_five(client):
+    http = TestClient(app)
+
+    accepted = http.post(
+        "/v1/user-memory",
+        json=update_body(
+            dailyTimelines=[daily_timeline()] * MAX_DAILY_TIMELINE_COUNT
+        ),
+    )
+    rejected = http.post(
+        "/v1/user-memory",
+        json=update_body(
+            dailyTimelines=[daily_timeline()]
+            * (MAX_DAILY_TIMELINE_COUNT + 1)
+        ),
+    )
+
+    assert accepted.status_code == 202
+    assert rejected.status_code == 422
+    assert rejected.json()["errorCode"] == int(
+        ErrorCode.REQUEST_VALIDATION_FAILED
+    )
+    assert client.order == ["user-memory-result"]
 
 
 def test_old_date_key_is_rejected(client):

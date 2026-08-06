@@ -298,12 +298,12 @@ def test_failed_result_call_is_visible_in_the_event(caplog):
     assert event["errorCode"] == int(ErrorCode.USER_MEMORY_SUBMIT_FAILED)
 
 
-def test_event_reports_what_was_dropped_from_the_input(caplog):
-    """조용히 자르면 "다 보고 이 정도" 인지 "못 본 게 있어서" 인지 알 수 없다."""
+def test_event_reports_the_accepted_batch_size(caplog):
+    """접수 상한 안의 타임라인 수를 완료 이벤트에 남긴다."""
 
     daily_timelines = [
         daily_timeline(record_date=f"2026-07-{day:02d}")
-        for day in range(1, 12)
+        for day in range(1, MAX_DAILY_TIMELINE_COUNT + 1)
     ]
 
     with caplog.at_level(logging.DEBUG):
@@ -311,7 +311,7 @@ def test_event_reports_what_was_dropped_from_the_input(caplog):
 
     event = _events(caplog)[-1]
     assert event["dailyTimelineCount"] == MAX_DAILY_TIMELINE_COUNT
-    assert event["droppedDailyTimelineCount"] == 11 - MAX_DAILY_TIMELINE_COUNT
+    assert event["droppedDailyTimelineCount"] == 0
 
 
 def test_event_never_carries_timeline_or_memory_content(caplog):

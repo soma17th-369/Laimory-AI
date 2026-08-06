@@ -2,9 +2,9 @@
 
 두 방향을 다룬다.
 
-- **입력** — 접수한 하루 타임라인을 프롬프트에 실을 만큼으로 줄인다. 거절하지 않고
-  **자른다**. App Server 는 4xx 를 "미접수 확정" 으로 읽고 앱에 502 를 주므로,
-  이벤트가 많은 정상적인 하루가 사용자에게 저장 실패로 보이면 안 된다.
+- **입력** — 접수 schema 가 하루 타임라인을 최대 5건으로 제한한다. 그 안의 event와
+  본문은 프롬프트에 실을 만큼으로 줄이며, event가 많은 정상적인 하루는 거절하지 않고
+  **자른다**.
 - **출력** — LLM 이 만든 갱신본이 크기·민감정보 규칙을 지켰는지 본다. 여기서는
   **검출만** 하고 고치지 않는다. 압축은 의미 판단이라 코드가 문장을 자르면 뜻이
   달라진다(:mod:`app.services.duration_guard` 와 같은 철학이다).
@@ -32,14 +32,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.schemas.user_memory import UserMemory
-from app.schemas.user_memory_update import DailyTimeline, DailyTimelineEvent
+from app.schemas.user_memory_update import (
+    MAX_DAILY_TIMELINE_COUNT,
+    DailyTimeline,
+    DailyTimelineEvent,
+)
 from app.services.notification_guard import SENSITIVE_PATTERNS
 
 #: 갱신본 전체의 직렬화 문자 수 상한(이슈의 1,000토큰을 문자 수로 옮긴 값).
 USER_MEMORY_MAX_CHARS = 1_200
-
-#: 프롬프트에 실을 최대 하루 타임라인 수. 최근 것부터 남긴다.
-MAX_DAILY_TIMELINE_COUNT = 5
 
 #: 하루당 최대 event 수. **날짜별 몫이다.**
 #:
