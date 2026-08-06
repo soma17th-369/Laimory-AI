@@ -13,10 +13,10 @@
 ## Authoritative Sources
 
 - `pyproject.toml`, `app/core/config.py`
-- `app/schemas/common.py`, `source_snapshot.py`, domain schema, `event_candidate.py`, `timeline_request.py`, `timeline.py`, `timeline_input.py`, `timeline_result.py`, `task.py`
-- `app/services/normalizer.py`, `source_contract.py`, `source_integrity.py`, `timeline_validator.py`, `timeline_result.py`
-- `app/services/app_server_client.py`, `app/services/timeline_runner.py`
-- `tests/services/test_normalizer.py`, `test_source_contract.py`, `test_source_integrity.py`, `test_timeline_result.py`, `test_timeline_validator.py`
+- `app/schemas/common.py`, `source_snapshot.py`, domain schema, `event_candidate.py`, `timeline_request.py`, `timeline.py`, `timeline_input.py`, `timeline_result.py`, `task.py`, `user_memory.py`, `user_memory_update.py`
+- `app/services/normalizer.py`, `source_contract.py`, `source_integrity.py`, `timeline_validator.py`, `timeline_result.py`, `user_memory_limits.py`, `user_memory_repair.py`
+- `app/services/app_server_client.py`, `app/services/timeline_runner.py`, `app/services/user_memory_runner.py`
+- `tests/services/test_normalizer.py`, `test_source_contract.py`, `test_source_integrity.py`, `test_timeline_result.py`, `test_timeline_validator.py`, `test_user_memory_limits.py`, `test_user_memory_repair.py`
 
 ## Current Implementation
 
@@ -40,6 +40,9 @@ Redis나 제품 cache도 없다. `lru_cache`로 유지되는 Settings, provider/
 | `TimelineDraft` | Timeline/Repair/Question이 다루는 넓은 내부 draft |
 | `TimelineResultRequest` | App Server로 보내는 좁은 persistence 계약 |
 | `TimelineCallbackPayload` | 결과가 아닌 terminal 상태 통보 계약 |
+| `UserMemoryUpdateRequest` | User Memory 갱신 접수 계약(#64). 확정된 `diaries`와 기존 profile |
+| `DiaryDigest` | prompt에 실을 만큼으로 줄인 하루 기록과 잘라낸 양 |
+| `UserMemoryResultRequest` | 갱신본 저장과 종료 통보를 겸하는 계약 |
 
 `CamelModel`은 JSON alias는 camelCase, Python construction은 snake_case도 허용한다. `rawId`는 UUID로 검증하고 표준 문자열로 정규화한다. source 식별자는 rawId 하나이며 내부 DB ID fallback은 없다.
 
@@ -51,6 +54,10 @@ result mapper는 내부 판단 필드를 버리고 사람이 읽는 event와 sou
 
 Photo의 `photoUrl`은 image fetch에만 사용하며 Pydantic serialization에서 제외된다. presigned query가 prompt·trace로 유출되지 않도록 하기 위한 데이터 경계다. client URI와 filename은 schema에 없어 무시된다.
 
+User Memory는 App Server가 소유하고 AI 서버는 읽기(input 조회)와 쓰기(갱신 결과 저장) 둘 다 HTTP로만 한다. 갱신은 append가 아니라 **전체 rewrite**이며, 출력이 기존 값을 통째로 대체한다. `schemaVersion`과 `updatedAt`은 LLM 값이 아니라 서버가 박는다 — 모델이 정하게 두면 언젠가 우리가 모르는 버전이 저장되고 다음 날 읽기가 깨진다.
+
+갱신 입력의 `title`·`subtitle`·`question`은 **이 시스템의 Timeline·Question Agent가 쓴 문장**이고, 사용자가 직접 쓴 글은 `memo` 뿐이다. 이 출처 구분이 계약 수준의 의미를 갖는다 — AI가 쓴 문장에서 성향을 뽑으면 모델이 자기 출력을 읽고 사용자를 만들어 내는 되먹임이 되고, 그 profile이 다시 다음 Timeline 문장을 만드는 데 쓰여 스스로를 강화한다. 성향 계열 다섯 필드(`personality`, `values`, `preferences`, `emotionalPatterns`, `memoryStyle`)의 근거는 `memo` 뿐이며, `memo`가 없는 날은 그 필드가 그대로인 것이 정상이고 결과는 `SUCCESS`다.
+
 ## Invariants
 
 - App Server가 제품 persistence와 task 상태의 유일한 소유자다.
@@ -60,6 +67,9 @@ Photo의 `photoUrl`은 image fetch에만 사용하며 Pydantic serialization에�
 - result가 0건이어도 저장 request를 생략하지 않는다.
 - URL·token·내부 파일 식별자를 LLM 입력이나 저장 결과에 섞지 않는다.
 - source 하나가 여러 event의 근거가 되는 것은 허용한다.
+- User Memory의 `schemaVersion`·`updatedAt`은 서버가 확정한다. LLM 출력값을 그대로 저장하지 않는다.
+- 성향 계열 필드는 사용자가 직접 쓴 `memo`만 근거로 한다. AI가 쓴 문장에서 사용자 특성을 만들지 않는다.
+- 크기 상한을 넘은 갱신본은 잘라서 저장하지 않는다. 다시 요청하고, 소진하면 저장하지 않는다.
 
 ## Known Gaps
 
