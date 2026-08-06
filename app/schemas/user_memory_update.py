@@ -60,7 +60,7 @@ class DailyTimelineEvent(CamelModel):
 class DailyTimeline(CamelModel):
     """하루치 확정 타임라인."""
 
-    date: str = Field(min_length=1)
+    record_date: str = Field(alias="recordDate", min_length=1)
     record_time_zone: str = Field(default="Asia/Seoul", alias="recordTimeZone")
     #: 현재 App Server 가 항상 ``null`` 로 보낸다. 받아만 두고 쓰지 않는다.
     emotion_type: str | None = Field(default=None, alias="emotionType")

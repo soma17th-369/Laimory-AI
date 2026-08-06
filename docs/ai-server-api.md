@@ -205,7 +205,7 @@ AI → App Server   POST /user-memory/updates/{taskId}/result       (성공·실
 | `taskToken` | `string` | O | 이 작업의 토큰입니다. **갱신되지 않습니다** — 결과 저장이 유일한 호출이라 갱신 기회가 없습니다. |
 | `userMemory` | `object \| null` | O | 기존 User Memory입니다. 최초 생성이면 `null`입니다. |
 | `dailyTimelines` | `object[]` | O | 확정된 하루 타임라인입니다. 비어 있어도 됩니다. |
-| `dailyTimelines[].date` | `string` | O | 대상 날짜(`YYYY-MM-DD`)입니다. |
+| `dailyTimelines[].recordDate` | `string` | O | 대상 날짜(`YYYY-MM-DD`)입니다. |
 | `dailyTimelines[].recordTimeZone` | `string` | | 시간대입니다. 기본값은 `Asia/Seoul`입니다. |
 | `dailyTimelines[].emotionType` | `string \| null` | | 현재 항상 `null`입니다. 받아만 두고 사용하지 않습니다. |
 | `dailyTimelines[].events[].eventType` | `string` | O | **자유 문자열**입니다. enum으로 제한하지 않습니다. |
@@ -225,7 +225,7 @@ AI → App Server   POST /user-memory/updates/{taskId}/result       (성공·실
   "userMemory": null,
   "dailyTimelines": [
     {
-      "date": "2026-08-04",
+      "recordDate": "2026-08-04",
       "recordTimeZone": "Asia/Seoul",
       "emotionType": null,
       "events": [

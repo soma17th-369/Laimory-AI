@@ -147,7 +147,9 @@ def build_daily_timeline_digest(daily_timelines: list[DailyTimeline]) -> DailyTi
     인지 "못 본 게 있어서 이 정도" 인지 구분할 수 없다.
     """
 
-    ordered = sorted(daily_timelines, key=lambda entry: entry.date, reverse=True)
+    ordered = sorted(
+        daily_timelines, key=lambda entry: entry.record_date, reverse=True
+    )
     kept_timelines = ordered[:MAX_DAILY_TIMELINE_COUNT]
     dropped_timeline_count = len(ordered) - len(kept_timelines)
 
@@ -182,7 +184,9 @@ def build_daily_timeline_digest(daily_timelines: list[DailyTimeline]) -> DailyTi
             # event 가 전부 잘려 나간 날은 싣지 않는다. 날짜만 남은 항목은 모델에게
             # "이 날은 아무 일도 없었다" 로 읽힌다.
             continue
-        payload.append({"date": entry.date, "events": events})
+        # ``date`` 는 Agent 프롬프트용 내부 digest 키다. 공개 접수 계약의
+        # ``recordDate`` 와 분리해 프롬프트 입력을 불필요하게 바꾸지 않는다.
+        payload.append({"date": entry.record_date, "events": events})
     payload.sort(key=lambda entry: entry["date"])
 
     return DailyTimelineDigest(

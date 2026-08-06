@@ -301,7 +301,10 @@ def test_failed_result_call_is_visible_in_the_event(caplog):
 def test_event_reports_what_was_dropped_from_the_input(caplog):
     """조용히 자르면 "다 보고 이 정도" 인지 "못 본 게 있어서" 인지 알 수 없다."""
 
-    daily_timelines = [daily_timeline(date=f"2026-07-{day:02d}") for day in range(1, 12)]
+    daily_timelines = [
+        daily_timeline(record_date=f"2026-07-{day:02d}")
+        for day in range(1, 12)
+    ]
 
     with caplog.at_level(logging.DEBUG):
         _run(FakeAppServerClient(), dailyTimelines=daily_timelines)

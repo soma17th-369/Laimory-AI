@@ -248,7 +248,7 @@ def test_user_memory_key_matching_ignores_case_and_separators() -> None:
 
 _DAILY_TIMELINES_BODY = [
     {
-        "date": "2026-08-04",
+        "recordDate": "2026-08-04",
         "events": [
             {
                 "eventType": "MEAL",
@@ -297,7 +297,14 @@ def test_daily_timeline_summary_does_not_depend_on_event_field_names() -> None:
     """App Server 가 필드를 더해도 본문이 새면 안 된다."""
 
     redacted = redact_value(
-        {"dailyTimelines": [{"date": "2026-08-04", "events": [{"newField": "점심 이야기"}]}]}
+        {
+            "dailyTimelines": [
+                {
+                    "recordDate": "2026-08-04",
+                    "events": [{"newField": "점심 이야기"}],
+                }
+            ]
+        }
     )
 
     assert redacted["dailyTimelines"]["eventCount"] == 1
@@ -305,6 +312,8 @@ def test_daily_timeline_summary_does_not_depend_on_event_field_names() -> None:
 
 
 def test_daily_timelines_of_unknown_shape_are_folded_whole() -> None:
-    redacted = redact_value({"dailyTimelines": {"date": "2026-08-04"}})
+    redacted = redact_value(
+        {"dailyTimelines": {"recordDate": "2026-08-04"}}
+    )
 
     assert redacted["dailyTimelines"]["contentCaptured"] is False

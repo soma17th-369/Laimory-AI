@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from app.core.error_codes import ErrorCode
 from app.schemas import TaskStatus
 from app.schemas.user_memory import UserMemory
-from app.schemas.user_memory_update import UserMemoryUpdateRequest
+from app.schemas.user_memory_update import DailyTimeline, UserMemoryUpdateRequest
 from app.server import app
 from app.services import user_memory_runner
 from app.services.app_server_client import get_app_server_client
@@ -157,6 +157,49 @@ def test_wire_key_is_daily_timelines():
     field = UserMemoryUpdateRequest.model_fields["daily_timelines"]
 
     assert field.alias == "dailyTimelines"
+
+
+def test_daily_timeline_wire_key_is_record_date():
+    """App Server의 `recordDate`를 공개 계약의 유일한 날짜 키로 고정한다."""
+
+    field = DailyTimeline.model_fields["record_date"]
+    properties = DailyTimeline.model_json_schema(by_alias=True)["properties"]
+
+    assert field.alias == "recordDate"
+    assert "recordDate" in properties
+    assert "date" not in properties
+
+
+def test_record_date_is_accepted(client):
+    http = TestClient(app)
+
+    response = http.post(
+        "/v1/user-memory",
+        json=update_body(
+            dailyTimelines=[daily_timeline(record_date="2026-07-08")]
+        ),
+    )
+
+    assert response.status_code == 202
+    assert client.last_user_memory.status is TaskStatus.SUCCESS
+
+
+def test_old_date_key_is_rejected(client):
+    """날짜 키를 둘 다 받으면 생산자마다 계약이 다시 갈리므로 구 키는 거절한다."""
+
+    http = TestClient(app)
+    timeline = daily_timeline()
+    timeline["date"] = timeline.pop("recordDate")
+
+    response = http.post(
+        "/v1/user-memory",
+        json=update_body(dailyTimelines=[timeline]),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["errorCode"] == int(
+        ErrorCode.REQUEST_VALIDATION_FAILED
+    )
 
 
 def test_old_diaries_key_no_longer_populates(client):

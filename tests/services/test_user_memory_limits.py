@@ -32,7 +32,10 @@ def _entries(payload: list[dict]) -> list[DailyTimeline]:
 
 
 def test_digest_keeps_only_the_most_recent_timelines():
-    payload = [daily_timeline(date=f"2026-07-{day:02d}") for day in range(1, MAX_DAILY_TIMELINE_COUNT + 4)]
+    payload = [
+        daily_timeline(record_date=f"2026-07-{day:02d}")
+        for day in range(1, MAX_DAILY_TIMELINE_COUNT + 4)
+    ]
 
     digest = build_daily_timeline_digest(_entries(payload))
 
@@ -154,7 +157,14 @@ def test_digest_clips_long_text_instead_of_rejecting():
 def test_digest_skips_a_day_whose_events_were_all_dropped():
     """event 가 하나도 안 남은 날은 싣지 않는다. 모델이 "아무 일도 없던 날" 로 읽는다."""
 
-    digest = build_daily_timeline_digest(_entries([daily_timeline(date="2026-08-03", events=[]), daily_timeline()]))
+    digest = build_daily_timeline_digest(
+        _entries(
+            [
+                daily_timeline(record_date="2026-08-03", events=[]),
+                daily_timeline(),
+            ]
+        )
+    )
 
     assert [entry["date"] for entry in digest.daily_timelines] == ["2026-08-04"]
 
@@ -253,7 +263,7 @@ def test_each_day_gets_its_own_event_quota():
     """
 
     busy = daily_timeline(
-        date="2026-08-05",
+        record_date="2026-08-05",
         events=[
             daily_timeline_event(
                 start_at=f"2026-08-05T{index % 24:02d}:00:00+09:00", end_at=None
@@ -262,7 +272,7 @@ def test_each_day_gets_its_own_event_quota():
         ],
     )
     quiet = daily_timeline(
-        date="2026-08-04",
+        record_date="2026-08-04",
         events=[daily_timeline_event(start_at="2026-08-04T09:00:00+09:00", end_at=None)],
     )
 
@@ -284,7 +294,7 @@ def test_total_cap_is_derived_from_the_daily_quota():
 def test_a_full_request_never_exceeds_the_total_cap():
     payload = [
         daily_timeline(
-            date=f"2026-08-{day:02d}",
+            record_date=f"2026-08-{day:02d}",
             events=[
                 daily_timeline_event(
                     start_at=f"2026-08-{day:02d}T{index % 24:02d}:00:00+09:00",

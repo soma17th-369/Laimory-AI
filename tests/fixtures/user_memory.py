@@ -52,13 +52,13 @@ def daily_timeline_event(
 
 def daily_timeline(
     *,
-    date: str = "2026-08-04",
+    record_date: str = "2026-08-04",
     record_time_zone: str = "Asia/Seoul",
     emotion_type: str | None = None,
     events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
-        "date": date,
+        "recordDate": record_date,
         "recordTimeZone": record_time_zone,
         "emotionType": emotion_type,
         "events": events if events is not None else [daily_timeline_event()],
