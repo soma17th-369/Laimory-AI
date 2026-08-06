@@ -12,6 +12,11 @@ from pydantic import SecretStr
 
 from app.core import langfuse_tracing
 from app.core.error_codes import ErrorCode
+from app.core.execution_context import (
+    ExecutionStage,
+    execution_context,
+    execution_scope,
+)
 from app.core.llm import OpenAIProvider
 
 
@@ -474,3 +479,54 @@ def test_generation_failure_records_safe_error_code(monkeypatch) -> None:
         "errorType": "RuntimeError",
     }
     assert "provider secret failure" not in str(update)
+
+
+@pytest.mark.parametrize(
+    ("stage", "expected"),
+    [
+        pytest.param(
+            ExecutionStage.TIMELINE_AGENT, "generate-timeline-draft", id="timeline"
+        ),
+        pytest.param(
+            ExecutionStage.REPAIR_AGENT, "analyze-timeline-repair", id="repair"
+        ),
+        pytest.param(
+            ExecutionStage.USER_MEMORY_AGENT,
+            "update-user-memory-profile",
+            id="user-memory",
+        ),
+    ],
+)
+def test_generation_name_follows_the_execution_stage(
+    monkeypatch, stage, expected: str
+) -> None:
+    """단계마다 generation 이름이 다르다 (#64).
+
+    이름이 `call-llm` 으로 퇴화하면 Timeline 과 User Memory 의 generation 이 화면에서
+    한 덩어리로 보여, 어느 작업이 느려졌는지도 비싼지도 알 수 없다.
+    """
+
+    fake = _FakeLangfuse()
+    monkeypatch.setattr(langfuse_tracing, "get_langfuse_client", lambda: fake)
+    provider = object.__new__(OpenAIProvider)
+    provider.model = "gpt-test"
+
+    with execution_context("task-1"), execution_scope(stage):
+        with provider._trace_generation("프롬프트", system=None, temperature=0.2):
+            pass
+
+    assert fake.started[0]["name"] == expected
+
+
+def test_generation_without_a_stage_falls_back(monkeypatch) -> None:
+    """컨텍스트가 없는 스크립트·단위 테스트 호출은 총칭 이름으로 남는다."""
+
+    fake = _FakeLangfuse()
+    monkeypatch.setattr(langfuse_tracing, "get_langfuse_client", lambda: fake)
+    provider = object.__new__(OpenAIProvider)
+    provider.model = "gpt-test"
+
+    with provider._trace_generation("프롬프트", system=None, temperature=0.2):
+        pass
+
+    assert fake.started[0]["name"] == "call-llm"

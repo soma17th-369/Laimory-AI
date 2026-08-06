@@ -296,6 +296,13 @@ class LLMProvider(ABC):
             observation_name = "generate-timeline-draft"
         elif context is not None and context.stage is ExecutionStage.REPAIR_AGENT:
             observation_name = "analyze-timeline-repair"
+        elif (
+            context is not None
+            and context.stage is ExecutionStage.USER_MEMORY_AGENT
+        ):
+            # Timeline 과 다른 작업이다(#64). 이름이 `call-llm` 으로 퇴화하면 두 작업의
+            # generation 이 화면에서 한 덩어리로 보여 어느 쪽이 느려졌는지 알 수 없다.
+            observation_name = "update-user-memory-profile"
         else:
             observation_name = "call-llm"
 

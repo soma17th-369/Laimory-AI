@@ -38,7 +38,9 @@ HTTP request는 response start 시점에 요청당 한 건, Timeline·User Memor
 
 `ErrorCode`는 영역별 정수 대역, 외부 안전 메시지, 필요한 HTTP status의 단일 카탈로그다. 예약된 과거 번호는 재사용하지 않는다. `report_error`는 최종/흡수 경계의 local 진단이며 외부 response·callback·운영 event는 같은 code를 참조한다. 원본 exception message와 traceback은 외부 안전 메시지로 변환된다.
 
-Langfuse는 설정이 활성이고 public/secret key가 모두 있을 때 지연 생성한다. release는 `AGENT_VERSION`, environment는 `APP_ENV`를 쓴다. content policy는 명시 설정이 우선하며 미지정 시 local/dev는 `SANITIZED`, 그 밖은 `NONE`이다. `NONE`도 duration, token, count, errorCode 같은 diagnostics는 보존하고 사용자 본문은 byte/hash summary로 접는다. payload size를 제한하고 export 직전 OTel attribute를 다시 마스킹한다.
+Langfuse는 설정이 활성이고 public/secret key가 모두 있을 때 지연 생성한다. release는 `AGENT_VERSION`, environment는 `APP_ENV`를 쓴다.
+
+Timeline과 User Memory 갱신은 **별개 trace**다. trace 이름(`generate-timeline` / `update-user-memory`), tag(`timeline` / `user-memory`), metadata `feature`가 모두 다르며, LLM generation 이름도 실행 단계로 갈린다(`generate-timeline-draft`, `analyze-timeline-repair`, `update-user-memory-profile`). 이름이 `call-llm`으로 퇴화하면 두 작업의 지연·토큰이 화면에서 한 덩어리로 보여 어느 쪽이 느려졌는지 알 수 없다. 새 단계를 추가하면 `_trace_generation`의 이름 분기도 함께 늘린다. content policy는 명시 설정이 우선하며 미지정 시 local/dev는 `SANITIZED`, 그 밖은 `NONE`이다. `NONE`도 duration, token, count, errorCode 같은 diagnostics는 보존하고 사용자 본문은 byte/hash summary로 접는다. payload size를 제한하고 export 직전 OTel attribute를 다시 마스킹한다.
 
 `userMemory` 키의 값은 정책과 무관하게 `redact_value`가 비식별 요약(`schemaVersion`, 채워진 필드 수, `customAttributeCount`, byte/hash)으로 바꾼다(#65). `dailyTimelines` 키도 같은 이유로 개수 요약(`dailyTimelineCount`, `eventCount`, `memoCount`, byte/hash)으로 바꾼다(#64) — `memo`는 사용자가 직접 쓴 글이고 `title`/`subtitle`은 사용자가 읽는 문장이다. 두 요약 모두 필드 이름 목록에 의존하지 않아 App Server가 필드를 더해도 본문이 새지 않는다. 사용자 profile 문장은 마스킹 pattern에 걸릴 형태가 아니므로 key 이름으로 접는다. 이 치환이 log·Langfuse input/output·metadata의 공용 경로에 있어, 호출부가 snapshot이나 정규화 request를 통째로 dump해도 본문이 나가지 않는다. prompt 본문(generation input)에는 값이 들어가며 그것은 content policy가 통제한다.
 
