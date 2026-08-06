@@ -64,6 +64,8 @@ class OperationalEvent(StrEnum):
     SERVER_STOPPED = "server.stopped"
     #: 202 로 접수한 Timeline 백그라운드 작업의 종료. 작업당 정확히 한 건.
     TIMELINE_TASK_COMPLETED = "timeline.task.completed"
+    #: 202 로 접수한 User Memory 갱신 작업의 종료(#64). 작업당 정확히 한 건.
+    USER_MEMORY_TASK_COMPLETED = "usermemory.task.completed"
     #: 외부 연동(App Server) 논리 호출 하나의 종료.
     DEPENDENCY_REQUEST_COMPLETED = "dependency.request.completed"
     #: 그 호출의 재시도 한 번.
@@ -102,6 +104,31 @@ _ALLOWED_FIELDS: dict[OperationalEvent, frozenset[str]] = {
             "failureStage",
         }
     ),
+    OperationalEvent.USER_MEMORY_TASK_COMPLETED: frozenset(
+        {
+            "taskId",
+            "status",
+            "durationMs",
+            # 콜백이 없는 계약이라 이 한 번이 통보의 전부다. False 면 App Server 는
+            # 아무 연락도 못 받고 TTL 로 정리한다 — 가장 먼저 봐야 할 값이다.
+            "resultSent",
+            "errorCode",
+            "hasExistingMemory",
+            # 입력을 잘랐는지. 조용히 자르면 "다 보고 이 정도" 인지 "못 본 게 있어서
+            # 이 정도" 인지 구분할 수 없다.
+            "dailyTimelineCount",
+            "eventCount",
+            "memoCount",
+            "droppedDailyTimelineCount",
+            "droppedEventCount",
+            # 결과의 모양. 본문이 아니라 크기와 개수다.
+            "repairAttempts",
+            "schemaVersion",
+            "filledFieldCount",
+            "customAttributeCount",
+            "serializedChars",
+        }
+    ),
     OperationalEvent.DEPENDENCY_REQUEST_COMPLETED: frozenset(
         {
             "dependency",
@@ -135,6 +162,7 @@ _MESSAGES: dict[OperationalEvent, str] = {
     OperationalEvent.SERVER_STARTED: "서버 기동 완료",
     OperationalEvent.SERVER_STOPPED: "서버 종료",
     OperationalEvent.TIMELINE_TASK_COMPLETED: "Timeline 작업 완료",
+    OperationalEvent.USER_MEMORY_TASK_COMPLETED: "User Memory 갱신 작업 완료",
     OperationalEvent.DEPENDENCY_REQUEST_COMPLETED: "외부 연동 호출 완료",
     OperationalEvent.DEPENDENCY_REQUEST_RETRY: "외부 연동 호출 재시도",
 }

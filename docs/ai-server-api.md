@@ -81,11 +81,13 @@ Content-Type: application/json
 | Method | Path | 설명 |
 |---|---|---|
 | `POST` | `/v1/timeline` | 타임라인 생성 작업 접수 |
+| `POST` | `/v1/user-memory` | User Memory 갱신 작업 접수 |
 | `GET` | `/health` | AI 서버 상태 확인 |
 | `POST` | `/invocations` | AgentCore Runtime 호출 진입점. `/v1/timeline`과 동일하게 처리 |
 | `GET` | `/ping` | AgentCore Runtime 헬스체크 |
 
 `/invocations`와 `/ping`은 AgentCore Runtime이 컨테이너에 요구하는 고정 경로입니다.
+`/invocations`는 타임라인 전용이며 User Memory 갱신을 받지 않습니다.
 
 ## 4. 타임라인 생성 요청
 
@@ -179,19 +181,121 @@ AgentCore Runtime에 배포한 환경에서는 `POST /invocations`가 동일한 
 
 요청 접수 이후 발생한 오류는 이미 반환된 `202` 응답에 반영되지 않습니다. 최종 성공 또는 실패 여부는 완료 콜백으로 전달됩니다.
 
+## 4-2. User Memory 갱신 요청 (이슈 #64)
+
+### `POST /v1/user-memory`
+
+확정된 하루 타임라인으로 사용자 압축 프로필을 갱신하는 작업을 접수합니다. 실제 처리는
+백그라운드에서 진행됩니다.
+
+**완료 콜백이 없습니다.** 결과 저장 API 한 번이 결과 전달과 종료 통보를 겸하며
+성공·실패 모두 그 경로로 나갑니다(5.4 참고).
+
+```text
+앱 → App Server   일기 저장 (DailyRecord DRAFT → SAVED)
+App Server → AI   POST /v1/user-memory                            → 202 Accepted
+AI → App Server   POST /user-memory/updates/{taskId}/result       (성공·실패 공통)
+```
+
+### Request Body
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| `taskId` | `string` | O | 작업 식별자입니다. 형식은 검증하지 않습니다. |
+| `taskToken` | `string` | O | 이 작업의 토큰입니다. **갱신되지 않습니다** — 결과 저장이 유일한 호출이라 갱신 기회가 없습니다. |
+| `userMemory` | `object \| null` | O | 기존 User Memory입니다. 최초 생성이면 `null`입니다. |
+| `dailyTimelines` | `object[]` | O | 확정된 하루 타임라인입니다. 비어 있어도 됩니다. |
+| `dailyTimelines[].date` | `string` | O | 대상 날짜(`YYYY-MM-DD`)입니다. |
+| `dailyTimelines[].recordTimeZone` | `string` | | 시간대입니다. 기본값은 `Asia/Seoul`입니다. |
+| `dailyTimelines[].emotionType` | `string \| null` | | 현재 항상 `null`입니다. 받아만 두고 사용하지 않습니다. |
+| `dailyTimelines[].events[].eventType` | `string` | O | **자유 문자열**입니다. enum으로 제한하지 않습니다. |
+| `dailyTimelines[].events[].title` | `string` | | AI가 쓴 제목입니다. |
+| `dailyTimelines[].events[].subtitle` | `string \| null` | | AI가 쓴 부제입니다. |
+| `dailyTimelines[].events[].question` | `string \| null` | | AI가 붙인 회고 유도 질문입니다. |
+| `dailyTimelines[].events[].memo` | `string \| null` | | **사용자가 직접 쓴 메모**입니다. 500자로 자릅니다. |
+| `dailyTimelines[].events[].startAt` | `datetime` | O | 시작 시각입니다. |
+| `dailyTimelines[].events[].endAt` | `datetime \| null` | | 종료 시각입니다. 단일 시점 event는 `null`입니다. |
+
+### Request Example
+
+```json
+{
+  "taskId": "0198f2a1-7c3d-7000-8b2e-1f4a9c05d6e7",
+  "taskToken": "task-token-001",
+  "userMemory": null,
+  "dailyTimelines": [
+    {
+      "date": "2026-08-04",
+      "recordTimeZone": "Asia/Seoul",
+      "emotionType": null,
+      "events": [
+        {
+          "eventType": "MEAL",
+          "title": "회사 근처에서 점심을 먹었어요",
+          "subtitle": null,
+          "question": "그 자리에서 어떤 이야기가 기억에 남았나요?",
+          "memo": "오랜만에 팀 사람들이랑 이야기를 많이 했다.",
+          "startAt": "2026-08-04T12:10:00+09:00",
+          "endAt": "2026-08-04T13:00:00+09:00"
+        }
+      ]
+    }
+  ]
+}
+```
+
+전체 예시는 [docs/samples/user-memory-update.sample.json](samples/user-memory-update.sample.json)에 있습니다.
+
+### Success Response
+
+#### `202 Accepted`
+
+```json
+{
+  "taskId": "0198f2a1-7c3d-7000-8b2e-1f4a9c05d6e7",
+  "status": "PROCESSING"
+}
+```
+
+### 크기로 거절하지 않습니다
+
+접수는 **스키마만 맞으면 항상 202**입니다. 이벤트가 많은 하루도 거절하지 않습니다.
+
+AI 서버가 4xx를 내면 App Server는 이를 "미접수 확정"으로 보고 작업을 폐기한 뒤 앱에
+502를 돌려줍니다. 즉 사용자에게는 *일기 저장 실패*로 보입니다. 정상적인 하루가 그렇게
+보이면 안 되므로, 입력이 크면 거절 대신 **프롬프트 조립 단계에서 자릅니다.**
+
+| 대상 | 상한 | 초과 시 |
+|---|---|---|
+| `dailyTimelines` | 5일 | 오래된 날부터 제외 |
+| `events` | **하루당** 20개 | **메모 있는 event를 남기고** 오래된 것부터 제외 |
+| `memo` | 500자 | 잘라서 사용 |
+| `title`, `subtitle` | 255자 | 잘라서 사용 |
+
+무엇을 얼마나 잘랐는지는 운영 이벤트(`usermemory.task.completed`)의
+`droppedDailyTimelineCount`/`droppedEventCount`에 남습니다.
+
+422는 계약 위반일 때만 나갑니다 — 필수 필드 누락, `startAt` 파싱 실패 등입니다.
+
+### 처리 시간
+
+전체 처리에 `USER_MEMORY_TIMEOUT_SEC`(기본 120초) 예산을 둡니다. 초과해도 `FAILED`
+결과는 보냅니다.
+
 ## 5. AI 서버가 호출하는 App Server API
 
-AI 서버는 설정된 `APP_SERVER_API_URL`에 task별 경로를 붙여 세 개의 API를 호출합니다.
+AI 서버는 설정된 `APP_SERVER_API_URL`에 task별 경로를 붙여 네 개의 API를 호출합니다.
 
 ```env
 APP_SERVER_API_URL=https://api.example.com/s/api/v1
 ```
 
-| 순서 | Method | 경로 |
-|---|---|---|
-| 1 | `GET` | `{APP_SERVER_API_URL}/timeline/drafts/{taskId}/input` |
-| 2 | `POST` | `{APP_SERVER_API_URL}/timeline/drafts/{taskId}/result` |
-| 3 | `POST` | `{APP_SERVER_API_URL}/timeline/drafts/{taskId}/callback` |
+| 작업 | 순서 | Method | 경로 |
+|---|---|---|---|
+| 타임라인 | 1 | `GET` | `{APP_SERVER_API_URL}/timeline/drafts/{taskId}/input` |
+| 타임라인 | 2 | `POST` | `{APP_SERVER_API_URL}/timeline/drafts/{taskId}/result` |
+| 타임라인 | 3 | `POST` | `{APP_SERVER_API_URL}/timeline/drafts/{taskId}/callback` |
+| User Memory | 1 | `POST` | `{APP_SERVER_API_URL}/user-memory/updates/{taskId}/result` |
 
 `APP_SERVER_API_URL`은 **필수 설정**입니다. AI 서버의 유일한 데이터 경로이므로 값이
 없으면 서버가 기동하지 않습니다. 버전 경로까지 넣으며 `/s/api/v1`과 `/s/v1` 두 형태를
@@ -451,13 +555,91 @@ Task-Token: {taskToken}
 - 콜백 전송 실패는 이미 저장된 결과를 되돌리지 않습니다.
 - 콜백 timeout/5xx는 같은 토큰과 같은 body로 재시도합니다.
 
+### 5.4 User Memory 결과 저장 (이슈 #64)
+
+```http
+POST {APP_SERVER_API_URL}/user-memory/updates/{taskId}/result
+Task-Token: {taskToken}
+```
+
+**이 호출 하나가 결과 전달과 종료 통보를 겸합니다.** 성공도 실패도 같은 경로로
+나가며, 완료 콜백은 없습니다.
+
+#### 성공
+
+```json
+{
+  "status": "SUCCESS",
+  "userMemory": {
+    "schemaVersion": "1.0",
+    "updatedAt": "2026-08-06T09:00:00+09:00",
+    "basicProfile": "경기도에 사는 20대 후반 개발자입니다.",
+    "lifeContext": "",
+    "relationships": "",
+    "personality": "",
+    "values": "",
+    "preferences": "",
+    "routines": "평일 아침에 출근하고 저녁에는 회고를 적습니다.",
+    "currentFocus": "",
+    "emotionalPatterns": "",
+    "memoryStyle": "",
+    "customAttributes": {}
+  }
+}
+```
+
+#### 실패
+
+```json
+{
+  "status": "FAILED",
+  "errorCode": 1210,
+  "error": "사용자 메모리 생성에 실패했습니다."
+}
+```
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `status` | `string` | `SUCCESS` 또는 `FAILED`입니다. |
+| `userMemory` | `object \| null` | 전체 갱신본입니다. 실패는 `null`입니다 — 부분 결과를 저장하지 않습니다. |
+| `errorCode` | `int \| null` | 실패 원인 정수입니다. 성공은 `null`입니다. |
+| `error` | `string \| null` | 카탈로그의 안전 메시지입니다. 성공은 `null`입니다. |
+
+- `schemaVersion`과 `updatedAt`은 **AI 서버가 확정**합니다. LLM이 만든 값을 쓰지 않습니다.
+- 응답은 상태 코드만 봅니다. `2xx`가 성공이고, 재시도·중단 규칙은 타임라인 경로와 같습니다.
+- `taskToken`은 갱신되지 않습니다. 접수 요청 body의 값을 끝까지 사용합니다.
+
+##### `FAILED`의 의미 — `SAVED` 전이와 분리됩니다
+
+`FAILED`는 **"User Memory가 바뀌지 않았다"**는 뜻이지 "하루 기록 저장이 실패했다"가
+아닙니다. `DailyRecord`의 `DRAFT → SAVED` 전이는 앱 → App Server 구간에서 이미 끝나
+있습니다. 둘을 한 트랜잭션으로 묶으면 AI 실패가 사용자의 일기 저장을 되돌리게 되고,
+"실패해도 사용자 피해가 없다"는 전제가 사라집니다.
+
+실패 원인별 코드는 다음과 같습니다.
+
+| 실패 원인 | `errorCode` |
+|---|---|
+| AI 응답 스키마 검증 실패 | `1202` |
+| LLM provider 호출 실패 | `1203` |
+| 갱신본 생성 실패(제한 시간 초과 포함) | `1210` |
+| 크기·민감정보 검증을 재요청 뒤에도 통과 못 함 | `1304` |
+
+기존 `userMemory`가 v1.0 계약을 어긴 경우는 실패가 아닙니다. 코드 `1106`으로 기록하고
+**새로 만들어** 대체합니다 — 여기서 멈추면 그 사용자는 이후 어떤 날도 갱신되지
+않습니다.
+
+이 호출 자체가 재시도까지 실패하면(`1305`) App Server는 아무 연락도 받지 못하고 작업이
+TTL로 정리됩니다. 콜백이 있어도 401/404/409에서는 같았으므로 회귀는 아닙니다.
+
 ## 6. 데이터 접근 경계
 
 | 대상 | 소유 | AI 서버 접근 |
 |---|---|---|
 | 수집 원본 | App Server | 입력 조회 API (읽기) |
 | 타임라인 결과 | App Server | 결과 저장 API (쓰기) |
-| 작업 상태 | App Server | 콜백으로 통보만 |
+| User Memory | App Server | 입력 조회 API (읽기), 갱신 결과 저장 API (쓰기) |
+| 작업 상태 | App Server | 콜백(타임라인) 또는 결과 저장(User Memory)으로 통보만 |
 
 AI 서버는 데이터베이스에 직접 접근하지 않으며, 운영에 DB 접속 정보와 네트워크
 권한이 필요하지 않습니다.
@@ -509,9 +691,11 @@ AI 서버는 요청을 `202`로 접수한 뒤 백그라운드에서 처리를 �
 
 | 값 | 사용 위치 | 설명 |
 |---|---|---|
-| `PROCESSING` | 타임라인 생성 접수 응답 | 요청이 접수되어 백그라운드 처리를 시작함 |
+| `PROCESSING` | 접수 응답(타임라인·User Memory) | 요청이 접수되어 백그라운드 처리를 시작함 |
 | `SUCCESS` | 완료 콜백 | 타임라인 생성과 결과 저장이 완료됨 |
 | `FAILED` | 완료 콜백 | 입력 조회, AI 처리, 검증 또는 결과 저장에 실패함 |
+| `SUCCESS` | User Memory 결과 저장 | 갱신본을 만들었고 함께 보냄 |
+| `FAILED` | User Memory 결과 저장 | User Memory가 바뀌지 않음(하루 기록 저장과 무관) |
 
 ## 9. API 문서 확인
 

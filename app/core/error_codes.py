@@ -79,8 +79,10 @@ class ErrorCode(IntEnum):
     TIMEZONE_RESOLUTION_FAILED = 1104
     #: 입력 조회 API 호출이 실패했다(5xx/timeout 을 재시도까지 소진).
     SOURCE_FETCH_FAILED = 1105
-    #: 입력 조회 응답의 ``userMemory`` 가 v1.0 계약을 어겼다. User Memory 는 보조
-    #: context 라 이 실패로 타임라인을 멈추지 않는다 — 값 없이 진행한다(흡수 경로).
+    #: 받은 ``userMemory`` 가 v1.0 계약을 어겼다. 타임라인 입력 조회(#65)와 갱신
+    #: 접수(#64)가 같은 코드를 쓴다 — 같은 계약을 어긴 같은 실패다. 두 경로 모두
+    #: 값 없이 진행한다(흡수 경로). 갱신 쪽에서는 읽지 못한 프로필을 새로 만들어
+    #: 대체한다. 여기서 멈추면 그 사용자는 이후 어떤 날도 갱신되지 않는다.
     USER_MEMORY_CONTRACT_VIOLATION = 1106
 
     # --- 1200~1299 AI/LLM ------------------------------------------------
@@ -102,6 +104,10 @@ class ErrorCode(IntEnum):
     DRAFT_EDIT_FAILED = 1208
     #: 회고 유도 질문 생성이 실패했다. 질문 없이 타임라인을 저장한다(흡수 경로).
     QUESTION_GENERATION_FAILED = 1209
+    #: User Memory 갱신 Agent 가 유효한 문서를 만들지 못했다(#64). 제한 시간 초과도
+    #: 여기로 모은다 — App Server 입장에서는 둘 다 "AI 가 만들지 못했다" 이고,
+    #: timeout 인지 여부는 운영 로그의 ``errorType`` 이 답한다.
+    USER_MEMORY_GENERATION_FAILED = 1210
 
     # --- 1300~1399 결과 저장 ----------------------------------------------
     #: 저장 전 자체검증에서 계약 위반이 나왔다(TimelineValidationError).
@@ -115,6 +121,13 @@ class ErrorCode(IntEnum):
 
     #: 결과 저장 API 호출이 실패했다(5xx/timeout 을 재시도까지 소진).
     TIMELINE_RESULT_SUBMIT_FAILED = 1303
+
+    #: User Memory 갱신본이 재요청 뒤에도 크기·민감정보 검증을 통과하지 못했다(#64).
+    #: 규칙을 어긴 프로필을 저장하지 않고 기존 값을 그대로 둔다.
+    USER_MEMORY_LIMIT_EXCEEDED = 1304
+    #: User Memory 결과 저장 호출이 재시도까지 실패했다(#64). 콜백이 없는 계약이라
+    #: 이 실패는 **App Server 에 알릴 방법이 없다** — 그쪽은 TTL 로 정리한다.
+    USER_MEMORY_SUBMIT_FAILED = 1305
 
     # --- 1400~1499 외부 연동 ---------------------------------------------
     #: App Server 완료 콜백 전송이 실패했다.
@@ -172,9 +185,12 @@ _MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.REPAIR_TOOL_FAILED: "타임라인 보정 작업에 실패했습니다.",
     ErrorCode.DRAFT_EDIT_FAILED: "타임라인 수정에 실패했습니다.",
     ErrorCode.QUESTION_GENERATION_FAILED: "기록 질문 생성에 실패했습니다.",
+    ErrorCode.USER_MEMORY_GENERATION_FAILED: "사용자 메모리 생성에 실패했습니다.",
     ErrorCode.TIMELINE_STORAGE_VALIDATION_FAILED: "타임라인 저장 검증에 실패했습니다.",
     ErrorCode.DATABASE_ERROR: "데이터 저장 중 오류가 발생했습니다.",
     ErrorCode.TIMELINE_RESULT_SUBMIT_FAILED: "타임라인 결과 저장에 실패했습니다.",
+    ErrorCode.USER_MEMORY_LIMIT_EXCEEDED: "사용자 메모리가 크기 제한을 지키지 못했습니다.",
+    ErrorCode.USER_MEMORY_SUBMIT_FAILED: "사용자 메모리 저장에 실패했습니다.",
     ErrorCode.CALLBACK_SEND_FAILED: "결과 통보에 실패했습니다.",
     ErrorCode.LEGACY_OBSERVATION_EXPORT_FAILED: "관측 데이터 전송에 실패했습니다.",
     ErrorCode.LEGACY_OBSERVATION_EMIT_FAILED: "관측 데이터 기록에 실패했습니다.",

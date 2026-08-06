@@ -80,6 +80,7 @@ AI 서버가 밖으로 내보내는 실패는 **정수 하나로 식별**합니�
 | 1207 | `REPAIR_TOOL_FAILED` | Repair 도구 실행이 실패했습니다. | | ✓ |
 | 1208 | `DRAFT_EDIT_FAILED` | draft 편집을 적용할 수 없습니다. | | ✓ |
 | 1209 | `QUESTION_GENERATION_FAILED` | 회고 유도 질문 생성이 실패해 질문 없이 진행했습니다. | | ✓ |
+| 1210 | `USER_MEMORY_GENERATION_FAILED` | User Memory 갱신 Agent가 유효한 문서를 만들지 못했습니다(제한 시간 초과 포함). | | |
 
 1209는 질문 단계 하나의 흡수 코드입니다. 질문은 타임라인에 얹는 부가 가치이므로,
 실패해도 event 본문은 그대로 저장되고 task는 SUCCESS로 끝납니다. 결과의 `question`이
@@ -92,6 +93,16 @@ AI 서버가 밖으로 내보내는 실패는 **정수 하나로 식별**합니�
 | 1301 | `TIMELINE_STORAGE_VALIDATION_FAILED` | 저장 전 자체검증에서 계약 위반이 나왔습니다. | | |
 | 1302 | *(예약)* | AI 서버가 staging DB에 직접 붙던 시절의 `DATABASE_ERROR`입니다. **사용하지 않습니다.** | | |
 | 1303 | `TIMELINE_RESULT_SUBMIT_FAILED` | 결과 저장 API 호출이 재시도까지 실패했습니다(5xx/timeout). | | |
+| 1304 | `USER_MEMORY_LIMIT_EXCEEDED` | User Memory 갱신본이 재요청 뒤에도 크기·민감정보 검증을 통과하지 못했습니다. | | |
+| 1305 | `USER_MEMORY_SUBMIT_FAILED` | User Memory 결과 저장 호출이 재시도까지 실패했습니다(5xx/timeout). | | |
+
+1210·1304는 **User Memory만** 실패한 것입니다. 하루 기록 저장(`DailyRecord`의
+`DRAFT → SAVED` 전이)은 앱 → App Server 구간에서 이미 끝나 있으므로, 이 실패가
+사용자의 일기를 되돌리지 않습니다. 갱신은 다음 기록에서 다시 시도됩니다.
+
+1305는 결과를 만들고도 **통보하지 못한** 경우입니다. User Memory 갱신에는 완료
+콜백이 없어 결과 저장 호출 하나가 통보의 전부이므로, 이 코드는 App Server로 나가지
+못하고 AI 서버 로그에만 남습니다. App Server 쪽에서는 작업이 TTL로 정리됩니다.
 
 ### 1400~1499 외부 연동
 

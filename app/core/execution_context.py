@@ -37,6 +37,9 @@ class ExecutionStage(StrEnum):
     TIMELINE_AGENT = "TIMELINE_AGENT"
     REPAIR_AGENT = "REPAIR_AGENT"
     QUESTION_AGENT = "QUESTION_AGENT"
+    #: User Memory 갱신(#64). 타임라인과 별개의 작업이라 같은 단계 목록을 쓰되
+    #: 겹치는 값(MAIN_AGENT 등)을 재사용하지 않는다.
+    USER_MEMORY_AGENT = "USER_MEMORY_AGENT"
     LLM = "LLM"
     STORAGE = "STORAGE"
     CALLBACK = "CALLBACK"

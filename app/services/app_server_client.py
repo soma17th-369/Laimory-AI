@@ -1,24 +1,29 @@
-"""App Server 서버간 API 클라이언트 (이슈 #40).
+"""App Server 서버간 API 클라이언트 (이슈 #40, #64).
 
-AI 서버가 밖으로 나가는 호출은 전부 여기를 지난다. 세 개다.
+AI 서버가 밖으로 나가는 호출은 전부 여기를 지난다. 네 개다.
 
-===============  ==============================================  ================
-용도             경로                                            body
-===============  ==============================================  ================
-입력 조회        ``GET  /timeline/drafts/{taskId}/input``         응답에 sourceItems
-결과 저장        ``POST /timeline/drafts/{taskId}/result``        요청에 events
-완료 통보        ``POST /timeline/drafts/{taskId}/callback``      요청에 status
-===============  ==============================================  ================
+=================  ==================================================  ================
+용도               경로                                                body
+=================  ==================================================  ================
+입력 조회          ``GET  /timeline/drafts/{taskId}/input``             응답에 sourceItems
+결과 저장          ``POST /timeline/drafts/{taskId}/result``            요청에 events
+완료 통보          ``POST /timeline/drafts/{taskId}/callback``          요청에 status
+메모리 저장        ``POST /user-memory/updates/{taskId}/result``        요청에 status+userMemory
+=================  ==================================================  ================
 
-세 호출이 헤더·재시도·상태코드 해석을 공유하므로 한 모듈이 소유한다. 경로마다
+네 호출이 헤더·재시도·상태코드 해석을 공유하므로 한 모듈이 소유한다. 경로마다
 따로 짜면 언젠가 한쪽만 고쳐지고, 그 사실을 알아채기 어렵다.
+
+앞의 셋은 타임라인 한 건의 순서 계약(저장 200 → 콜백)을 이룬다. 마지막 하나는
+User Memory 갱신(#64)의 **유일한 바깥 호출**이라 순서 계약이 없다 — 성공도 실패도
+그 한 번으로 통보한다.
 
 ## 토큰
 
-작업 하나에 토큰 하나(:class:`TaskToken`)다. 최초 값은 ``POST /v1/timeline`` 접수
-요청 body 로 들어오고, 그 뒤 **응답 body 의 ``taskToken`` 으로 계속 갱신된다**.
-인증은 언제나 요청 헤더 ``Task-Token`` 이다 — 토큰을 URL 이나 요청 body 에 넣지
-않는다.
+작업 하나에 토큰 하나(:class:`TaskToken`)다. 최초 값은 접수 요청 body 로 들어오고,
+타임라인 경로에서는 그 뒤 **응답 body 의 ``taskToken`` 으로 계속 갱신된다**. User
+Memory 갱신은 호출이 하나뿐이라 갱신될 기회 자체가 없다. 인증은 언제나 요청 헤더
+``Task-Token`` 이다 — 토큰을 URL 이나 요청 body 에 넣지 않는다.
 
 토큰 값은 **어디에도 기록하지 않는다**. 로그·관측 이벤트·Langfuse trace 어디에도
 남기지 않으며, :class:`TaskToken` 의 ``repr`` 자체가 마스킹돼 있어 객체를 통째로
@@ -72,6 +77,7 @@ from app.core.operational_logging import (
 from app.schemas import CollectedSnapshot, TimelineCallbackPayload, UserMemory
 from app.schemas.timeline_input import TimelineInputResponse
 from app.schemas.timeline_result import TimelineResultRequest
+from app.schemas.user_memory_update import UserMemoryResultRequest
 from app.services.source_contract import SourceBatchError, ensure_source_contract
 
 logger = get_logger(__name__)
@@ -85,6 +91,7 @@ DEPENDENCY_NAME = "app-server"
 INPUT_PATH = "/timeline/drafts/{taskId}/input"
 RESULT_PATH = "/timeline/drafts/{taskId}/result"
 CALLBACK_PATH = "/timeline/drafts/{taskId}/callback"
+USER_MEMORY_RESULT_PATH = "/user-memory/updates/{taskId}/result"
 
 #: 재시도해도 결과가 달라지지 않고, 콜백조차 같은 이유로 거절되는 상태.
 _ABORT_STATUSES: dict[int, ErrorCode] = {
@@ -200,6 +207,19 @@ class AppServerClient(ABC):
         payload: TimelineCallbackPayload,
     ) -> bool:
         """완료 상태를 통보한다. 실패해도 예외 대신 False 를 돌려준다."""
+
+    @abstractmethod
+    async def submit_user_memory(
+        self,
+        task_id: str,
+        token: TaskToken,
+        request: UserMemoryResultRequest,
+    ) -> None:
+        """User Memory 갱신 결과를 저장한다(#64).
+
+        **성공과 실패가 같은 경로로 나간다.** 콜백이 없으므로 이 호출이 곧 종료
+        통보다. 실패는 :class:`AppServerError` 로 던진다.
+        """
 
 
 class HttpAppServerClient(AppServerClient):
@@ -336,6 +356,23 @@ class HttpAppServerClient(AppServerClient):
 
         logger.debug("콜백 전송 완료: operation=callback, status=%s", payload.status.value)
         return True
+
+    async def submit_user_memory(
+        self,
+        task_id: str,
+        token: TaskToken,
+        request: UserMemoryResultRequest,
+    ) -> None:
+        await self._request(
+            "POST",
+            self._url(USER_MEMORY_RESULT_PATH, task_id),
+            task_id=task_id,
+            token=token,
+            operation="user-memory-result",
+            not_found_code=ErrorCode.APP_SERVER_TASK_NOT_FOUND,
+            failure_code=ErrorCode.USER_MEMORY_SUBMIT_FAILED,
+            json_body=request.model_dump(by_alias=True, mode="json"),
+        )
 
     # --- 내부 ----------------------------------------------------------
 

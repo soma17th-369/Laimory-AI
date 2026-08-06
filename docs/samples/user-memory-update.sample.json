@@ -1,0 +1,57 @@
+{
+  "taskId": "0198f2a1-7c3d-7000-8b2e-1f4a9c05d6e7",
+  "taskToken": "REPLACE_WITH_TASK_TOKEN",
+  "userMemory": {
+    "schemaVersion": "1.0",
+    "updatedAt": "2026-08-05T21:00:00+09:00",
+    "basicProfile": "경기도에 사는 20대 후반 개발자입니다.",
+    "lifeContext": "이직 후 새 팀에 적응하는 중입니다.",
+    "relationships": "함께 일하는 동료들과 자주 이야기를 나눕니다.",
+    "personality": "",
+    "values": "",
+    "preferences": "조용한 곳에서 혼자 정리하는 시간을 좋아합니다.",
+    "routines": "평일 아침에 출근하고 저녁에는 회고를 적습니다.",
+    "currentFocus": "새 프로젝트의 초기 설계를 맡고 있습니다.",
+    "emotionalPatterns": "",
+    "memoryStyle": "",
+    "customAttributes": {
+      "자주 가는 카페": "회사 근처 1층 카페"
+    }
+  },
+  "dailyTimelines": [
+    {
+      "date": "2026-08-04",
+      "recordTimeZone": "Asia/Seoul",
+      "emotionType": null,
+      "events": [
+        {
+          "eventType": "WAKE_UP",
+          "title": "아침에 일어났어요",
+          "subtitle": null,
+          "question": "눈을 떴을 때 몸 상태는 어땠나요?",
+          "memo": null,
+          "startAt": "2026-08-04T07:20:00+09:00",
+          "endAt": null
+        },
+        {
+          "eventType": "MEAL",
+          "title": "회사 근처에서 점심을 먹었어요",
+          "subtitle": "동료들과 함께한 자리였어요",
+          "question": "그 자리에서 어떤 이야기가 기억에 남았나요?",
+          "memo": "오랜만에 팀 사람들이랑 이야기를 많이 했다. 생각보다 편했다.",
+          "startAt": "2026-08-04T12:10:00+09:00",
+          "endAt": "2026-08-04T13:00:00+09:00"
+        },
+        {
+          "eventType": "새로운타입",
+          "title": "저녁에 산책을 했어요",
+          "subtitle": null,
+          "question": "걷는 동안 어떤 생각이 스쳤나요?",
+          "memo": null,
+          "startAt": "2026-08-04T19:30:00+09:00",
+          "endAt": "2026-08-04T20:10:00+09:00"
+        }
+      ]
+    }
+  ]
+}

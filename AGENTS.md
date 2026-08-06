@@ -110,7 +110,10 @@ app/
 │   ├── error_handlers.py      # 전역 예외 처리기 (#42). 검증오류/HTTPException/AppError/미처리 4종을 ErrorResponse 로 통일 + OpenAPI ERROR_RESPONSES
 │   └── v1/
 │       ├── router.py          # v1 라우터 취합
-│       └── timeline.py        # POST /v1/timeline (taskId+taskToken+dailyRecordId+window 접수 → 202). 상태 조회 없음(상태는 App Server 소유)
+│       ├── timeline.py        # POST /v1/timeline (taskId+taskToken+dailyRecordId+window 접수 → 202). 상태 조회 없음(상태는 App Server 소유)
+│       └── user_memory.py     # POST /v1/user-memory (#64). 확정된 하루 타임라인 접수 → 202.
+│                              #   **크기로 거절하지 않는다** — 4xx 는 App Server 가 "미접수 확정"
+│                              #   으로 읽어 앱에 502 를 주므로 정상적인 하루가 저장 실패로 보인다
 │
 ├── schemas/                   # Pydantic 계약(contract)
 │   ├── error.py               # 공통 오류 응답 ErrorResponse(errorCode:int, error:str)
@@ -123,6 +126,10 @@ app/
 │   ├── user_memory.py         # 사용자 압축 프로필 v1.0 (#65). 고정 자연어 10필드(각 200자) +
 │   │                          #   customAttributes(5개·150자). extra="forbid". prompt_payload() 가
 │   │                          #   projection 규칙(빈 필드·메타데이터 제외, 선언 순서)을 소유한다
+│   ├── user_memory_update.py  # 갱신 접수·저장 계약 (#64). dailyTimelines[].events[] 를 **느슨하게** 받는다
+│   │                          #   (eventType 자유 문자열, endAt·subtitle·question·memo nullable,
+│   │                          #   길이 상한 없음). UserMemoryResultRequest 는 status 에 따라 필드 짝
+│   │                          #   (SUCCESS→userMemory / FAILED→errorCode)을 강제한다
 │   ├── timeline_result.py     # App Server 결과 저장 요청 계약 (#40, #66). eventType/title/subtitle/
 │   │                          #   startAt/endAt/sourceRawIds/question. question 은 event 안에 중첩한다 —
 │   │                          #   계약에 clientEventId 가 없어 최상위 목록은 event 를 가리킬 수 없다
@@ -143,10 +150,17 @@ app/
 │   │                          #   빠진 event 는 1회 재요청한다. 길이·형식 검사는 코드가 한다.
 │   │                          #   User Memory 를 받는다(#65) — 무엇을 물을지가 아니라 어떻게
 │   │                          #   물을지(문체·결)를 고르는 자료다
+│   ├── user_memory/user_memory_agent.py  # User Memory 전체 갱신본 생성 (#64). append 가 아니라
+│   │                          #   rewrite 다. **title·subtitle·question 은 우리 AI 가 쓴 문장이라
+│   │                          #   성향 근거로 쓰지 않는다** — 그러면 모델이 자기 출력을 읽고 사용자를
+│   │                          #   만들어 내는 되먹임이 된다. 성향 계열 5필드의 근거는 memo 뿐이고,
+│   │                          #   memo 없는 날은 그 필드가 그대로인 것이 정상이다.
+│   │                          #   타임라인 파이프라인 밖이라 base.Agent 를 상속하지 않는다
 │   └── main/main_agent.py     # events → timeline → repair → question 조율(LangGraph)
 │
 └── services/
-    ├── app_server_client.py   # App Server 서버간 API 클라이언트 (#40). 입력 조회/결과 저장/콜백 3종을 소유.
+    ├── app_server_client.py   # App Server 서버간 API 클라이언트 (#40, #64). 입력 조회/결과 저장/콜백/
+    │                          #   User Memory 결과 저장 4종을 소유.
     │                          #   TaskToken 홀더(응답 body 로 갱신, Task-Token 헤더로만 전송, 로그 금지),
     │                          #   재시도(timeout·5xx)와 중단(401/404/409) 정책의 유일한 자리
     ├── source_contract.py     # 입력 조회 응답의 묶음 계약 검증 (taskId 일치/0건/rawId 중복) + SourceBatchError
@@ -171,8 +185,26 @@ app/
     │                           #   ·MEAL 은 제외(지속 구간이 근거에 직접 있거나 meal_guard 담당)
     ├── place_resolver.py       # placeLabel을 근거 place로 확정, 근거 없는 address 제거
     ├── place_text.py           # 장소 문자열 정규화·비교 (calendar_location/place_resolver/stay_merge 공용)
-    └── timeline_runner.py     # 백그라운드(무상태): 입력 조회→정규화→main agent→결과 저장→콜백. 최종 상태 반환
+    ├── timeline_runner.py     # 백그라운드(무상태): 입력 조회→정규화→main agent→결과 저장→콜백. 최종 상태 반환
+    ├── user_memory_limits.py  # 갱신 크기 정책 (#64). 입력은 **거절하지 않고 자르고**(최근 5일·
+    │                          #   하루당 event 20개, memo 있는 event 우선 보존), 출력은 **자르지 않고
+    │                          #   지적한다**(전체 1,200자·민감정보). 지적 문장에 값을 인용하지 않는다
+    ├── user_memory_repair.py  # 갱신본 확정 (#64). 위반을 붙여 재요청(기본 2회), 소진 시 문서를
+    │                          #   만들지 않는다(1304). schemaVersion·updatedAt 은 서버가 박는다
+    └── user_memory_runner.py  # 백그라운드(무상태): 기존 프로필 해석→digest→Agent→확정→**결과 저장
+                               #   1회**. 모든 실패 경로가 그 한 번으로 수렴해야 한다
 
+# User Memory 갱신 흐름(#64): taskId+taskToken+userMemory+dailyTimelines 접수 → 202 즉시응답 →
+#   (백그라운드) 기존 프로필 해석(실패는 1106 으로 흡수하고 새로 만든다) → digest(자르기)
+#   → 갱신 Agent → 크기·민감정보 확정 → **결과 저장 1회**
+#   **콜백이 없다.** 결과 저장 한 번이 결과 전달과 종료 통보를 겸하며 성공·실패가 같은
+#   경로로 나간다. 순서 계약도 토큰 갱신도 없다(호출이 하나라 그럴 기회가 없다).
+#   어떤 실패 경로에서도 이 호출을 빠뜨리면 App Server 작업이 TTL 까지 매달린다.
+#   **`FAILED` 는 "User Memory 가 안 바뀌었다"는 뜻이지 "하루 기록 저장이 실패했다"가
+#   아니다.** DailyRecord 의 DRAFT→SAVED 전이는 앱→App Server 구간에서 이미 끝나 있고,
+#   둘을 묶으면 AI 실패가 사용자의 일기 저장을 되돌린다.
+#   `user_memory_timeout_sec`(기본 120초)로 감싼다 — llm.py 에 자체 timeout 이 없어
+#   상한이 없으면 한 작업이 10분 매달리고 그동안 /ping 이 HealthyBusy 라 배포가 막힌다.
 # 처리 흐름: taskId+taskToken+dailyRecordId+window 접수 → 202 즉시응답 →
 #   (백그라운드) 입력 조회 API → 요청 window 를 정본으로 덮어쓰기 → normalize → main agent
 #   → 저장 전 자체검증 → 결과 저장 API(200 확인) → 콜백(SUCCESS/FAILED 통보만)
@@ -230,10 +262,10 @@ app/
 #   이 경계는 프롬프트가 지킨다. 결정론 코드는 자연어 필드 내용이나 customAttributes 키에
 #   구조적으로 의존하지 않는다(notification_guard 는 통째 문자열 검색이라 키에 무관하다).
 #   계약 위반은 흡수한다(1106) — 보조 context 하나 때문에 하루치 수집 원본을 버리지 않는다.
-#   본문은 운영 로그·관측 어디에도 남기지 않는다. redact_value 가 `userMemory` 키를
-#   비식별 요약(schemaVersion·채워진 필드 수·크기)으로 바꾸므로 호출부가 스냅샷이나 요청을
-#   통째로 덤프해도 본문이 새지 않는다. Langfuse generation input(프롬프트 본문)에는 값이
-#   들어가지만 운영은 콘텐츠 정책이 NONE 이다.
+#   본문은 운영 로그·관측 어디에도 남기지 않는다. redact_value 가 `userMemory` 와
+#   `dailyTimelines` 키를 비식별 요약(schemaVersion·채워진 필드 수·크기 / 타임라인 수·event 수·memo 수)
+#   으로 바꾸므로 호출부가 스냅샷이나 요청을 통째로 덤프해도 본문이 새지 않는다.
+#   Langfuse generation input(프롬프트 본문)에는 값이 들어가지만 운영은 콘텐츠 정책이 NONE 이다.
 # 프롬프트 동결본: 활성 프롬프트를 크게 바꿀 때 같은 디렉터리에 `<활성파일명>_v<버전>.md`
 #   로 직전 버전을 복사해 둔다(예: `timeline_v2.0.0.md`). load_prompt 는 정확한 파일명만
 #   읽으므로 동결본은 실행에 영향이 없다. **활성 파일은 `timeline.md`·`prompt.md`·

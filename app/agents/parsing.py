@@ -59,7 +59,8 @@ def user_memory_to_text(user_memory: UserMemory | None) -> str:
 
     **Timeline Agent 와 Question Agent 가 이 함수를 쓴다.** Agent 마다 필드를 골라
     쓰거나 다른 형태로 바꾸지 않는다 — 같은 메모리를 보고 서로 다른 문자열을 읽으면
-    어느 Agent 가 무엇을 근거로 판단했는지 재현할 수 없다.
+    어느 Agent 가 무엇을 근거로 판단했는지 재현할 수 없다. 갱신 쪽(#64)의 User Memory
+    Agent 도 "기존 프로필" 을 같은 projection 으로 읽는다.
 
     Event Agent 에는 주입하지 않는다. 자기 source 에 대한 사실 보고가 임무이고,
     다섯이 같은 프로필을 읽으면 Timeline 이 그 합의를 독립된 근거로 착각한다.

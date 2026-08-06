@@ -143,6 +143,14 @@ class Settings(BaseSettings):
     # 0 이면 LLM 개선 없이 결정론 확정(draft_repair)만 수행한다.
     repair_max_iterations: int = 3
 
+    # User Memory 갱신(#64) 전체 실행 timeout(초). 초과해도 FAILED 결과는 보낸다.
+    #
+    # 상한이 필요한 이유는 App Server TTL(3분) 때문만이 아니다. `app/core/llm.py` 에
+    # 자체 timeout 이 없어 provider SDK 기본값(OpenAI 600초)을 따르는데, 그동안
+    # `GET /ping` 이 HealthyBusy 를 답해 **컨테이너 회수와 배포가 막힌다**.
+    # 갱신은 LLM 호출 1~3회라 타임라인보다 짧게 잡는다.
+    user_memory_timeout_sec: float = 120.0
+
     # App Server 서버간 API 기본 URL. 버전 경로(`/s/api/v1` 또는 `/s/v1`)까지를
     # 넣고, task별 리소스 경로(input/result/callback)는 코드에서 조립한다. 요청
     # 계약에는 URL이 없으므로 환경별로 고정한다.

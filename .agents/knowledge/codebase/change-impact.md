@@ -22,6 +22,7 @@
 |---|---|---|---|
 | inbound Timeline 요청·응답 | AgentCore adapter, 공통 오류 응답, 요청 로그의 taskId | Timeline/AgentCore/error/request logging API 테스트 | HTTP API, Timeline task |
 | App Server path/body/status | client 모델, token holder, runner 실패·callback 순서 | App Server client, runner, result 변환 테스트 | App Server 계약, 데이터, Timeline task |
+| User Memory 갱신 계약 | 접수 schema의 느슨함, digest 잘라내기, 재요청 상한, **결과 저장 1회** 수렴, `dailyTimelines` 마스킹 | user memory limits/repair/runner, endpoint, client, redaction 테스트 | HTTP API, App Server 계약, 데이터, 관측성, 제약 |
 | 새 source `itemType` | snapshot enum, domain schema, normalizer, Event Agent, source 무결성 | normalizer, source contract/integrity, Agent 테스트 | 데이터, Agent pipeline, 공통 언어·불변식 |
 | Timeline event 필드 | draft schema, prompt/parse, Repair 편집, result mapper, 저장 검증 | timeline/repair/result/validator 테스트 | 데이터, Agent pipeline, App Server 계약 |
 | guard 또는 Repair 순서 | warning 재계산, 병합·정렬·ID, Repair tool catalog | 해당 guard, draft repair, Repair Agent 테스트 | Agent pipeline, 불변식 |

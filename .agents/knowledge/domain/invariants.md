@@ -30,7 +30,20 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - user memory는 근거가 아니라 해석·표현용 보조 context다. user memory만으로 사건 발생, 일정 참석, 장소, 이동 목적, 사람의 실명이나 정확한 관계를 확정하지 않고, 수집 원본과 충돌하면 원본이 이긴다. 이 경계는 prompt가 지키며 코드가 의미로 판정하지 않는다.
 - user memory는 rawId를 갖지 않으므로 `sourceRefs`에 넣지 않는다.
 - user memory는 해석·표현 계층(Timeline Agent, Question Agent)에만 주입한다. Event Agent와 Repair Agent는 받지 않는다. Event Agent 5종은 병렬로 돌고 Timeline이 결과를 병합하므로, 다섯이 같은 프로필을 읽으면 같은 근거 하나가 독립된 근거 다섯으로 세어진다.
-- 소비 Agent 2종은 공용 projection 하나를 쓴다. Agent별로 필드를 골라 쓰거나 다르게 직렬화하지 않는다.
+- 소비 Agent 2종은 공용 projection 하나를 쓴다. Agent별로 필드를 골라 쓰거나 다르게 직렬화하지 않는다. 갱신 Agent가 "기존 프로필"을 읽을 때도 같은 projection이다.
+
+### User Memory 갱신
+
+- 갱신은 append가 아니라 전체 rewrite다. 출력이 기존 값을 통째로 대체한다.
+- 입력의 `title`·`subtitle`·`question`은 이 시스템의 AI가 쓴 문장이다. 거기서 사용자 성향을 뽑지 않는다. 그렇게 하면 모델이 자기 출력을 읽고 사용자를 만들어 내는 되먹임이 되고, 그 프로필이 다시 다음 Timeline 문장을 만드는 데 쓰여 스스로를 강화한다.
+- 성향 계열 다섯 필드(`personality`, `values`, `preferences`, `emotionalPatterns`, `memoryStyle`)의 근거는 `memo` 뿐이다. `memo`가 없는 날은 그 필드가 그대로인 것이 정상이고 결과는 `SUCCESS`다.
+- 생활 구조 계열(`routines`, `lifeContext`, `currentFocus`)은 event 구조(시간대·종류·반복)를 근거로 갱신할 수 있다.
+- `schemaVersion`과 `updatedAt`은 서버가 확정한다. LLM 출력값을 저장하지 않는다.
+- 크기·민감정보를 어긴 갱신본은 코드가 자르지 않고 위반을 붙여 다시 요청한다. 재요청까지 실패하면 저장 문서를 만들지 않고 기존 값을 그대로 둔다.
+- 위반 지적 문장은 prompt와 로그에 그대로 실리므로 걸린 값을 인용하지 않는다.
+- 접수 입력은 크기로 거절하지 않고 prompt 조립 단계에서 자르며, 자를 때 `memo` 있는 event를 끝까지 남긴다. event 상한은 **날짜별 몫**이다 — 전체 상한 하나로 자르면 event가 몰린 하루가 다른 날의 자리를 다 먹고, 밀려난 날은 payload에서 빠져 모델에게는 없던 날이 된다. 무엇을 얼마나 잘랐는지는 운영 이벤트에 남긴다.
+- 읽지 못하는 기존 프로필은 실패가 아니라 흡수다. 없는 셈 치고 새로 만든다 — 여기서 멈추면 그 사용자는 이후 어떤 날도 갱신되지 않는다.
+- 갱신 실패는 하루 기록 저장(`DailyRecord`의 `DRAFT → SAVED`)과 분리된다. `FAILED`는 "User Memory가 바뀌지 않았다"는 뜻이다.
 
 ### 시간
 
@@ -76,6 +89,7 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - 저장 전 event는 title, start, 유효 시간 범위, 하나 이상의 현재 task source를 가져야 한다.
 - 0 event도 확정 결과로 result API에 보낸다.
 - result 성공 뒤에만 SUCCESS callback을 보낸다. 그 뒤 callback 실패가 저장 결과를 FAILED로 바꾸지 않는다.
+- User Memory 갱신은 callback이 없다. 어떤 실패 경로로 끝나도 결과 저장을 정확히 1회 호출한다.
 - 실패 code는 API, callback, 운영 event에서 같은 정수를 쓰며 외부 문장은 카탈로그 안전 메시지만 쓴다.
 - 401/404/409 App Server 거절은 retry와 callback 없이 abort한다.
 
@@ -97,7 +111,9 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - App Server DB constraint와 callback/result idempotency는 이 저장소에서 확인할 수 없다.
 - inbound 인증·인가가 없어 호출 주체 불변식은 코드로 강제되지 않는다.
 - user memory 소비 경로는 input API 응답까지 열려 있으나, App Server가 실제로 값을 채워 보내는지는 이 저장소에서 확인할 수 없다.
-- user memory 최대 1,000토큰 상한은 소비 측에서 강제하지 않는다. 코드가 강제하는 것은 필드별 길이(200자)와 `customAttributes` 개수·길이(5개·150자)뿐이다.
+- user memory 최대 1,000토큰 상한은 소비 측에서 강제하지 않는다. 소비 경로가 강제하는 것은 필드별 길이(200자)와 `customAttributes` 개수·길이(5개·150자)뿐이다.
+- 생성 측(#64)은 1,000토큰을 **직렬화 1,200자**로 환산해 강제한다. 이 프로젝트에 tokenizer 의존성이 없고 provider가 셋이라 provider와 무관한 문자 수를 정본으로 삼은 것이며, 표준이 아니라 이 저장소가 고른 값이다.
+- User Memory 갱신 입력 상한(하루 타임라인 5일·**하루당** event 20개·`memo` 500자)도 이 저장소가 고른 방어선이다. App Server 쪽 실제 상한과 일치하는지는 여기서 확인할 수 없다.
 
 ## Update When
 
