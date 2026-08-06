@@ -296,6 +296,8 @@ class LLMProvider(ABC):
             observation_name = "generate-timeline-draft"
         elif context is not None and context.stage is ExecutionStage.REPAIR_AGENT:
             observation_name = "analyze-timeline-repair"
+        elif context is not None and context.stage is ExecutionStage.QUESTION_AGENT:
+            observation_name = "generate-event-questions"
         elif (
             context is not None
             and context.stage is ExecutionStage.USER_MEMORY_AGENT

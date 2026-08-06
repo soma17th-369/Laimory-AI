@@ -491,6 +491,9 @@ def test_generation_failure_records_safe_error_code(monkeypatch) -> None:
             ExecutionStage.REPAIR_AGENT, "analyze-timeline-repair", id="repair"
         ),
         pytest.param(
+            ExecutionStage.QUESTION_AGENT, "generate-event-questions", id="question"
+        ),
+        pytest.param(
             ExecutionStage.USER_MEMORY_AGENT,
             "update-user-memory-profile",
             id="user-memory",
