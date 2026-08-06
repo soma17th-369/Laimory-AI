@@ -390,6 +390,65 @@ def trace_timeline_task(
             yield observation
 
 
+@contextmanager
+def trace_user_memory_task(task_id: str) -> Iterator[Any | None]:
+    """User Memory 갱신 작업(#64)의 최상위 span trace 를 연다.
+
+    타임라인과 다른 trace 이름·태그를 쓴다. 같은 이름으로 묶으면 대시보드에서 두
+    작업의 지연·토큰이 한 지표로 합쳐져, 어느 쪽이 느려졌는지 알 수 없다.
+
+    ``input`` 에 body 를 싣지 않는다. 실을 것이 ``taskId`` 뿐이고, 하루 기록은 그
+    아래 generation 의 프롬프트로 이미 들어간다(콘텐츠 정책이 적용되는 자리다).
+    """
+
+    client = get_langfuse_client()
+    if client is None:
+        yield None
+        return
+
+    try:
+        trace_id = client.create_trace_id(seed=task_id)
+    except Exception:  # noqa: BLE001 - trace ID 생성 실패도 관측만 비활성화한다.
+        logger.exception("Langfuse trace ID 생성 실패(격리): taskId=%s", task_id)
+        trace_id = None
+
+    try:
+        attributes_manager = propagate_attributes(
+            trace_name="update-user-memory",
+            tags=["user-memory"],
+            environment=settings.app_env,
+            version=settings.agent_version,
+            session_id=task_id,
+            metadata={"taskId": task_id},
+        )
+    except Exception:  # noqa: BLE001 - 속성 전파 실패는 trace 본문과 격리한다.
+        logger.exception("Langfuse trace 속성 준비 실패(격리): taskId=%s", task_id)
+        attributes_manager = None
+
+    @contextmanager
+    def _run_trace() -> Iterator[Any | None]:
+        with trace_observation(
+            "update-user-memory",
+            as_type="span",
+            input={"taskId": task_id},
+            metadata={"feature": "user-memory"},
+            trace_context={"trace_id": trace_id} if trace_id is not None else None,
+        ) as observation:
+            yield observation
+
+    if attributes_manager is None:
+        with _run_trace() as observation:
+            yield observation
+        return
+
+    with _isolated_context_manager(
+        attributes_manager,
+        operation=f"Langfuse trace 속성 전파({task_id})",
+    ):
+        with _run_trace() as observation:
+            yield observation
+
+
 def update_observation(
     observation: Any | None,
     *,

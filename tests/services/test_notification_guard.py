@@ -66,7 +66,7 @@ def test_relation_term_without_user_memory_is_flagged():
 
 def test_relation_term_registered_in_user_memory_is_allowed():
     request = make_request(
-        user_memory={"people": [{"name": "김영희", "relation": "엄마"}]}
+        user_memory={"relationships": "엄마(김영희)와 매주 통화합니다."}
     )
     result = _result_with_title("엄마와 통화")
 

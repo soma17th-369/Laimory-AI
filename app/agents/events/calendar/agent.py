@@ -11,7 +11,6 @@ from app.agents.parsing import (
     build_infer_prompt,
     default_llm,
     items_to_text,
-    user_memory_to_text,
 )
 from app.agents.prompt_loader import load_prompt
 from app.schemas import AgentEventResult, TimelineDraftRequest
@@ -40,7 +39,6 @@ class CalendarEventAgent(EventAgent):
             return AgentEventResult()
 
         infer_prompt = build_infer_prompt(
-            user_memory_to_text(request.user_memory),
             items_to_text(items),
             date=request.date,
             window_start=request.window.start if request.window else None,

@@ -31,7 +31,9 @@ LLM call은 provider/model/version, duration, 사용 가능한 token bucket을 L
 
 `PROMPT_VERSION`은 현재 `v1` 또는 `v2`이고 모든 Agent가 같은 세트를 사용한다. loader는 module 옆 `prompts/{version}/{정확한 파일명}`만 UTF-8로 읽는다. version과 filename에 nested path를 허용하지 않으며, 파일이 없을 때 다른 version으로 fallback하지 않는다.
 
-prompt 세트에는 현재 Timeline, Repair, Question, Calendar, Notification, Location, SleepActivity, Photo Agent가 실제 로드하는 파일이 모두 있어야 한다. v1 Location/Sleep은 review prompt를 사용하지만 v2는 단일 structured 호출이라 review 파일이 없어야 한다. Photo는 version마다 infer, metadata fallback, vision prompt가 필요하다.
+prompt 세트에는 현재 Timeline, Repair, Question, UserMemory, Calendar, Notification, Location, SleepActivity, Photo Agent가 실제 로드하는 파일이 모두 있어야 한다. v1 Location/Sleep은 review prompt를 사용하지만 v2는 단일 structured 호출이라 review 파일이 없어야 한다. Photo는 version마다 infer, metadata fallback, vision prompt가 필요하다.
+
+UserMemory Agent(#64)는 Timeline pipeline 밖이지만 `PROMPT_VERSION`이 전역이라 `prompts/v1/prompt.md`와 `prompts/v2/prompt.md`를 모두 갖는다. 두 파일은 **같은 내용**이며 테스트가 동일성을 강제한다 — 이 Agent에는 되돌릴 v1 동작이 없어서, 갈라지면 rollback이 다른 동작을 만든다.
 
 활성 prompt의 큰 의미 변경 전에는 같은 디렉터리에 version suffix 동결본을 둘 수 있다. loader는 활성 코드가 요청하는 정확한 filename만 읽으므로 동결본은 실행에 영향을 주지 않는다.
 
@@ -43,6 +45,7 @@ prompt 세트에는 현재 Timeline, Repair, Question, Calendar, Notification, L
 - prompt 누락을 조용히 v1로 fallback하지 않는다.
 - key, AWS credential, token, 원본 provider error를 외부 response·운영 이벤트에 싣지 않는다.
 - Timeline·Repair 최종 서술 규칙과 Event Agent 사실 보고 규칙을 섞지 않는다.
+- UserMemory prompt는 문장 출처 구분(AI가 쓴 `title`/`subtitle`/`question` vs 사용자가 쓴 `memo`)을 명시한다. 이 지시가 빠지면 모델은 반드시 AI 문장에서 성향을 만들어 낸다.
 
 ## Known Gaps
 

@@ -13,6 +13,8 @@ from app.core.error_codes import ErrorCode
 from app.core.operational_logging import OperationalEvent
 from app.schemas import TaskStatus, TimelineCallbackPayload
 from app.schemas.timeline_result import TimelineResultEvent, TimelineResultRequest
+from app.schemas.user_memory import UserMemory
+from app.schemas.user_memory_update import UserMemoryResultRequest
 from app.services import app_server_client as module
 from app.services.app_server_client import (
     DEPENDENCY_NAME,
@@ -243,6 +245,74 @@ async def test_input_abort_statuses_are_not_retried(status_code, expected):
     assert caught.value.code is expected
     assert caught.value.abort is True
     assert len(seen) == 1
+
+
+# --- userMemory 흡수 (#65) ---------------------------------------------
+
+
+_VALID_MEMORY = {
+    "schemaVersion": "1.0",
+    "basicProfile": "경기도에 사는 개발자",
+    "customAttributes": {"반려동물": "고양이"},
+}
+
+
+async def test_valid_user_memory_reaches_the_snapshot():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_input_body(userMemory=_VALID_MEMORY))
+
+    snapshot = await _client(handler).fetch_input(_TASK_ID, TaskToken("tok-1"))
+
+    assert snapshot.user_memory is not None
+    assert snapshot.user_memory.basic_profile == "경기도에 사는 개발자"
+
+
+async def test_broken_user_memory_is_absorbed_without_failing_the_timeline(caplog):
+    """보조 context 하나 때문에 하루치 수집 원본을 버리지 않는다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_input_body(userMemory={"favoriteColor": "파랑", "schemaVersion": "1.0"}),
+        )
+
+    with caplog.at_level("WARNING"):
+        snapshot = await _client(handler).fetch_input(_TASK_ID, TaskToken("tok-1"))
+
+    assert snapshot.user_memory is None
+    assert snapshot.source_items  # 수집 원본은 그대로 살아 있다.
+
+    reported = [
+        getattr(record, "fields", {})
+        for record in caplog.records
+        if getattr(record, "fields", {}).get("errorCode")
+        == int(ErrorCode.USER_MEMORY_CONTRACT_VIOLATION)
+    ]
+    assert len(reported) == 1
+    assert reported[0]["userMemoryErrorFields"] == ["favoriteColor"]
+    assert reported[0]["userMemoryErrorTypes"] == ["extra_forbidden"]
+
+
+async def test_absorbed_user_memory_failure_does_not_log_the_body(caplog):
+    """pydantic 오류 문자열에는 걸린 값이 그대로 인용된다. 그 경로를 막았는지 본다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_input_body(
+                userMemory={"basicProfile": "엄마와 매주 통화하는 개발자" * 20}
+            ),
+        )
+
+    with caplog.at_level("WARNING"):
+        await _client(handler).fetch_input(_TASK_ID, TaskToken("tok-1"))
+
+    logged = "\n".join(
+        [record.getMessage() for record in caplog.records]
+        + [str(record.__dict__) for record in caplog.records]
+    )
+    assert "엄마" not in logged
+    assert "개발자" not in logged
 
 
 async def test_result_404_uses_task_not_found_code():
@@ -481,3 +551,117 @@ async def test_dependency_events_never_carry_url_or_body(caplog):
     serialized = json.dumps(event, ensure_ascii=False)
     assert "app.example" not in serialized
     assert "점심" not in serialized
+
+
+# --- User Memory 결과 저장 (#64) ---------------------------------------
+
+
+def _user_memory_request(
+    status: TaskStatus = TaskStatus.SUCCESS,
+) -> UserMemoryResultRequest:
+    if status is TaskStatus.SUCCESS:
+        return UserMemoryResultRequest.success(
+            UserMemory(basic_profile="30대 개발자입니다.")
+        )
+    return UserMemoryResultRequest.failure(ErrorCode.USER_MEMORY_GENERATION_FAILED)
+
+
+async def test_submit_user_memory_calls_the_contract_path_with_token_header():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200)
+
+    await _client(handler).submit_user_memory(
+        _TASK_ID, TaskToken("tok-1"), _user_memory_request()
+    )
+
+    assert seen[0].method == "POST"
+    assert str(seen[0].url) == f"{_BASE}/user-memory/updates/{_TASK_ID}/result"
+    assert seen[0].headers[TASK_TOKEN_HEADER] == "tok-1"
+    body = json.loads(seen[0].content)
+    assert body["status"] == TaskStatus.SUCCESS.value
+    assert body["userMemory"]["schemaVersion"] == "1.0"
+
+
+async def test_failure_result_carries_the_code_and_no_memory():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200)
+
+    await _client(handler).submit_user_memory(
+        _TASK_ID, TaskToken("tok-1"), _user_memory_request(TaskStatus.FAILED)
+    )
+
+    body = json.loads(seen[0].content)
+    assert body["status"] == TaskStatus.FAILED.value
+    assert body["errorCode"] == int(ErrorCode.USER_MEMORY_GENERATION_FAILED)
+    assert body["userMemory"] is None
+
+
+async def test_submit_user_memory_retries_server_errors():
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        return httpx.Response(200 if len(attempts) == 3 else 503)
+
+    await _client(handler).submit_user_memory(
+        _TASK_ID, TaskToken("tok-1"), _user_memory_request()
+    )
+
+    assert len(attempts) == 3
+
+
+async def test_exhausted_retries_report_the_user_memory_submit_code():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    with pytest.raises(AppServerError) as caught:
+        await _client(handler).submit_user_memory(
+            _TASK_ID, TaskToken("tok-1"), _user_memory_request()
+        )
+
+    assert caught.value.code is ErrorCode.USER_MEMORY_SUBMIT_FAILED
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [
+        (401, ErrorCode.APP_SERVER_UNAUTHORIZED),
+        (404, ErrorCode.APP_SERVER_TASK_NOT_FOUND),
+        (409, ErrorCode.APP_SERVER_CONFLICT),
+    ],
+)
+async def test_abort_statuses_stop_immediately(status_code: int, expected: ErrorCode):
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        return httpx.Response(status_code)
+
+    with pytest.raises(AppServerError) as caught:
+        await _client(handler).submit_user_memory(
+            _TASK_ID, TaskToken("tok-1"), _user_memory_request()
+        )
+
+    assert caught.value.code is expected
+    assert caught.value.abort
+    assert len(attempts) == 1
+
+
+async def test_user_memory_dependency_event_uses_its_own_operation(caplog):
+    with caplog.at_level("DEBUG"):
+        await _client(lambda request: httpx.Response(200)).submit_user_memory(
+            _TASK_ID, TaskToken("tok-1"), _user_memory_request()
+        )
+
+    event = _dependency_events(
+        caplog, OperationalEvent.DEPENDENCY_REQUEST_COMPLETED.value
+    )[-1]
+    assert event["operation"] == "user-memory-result"
+    assert event["dependency"] == DEPENDENCY_NAME
+    assert "30대 개발자입니다." not in json.dumps(event, ensure_ascii=False)

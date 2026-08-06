@@ -30,7 +30,10 @@ logger = get_logger(__name__)
 _AGENT_NAME = "notification"
 
 #: 최종 결과에 절대 남으면 안 되는 문자열 형태.
-_SENSITIVE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+#:
+#: User Memory 갱신(#64)도 같은 목록을 쓴다. 알림에서 걸러야 할 값과 프로필에 남으면
+#: 안 되는 값은 같은 것들이고, 목록이 둘로 갈리면 한쪽만 늘어나도 아무도 모른다.
+SENSITIVE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # JWT: base64url 세 토막. 인증 토큰이 그대로 옮겨 적힌 경우다.
     ("JWT", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+")),
     # Bearer 토큰과 API 키 접두사.
@@ -194,7 +197,7 @@ def _find_sensitive(texts: list[str]) -> list[tuple[str, str]]:
     return [
         (label, text)
         for text in texts
-        for label, pattern in _SENSITIVE_PATTERNS
+        for label, pattern in SENSITIVE_PATTERNS
         if pattern.search(text)
     ]
 

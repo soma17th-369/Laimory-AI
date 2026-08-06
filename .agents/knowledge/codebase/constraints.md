@@ -29,6 +29,7 @@
 
 - Uvicorn worker를 늘리지 않는다. inflight counter가 프로세스 로컬이며 `/ping`의 `HealthyBusy` 판단과 EC2 idle 대기가 이 값에 의존한다.
 - 202 응답은 처리 완료가 아니다. HTTP latency와 background task duration을 같은 지표로 합치지 않는다.
+- 새 background task는 전체를 `track_inflight`로 감싸고 시간 예산을 둔다. `app/core/llm.py`에 자체 timeout이 없어 provider SDK 기본값(OpenAI 600초)을 따르므로, 상한이 없으면 한 작업이 매달리는 동안 `/ping`이 `HealthyBusy`를 답해 컨테이너 회수와 배포가 막힌다.
 - 컨테이너는 non-root, 8080, deny-all Docker build context를 유지한다. 환경별 secret과 URL을 이미지에 굽지 않는다.
 
 ### App Server 순서와 인증
@@ -38,6 +39,9 @@
 - timeout과 5xx만 같은 body·token으로 retry한다. 401/404/409는 callback 없이 중단한다.
 - 결과 저장 성공을 확인하기 전에는 SUCCESS callback을 보내지 않는다.
 - 결과 저장 성공 뒤 callback 실패가 나도 task 결과를 FAILED로 되돌리지 않는다.
+- User Memory 갱신에는 callback이 없다. 성공·실패 어느 경로로 끝나도 결과 저장을 정확히 1회 호출한다. 빠뜨리면 실패를 알릴 수단이 없다.
+- User Memory 접수의 `dailyTimelines`는 App Server 재시도 배치 계약에 따라 최대 5건이며 초과하면 422/1001이다. 그 안에서 이벤트가 많은 정상적인 하루는 거절하지 않고 prompt 조립 단계에서 자른다.
+- User Memory 갱신 실패를 `DailyRecord`의 `DRAFT → SAVED` 전이와 묶지 않는다. 묶으면 AI 실패가 사용자의 일기 저장을 되돌린다.
 
 ### 오류·로그·관측
 

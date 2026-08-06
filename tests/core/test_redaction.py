@@ -172,3 +172,148 @@ def test_external_oversized_payload_keeps_diagnostics_and_truncates_body() -> No
     assert captured["body"]["truncated"] is True
     assert captured["body"]["storedByteLength"] <= 100
     assert "가" in captured["body"]["contentPreview"]
+
+
+# --- User Memory (#65) --------------------------------------------------
+#
+# User Memory 본문은 SANITIZED 정책에서도 나가지 않는다. 관계·성향·관심사를 압축한
+# 프로필이라 마스킹 패턴으로 걸러지지 않는다 — 패턴에 걸릴 만한 형태가 아니라
+# 그냥 사람에 대한 문장이다. 그래서 키 이름으로 통째로 접는다.
+
+_MEMORY_BODY = {
+    "schemaVersion": "1.0",
+    "updatedAt": "2026-08-05T11:00:00+09:00",
+    "basicProfile": "경기도에 사는 개발자",
+    "relationships": "엄마와 매주 통화합니다",
+    "customAttributes": {"반려동물": "고양이 두 마리"},
+}
+
+
+def _has_no_memory_body(value: object) -> bool:
+    serialized = str(value)
+    return not any(
+        body in serialized
+        for body in ("경기도", "개발자", "엄마", "고양이", "반려동물")
+    )
+
+
+def test_user_memory_body_is_summarized_in_logs() -> None:
+    redacted = redact_value({"userMemory": _MEMORY_BODY})
+
+    summary = redacted["userMemory"]
+    assert summary["schemaVersion"] == "1.0"
+    assert summary["filledFieldCount"] == 2
+    assert summary["customAttributeCount"] == 1
+    assert summary["contentCaptured"] is False
+    assert _has_no_memory_body(redacted)
+
+
+def test_user_memory_body_never_reaches_external_capture() -> None:
+    captured = capture_external_content(
+        {"taskId": "task-1", "request": {"userMemory": _MEMORY_BODY}},
+        ContentCapture.SANITIZED,
+        max_bytes=4096,
+    )
+
+    assert captured["taskId"] == "task-1"
+    assert _has_no_memory_body(captured)
+
+
+def test_user_memory_body_never_reaches_metadata_capture() -> None:
+    captured = capture_payload(
+        {"userMemory": _MEMORY_BODY},
+        ContentCapture.SANITIZED,
+        max_bytes=4096,
+    )
+
+    assert _has_no_memory_body(captured)
+
+
+def test_user_memory_of_unknown_shape_is_folded_whole() -> None:
+    """dict 가 아니면 형태를 모른다. 요약만 남기고 값은 버린다."""
+
+    redacted = redact_value({"userMemory": "엄마와 매주 통화합니다"})
+
+    assert redacted["userMemory"]["contentCaptured"] is False
+    assert _has_no_memory_body(redacted)
+
+
+def test_user_memory_key_matching_ignores_case_and_separators() -> None:
+    redacted = redact_value({"user_memory": _MEMORY_BODY})
+
+    assert _has_no_memory_body(redacted)
+
+
+# --- 확정된 하루 타임라인 (#64) --------------------------------------------
+
+_DAILY_TIMELINES_BODY = [
+    {
+        "recordDate": "2026-08-04",
+        "events": [
+            {
+                "eventType": "MEAL",
+                "title": "회사 근처에서 점심을 먹었어요",
+                "memo": "오랜만에 마음이 놓였어요",
+            },
+            {"eventType": "SLEEP", "title": "잠들었어요", "memo": None},
+        ],
+    }
+]
+
+
+def _has_no_daily_timeline_body(value: object) -> bool:
+    serialized = str(value)
+    return not any(
+        body in serialized
+        for body in ("회사 근처", "점심", "마음이 놓였", "잠들었")
+    )
+
+
+def test_daily_timeline_body_is_summarized_in_logs() -> None:
+    """`memo` 는 사용자가 직접 쓴 글이다. User Memory 와 같은 이유로 개수만 남긴다."""
+
+    redacted = redact_value({"dailyTimelines": _DAILY_TIMELINES_BODY})
+
+    summary = redacted["dailyTimelines"]
+    assert summary["dailyTimelineCount"] == 1
+    assert summary["eventCount"] == 2
+    assert summary["memoCount"] == 1
+    assert summary["contentCaptured"] is False
+    assert _has_no_daily_timeline_body(redacted)
+
+
+def test_daily_timeline_body_never_reaches_external_capture() -> None:
+    captured = capture_external_content(
+        {"taskId": "task-1", "dailyTimelines": _DAILY_TIMELINES_BODY},
+        ContentCapture.SANITIZED,
+        max_bytes=4096,
+    )
+
+    assert captured["taskId"] == "task-1"
+    assert _has_no_daily_timeline_body(captured)
+
+
+def test_daily_timeline_summary_does_not_depend_on_event_field_names() -> None:
+    """App Server 가 필드를 더해도 본문이 새면 안 된다."""
+
+    redacted = redact_value(
+        {
+            "dailyTimelines": [
+                {
+                    "recordDate": "2026-08-04",
+                    "events": [{"newField": "점심 이야기"}],
+                }
+            ]
+        }
+    )
+
+    assert redacted["dailyTimelines"]["eventCount"] == 1
+    assert _has_no_daily_timeline_body(redacted)
+
+
+def test_daily_timelines_of_unknown_shape_are_folded_whole() -> None:
+    redacted = redact_value(
+        {"dailyTimelines": {"recordDate": "2026-08-04"}}
+    )
+
+    assert redacted["dailyTimelines"]["contentCaptured"] is False

@@ -107,8 +107,9 @@ def _synthetic_snapshot(task_id: str) -> Any:
             endTime="2026-07-31T00:00:00+09:00",
         ),
         userMemory={
-            "auditNotice": "이 입력은 Langfuse 구조 검수용 합성 데이터입니다.",
-            "usualRoutine": "평일에는 합성 사무실에서 근무합니다.",
+            "schemaVersion": "1.0",
+            "basicProfile": "이 입력은 Langfuse 구조 검수용 합성 데이터입니다.",
+            "routines": "평일에는 합성 사무실에서 근무합니다.",
         },
         sourceItems=[
             source(
