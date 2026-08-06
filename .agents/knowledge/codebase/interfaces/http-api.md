@@ -32,7 +32,7 @@ FastAPI 기본 `/docs`, `/redoc`, `/openapi.json`도 별도 비활성 설정 없
 
 Timeline 접수 request는 빈 문자열이 아닌 `taskId`·`taskToken`, 정수 `dailyRecordId`, timezone-aware `window.startAt/endAt`을 요구한다. taskToken은 이 inbound body에서 최초 값으로만 받고 outbound App Server 인증 header로 옮긴다.
 
-User Memory 접수 request는 `taskId`·`taskToken`과 optional `userMemory`, `diaries`를 받는다. **일부러 느슨하다** — `eventType`은 자유 문자열이고 `endAt`·`subtitle`·`question`·`memo`·`emotionType`은 nullable이며 길이 상한을 강제하지 않는다. App Server가 4xx를 "미접수 확정"으로 읽어 앱에 502를 주기 때문에, 이벤트가 많은 정상적인 하루가 사용자에게 일기 저장 실패로 보이면 안 된다. 크기는 거절 사유가 아니라 prompt 조립 단계의 잘라내기로 다룬다. 422는 필수 필드 누락이나 `startAt` 파싱 실패 같은 계약 위반에만 나간다. 기존 `userMemory`는 원본 dict로 받고 background에서 따로 검증한다 — 여기서 엄격히 선언하면 읽지 못하는 프로필 하나가 접수 자체를 막고, 그 사용자는 이후 어떤 날도 갱신되지 않는다.
+User Memory 접수 request는 `taskId`·`taskToken`과 optional `userMemory`, `dailyTimelines`를 받는다. **일부러 느슨하다** — `eventType`은 자유 문자열이고 `endAt`·`subtitle`·`question`·`memo`·`emotionType`은 nullable이며 길이 상한을 강제하지 않는다. App Server가 4xx를 "미접수 확정"으로 읽어 앱에 502를 주기 때문에, 이벤트가 많은 정상적인 하루가 사용자에게 일기 저장 실패로 보이면 안 된다. 크기는 거절 사유가 아니라 prompt 조립 단계의 잘라내기로 다룬다. 422는 필수 필드 누락이나 `startAt` 파싱 실패 같은 계약 위반에만 나간다. 기존 `userMemory`는 원본 dict로 받고 background에서 따로 검증한다 — 여기서 엄격히 선언하면 읽지 못하는 프로필 하나가 접수 자체를 막고, 그 사용자는 이후 어떤 날도 갱신되지 않는다.
 
 모든 실패 response는 `ErrorResponse {errorCode: int, error: string}` 한 형태로 통일한다. request validation은 422/1001, route 404는 1003, method 405는 1004, 그 밖의 4xx는 1002, 미처리 5xx는 1901을 쓴다. `error`는 카탈로그의 외부 안전 메시지이며 validation input과 원본 exception은 response에 포함하지 않는다.
 

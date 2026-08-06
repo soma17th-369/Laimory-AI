@@ -117,9 +117,9 @@ _DIAGNOSTIC_KEYS = {
 _USER_MEMORY_KEY = "usermemory"
 # 요약에서 "채워진 필드" 로 세지 않는 메타데이터 키.
 _USER_MEMORY_META_KEYS = {"schemaversion", "updatedat", "customattributes"}
-# 확정된 하루 기록(#64). `memo` 는 사용자가 직접 쓴 글이고 `title`/`subtitle` 도
+# 확정된 하루 타임라인(#64). `memo` 는 사용자가 직접 쓴 글이고 `title`/`subtitle` 도
 # 사용자가 읽는 문장이다. User Memory 와 같은 이유로 본문 대신 개수만 남긴다.
-_DIARIES_KEY = "diaries"
+_DAILY_TIMELINES_KEY = "dailytimelines"
 # 접어 넣은 본문이 들어가는 자리. 진단 지표와 같은 depth 에 두어 화면에서 바로 구분된다.
 _SUPPRESSED_BODY_KEY = "body"
 _KEY_NORMALIZER = re.compile(r"[^a-z0-9]")
@@ -191,12 +191,12 @@ def _summarize_user_memory(value: Any) -> Any:
     }
 
 
-def _is_diaries_key(key: Any) -> bool:
-    return _normalized_key(key) == _DIARIES_KEY
+def _is_daily_timelines_key(key: Any) -> bool:
+    return _normalized_key(key) == _DAILY_TIMELINES_KEY
 
 
-def _summarize_diaries(value: Any) -> Any:
-    """확정된 하루 기록을 비식별 요약으로 바꾼다(#64).
+def _summarize_daily_timelines(value: Any) -> Any:
+    """확정된 하루 타임라인을 비식별 요약으로 바꾼다(#64).
 
     User Memory 와 같은 이유로 개수만 남긴다. ``memoCount`` 를 함께 남기는 것은
     "성향 필드가 안 바뀐 것이 정상인 날" 을 결과만 보고 구분하기 위해서다 — 메모가
@@ -220,7 +220,7 @@ def _summarize_diaries(value: Any) -> Any:
     ]
     return {
         **summarize_content(value),
-        "diaryCount": len(value),
+        "dailyTimelineCount": len(value),
         "eventCount": len(events),
         "memoCount": sum(
             1
@@ -248,8 +248,8 @@ def _redact_entry(key: Any, item: Any) -> Any:
         return REDACTED
     if _is_user_memory_key(key):
         return _summarize_user_memory(item)
-    if _is_diaries_key(key):
-        return _summarize_diaries(item)
+    if _is_daily_timelines_key(key):
+        return _summarize_daily_timelines(item)
     return redact_value(item)
 
 

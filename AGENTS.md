@@ -111,7 +111,7 @@ app/
 │   └── v1/
 │       ├── router.py          # v1 라우터 취합
 │       ├── timeline.py        # POST /v1/timeline (taskId+taskToken+dailyRecordId+window 접수 → 202). 상태 조회 없음(상태는 App Server 소유)
-│       └── user_memory.py     # POST /v1/user-memory (#64). 확정된 하루 기록 접수 → 202.
+│       └── user_memory.py     # POST /v1/user-memory (#64). 확정된 하루 타임라인 접수 → 202.
 │                              #   **크기로 거절하지 않는다** — 4xx 는 App Server 가 "미접수 확정"
 │                              #   으로 읽어 앱에 502 를 주므로 정상적인 하루가 저장 실패로 보인다
 │
@@ -126,7 +126,7 @@ app/
 │   ├── user_memory.py         # 사용자 압축 프로필 v1.0 (#65). 고정 자연어 10필드(각 200자) +
 │   │                          #   customAttributes(5개·150자). extra="forbid". prompt_payload() 가
 │   │                          #   projection 규칙(빈 필드·메타데이터 제외, 선언 순서)을 소유한다
-│   ├── user_memory_update.py  # 갱신 접수·저장 계약 (#64). diaries[].events[] 를 **느슨하게** 받는다
+│   ├── user_memory_update.py  # 갱신 접수·저장 계약 (#64). dailyTimelines[].events[] 를 **느슨하게** 받는다
 │   │                          #   (eventType 자유 문자열, endAt·subtitle·question·memo nullable,
 │   │                          #   길이 상한 없음). UserMemoryResultRequest 는 status 에 따라 필드 짝
 │   │                          #   (SUCCESS→userMemory / FAILED→errorCode)을 강제한다
@@ -194,7 +194,7 @@ app/
     └── user_memory_runner.py  # 백그라운드(무상태): 기존 프로필 해석→digest→Agent→확정→**결과 저장
                                #   1회**. 모든 실패 경로가 그 한 번으로 수렴해야 한다
 
-# User Memory 갱신 흐름(#64): taskId+taskToken+userMemory+diaries 접수 → 202 즉시응답 →
+# User Memory 갱신 흐름(#64): taskId+taskToken+userMemory+dailyTimelines 접수 → 202 즉시응답 →
 #   (백그라운드) 기존 프로필 해석(실패는 1106 으로 흡수하고 새로 만든다) → digest(자르기)
 #   → 갱신 Agent → 크기·민감정보 확정 → **결과 저장 1회**
 #   **콜백이 없다.** 결과 저장 한 번이 결과 전달과 종료 통보를 겸하며 성공·실패가 같은
@@ -263,7 +263,7 @@ app/
 #   구조적으로 의존하지 않는다(notification_guard 는 통째 문자열 검색이라 키에 무관하다).
 #   계약 위반은 흡수한다(1106) — 보조 context 하나 때문에 하루치 수집 원본을 버리지 않는다.
 #   본문은 운영 로그·관측 어디에도 남기지 않는다. redact_value 가 `userMemory` 와
-#   `diaries` 키를 비식별 요약(schemaVersion·채워진 필드 수·크기 / 일기 수·event 수·memo 수)
+#   `dailyTimelines` 키를 비식별 요약(schemaVersion·채워진 필드 수·크기 / 타임라인 수·event 수·memo 수)
 #   으로 바꾸므로 호출부가 스냅샷이나 요청을 통째로 덤프해도 본문이 새지 않는다.
 #   Langfuse generation input(프롬프트 본문)에는 값이 들어가지만 운영은 콘텐츠 정책이 NONE 이다.
 # 프롬프트 동결본: 활성 프롬프트를 크게 바꿀 때 같은 디렉터리에 `<활성파일명>_v<버전>.md`

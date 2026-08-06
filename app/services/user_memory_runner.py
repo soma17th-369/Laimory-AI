@@ -1,10 +1,10 @@
 """User Memory 갱신 실행부 (#64).
 
-`POST /v1/user-memory` 가 `taskId`, `taskToken`, 기존 `userMemory`, 확정된 `diaries`
+`POST /v1/user-memory` 가 `taskId`, `taskToken`, 기존 `userMemory`, 확정된 `dailyTimelines`
 를 받아 즉시 202 를 돌려준 뒤, 백그라운드에서
 
     1. 기존 프로필을 v1.0 계약으로 읽고(못 읽으면 없는 셈 치고),
-    2. 하루 기록을 프롬프트에 실을 만큼으로 줄인 다음,
+    2. 하루 타임라인을 프롬프트에 실을 만큼으로 줄인 다음,
     3. 갱신 Agent 로 전체 갱신본을 만들고 크기·민감정보를 확정하고,
     4. **성공이든 실패든 결과 저장 API 를 정확히 한 번** 호출한다.
 
@@ -71,7 +71,7 @@ from app.schemas import TaskStatus
 from app.schemas.user_memory import UserMemory
 from app.schemas.user_memory_update import UserMemoryResultRequest, UserMemoryUpdateRequest
 from app.services.app_server_client import AppServerClient, TaskToken
-from app.services.user_memory_limits import build_diary_digest, serialized_chars
+from app.services.user_memory_limits import build_daily_timeline_digest, serialized_chars
 from app.services.user_memory_repair import UserMemoryOutcome, build_user_memory
 from app.services.validator import resolve_timezone
 
@@ -97,7 +97,7 @@ async def process_user_memory_task(
     with track_inflight():
         token = TaskToken(payload.task_token)
         started = perf_counter()
-        digest = build_diary_digest(payload.diaries)
+        digest = build_daily_timeline_digest(payload.daily_timelines)
         agent = agent or UserMemoryAgent()
 
         memory: UserMemory | None = None
@@ -229,7 +229,7 @@ def _updated_at(payload: UserMemoryUpdateRequest) -> datetime:
     때마다 머릿속에서 9시간을 더해야 한다.
     """
 
-    zones = [entry.record_time_zone for entry in payload.diaries if entry.record_time_zone]
+    zones = [entry.record_time_zone for entry in payload.daily_timelines if entry.record_time_zone]
     return datetime.now(resolve_timezone(zones[-1] if zones else None))
 
 

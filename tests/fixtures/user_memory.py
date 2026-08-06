@@ -29,7 +29,7 @@ NARRATIVE_FIELDS = (
 )
 
 
-def diary_event(
+def daily_timeline_event(
     *,
     event_type: str = "MEAL",
     title: str = "점심을 먹었어요",
@@ -50,7 +50,7 @@ def diary_event(
     }
 
 
-def diary(
+def daily_timeline(
     *,
     date: str = "2026-08-04",
     record_time_zone: str = "Asia/Seoul",
@@ -61,7 +61,7 @@ def diary(
         "date": date,
         "recordTimeZone": record_time_zone,
         "emotionType": emotion_type,
-        "events": events if events is not None else [diary_event()],
+        "events": events if events is not None else [daily_timeline_event()],
     }
 
 
@@ -72,7 +72,7 @@ def update_body(**overrides: Any) -> dict[str, Any]:
         "taskId": TASK_ID,
         "taskToken": TASK_TOKEN,
         "userMemory": None,
-        "diaries": [diary()],
+        "dailyTimelines": [daily_timeline()],
     }
     body.update(overrides)
     return body

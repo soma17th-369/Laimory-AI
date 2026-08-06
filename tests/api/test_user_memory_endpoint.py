@@ -11,14 +11,15 @@ from fastapi.testclient import TestClient
 from app.core.error_codes import ErrorCode
 from app.schemas import TaskStatus
 from app.schemas.user_memory import UserMemory
+from app.schemas.user_memory_update import UserMemoryUpdateRequest
 from app.server import app
 from app.services import user_memory_runner
 from app.services.app_server_client import get_app_server_client
 from tests.fixtures.app_server import FakeAppServerClient
 from tests.fixtures.user_memory import (
     TASK_ID,
-    diary,
-    diary_event,
+    daily_timeline,
+    daily_timeline_event,
     memory_body,
     update_body,
 )
@@ -79,10 +80,10 @@ def test_existing_memory_is_optional(client):
 @pytest.mark.parametrize(
     "events",
     [
-        pytest.param([diary_event(end_at=None)], id="null-endAt"),
-        pytest.param([diary_event(event_type="새로운타입")], id="unknown-eventType"),
+        pytest.param([daily_timeline_event(end_at=None)], id="null-endAt"),
+        pytest.param([daily_timeline_event(event_type="새로운타입")], id="unknown-eventType"),
         pytest.param(
-            [diary_event(subtitle=None, question=None, memo=None)],
+            [daily_timeline_event(subtitle=None, question=None, memo=None)],
             id="all-optionals-null",
         ),
     ],
@@ -92,7 +93,7 @@ def test_loose_fields_are_accepted(client, events):
 
     http = TestClient(app)
 
-    response = http.post("/v1/user-memory", json=update_body(diaries=[diary(events=events)]))
+    response = http.post("/v1/user-memory", json=update_body(dailyTimelines=[daily_timeline(events=events)]))
 
     assert response.status_code == 202
 
@@ -101,24 +102,24 @@ def test_a_big_day_is_accepted_not_rejected(client):
     """이벤트가 많은 하루는 정상이다. 크기는 프롬프트 조립 단계에서 자른다."""
 
     events = [
-        diary_event(start_at=f"2026-08-04T{hour:02d}:00:00+09:00", end_at=None)
+        daily_timeline_event(start_at=f"2026-08-04T{hour:02d}:00:00+09:00", end_at=None)
         for hour in range(24)
     ] * 5
     http = TestClient(app)
 
     response = http.post(
         "/v1/user-memory",
-        json=update_body(diaries=[diary(events=events)] * 10),
+        json=update_body(dailyTimelines=[daily_timeline(events=events)] * 10),
     )
 
     assert response.status_code == 202
     assert client.last_user_memory.status is TaskStatus.SUCCESS
 
 
-def test_empty_diaries_are_accepted(client):
+def test_empty_daily_timelines_are_accepted(client):
     http = TestClient(app)
 
-    assert http.post("/v1/user-memory", json=update_body(diaries=[])).status_code == 202
+    assert http.post("/v1/user-memory", json=update_body(dailyTimelines=[])).status_code == 202
 
 
 @pytest.mark.parametrize(
@@ -127,7 +128,7 @@ def test_empty_diaries_are_accepted(client):
         pytest.param(update_body(taskId=""), id="empty-taskId"),
         pytest.param({"taskId": TASK_ID}, id="missing-taskToken"),
         pytest.param(
-            update_body(diaries=[diary(events=[diary_event(start_at="어제")])]),
+            update_body(dailyTimelines=[daily_timeline(events=[daily_timeline_event(start_at="어제")])]),
             id="unparsable-startAt",
         ),
     ],
@@ -141,3 +142,31 @@ def test_broken_contract_returns_the_common_error_shape(client, body):
 
     assert response.status_code == 422
     assert response.json()["errorCode"] == int(ErrorCode.REQUEST_VALIDATION_FAILED)
+
+
+# --- 계약 키 고정 -------------------------------------------------------
+
+
+def test_wire_key_is_daily_timelines():
+    """`populate_by_name` 때문에 snake_case 도 파싱된다. 계약 키는 하나다.
+
+    이 단언이 없으면 필드 이름을 바꿔도 모든 테스트가 그대로 통과하고, 실제 App
+    Server 요청만 조용히 빈 목록으로 들어온다.
+    """
+
+    field = UserMemoryUpdateRequest.model_fields["daily_timelines"]
+
+    assert field.alias == "dailyTimelines"
+
+
+def test_old_diaries_key_no_longer_populates(client):
+    """예전 이름으로 오면 빈 목록이다. 조용히 둘 다 받아 주지 않는다."""
+
+    http = TestClient(app)
+    body = update_body()
+    body["diaries"] = body.pop("dailyTimelines")
+
+    response = http.post("/v1/user-memory", json=body)
+
+    assert response.status_code == 202
+    assert client.last_user_memory.status is TaskStatus.SUCCESS

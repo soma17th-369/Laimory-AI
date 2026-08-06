@@ -48,9 +48,9 @@
 | Confidence | event/candidate 확신도를 0~1로 표현한 값. 불확실성을 문장에 헤지하는 대신 metadata로 전달한다. |
 | Inference level | DIRECT, EVIDENCE_BASED, INFERRED, UNCERTAIN으로 판단 근거 수준을 표현한다. |
 | User Memory | 사용자를 압축한 프로필 v1.0. 사건 데이터가 아니라 해석·표현을 돕는 보조 context다. 소유는 App Server, 소비는 Timeline·Question Agent, 생성은 User Memory Agent다. |
-| User Memory 갱신 task | 확정된 하루 기록으로 프로필 전체를 다시 쓰는 비동기 작업. Timeline task와 별개이며 callback이 없다. |
-| Diary | 갱신 입력의 하루치 확정 기록. `date`와 `events`로 구성되며 수집 원본(source item)이 아니라 **이미 사용자에게 보인 결과**다. |
-| Diary event | Diary 안의 event 한 건. `title`·`subtitle`·`question`은 AI가 쓴 문장이고 `memo`만 사용자가 직접 쓴 글이다. |
+| User Memory 갱신 task | 확정된 하루 타임라인으로 프로필 전체를 다시 쓰는 비동기 작업. Timeline task와 별개이며 callback이 없다. |
+| Daily timeline | 갱신 입력의 하루치 확정 타임라인(`dailyTimelines[]`). `date`와 `events`로 구성되며 수집 원본(source item)이 아니라 **이미 사용자에게 보인 결과**다. |
+| Daily timeline event | Daily timeline 안의 event 한 건. `title`·`subtitle`·`question`은 AI가 쓴 문장이고 `memo`만 사용자가 직접 쓴 글이다. |
 | `memo` | 사용자가 event에 직접 남긴 글. 성향 계열 필드의 **유일한** 근거이며 비어 있을 수 있다. |
 | 갱신본(rewrite) | 기존 프로필을 통째로 대체하는 새 User Memory 전체 문서. append가 아니다. |
 | App Server | source, Timeline 결과 persistence, User Memory, task 상태를 소유하는 외부 서버. AI 서버의 제품 데이터 경계다. |

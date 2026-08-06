@@ -40,8 +40,8 @@ Redis나 제품 cache도 없다. `lru_cache`로 유지되는 Settings, provider/
 | `TimelineDraft` | Timeline/Repair/Question이 다루는 넓은 내부 draft |
 | `TimelineResultRequest` | App Server로 보내는 좁은 persistence 계약 |
 | `TimelineCallbackPayload` | 결과가 아닌 terminal 상태 통보 계약 |
-| `UserMemoryUpdateRequest` | User Memory 갱신 접수 계약(#64). 확정된 `diaries`와 기존 profile |
-| `DiaryDigest` | prompt에 실을 만큼으로 줄인 하루 기록과 잘라낸 양 |
+| `UserMemoryUpdateRequest` | User Memory 갱신 접수 계약(#64). 확정된 `dailyTimelines`와 기존 profile |
+| `DailyTimelineDigest` | prompt에 실을 만큼으로 줄인 하루 타임라인과 잘라낸 양 |
 | `UserMemoryResultRequest` | 갱신본 저장과 종료 통보를 겸하는 계약 |
 
 `CamelModel`은 JSON alias는 camelCase, Python construction은 snake_case도 허용한다. `rawId`는 UUID로 검증하고 표준 문자열로 정규화한다. source 식별자는 rawId 하나이며 내부 DB ID fallback은 없다.

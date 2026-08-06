@@ -185,7 +185,7 @@ AgentCore Runtime에 배포한 환경에서는 `POST /invocations`가 동일한 
 
 ### `POST /v1/user-memory`
 
-확정된 하루 기록으로 사용자 압축 프로필을 갱신하는 작업을 접수합니다. 실제 처리는
+확정된 하루 타임라인으로 사용자 압축 프로필을 갱신하는 작업을 접수합니다. 실제 처리는
 백그라운드에서 진행됩니다.
 
 **완료 콜백이 없습니다.** 결과 저장 API 한 번이 결과 전달과 종료 통보를 겸하며
@@ -204,17 +204,17 @@ AI → App Server   POST /user-memory/updates/{taskId}/result       (성공·실
 | `taskId` | `string` | O | 작업 식별자입니다. 형식은 검증하지 않습니다. |
 | `taskToken` | `string` | O | 이 작업의 토큰입니다. **갱신되지 않습니다** — 결과 저장이 유일한 호출이라 갱신 기회가 없습니다. |
 | `userMemory` | `object \| null` | O | 기존 User Memory입니다. 최초 생성이면 `null`입니다. |
-| `diaries` | `object[]` | O | 확정된 하루 기록입니다. 비어 있어도 됩니다. |
-| `diaries[].date` | `string` | O | 대상 날짜(`YYYY-MM-DD`)입니다. |
-| `diaries[].recordTimeZone` | `string` | | 시간대입니다. 기본값은 `Asia/Seoul`입니다. |
-| `diaries[].emotionType` | `string \| null` | | 현재 항상 `null`입니다. 받아만 두고 사용하지 않습니다. |
-| `diaries[].events[].eventType` | `string` | O | **자유 문자열**입니다. enum으로 제한하지 않습니다. |
-| `diaries[].events[].title` | `string` | | AI가 쓴 제목입니다. |
-| `diaries[].events[].subtitle` | `string \| null` | | AI가 쓴 부제입니다. |
-| `diaries[].events[].question` | `string \| null` | | AI가 붙인 회고 유도 질문입니다. |
-| `diaries[].events[].memo` | `string \| null` | | **사용자가 직접 쓴 메모**입니다. 500자로 자릅니다. |
-| `diaries[].events[].startAt` | `datetime` | O | 시작 시각입니다. |
-| `diaries[].events[].endAt` | `datetime \| null` | | 종료 시각입니다. 단일 시점 event는 `null`입니다. |
+| `dailyTimelines` | `object[]` | O | 확정된 하루 타임라인입니다. 비어 있어도 됩니다. |
+| `dailyTimelines[].date` | `string` | O | 대상 날짜(`YYYY-MM-DD`)입니다. |
+| `dailyTimelines[].recordTimeZone` | `string` | | 시간대입니다. 기본값은 `Asia/Seoul`입니다. |
+| `dailyTimelines[].emotionType` | `string \| null` | | 현재 항상 `null`입니다. 받아만 두고 사용하지 않습니다. |
+| `dailyTimelines[].events[].eventType` | `string` | O | **자유 문자열**입니다. enum으로 제한하지 않습니다. |
+| `dailyTimelines[].events[].title` | `string` | | AI가 쓴 제목입니다. |
+| `dailyTimelines[].events[].subtitle` | `string \| null` | | AI가 쓴 부제입니다. |
+| `dailyTimelines[].events[].question` | `string \| null` | | AI가 붙인 회고 유도 질문입니다. |
+| `dailyTimelines[].events[].memo` | `string \| null` | | **사용자가 직접 쓴 메모**입니다. 500자로 자릅니다. |
+| `dailyTimelines[].events[].startAt` | `datetime` | O | 시작 시각입니다. |
+| `dailyTimelines[].events[].endAt` | `datetime \| null` | | 종료 시각입니다. 단일 시점 event는 `null`입니다. |
 
 ### Request Example
 
@@ -223,7 +223,7 @@ AI → App Server   POST /user-memory/updates/{taskId}/result       (성공·실
   "taskId": "0198f2a1-7c3d-7000-8b2e-1f4a9c05d6e7",
   "taskToken": "task-token-001",
   "userMemory": null,
-  "diaries": [
+  "dailyTimelines": [
     {
       "date": "2026-08-04",
       "recordTimeZone": "Asia/Seoul",
@@ -267,13 +267,13 @@ AI 서버가 4xx를 내면 App Server는 이를 "미접수 확정"으로 보고 
 
 | 대상 | 상한 | 초과 시 |
 |---|---|---|
-| `diaries` | 7일 | 오래된 날부터 제외 |
+| `dailyTimelines` | 7일 | 오래된 날부터 제외 |
 | `events` 총합 | 50개 | **메모 있는 event를 남기고** 오래된 것부터 제외 |
 | `memo` | 500자 | 잘라서 사용 |
 | `title`, `subtitle` | 255자 | 잘라서 사용 |
 
 무엇을 얼마나 잘랐는지는 운영 이벤트(`usermemory.task.completed`)의
-`droppedDiaryCount`/`droppedEventCount`에 남습니다.
+`droppedDailyTimelineCount`/`droppedEventCount`에 남습니다.
 
 422는 계약 위반일 때만 나갑니다 — 필수 필드 누락, `startAt` 파싱 실패 등입니다.
 

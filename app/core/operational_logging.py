@@ -116,10 +116,10 @@ _ALLOWED_FIELDS: dict[OperationalEvent, frozenset[str]] = {
             "hasExistingMemory",
             # 입력을 잘랐는지. 조용히 자르면 "다 보고 이 정도" 인지 "못 본 게 있어서
             # 이 정도" 인지 구분할 수 없다.
-            "diaryCount",
+            "dailyTimelineCount",
             "eventCount",
             "memoCount",
-            "droppedDiaryCount",
+            "droppedDailyTimelineCount",
             "droppedEventCount",
             # 결과의 모양. 본문이 아니라 크기와 개수다.
             "repairAttempts",

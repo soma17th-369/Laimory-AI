@@ -49,8 +49,8 @@ from app.schemas.timeline_request import TimelineDraftRequest, TimeWindow
 from app.schemas.timeline_result import TimelineResultEvent, TimelineResultRequest
 from app.schemas.user_memory import UserMemory
 from app.schemas.user_memory_update import (
-    DiaryEntry,
-    DiaryEvent,
+    DailyTimeline,
+    DailyTimelineEvent,
     UserMemoryResultRequest,
     UserMemoryUpdateRequest,
     UserMemoryUpdateResponse,
@@ -65,8 +65,8 @@ __all__ = [
     "CandidateTimeRange",
     "CollectedSnapshot",
     "CollectedSourceItem",
-    "DiaryEntry",
-    "DiaryEvent",
+    "DailyTimeline",
+    "DailyTimelineEvent",
     "ErrorResponse",
     "EventSourceType",
     "EventType",

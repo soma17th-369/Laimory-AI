@@ -2,7 +2,7 @@
 
 두 방향을 다룬다.
 
-- **입력** — 접수한 하루 기록을 프롬프트에 실을 만큼으로 줄인다. 거절하지 않고
+- **입력** — 접수한 하루 타임라인을 프롬프트에 실을 만큼으로 줄인다. 거절하지 않고
   **자른다**. App Server 는 4xx 를 "미접수 확정" 으로 읽고 앱에 502 를 주므로,
   이벤트가 많은 정상적인 하루가 사용자에게 저장 실패로 보이면 안 된다.
 - **출력** — LLM 이 만든 갱신본이 크기·민감정보 규칙을 지켰는지 본다. 여기서는
@@ -32,14 +32,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.schemas.user_memory import UserMemory
-from app.schemas.user_memory_update import DiaryEntry, DiaryEvent
+from app.schemas.user_memory_update import DailyTimeline, DailyTimelineEvent
 from app.services.notification_guard import SENSITIVE_PATTERNS
 
 #: 갱신본 전체의 직렬화 문자 수 상한(이슈의 1,000토큰을 문자 수로 옮긴 값).
 USER_MEMORY_MAX_CHARS = 1_200
 
-#: 프롬프트에 실을 최대 일기 수. 최근 것부터 남긴다.
-MAX_DIARY_COUNT = 7
+#: 프롬프트에 실을 최대 하루 타임라인 수. 최근 것부터 남긴다.
+MAX_DAILY_TIMELINE_COUNT = 7
 
 #: 프롬프트에 실을 최대 event 수(요청 전체 합계).
 MAX_EVENT_COUNT = 50
@@ -53,13 +53,13 @@ TEXT_MAX_CHARS = 255
 
 
 @dataclass(frozen=True)
-class DiaryDigest:
-    """프롬프트에 실을 하루 기록과, 무엇을 얼마나 버렸는지.
+class DailyTimelineDigest:
+    """프롬프트에 실을 하루 타임라인과, 무엇을 얼마나 버렸는지.
 
     ``stats`` 는 전부 정수라 그대로 운영 이벤트에 실을 수 있다. 본문은 담지 않는다.
     """
 
-    diaries: list[dict[str, Any]]
+    daily_timelines: list[dict[str, Any]]
     stats: dict[str, int]
 
     @property
@@ -87,7 +87,7 @@ def _clip(value: str | None, limit: int) -> str | None:
     return text[:limit]
 
 
-def _project_event(event: DiaryEvent) -> dict[str, Any]:
+def _project_event(event: DailyTimelineEvent) -> dict[str, Any]:
     """event 하나를 프롬프트용 최소 형태로 접는다.
 
     시각은 분을 버리고 시 단위로만 준다. 갱신 대상은 "몇 시 몇 분에 무엇을 했다" 가
@@ -111,7 +111,7 @@ def _project_event(event: DiaryEvent) -> dict[str, Any]:
     return projected
 
 
-def _event_priority(item: tuple[int, int, DiaryEvent]) -> tuple[int, float]:
+def _event_priority(item: tuple[int, int, DailyTimelineEvent]) -> tuple[int, float]:
     """남길 순서를 정하는 키(작을수록 먼저 남긴다).
 
     **메모가 있는 event 를 끝까지 지킨다.** 사용자가 직접 쓴 글은 성향 계열 필드의
@@ -124,10 +124,10 @@ def _event_priority(item: tuple[int, int, DiaryEvent]) -> tuple[int, float]:
     return (has_memo, -event.start_at.timestamp())
 
 
-def build_diary_digest(diaries: list[DiaryEntry]) -> DiaryDigest:
-    """접수한 하루 기록을 프롬프트에 실을 만큼으로 줄인다.
+def build_daily_timeline_digest(daily_timelines: list[DailyTimeline]) -> DailyTimelineDigest:
+    """접수한 하루 타임라인을 프롬프트에 실을 만큼으로 줄인다.
 
-    1. 최근 :data:`MAX_DIARY_COUNT` 일만 남긴다.
+    1. 최근 :data:`MAX_DAILY_TIMELINE_COUNT` 일만 남긴다.
     2. 전체 event 가 :data:`MAX_EVENT_COUNT` 를 넘으면, **메모 있는 event 를 모두
        남긴 뒤** 남는 자리를 최근 event 로 채운다.
     3. 남은 것을 날짜 오름차순·시간 오름차순으로 다시 묶는다.
@@ -136,14 +136,14 @@ def build_diary_digest(diaries: list[DiaryEntry]) -> DiaryDigest:
     인지 "못 본 게 있어서 이 정도" 인지 구분할 수 없다.
     """
 
-    ordered = sorted(diaries, key=lambda entry: entry.date, reverse=True)
-    kept_diaries = ordered[:MAX_DIARY_COUNT]
-    dropped_diary_count = len(ordered) - len(kept_diaries)
+    ordered = sorted(daily_timelines, key=lambda entry: entry.date, reverse=True)
+    kept_timelines = ordered[:MAX_DAILY_TIMELINE_COUNT]
+    dropped_timeline_count = len(ordered) - len(kept_timelines)
 
     # (일기 index, event index, event) 로 들고 다녀야 잘라낸 뒤 원래 자리로 되돌릴 수 있다.
     flattened = [
-        (diary_index, event_index, event)
-        for diary_index, entry in enumerate(kept_diaries)
+        (timeline_index, event_index, event)
+        for timeline_index, entry in enumerate(kept_timelines)
         for event_index, event in enumerate(entry.events)
     ]
     total_event_count = len(flattened)
@@ -156,12 +156,12 @@ def build_diary_digest(diaries: list[DiaryEntry]) -> DiaryDigest:
     dropped_event_count = total_event_count - len(kept)
 
     grouped: dict[int, list[dict[str, Any]]] = {}
-    for diary_index, _, event in kept:
-        grouped.setdefault(diary_index, []).append(_project_event(event))
+    for timeline_index, _, event in kept:
+        grouped.setdefault(timeline_index, []).append(_project_event(event))
 
     payload: list[dict[str, Any]] = []
-    for diary_index, entry in enumerate(kept_diaries):
-        events = grouped.get(diary_index, [])
+    for timeline_index, entry in enumerate(kept_timelines):
+        events = grouped.get(timeline_index, [])
         if not events:
             # event 가 전부 잘려 나간 날은 싣지 않는다. 날짜만 남은 항목은 모델에게
             # "이 날은 아무 일도 없었다" 로 읽힌다.
@@ -169,13 +169,13 @@ def build_diary_digest(diaries: list[DiaryEntry]) -> DiaryDigest:
         payload.append({"date": entry.date, "events": events})
     payload.sort(key=lambda entry: entry["date"])
 
-    return DiaryDigest(
-        diaries=payload,
+    return DailyTimelineDigest(
+        daily_timelines=payload,
         stats={
-            "diaryCount": len(payload),
+            "dailyTimelineCount": len(payload),
             "eventCount": len(kept),
             "memoCount": memo_count,
-            "droppedDiaryCount": dropped_diary_count,
+            "droppedDailyTimelineCount": dropped_timeline_count,
             "droppedEventCount": dropped_event_count,
         },
     )

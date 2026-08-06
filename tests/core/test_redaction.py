@@ -244,9 +244,9 @@ def test_user_memory_key_matching_ignores_case_and_separators() -> None:
     assert _has_no_memory_body(redacted)
 
 
-# --- 확정된 하루 기록 (#64) --------------------------------------------
+# --- 확정된 하루 타임라인 (#64) --------------------------------------------
 
-_DIARIES_BODY = [
+_DAILY_TIMELINES_BODY = [
     {
         "date": "2026-08-04",
         "events": [
@@ -261,7 +261,7 @@ _DIARIES_BODY = [
 ]
 
 
-def _has_no_diary_body(value: object) -> bool:
+def _has_no_daily_timeline_body(value: object) -> bool:
     serialized = str(value)
     return not any(
         body in serialized
@@ -269,42 +269,42 @@ def _has_no_diary_body(value: object) -> bool:
     )
 
 
-def test_diary_body_is_summarized_in_logs() -> None:
+def test_daily_timeline_body_is_summarized_in_logs() -> None:
     """`memo` 는 사용자가 직접 쓴 글이다. User Memory 와 같은 이유로 개수만 남긴다."""
 
-    redacted = redact_value({"diaries": _DIARIES_BODY})
+    redacted = redact_value({"dailyTimelines": _DAILY_TIMELINES_BODY})
 
-    summary = redacted["diaries"]
-    assert summary["diaryCount"] == 1
+    summary = redacted["dailyTimelines"]
+    assert summary["dailyTimelineCount"] == 1
     assert summary["eventCount"] == 2
     assert summary["memoCount"] == 1
     assert summary["contentCaptured"] is False
-    assert _has_no_diary_body(redacted)
+    assert _has_no_daily_timeline_body(redacted)
 
 
-def test_diary_body_never_reaches_external_capture() -> None:
+def test_daily_timeline_body_never_reaches_external_capture() -> None:
     captured = capture_external_content(
-        {"taskId": "task-1", "diaries": _DIARIES_BODY},
+        {"taskId": "task-1", "dailyTimelines": _DAILY_TIMELINES_BODY},
         ContentCapture.SANITIZED,
         max_bytes=4096,
     )
 
     assert captured["taskId"] == "task-1"
-    assert _has_no_diary_body(captured)
+    assert _has_no_daily_timeline_body(captured)
 
 
-def test_diary_summary_does_not_depend_on_event_field_names() -> None:
+def test_daily_timeline_summary_does_not_depend_on_event_field_names() -> None:
     """App Server 가 필드를 더해도 본문이 새면 안 된다."""
 
     redacted = redact_value(
-        {"diaries": [{"date": "2026-08-04", "events": [{"newField": "점심 이야기"}]}]}
+        {"dailyTimelines": [{"date": "2026-08-04", "events": [{"newField": "점심 이야기"}]}]}
     )
 
-    assert redacted["diaries"]["eventCount"] == 1
-    assert _has_no_diary_body(redacted)
+    assert redacted["dailyTimelines"]["eventCount"] == 1
+    assert _has_no_daily_timeline_body(redacted)
 
 
-def test_diaries_of_unknown_shape_are_folded_whole() -> None:
-    redacted = redact_value({"diaries": {"date": "2026-08-04"}})
+def test_daily_timelines_of_unknown_shape_are_folded_whole() -> None:
+    redacted = redact_value({"dailyTimelines": {"date": "2026-08-04"}})
 
-    assert redacted["diaries"]["contentCaptured"] is False
+    assert redacted["dailyTimelines"]["contentCaptured"] is False

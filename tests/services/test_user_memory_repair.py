@@ -13,7 +13,7 @@ import pytest
 
 from app.core.error_codes import ErrorCode
 from app.schemas.user_memory import SCHEMA_VERSION, UserMemory
-from app.services.user_memory_limits import build_diary_digest
+from app.services.user_memory_limits import build_daily_timeline_digest
 from app.services.user_memory_repair import (
     UserMemoryLimitError,
     build_user_memory,
@@ -38,7 +38,7 @@ class _StubAgent:
 
 
 def _digest():
-    return build_diary_digest([])
+    return build_daily_timeline_digest([])
 
 
 def _oversized() -> UserMemory:

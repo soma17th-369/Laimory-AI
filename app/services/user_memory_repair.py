@@ -75,7 +75,7 @@ def build_user_memory(
     Args:
         agent: :class:`~app.agents.user_memory.UserMemoryAgent` 또는 같은 형태의 더블.
         existing: 기존 프로필. 최초 생성이면 ``None``.
-        digest: 프롬프트에 실을 하루 기록(:class:`~app.services.user_memory_limits.DiaryDigest`).
+        digest: 프롬프트에 실을 하루 기록(:class:`~app.services.user_memory_limits.DailyTimelineDigest`).
         updated_at: 갱신 시각. 호출부가 정한다(테스트가 시간을 고정할 수 있게).
         max_attempts: 위반 시 다시 물어볼 횟수.
 

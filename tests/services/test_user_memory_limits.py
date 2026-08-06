@@ -9,45 +9,45 @@
 import pytest
 
 from app.schemas.user_memory import UserMemory
-from app.schemas.user_memory_update import DiaryEntry
+from app.schemas.user_memory_update import DailyTimeline
 from app.services.user_memory_limits import (
-    MAX_DIARY_COUNT,
+    MAX_DAILY_TIMELINE_COUNT,
     MAX_EVENT_COUNT,
     MEMO_MAX_CHARS,
     TEXT_MAX_CHARS,
     USER_MEMORY_MAX_CHARS,
-    build_diary_digest,
+    build_daily_timeline_digest,
     find_violations,
     serialized_chars,
 )
-from tests.fixtures.user_memory import diary, diary_event
+from tests.fixtures.user_memory import daily_timeline, daily_timeline_event
 
 
-def _entries(payload: list[dict]) -> list[DiaryEntry]:
-    return [DiaryEntry.model_validate(item) for item in payload]
+def _entries(payload: list[dict]) -> list[DailyTimeline]:
+    return [DailyTimeline.model_validate(item) for item in payload]
 
 
 # --- 입력 잘라내기 -----------------------------------------------------
 
 
-def test_digest_keeps_only_the_most_recent_diaries():
-    payload = [diary(date=f"2026-07-{day:02d}") for day in range(1, MAX_DIARY_COUNT + 4)]
+def test_digest_keeps_only_the_most_recent_timelines():
+    payload = [daily_timeline(date=f"2026-07-{day:02d}") for day in range(1, MAX_DAILY_TIMELINE_COUNT + 4)]
 
-    digest = build_diary_digest(_entries(payload))
+    digest = build_daily_timeline_digest(_entries(payload))
 
-    assert digest.stats["diaryCount"] == MAX_DIARY_COUNT
-    assert digest.stats["droppedDiaryCount"] == 3
+    assert digest.stats["dailyTimelineCount"] == MAX_DAILY_TIMELINE_COUNT
+    assert digest.stats["droppedDailyTimelineCount"] == 3
     # 남은 것은 최근 날짜이고, 프롬프트에는 오름차순으로 실린다.
-    dates = [entry["date"] for entry in digest.diaries]
+    dates = [entry["date"] for entry in digest.daily_timelines]
     assert dates == sorted(dates)
-    assert dates[-1] == f"2026-07-{MAX_DIARY_COUNT + 3:02d}"
+    assert dates[-1] == f"2026-07-{MAX_DAILY_TIMELINE_COUNT + 3:02d}"
 
 
 def test_digest_keeps_memo_events_when_over_budget():
     """메모는 성향 계열 필드의 유일한 근거다. 마지막까지 지킨다."""
 
     events = [
-        diary_event(
+        daily_timeline_event(
             title=f"이벤트 {index}",
             start_at=f"2026-08-04T{index % 24:02d}:00:00+09:00",
             end_at=None,
@@ -58,11 +58,11 @@ def test_digest_keeps_memo_events_when_over_budget():
     events[0]["memo"] = "오늘은 오랜만에 마음이 놓였어요."
     events[0]["startAt"] = "2026-08-04T00:00:00+09:00"
 
-    digest = build_diary_digest(_entries([diary(events=events)]))
+    digest = build_daily_timeline_digest(_entries([daily_timeline(events=events)]))
 
     memos = [
         event.get("memo")
-        for entry in digest.diaries
+        for entry in digest.daily_timelines
         for event in entry["events"]
         if event.get("memo")
     ]
@@ -75,20 +75,20 @@ def test_digest_reports_memo_count_even_for_dropped_events():
     """센 것은 접수한 전부다. 자른 뒤 숫자만 보면 "메모 없는 날" 로 오해한다."""
 
     events = [
-        diary_event(start_at=f"2026-08-04T{index % 24:02d}:30:00+09:00", end_at=None)
+        daily_timeline_event(start_at=f"2026-08-04T{index % 24:02d}:30:00+09:00", end_at=None)
         for index in range(MAX_EVENT_COUNT + 5)
     ]
     for event in events:
         event["memo"] = "메모"
 
-    digest = build_diary_digest(_entries([diary(events=events)]))
+    digest = build_daily_timeline_digest(_entries([daily_timeline(events=events)]))
 
     assert digest.stats["memoCount"] == MAX_EVENT_COUNT + 5
     assert digest.has_memo
 
 
 def test_digest_reports_no_memo_day():
-    digest = build_diary_digest(_entries([diary()]))
+    digest = build_daily_timeline_digest(_entries([daily_timeline()]))
 
     assert digest.stats["memoCount"] == 0
     assert not digest.has_memo
@@ -97,11 +97,11 @@ def test_digest_reports_no_memo_day():
 def test_digest_drops_the_minute_from_event_times():
     """분 단위 시각은 갱신 판단에 쓸모가 없고 프로필 문장에 샐 위험만 만든다."""
 
-    digest = build_diary_digest(
-        _entries([diary(events=[diary_event(start_at="2026-08-04T12:43:00+09:00")])])
+    digest = build_daily_timeline_digest(
+        _entries([daily_timeline(events=[daily_timeline_event(start_at="2026-08-04T12:43:00+09:00")])])
     )
 
-    event = digest.diaries[0]["events"][0]
+    event = digest.daily_timelines[0]["events"][0]
     assert event["hour"] == 12
     assert "startAt" not in event
     assert "43" not in str(event)
@@ -110,12 +110,12 @@ def test_digest_drops_the_minute_from_event_times():
 def test_digest_omits_question_and_empty_values():
     """`question` 도 AI 가 쓴 문장이라 갱신 근거로 주지 않는다."""
 
-    digest = build_diary_digest(
+    digest = build_daily_timeline_digest(
         _entries(
             [
-                diary(
+                daily_timeline(
                     events=[
-                        diary_event(
+                        daily_timeline_event(
                             subtitle=None,
                             question="어떤 이야기가 기억에 남았나요?",
                             memo="  ",
@@ -126,26 +126,26 @@ def test_digest_omits_question_and_empty_values():
         )
     )
 
-    event = digest.diaries[0]["events"][0]
+    event = digest.daily_timelines[0]["events"][0]
     assert "question" not in event
     assert "subtitle" not in event
     assert "memo" not in event
 
 
 def test_digest_clips_long_text_instead_of_rejecting():
-    digest = build_diary_digest(
+    digest = build_daily_timeline_digest(
         _entries(
             [
-                diary(
+                daily_timeline(
                     events=[
-                        diary_event(title="가" * 400, memo="나" * (MEMO_MAX_CHARS + 200))
+                        daily_timeline_event(title="가" * 400, memo="나" * (MEMO_MAX_CHARS + 200))
                     ]
                 )
             ]
         )
     )
 
-    event = digest.diaries[0]["events"][0]
+    event = digest.daily_timelines[0]["events"][0]
     assert len(event["title"]) == TEXT_MAX_CHARS
     assert len(event["memo"]) == MEMO_MAX_CHARS
 
@@ -153,15 +153,15 @@ def test_digest_clips_long_text_instead_of_rejecting():
 def test_digest_skips_a_day_whose_events_were_all_dropped():
     """event 가 하나도 안 남은 날은 싣지 않는다. 모델이 "아무 일도 없던 날" 로 읽는다."""
 
-    digest = build_diary_digest(_entries([diary(date="2026-08-03", events=[]), diary()]))
+    digest = build_daily_timeline_digest(_entries([daily_timeline(date="2026-08-03", events=[]), daily_timeline()]))
 
-    assert [entry["date"] for entry in digest.diaries] == ["2026-08-04"]
+    assert [entry["date"] for entry in digest.daily_timelines] == ["2026-08-04"]
 
 
 def test_digest_of_nothing_is_empty_not_an_error():
-    digest = build_diary_digest([])
+    digest = build_daily_timeline_digest([])
 
-    assert digest.diaries == []
+    assert digest.daily_timelines == []
     assert digest.stats["eventCount"] == 0
 
 

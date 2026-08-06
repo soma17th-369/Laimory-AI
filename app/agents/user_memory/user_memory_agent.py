@@ -1,6 +1,6 @@
 """User Memory 갱신 Agent (#64).
 
-기존 프로필과 확정된 하루 기록을 받아 **전체 갱신본 하나**를 만든다. append 가 아니라
+기존 프로필과 확정된 하루 타임라인을 받아 **전체 갱신본 하나**를 만든다. append 가 아니라
 rewrite 다 — 출력이 기존 값을 통째로 대체한다.
 
 ## 이 Agent 가 타임라인 파이프라인의 Agent 가 아닌 이유
@@ -42,7 +42,7 @@ from app.agents.prompt_loader import load_prompt
 from app.core.execution_context import ExecutionStage, execution_scope
 from app.core.logging import get_logger, log_fields
 from app.schemas.user_memory import UserMemory
-from app.services.user_memory_limits import DiaryDigest
+from app.services.user_memory_limits import DailyTimelineDigest
 
 logger = get_logger(__name__)
 
@@ -54,7 +54,7 @@ _TEMPERATURE = 0.2
 
 def build_update_prompt(
     existing: UserMemory | None,
-    digest: DiaryDigest,
+    digest: DailyTimelineDigest,
     *,
     violations: Sequence[str] = (),
 ) -> str:
@@ -70,7 +70,7 @@ def build_update_prompt(
 
     sections = [
         f"[existing user memory]\n{user_memory_to_text(existing)}",
-        f"[diaries]\n{json.dumps(digest.diaries, ensure_ascii=False, indent=2)}",
+        f"[dailyTimelines]\n{json.dumps(digest.daily_timelines, ensure_ascii=False, indent=2)}",
     ]
 
     if not digest.has_memo:
@@ -101,7 +101,7 @@ def build_update_prompt(
 
 
 class UserMemoryAgent:
-    """확정된 하루 기록으로 User Memory 전체 갱신본을 만든다."""
+    """확정된 하루 타임라인으로 User Memory 전체 갱신본을 만든다."""
 
     name = "user-memory"
 
@@ -117,7 +117,7 @@ class UserMemoryAgent:
     def generate(
         self,
         existing: UserMemory | None,
-        digest: DiaryDigest,
+        digest: DailyTimelineDigest,
         *,
         violations: Sequence[str] = (),
     ) -> UserMemory:

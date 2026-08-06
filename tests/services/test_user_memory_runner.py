@@ -23,8 +23,8 @@ from tests.fixtures.app_server import FakeAppServerClient
 from tests.fixtures.user_memory import (
     TASK_ID,
     TASK_TOKEN,
-    diary,
-    diary_event,
+    daily_timeline,
+    daily_timeline_event,
     memory_body,
     update_request,
 )
@@ -140,7 +140,7 @@ def test_a_day_without_memo_still_succeeds():
     status = _run(
         client,
         agent,
-        diaries=[diary(events=[diary_event(memo=None)])],
+        dailyTimelines=[daily_timeline(events=[daily_timeline_event(memo=None)])],
     )
 
     assert status is TaskStatus.SUCCESS
@@ -300,23 +300,23 @@ def test_failed_result_call_is_visible_in_the_event(caplog):
 def test_event_reports_what_was_dropped_from_the_input(caplog):
     """조용히 자르면 "다 보고 이 정도" 인지 "못 본 게 있어서" 인지 알 수 없다."""
 
-    diaries = [diary(date=f"2026-07-{day:02d}") for day in range(1, 12)]
+    daily_timelines = [daily_timeline(date=f"2026-07-{day:02d}") for day in range(1, 12)]
 
     with caplog.at_level(logging.DEBUG):
-        _run(FakeAppServerClient(), diaries=diaries)
+        _run(FakeAppServerClient(), dailyTimelines=daily_timelines)
 
     event = _events(caplog)[-1]
-    assert event["diaryCount"] == 7
-    assert event["droppedDiaryCount"] == 4
+    assert event["dailyTimelineCount"] == 7
+    assert event["droppedDailyTimelineCount"] == 4
 
 
-def test_event_never_carries_diary_or_memory_content(caplog):
+def test_event_never_carries_timeline_or_memory_content(caplog):
     with caplog.at_level(logging.DEBUG):
         _run(
             FakeAppServerClient(),
             _StubAgent(UserMemory(basic_profile="비밀 프로필 문장")),
-            diaries=[
-                diary(events=[diary_event(title="비밀 제목", memo="비밀 메모")])
+            dailyTimelines=[
+                daily_timeline(events=[daily_timeline_event(title="비밀 제목", memo="비밀 메모")])
             ],
         )
 

@@ -12,10 +12,10 @@ import pytest
 
 from app.agents.user_memory import UserMemoryAgent, build_update_prompt
 from app.schemas.user_memory import UserMemory
-from app.services.user_memory_limits import build_diary_digest
-from app.schemas.user_memory_update import DiaryEntry
+from app.services.user_memory_limits import build_daily_timeline_digest
+from app.schemas.user_memory_update import DailyTimeline
 from tests.fixtures.fake_llm import FakeLLM
-from tests.fixtures.user_memory import diary, diary_event, memory_json
+from tests.fixtures.user_memory import daily_timeline, daily_timeline_event, memory_json
 
 _PROMPTS = (
     Path(__file__).resolve().parents[2]
@@ -27,21 +27,21 @@ _PROMPTS = (
 
 
 def _digest(events=None):
-    payload = [diary(events=events if events is not None else [diary_event()])]
-    return build_diary_digest([DiaryEntry.model_validate(item) for item in payload])
+    payload = [daily_timeline(events=events if events is not None else [daily_timeline_event()])]
+    return build_daily_timeline_digest([DailyTimeline.model_validate(item) for item in payload])
 
 
 # --- 프롬프트 조립 -----------------------------------------------------
 
 
-def test_prompt_carries_the_existing_profile_and_the_diaries():
+def test_prompt_carries_the_existing_profile_and_the_timelines():
     prompt = build_update_prompt(
         UserMemory(basic_profile="30대 개발자입니다."), _digest()
     )
 
     assert "[existing user memory]" in prompt
     assert "30대 개발자입니다." in prompt
-    assert "[diaries]" in prompt
+    assert "[dailyTimelines]" in prompt
 
 
 def test_missing_profile_reads_the_same_as_an_empty_one():
@@ -57,7 +57,7 @@ def test_missing_profile_reads_the_same_as_an_empty_one():
 def test_a_day_without_memo_is_told_so_explicitly():
     """빈 자리를 메우려는 것을 막는다. 알려 주지 않으면 AI 문장에서 성향을 만든다."""
 
-    prompt = build_update_prompt(None, _digest([diary_event(memo=None)]))
+    prompt = build_update_prompt(None, _digest([daily_timeline_event(memo=None)]))
 
     assert "[근거 없음]" in prompt
     assert "personality" in prompt
@@ -65,7 +65,7 @@ def test_a_day_without_memo_is_told_so_explicitly():
 
 
 def test_a_day_with_memo_gets_no_such_hint():
-    prompt = build_update_prompt(None, _digest([diary_event(memo="오늘은 좋았어요.")]))
+    prompt = build_update_prompt(None, _digest([daily_timeline_event(memo="오늘은 좋았어요.")]))
 
     assert "[근거 없음]" not in prompt
     assert "오늘은 좋았어요." in prompt
@@ -84,7 +84,7 @@ def test_violations_are_sent_back_without_quoting_values():
 
 def test_prompt_never_contains_the_minute_of_an_event():
     prompt = build_update_prompt(
-        None, _digest([diary_event(start_at="2026-08-04T12:43:00+09:00")])
+        None, _digest([daily_timeline_event(start_at="2026-08-04T12:43:00+09:00")])
     )
 
     assert "12:43" not in prompt
@@ -94,7 +94,7 @@ def test_prompt_never_contains_the_ai_written_question():
     """`question` 도 AI 가 쓴 문장이라 갱신 근거로 주지 않는다."""
 
     prompt = build_update_prompt(
-        None, _digest([diary_event(question="어떤 이야기가 기억에 남았나요?")])
+        None, _digest([daily_timeline_event(question="어떤 이야기가 기억에 남았나요?")])
     )
 
     assert "기억에 남았나요" not in prompt

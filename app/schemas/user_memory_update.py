@@ -1,6 +1,6 @@
 """User Memory 갱신 접수·저장 계약 (#64).
 
-App Server 가 **확정된 하루 기록**과 **기존 User Memory** 를 보내면, AI 서버가 전체
+App Server 가 **확정된 하루 타임라인**과 **기존 User Memory** 를 보내면, AI 서버가 전체
 갱신본을 만들어 결과 저장 경로로 돌려준다. 호출은 두 개뿐이다.
 
 ===  ==========================================================  ==================
@@ -39,8 +39,8 @@ from app.schemas.task import TaskStatus
 from app.schemas.user_memory import UserMemory
 
 
-class DiaryEvent(CamelModel):
-    """확정된 하루 기록의 event 하나.
+class DailyTimelineEvent(CamelModel):
+    """확정된 하루 타임라인의 event 하나.
 
     ``title``·``subtitle``·``question`` 은 **이 시스템의 타임라인 AI 가 쓴 문장**이고
     ``memo`` 만 사용자가 직접 쓴 글이다. 이 구분은 갱신 프롬프트가 지키며, 근거는
@@ -57,14 +57,14 @@ class DiaryEvent(CamelModel):
     end_at: AwareDatetime | None = Field(default=None, alias="endAt")
 
 
-class DiaryEntry(CamelModel):
-    """하루치 확정 기록."""
+class DailyTimeline(CamelModel):
+    """하루치 확정 타임라인."""
 
     date: str = Field(min_length=1)
     record_time_zone: str = Field(default="Asia/Seoul", alias="recordTimeZone")
     #: 현재 App Server 가 항상 ``null`` 로 보낸다. 받아만 두고 쓰지 않는다.
     emotion_type: str | None = Field(default=None, alias="emotionType")
-    events: list[DiaryEvent] = Field(default_factory=list)
+    events: list[DailyTimelineEvent] = Field(default_factory=list)
 
 
 class UserMemoryUpdateRequest(CamelModel):
@@ -84,7 +84,9 @@ class UserMemoryUpdateRequest(CamelModel):
     #: 어떤 날도 메모리를 갱신하지 못한다. 검증은 :meth:`parse_user_memory` 가 따로
     #: 하고 실패는 접수 경계가 흡수한다(#65 의 입력 조회와 같은 구조다).
     user_memory: dict[str, Any] | None = Field(default=None, alias="userMemory")
-    diaries: list[DiaryEntry] = Field(default_factory=list)
+    daily_timelines: list[DailyTimeline] = Field(
+        default_factory=list, alias="dailyTimelines"
+    )
 
     def parse_user_memory(self) -> UserMemory | None:
         """기존 User Memory 를 v1.0 계약으로 검증한다.
