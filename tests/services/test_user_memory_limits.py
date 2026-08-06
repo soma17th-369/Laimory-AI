@@ -13,6 +13,7 @@ from app.schemas.user_memory_update import DailyTimeline
 from app.services.user_memory_limits import (
     MAX_DAILY_TIMELINE_COUNT,
     MAX_EVENT_COUNT,
+    MAX_EVENTS_PER_TIMELINE,
     MEMO_MAX_CHARS,
     TEXT_MAX_CHARS,
     USER_MEMORY_MAX_CHARS,
@@ -52,7 +53,7 @@ def test_digest_keeps_memo_events_when_over_budget():
             start_at=f"2026-08-04T{index % 24:02d}:00:00+09:00",
             end_at=None,
         )
-        for index in range(MAX_EVENT_COUNT + 10)
+        for index in range(MAX_EVENTS_PER_TIMELINE + 10)
     ]
     # 가장 오래된 자리에 메모를 둔다. 시간 순으로만 자르면 이것부터 사라진다.
     events[0]["memo"] = "오늘은 오랜만에 마음이 놓였어요."
@@ -66,7 +67,7 @@ def test_digest_keeps_memo_events_when_over_budget():
         for event in entry["events"]
         if event.get("memo")
     ]
-    assert digest.stats["eventCount"] == MAX_EVENT_COUNT
+    assert digest.stats["eventCount"] == MAX_EVENTS_PER_TIMELINE
     assert digest.stats["droppedEventCount"] == 10
     assert memos == ["오늘은 오랜만에 마음이 놓였어요."]
 
@@ -76,14 +77,14 @@ def test_digest_reports_memo_count_even_for_dropped_events():
 
     events = [
         daily_timeline_event(start_at=f"2026-08-04T{index % 24:02d}:30:00+09:00", end_at=None)
-        for index in range(MAX_EVENT_COUNT + 5)
+        for index in range(MAX_EVENTS_PER_TIMELINE + 5)
     ]
     for event in events:
         event["memo"] = "메모"
 
     digest = build_daily_timeline_digest(_entries([daily_timeline(events=events)]))
 
-    assert digest.stats["memoCount"] == MAX_EVENT_COUNT + 5
+    assert digest.stats["memoCount"] == MAX_EVENTS_PER_TIMELINE + 5
     assert digest.has_memo
 
 
@@ -238,3 +239,64 @@ def test_serialized_size_ignores_metadata_and_empty_fields():
     empty = UserMemory(updated_at="2026-08-06T09:00:00+09:00")
 
     assert serialized_chars(empty) == len("{}")
+
+
+# --- 날짜별 몫 ---------------------------------------------------------
+
+
+def test_each_day_gets_its_own_event_quota():
+    """event 가 몰린 하루가 다른 날의 자리를 먹지 않는다.
+
+    전체 상한 하나로 자르면 정렬 기준이 (메모 있음, 최근순)이라 최근의 바쁜 하루가
+    앞자리를 다 차지하고, 밀려난 날은 payload 에서 빠져 모델에게는 애초에 없던 날이
+    된다. "여러 날에서 반복 확인" 판단의 근거가 통째로 사라진다.
+    """
+
+    busy = daily_timeline(
+        date="2026-08-05",
+        events=[
+            daily_timeline_event(
+                start_at=f"2026-08-05T{index % 24:02d}:00:00+09:00", end_at=None
+            )
+            for index in range(MAX_EVENTS_PER_TIMELINE + 30)
+        ],
+    )
+    quiet = daily_timeline(
+        date="2026-08-04",
+        events=[daily_timeline_event(start_at="2026-08-04T09:00:00+09:00", end_at=None)],
+    )
+
+    digest = build_daily_timeline_digest(_entries([busy, quiet]))
+
+    by_date = {entry["date"]: entry["events"] for entry in digest.daily_timelines}
+    assert set(by_date) == {"2026-08-04", "2026-08-05"}
+    assert len(by_date["2026-08-05"]) == MAX_EVENTS_PER_TIMELINE
+    assert len(by_date["2026-08-04"]) == 1
+    assert digest.stats["droppedEventCount"] == 30
+
+
+def test_total_cap_is_derived_from_the_daily_quota():
+    """전체 상한을 따로 정하지 않는다. 두 값이 갈리면 어느 쪽이 이기는지 알기 어렵다."""
+
+    assert MAX_EVENT_COUNT == MAX_DAILY_TIMELINE_COUNT * MAX_EVENTS_PER_TIMELINE
+
+
+def test_a_full_request_never_exceeds_the_total_cap():
+    payload = [
+        daily_timeline(
+            date=f"2026-08-{day:02d}",
+            events=[
+                daily_timeline_event(
+                    start_at=f"2026-08-{day:02d}T{index % 24:02d}:00:00+09:00",
+                    end_at=None,
+                )
+                for index in range(MAX_EVENTS_PER_TIMELINE + 5)
+            ],
+        )
+        for day in range(1, MAX_DAILY_TIMELINE_COUNT + 3)
+    ]
+
+    digest = build_daily_timeline_digest(_entries(payload))
+
+    assert digest.stats["eventCount"] == MAX_EVENT_COUNT
+    assert digest.stats["dailyTimelineCount"] == MAX_DAILY_TIMELINE_COUNT

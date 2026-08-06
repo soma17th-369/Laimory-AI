@@ -39,10 +39,17 @@ from app.services.notification_guard import SENSITIVE_PATTERNS
 USER_MEMORY_MAX_CHARS = 1_200
 
 #: 프롬프트에 실을 최대 하루 타임라인 수. 최근 것부터 남긴다.
-MAX_DAILY_TIMELINE_COUNT = 7
+MAX_DAILY_TIMELINE_COUNT = 5
 
-#: 프롬프트에 실을 최대 event 수(요청 전체 합계).
-MAX_EVENT_COUNT = 50
+#: 하루당 최대 event 수. **날짜별 몫이다.**
+#:
+#: 전체 상한 하나만 두면 event 가 몰린 하루가 다른 날의 자리를 다 먹는다. 정렬 기준이
+#: (메모 있음, 최근순)이라 오래된 날이 통째로 밀려나고, event 가 하나도 안 남은 날은
+#: payload 에서 빠져 모델에게는 애초에 없던 날이 된다.
+MAX_EVENTS_PER_TIMELINE = 20
+
+#: 요청 전체 event 상한. 날짜별 몫에서 파생되므로 따로 정하지 않는다.
+MAX_EVENT_COUNT = MAX_DAILY_TIMELINE_COUNT * MAX_EVENTS_PER_TIMELINE
 
 #: 사용자가 직접 쓴 메모의 상한. App Server 도 같은 값으로 막지만, 넘겨받은 값을
 #: 그대로 믿지 않는다.
@@ -128,9 +135,13 @@ def build_daily_timeline_digest(daily_timelines: list[DailyTimeline]) -> DailyTi
     """접수한 하루 타임라인을 프롬프트에 실을 만큼으로 줄인다.
 
     1. 최근 :data:`MAX_DAILY_TIMELINE_COUNT` 일만 남긴다.
-    2. 전체 event 가 :data:`MAX_EVENT_COUNT` 를 넘으면, **메모 있는 event 를 모두
-       남긴 뒤** 남는 자리를 최근 event 로 채운다.
+    2. **하루마다** :data:`MAX_EVENTS_PER_TIMELINE` 개까지 남긴다. 메모 있는 event 를
+       먼저 남기고 남는 자리를 최근 event 로 채운다.
     3. 남은 것을 날짜 오름차순·시간 오름차순으로 다시 묶는다.
+
+    2번을 날짜별로 하는 것이 핵심이다. 전체 상한 하나로 자르면 event 가 몰린 하루가
+    다른 날의 자리를 다 먹고, 밀려난 날은 payload 에서 빠져 모델에게는 애초에 없던
+    날이 된다.
 
     버린 양은 ``stats`` 에 남는다. 조용히 자르면 결과만 보고는 "다 봤는데 이 정도"
     인지 "못 본 게 있어서 이 정도" 인지 구분할 수 없다.
@@ -151,7 +162,12 @@ def build_daily_timeline_digest(daily_timelines: list[DailyTimeline]) -> DailyTi
         1 for _, _, event in flattened if (event.memo or "").strip()
     )
 
-    kept = sorted(flattened, key=_event_priority)[:MAX_EVENT_COUNT]
+    kept: list[tuple[int, int, DailyTimelineEvent]] = []
+    for timeline_index in range(len(kept_timelines)):
+        same_day = [item for item in flattened if item[0] == timeline_index]
+        kept.extend(
+            sorted(same_day, key=_event_priority)[:MAX_EVENTS_PER_TIMELINE]
+        )
     kept.sort(key=lambda item: (item[0], item[1]))
     dropped_event_count = total_event_count - len(kept)
 

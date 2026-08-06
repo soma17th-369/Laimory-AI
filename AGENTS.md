@@ -186,8 +186,8 @@ app/
     ├── place_resolver.py       # placeLabel을 근거 place로 확정, 근거 없는 address 제거
     ├── place_text.py           # 장소 문자열 정규화·비교 (calendar_location/place_resolver/stay_merge 공용)
     ├── timeline_runner.py     # 백그라운드(무상태): 입력 조회→정규화→main agent→결과 저장→콜백. 최종 상태 반환
-    ├── user_memory_limits.py  # 갱신 크기 정책 (#64). 입력은 **거절하지 않고 자르고**(최근 7일·
-    │                          #   event 50개, memo 있는 event 우선 보존), 출력은 **자르지 않고
+    ├── user_memory_limits.py  # 갱신 크기 정책 (#64). 입력은 **거절하지 않고 자르고**(최근 5일·
+    │                          #   하루당 event 20개, memo 있는 event 우선 보존), 출력은 **자르지 않고
     │                          #   지적한다**(전체 1,200자·민감정보). 지적 문장에 값을 인용하지 않는다
     ├── user_memory_repair.py  # 갱신본 확정 (#64). 위반을 붙여 재요청(기본 2회), 소진 시 문서를
     │                          #   만들지 않는다(1304). schemaVersion·updatedAt 은 서버가 박는다

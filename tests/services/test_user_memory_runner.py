@@ -18,6 +18,7 @@ from app.schemas import TaskStatus
 from app.schemas.user_memory import UserMemory
 from app.services import user_memory_runner
 from app.services.app_server_client import AppServerError
+from app.services.user_memory_limits import MAX_DAILY_TIMELINE_COUNT
 from app.services.user_memory_repair import UserMemoryLimitError
 from tests.fixtures.app_server import FakeAppServerClient
 from tests.fixtures.user_memory import (
@@ -306,8 +307,8 @@ def test_event_reports_what_was_dropped_from_the_input(caplog):
         _run(FakeAppServerClient(), dailyTimelines=daily_timelines)
 
     event = _events(caplog)[-1]
-    assert event["dailyTimelineCount"] == 7
-    assert event["droppedDailyTimelineCount"] == 4
+    assert event["dailyTimelineCount"] == MAX_DAILY_TIMELINE_COUNT
+    assert event["droppedDailyTimelineCount"] == 11 - MAX_DAILY_TIMELINE_COUNT
 
 
 def test_event_never_carries_timeline_or_memory_content(caplog):
