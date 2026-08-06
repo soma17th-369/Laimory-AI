@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from app.core.error_codes import ErrorCode
 from app.schemas import CollectedSnapshot, TimelineCallbackPayload
 from app.schemas.timeline_result import TimelineResultRequest
+from app.schemas.user_memory_update import UserMemoryResultRequest
 from app.services.app_server_client import AppServerClient, AppServerError, TaskToken
 
 
@@ -34,6 +35,7 @@ class FakeAppServerClient(AppServerClient):
         callback_ok: bool = True,
         fetch_token: str | None = None,
         submit_token: str | None = None,
+        user_memory_error: Exception | None = None,
     ) -> None:
         self._snapshot = snapshot
         self._fetch_error = fetch_error
@@ -42,10 +44,14 @@ class FakeAppServerClient(AppServerClient):
         # 응답 body 로 새 토큰을 내려주는 상황을 재현한다.
         self._fetch_token = fetch_token
         self._submit_token = submit_token
+        self._user_memory_error = user_memory_error
 
         self.fetch_calls: list[RecordedCall] = []
         self.submit_calls: list[RecordedCall] = []
         self.callback_calls: list[RecordedCall] = []
+        #: User Memory 갱신 결과 저장(#64). 콜백이 없는 계약이라 **이 목록의 길이가
+        #: 곧 통보 횟수**다. 어떤 경로로 끝나든 정확히 1이어야 한다.
+        self.user_memory_calls: list[RecordedCall] = []
         #: 호출 순서. "결과 저장 뒤에 콜백" 같은 순서 계약을 여기서 본다.
         self.order: list[str] = []
 
@@ -87,6 +93,19 @@ class FakeAppServerClient(AppServerClient):
         self.order.append("callback")
         return self._callback_ok
 
+    async def submit_user_memory(
+        self,
+        task_id: str,
+        token: TaskToken,
+        request: UserMemoryResultRequest,
+    ) -> None:
+        # 실패를 재현할 때도 **호출은 기록한다**. "시도했지만 못 보냈다" 와 "아예
+        # 보내지 않았다" 는 완전히 다른 사고다.
+        self.user_memory_calls.append(RecordedCall(task_id, token.value, request))
+        self.order.append("user-memory-result")
+        if self._user_memory_error is not None:
+            raise self._user_memory_error
+
     # --- 조회 헬퍼 ------------------------------------------------------
 
     @property
@@ -100,3 +119,9 @@ class FakeAppServerClient(AppServerClient):
         if not self.submit_calls:
             return None
         return self.submit_calls[-1].payload  # type: ignore[return-value]
+
+    @property
+    def last_user_memory(self) -> UserMemoryResultRequest | None:
+        if not self.user_memory_calls:
+            return None
+        return self.user_memory_calls[-1].payload  # type: ignore[return-value]

@@ -13,6 +13,8 @@ from app.core.error_codes import ErrorCode
 from app.core.operational_logging import OperationalEvent
 from app.schemas import TaskStatus, TimelineCallbackPayload
 from app.schemas.timeline_result import TimelineResultEvent, TimelineResultRequest
+from app.schemas.user_memory import UserMemory
+from app.schemas.user_memory_update import UserMemoryResultRequest
 from app.services import app_server_client as module
 from app.services.app_server_client import (
     DEPENDENCY_NAME,
@@ -549,3 +551,117 @@ async def test_dependency_events_never_carry_url_or_body(caplog):
     serialized = json.dumps(event, ensure_ascii=False)
     assert "app.example" not in serialized
     assert "점심" not in serialized
+
+
+# --- User Memory 결과 저장 (#64) ---------------------------------------
+
+
+def _user_memory_request(
+    status: TaskStatus = TaskStatus.SUCCESS,
+) -> UserMemoryResultRequest:
+    if status is TaskStatus.SUCCESS:
+        return UserMemoryResultRequest.success(
+            UserMemory(basic_profile="30대 개발자입니다.")
+        )
+    return UserMemoryResultRequest.failure(ErrorCode.USER_MEMORY_GENERATION_FAILED)
+
+
+async def test_submit_user_memory_calls_the_contract_path_with_token_header():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200)
+
+    await _client(handler).submit_user_memory(
+        _TASK_ID, TaskToken("tok-1"), _user_memory_request()
+    )
+
+    assert seen[0].method == "POST"
+    assert str(seen[0].url) == f"{_BASE}/user-memory/updates/{_TASK_ID}/result"
+    assert seen[0].headers[TASK_TOKEN_HEADER] == "tok-1"
+    body = json.loads(seen[0].content)
+    assert body["status"] == TaskStatus.SUCCESS.value
+    assert body["userMemory"]["schemaVersion"] == "1.0"
+
+
+async def test_failure_result_carries_the_code_and_no_memory():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200)
+
+    await _client(handler).submit_user_memory(
+        _TASK_ID, TaskToken("tok-1"), _user_memory_request(TaskStatus.FAILED)
+    )
+
+    body = json.loads(seen[0].content)
+    assert body["status"] == TaskStatus.FAILED.value
+    assert body["errorCode"] == int(ErrorCode.USER_MEMORY_GENERATION_FAILED)
+    assert body["userMemory"] is None
+
+
+async def test_submit_user_memory_retries_server_errors():
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        return httpx.Response(200 if len(attempts) == 3 else 503)
+
+    await _client(handler).submit_user_memory(
+        _TASK_ID, TaskToken("tok-1"), _user_memory_request()
+    )
+
+    assert len(attempts) == 3
+
+
+async def test_exhausted_retries_report_the_user_memory_submit_code():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    with pytest.raises(AppServerError) as caught:
+        await _client(handler).submit_user_memory(
+            _TASK_ID, TaskToken("tok-1"), _user_memory_request()
+        )
+
+    assert caught.value.code is ErrorCode.USER_MEMORY_SUBMIT_FAILED
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [
+        (401, ErrorCode.APP_SERVER_UNAUTHORIZED),
+        (404, ErrorCode.APP_SERVER_TASK_NOT_FOUND),
+        (409, ErrorCode.APP_SERVER_CONFLICT),
+    ],
+)
+async def test_abort_statuses_stop_immediately(status_code: int, expected: ErrorCode):
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        return httpx.Response(status_code)
+
+    with pytest.raises(AppServerError) as caught:
+        await _client(handler).submit_user_memory(
+            _TASK_ID, TaskToken("tok-1"), _user_memory_request()
+        )
+
+    assert caught.value.code is expected
+    assert caught.value.abort
+    assert len(attempts) == 1
+
+
+async def test_user_memory_dependency_event_uses_its_own_operation(caplog):
+    with caplog.at_level("DEBUG"):
+        await _client(lambda request: httpx.Response(200)).submit_user_memory(
+            _TASK_ID, TaskToken("tok-1"), _user_memory_request()
+        )
+
+    event = _dependency_events(
+        caplog, OperationalEvent.DEPENDENCY_REQUEST_COMPLETED.value
+    )[-1]
+    assert event["operation"] == "user-memory-result"
+    assert event["dependency"] == DEPENDENCY_NAME
+    assert "30대 개발자입니다." not in json.dumps(event, ensure_ascii=False)
