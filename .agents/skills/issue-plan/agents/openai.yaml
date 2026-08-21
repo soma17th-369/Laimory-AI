@@ -1,0 +1,4 @@
+interface:
+  display_name: "이슈 작업 계획"
+  short_description: "GitHub 이슈를 계획·승인·구현·worklog 기록으로 연결"
+  default_prompt: "$issue-plan을 사용해 GitHub 이슈의 실행계획을 저장하고 승인 후 작업해 주세요."
