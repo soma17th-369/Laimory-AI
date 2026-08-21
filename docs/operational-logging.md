@@ -59,8 +59,31 @@ laimory-ai 컨테이너 stdout (한 줄 JSON)
 `service`, `environment`, `version`, 그리고 표식 3종(`event.dataset`,
 `event.action`, `event.outcome`)이다. `event.outcome` 은 `success` | `failure` 다.
 
-**`message` 로 집계하지 않는다.** 사람이 읽는 고정 문구일 뿐이고, 계약은
+**`message` 로 집계하지 않는다.** 사람이 읽는 한 줄일 뿐이고, 계약은
 `event.action` 이다. 문구는 언제든 다듬을 수 있어야 한다.
+
+### 외부 연동 이벤트의 message (이슈 #78)
+
+`dependency.request.*` 의 문구는 `dependency`·`operation`·`event.outcome` 의 **고정
+매핑**으로 정해진다. Kibana 목록에서 구조화 필드를 펼치기 전에도 어떤 App Server
+호출이 어떻게 끝났는지 보이게 하기 위해서다.
+
+| `operation` | 완료(success) | 완료(failure) | 재시도 |
+|---|---|---|---|
+| `input` | `App Server 타임라인 입력 조회 성공` | `App Server 타임라인 입력 조회 실패` | `App Server 타임라인 입력 조회 재시도` |
+| `result` | `App Server 타임라인 결과 저장 성공` | `App Server 타임라인 결과 저장 실패` | `App Server 타임라인 결과 저장 재시도` |
+| `callback` | `App Server 타임라인 완료 콜백 전송 성공` | `App Server 타임라인 완료 콜백 전송 실패` | `App Server 타임라인 완료 콜백 전송 재시도` |
+| `user-memory-result` | `App Server User Memory 결과 저장 성공` | `App Server User Memory 결과 저장 실패` | `App Server User Memory 결과 저장 재시도` |
+
+문구에 들어가는 값은 `_DEPENDENCY_LABELS`·`_OPERATION_LABELS` 의 **상수뿐이다.**
+라벨이 없는 `dependency`/`operation` 은 문구에 넣지 않고 `외부 연동 호출 완료` /
+`외부 연동 호출 재시도` 로 통째로 폴백한다 — 호출부 문자열이 문구로 흘러가는 경로를
+하나도 만들지 않는 것이 이 설계의 전부다. 그 경로가 생기면 URL·토큰·사용자 콘텐츠가
+곧 따라 들어온다.
+
+새 `operation` 을 추가할 때는 [`app/core/operational_logging.py`](../app/core/operational_logging.py)
+의 라벨 사전에 함께 등록한다. 잊어도 수집은 깨지지 않는다 — `operation` 필드는
+그대로 나가고 문구만 일반 문구로 남는다.
 
 ### 레벨 기준
 
@@ -366,6 +389,7 @@ curl -s "$ES_HOSTS/logs-laimory.ai-dev/_search?size=20&sort=@timestamp:desc" \
 | 특정 이벤트만 안 보임 | 앱에서 그 이벤트를 `emit_event` 로 남기는지, `_ALLOWED_FIELDS` 에 필드가 있는지. 허용 목록에 없는 필드는 조용히 빠진다(`app.core.operational_logging` 의 DEBUG 진단에 이름이 남는다) |
 | 대시보드가 비었음 | `message` 기반 쿼리를 `event.action` 기준으로 바꿨는지(#53) |
 | `message` 가 JSON 문자열 그대로 | 앱이 `LOG_FORMAT=json` 이 아니거나, `decode_json_fields` 대상 필드가 다르다 |
+| 외부 연동 `message` 가 `외부 연동 호출 완료` 로만 보임 | 그 `operation` 이 `_OPERATION_LABELS` 에 없다. 라벨을 등록하면 된다(#78). `operation` 필드 자체는 정상이다 |
 | `@timestamp` 가 전부 수집 시각 | `timestamp` processor의 `layouts` 가 앱 포맷과 어긋났다 |
 | 같은 로그가 두 번 | registry 볼륨(`/opt/laimory-ai/filebeat-data`)이 마운트되지 않았다 |
 | 배포 직후 몇 줄이 빔 | `close_removed: false` / `clean_removed: false` 가 설정에 있는지 |
