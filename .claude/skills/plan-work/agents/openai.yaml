@@ -1,0 +1,4 @@
+interface:
+  display_name: "작업 계획"
+  short_description: "사용자 승인 후 구현하고 worklog까지 남기는 실행계획 워크플로"
+  default_prompt: "$plan-work를 사용해 실행계획을 저장하고 승인 후 작업과 worklog까지 진행해 주세요."
