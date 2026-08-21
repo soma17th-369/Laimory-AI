@@ -221,6 +221,14 @@ app/
 # 처리 흐름: taskId+taskToken+dailyRecordId+window 접수 → 202 즉시응답 →
 #   (백그라운드) 입력 조회 API → 요청 window 를 정본으로 덮어쓰기 → normalize → main agent
 #   → 저장 전 자체검증 → 결과 저장 API(200 확인) → 콜백(SUCCESS/FAILED 통보만)
+# 제한 시간(#76): main agent 는 `pipeline_timeout_sec`(120초) 로 감싼다. **timeout 그
+#   자체는 실패가 아니다.** Repair 가 draft 를 확정할 때마다(`_confirm`) 복사본을 runner 로
+#   발행하므로, 제한 시간이 끝나 실행이 취소돼도 마지막 확정본이 남는다. 그것이 있으면
+#   평소와 같은 저장 경로를 그대로 지나 SUCCESS 로 끝내고, 하나도 없을 때만 1201 로 실패한다.
+#   부분 저장은 `timedOut`·`partialSave` 로 구분하고 errorCode 는 비운다 — 성공한 작업에
+#   실패 코드를 붙이면 지연 감시가 실제 실패와 섞인다.
+#   발행 값은 **참조가 아니라 deep copy** 다. `asyncio.wait_for` 는 코루틴만 취소하고
+#   `asyncio.to_thread` 위의 LLM 호출은 못 끊어, 취소 뒤에도 그 스레드가 draft 를 마저 고친다.
 # 토큰(#40): 작업 하나에 taskToken 하나. 최초 값은 접수 요청 body, 이후는 App Server 응답
 #   body 의 taskToken 으로 갱신한다. 인증은 언제나 Task-Token 헤더다. 파생·교체하지 않고
 #   로그·관측에 값을 남기지 않는다(갱신 횟수만 남긴다).

@@ -33,7 +33,7 @@ Timeline 생성 요청이 202로 접수된 뒤 입력 조회, Agent 실행, 결�
 2. 최초 token으로 task별 `TaskToken` holder를 만든다.
 3. App Server에서 source snapshot을 조회하고 묶음 계약을 검증한다.
 4. 접수 요청의 window로 snapshot window를 덮어쓴 뒤 도메인별로 정규화한다. App Server 응답 window가 아니라 접수 window가 정본이다.
-5. main Agent 전체를 `PIPELINE_TIMEOUT_SEC`로 제한해 실행한다.
+5. main Agent 전체를 `PIPELINE_TIMEOUT_SEC`로 제한해 실행한다. Repair가 draft를 확정할 때마다 복사본을 runner로 발행하므로, 제한 시간이 끝나 실행이 취소돼도 마지막 확정본이 남는다. 그 확정본이 있으면 아래 6~8을 그대로 지나 SUCCESS로 끝나고, 없을 때만 `1201`로 실패한다.
 6. 최종 draft가 현재 task의 rawId만 참조하는지 저장 전 검증한다.
 7. 좁은 App Server 결과 계약으로 변환해 결과를 제출한다.
 8. 결과 제출 성공 뒤에만 SUCCESS callback을 보낸다. 앞 단계 실패는 가능한 경우 FAILED callback을 보낸다.
@@ -61,6 +61,8 @@ callback 전송 실패는 저장된 결과나 최종 SUCCESS 상태를 되돌리
 - task token 값은 어떤 로그·관측·URL·outbound body에도 남기지 않는다.
 - task 하나는 token holder 하나와 최신 token 하나를 공유한다.
 - main Agent timeout만 `PIPELINE_TIMEOUT_SEC` 대상이다. App Server 호출은 각 호출의 timeout/retry 설정을 별도로 쓴다.
+- timeout은 그 자체로 실패가 아니다. 저장할 확정 draft가 없을 때만 `1201` 실패다. 확정본을 저장한 경우는 SUCCESS이며 `timedOut`/`partialSave`로 구분한다 — `errorCode`는 비어 있다.
+- `asyncio.wait_for`는 `asyncio.to_thread` 위의 LLM 호출을 끊지 못한다. 취소된 뒤에도 그 스레드는 계속 돌며 draft를 고치므로, 발행 값은 참조가 아니라 deep copy여야 한다.
 
 ## Known Gaps
 
