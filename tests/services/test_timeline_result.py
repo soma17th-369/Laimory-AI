@@ -90,6 +90,8 @@ def test_serialized_body_matches_the_contract_shape():
         "eventType",
         "title",
         "subtitle",
+        "place",
+        "address",
         "startAt",
         "endAt",
         "sourceRawIds",
@@ -146,3 +148,45 @@ def test_empty_draft_still_produces_a_request():
     """'결과 없음' 도 확정된 결과다. 저장 요청을 건너뛰지 않는다."""
 
     assert build_result_request(_draft()).events == []
+
+
+# --- 장소 (#72) -----------------------------------------------------------------
+#
+# Repair 가 근거로 확정한 placeLabel/address 를 App Server 로 내보낸다. 그전에는 확정해
+# 놓고도 계약에 필드가 없어 버려졌다.
+
+
+def test_place_and_address_are_carried_to_the_contract():
+    request = build_result_request(
+        _draft(_event(place_label="두꺼비 감자탕 지산점", address="경기도 오산시 운암로 90"))
+    )
+
+    [event] = request.events
+    assert event.place == "두꺼비 감자탕 지산점"
+    assert event.address == "경기도 오산시 운암로 90"
+
+
+def test_missing_place_and_address_are_sent_as_null():
+    request = build_result_request(_draft(_event()))
+
+    [event] = request.events
+    assert event.place is None
+    assert event.address is None
+
+
+def test_blank_place_becomes_null_rather_than_an_empty_string():
+    request = build_result_request(_draft(_event(place_label="   ", address="")))
+
+    [event] = request.events
+    assert event.place is None
+    assert event.address is None
+
+
+def test_place_and_address_are_truncated_to_the_column_limit():
+    request = build_result_request(
+        _draft(_event(place_label="장" * 300, address="주" * 300))
+    )
+
+    [event] = request.events
+    assert len(event.place) == 255
+    assert len(event.address) == 255

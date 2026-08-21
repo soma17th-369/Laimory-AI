@@ -45,7 +45,7 @@ input response는 taskId, record date/timezone, optional window, 평평한 `sour
 
 계약 위반(모르는 최상위 필드, 지원하지 않는 `schemaVersion`, 길이·개수 초과)은 묶음 규칙과 달리 **task를 실패시키지 않는다**. client가 code 1106으로 기록하고 memory 없이 진행한다. 응답 model에 `UserMemory`를 직접 선언하지 않는 이유가 이것이다 — 직접 선언하면 보조 context 하나가 응답 전체를 1102로 만든다.
 
-result request는 내부 draft보다 좁다. App Server에는 event type, title, subtitle, 시작·종료, source rawId 목록과 optional event question만 보낸다. confidence, inference level, uncertainty, 내부 questions/warnings, address/place/tags, clientEventId는 보내지 않는다. title/subtitle/question은 mapper에서 최대 255자로 방어하고, source rawId는 순서를 유지해 중복 제거하며, datetime은 draft timezone offset으로 보낸다. event가 0건이어도 결과 request를 전송한다.
+result request는 내부 draft보다 좁다. App Server에는 event type, title, subtitle, place, address, 시작·종료, source rawId 목록과 optional event question만 보낸다. confidence, inference level, uncertainty, 내부 questions/warnings, tags, 장소 후보 목록(`places`), clientEventId는 보내지 않는다. `place`/`address`는 `place_resolver`가 근거로 확정한 값이며 mapper는 검증하지 않고 옮기기만 한다 — 근거 없는 address는 확정 pass에서 이미 지워졌다. title/subtitle/place/address/question은 mapper에서 최대 255자로 방어하고, source rawId는 순서를 유지해 중복 제거하며, datetime은 draft timezone offset으로 보낸다. event가 0건이어도 결과 request를 전송한다.
 
 callback body는 terminal status와 오류 필드뿐이다. taskId는 URL, token은 header에 있으므로 body에 반복하지 않는다. SUCCESS는 error가 모두 null이고 FAILED는 예약되지 않은 카탈로그 code와 정확한 안전 메시지 쌍이어야 한다.
 

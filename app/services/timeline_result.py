@@ -4,6 +4,11 @@
 좁히는 규칙을 한 곳에 모아 둔다.
 
 - ``subtitle`` 은 draft 의 ``description`` 이다. 비어 있으면 ``null`` 로 보낸다.
+- ``place``/``address`` 는 draft 의 ``placeLabel``/``address`` 를 그대로 옮긴다(이슈 #72).
+  여기서 검증하지 않는다 — ``place_resolver`` 가 근거로 확정하고 근거 없는 주소를 이미
+  지웠다. 같은 검증을 두 곳에서 하면 규칙이 갈라진다.
+- draft 의 ``places``(후보 목록)는 내보내지 않는다. 여러 이름 중 고르는 것은 AI 의 일이고
+  App Server 에는 확정된 하나만 준다.
 - ``sourceRawIds`` 는 ``sourceRefs`` 의 ``rawId`` 를 **순서를 지키며** 디듀프한다.
   같은 근거를 두 번 참조한 이벤트가 App Server 에 중복 링크를 만들지 않게 한다.
 - ``title``/``subtitle`` 은 255자로 자른다. App Server 저장 컬럼 한도이며, 이슈
@@ -25,6 +30,7 @@ from app.services.validator import resolve_timezone
 _TITLE_MAX = 255
 _SUBTITLE_MAX = 255
 _QUESTION_MAX = 255
+_PLACE_MAX = 255
 
 
 def build_result_request(draft: TimelineDraft) -> TimelineResultRequest:
@@ -36,6 +42,8 @@ def build_result_request(draft: TimelineDraft) -> TimelineResultRequest:
             event_type=event.event_type,
             title=event.title[:_TITLE_MAX],
             subtitle=_subtitle(event.description),
+            place=_place(event.place_label),
+            address=_place(event.address),
             start_at=_localized(event.start_time, tz),
             end_at=_localized(event.end_time, tz),
             source_raw_ids=_unique_raw_ids(event),
@@ -49,6 +57,13 @@ def build_result_request(draft: TimelineDraft) -> TimelineResultRequest:
 def _subtitle(description: str | None) -> str | None:
     text = (description or "").strip()
     return text[:_SUBTITLE_MAX] if text else None
+
+
+def _place(value: str | None) -> str | None:
+    """장소명·주소를 저장 컬럼 한도에 맞춰 옮긴다. 빈 값은 ``null`` 이다."""
+
+    text = (value or "").strip()
+    return text[:_PLACE_MAX] if text else None
 
 
 def _question(question: str | None) -> str | None:
