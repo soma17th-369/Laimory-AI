@@ -23,7 +23,7 @@
 ### Main graph
 
 1. `Location`, `Calendar`, `Photo`, `SleepActivity`, `Notification` Event Agent를 worker thread에서 병렬 실행한다.
-2. Agent별 결과를 유일한 Agent 이름으로 보관하고 하나의 `AgentEventResult`로 취합한다.
+2. Agent별 결과를 유일한 Agent 이름으로 보관하고 하나의 `AgentEventResult`로 취합한다. 취합 직후 candidate의 `place`/`places`/`address`를 `sourceRefs`로 찾은 입력에서 그대로 복사한다. Event Agent는 이 필드를 채우지 않는다 — 한 지점에 장소명이 여럿일 때 어느 것이 맞는지 판단할 근거가 없기 때문이며, 고르는 것은 User Memory를 가진 Timeline Agent다. 복사 지점이 fan-in인 이유는 Repair의 `rerun_timeline_agent`도 같은 함수를 지나기 때문이다.
 3. Timeline Agent가 candidates와 fragments를 의미적으로 병합해 아직 확정되지 않은 draft를 만든다.
 4. Repair Agent가 결정론 확정과 최대 `REPAIR_MAX_ITERATIONS`회의 LLM 개선을 수행한다.
 5. Question Agent가 확정 event 중 질문할 가치가 있는 최대 5개에 회고 질문을 붙인다.
@@ -75,6 +75,7 @@ Repair는 시작할 때 LLM 호출 여부와 무관하게 `repair_draft`를 한 
 ## Invariants
 
 - Event Agent 병렬 실행 후 명시적인 merge를 거쳐야 Timeline Agent로 간다.
+- 장소 문자열은 코드가 입력에서 복사하고 LLM은 고르기만 한다. candidate 단계에서 복사하고, 확정 pass에서 draft의 `placeLabel`이 입력 또는 User Memory에서 왔는지 검사한다. 근거 없는 `placeLabel`은 warning만 남기고 지우지 않으며, 근거 없는 `address`는 지운다.
 - rawId 무결성과 request window는 candidate와 final draft 양쪽에서 방어한다.
 - Calendar 누락 방지, 정렬, ID, source/시간 확정은 LLM 선택에 의존하지 않는다.
 - 병합으로 event 구성이 바뀐 뒤에 Photo/Notification/길이 검사를 수행한다.

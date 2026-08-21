@@ -15,7 +15,8 @@ from app.agents.events.location import LocationEventAgent
 from app.agents.events.notification import NotificationEventAgent
 from app.agents.events.photo import PhotoEventAgent
 from app.agents.events.sleep_activity import SleepActivityEventAgent
-from app.schemas import AgentEventResult
+from app.schemas import AgentEventResult, TimelineDraftRequest
+from app.services.place_resolver import resolve_candidate_places
 
 
 def default_event_agents() -> list[EventAgent]:
@@ -30,12 +31,19 @@ def default_event_agents() -> list[EventAgent]:
     ]
 
 
-def merge_event_results(results: list[AgentEventResult]) -> AgentEventResult:
+def merge_event_results(
+    results: list[AgentEventResult], request: TimelineDraftRequest
+) -> AgentEventResult:
     """Event Agent 결과들을 하나의 `AgentEventResult` 로 취합한다.
 
     main agent 의 취합 node 와, Event Agent 를 다시 돌린 뒤 Timeline Agent 를 재실행
     하는 Repair Agent 도구가 함께 쓴다. 두 곳이 서로 다르게 취합하면 재실행 결과가
     처음 결과와 다른 규칙으로 병합된다.
+
+    취합 직후 candidate 의 장소 정보를 입력에서 복사한다(이슈 #72). **이 자리인 이유**가
+    바로 위 문단이다 — Timeline Agent 로 들어가는 fan-in 이 여기 하나뿐이라, 여기서 채워야
+    최초 실행과 Repair 재실행이 같은 입력을 본다. main graph 의 node 에만 두면
+    `rerun_timeline_agent` 경로에서 장소가 빠진다.
     """
 
     merged = AgentEventResult()
@@ -43,6 +51,7 @@ def merge_event_results(results: list[AgentEventResult]) -> AgentEventResult:
         merged.candidates.extend(result.candidates)
         merged.fragments.extend(result.fragments)
         merged.warnings.extend(result.warnings)
+    resolve_candidate_places(merged, request)
     return merged
 
 

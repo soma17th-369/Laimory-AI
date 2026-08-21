@@ -22,22 +22,24 @@
 PHOTO 는 `place` 필드가 없어(좌표뿐) 후보를 제공하지 못한다.
 """
 
-from collections.abc import Iterator
+import json
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from typing import Any
 
 from app.core.logging import get_logger
 from app.schemas import (
+    AgentEventResult,
     CalendarItem,
-    EventSourceType,
     MovementItem,
+    SourceRef,
     StayItem,
     TimelineDraft,
     TimelineDraftRequest,
-    TimelineEventDraft,
     TimelineWarning,
     TimelineWarningSeverity,
 )
-from app.services.place_text import place_text_contains
+from app.services.place_text import normalize_place_text, place_text_contains
 from app.services.source_lookup import raw_id_of
 
 logger = get_logger(__name__)
@@ -64,6 +66,9 @@ _VAGUE_PLACE_LABELS = frozenset(
 _APPROXIMATE_MARKERS = ("인근", "부근", "근처", "주변", "일대")
 
 _MAX_EXAMPLES = 3
+
+#: 이 모듈이 남기는 warning 의 id 접두어. 반복마다 자기 것만 골라 지우기 위해 쓴다.
+_WARNING_PREFIX = "warning-place-"
 
 
 @dataclass(frozen=True)
@@ -128,51 +133,108 @@ def is_exact_address(text: str | None) -> bool:
     return not any(marker in text for marker in _APPROXIMATE_MARKERS)
 
 
-def _referenced(event: TimelineEventDraft, source_type: EventSourceType, lookup: dict) -> Iterator:
-    for ref in event.source_refs:
-        if ref.source_type is source_type and ref.raw_id in lookup:
-            yield lookup[ref.raw_id]
+def _referenced(refs: list[SourceRef], lookup: dict) -> Iterator:
+    """`rawId` 로 입력 항목을 찾는다.
 
+    `ref.source_type` 은 **보지 않는다.** rawId 는 UUID 라 타입을 가로질러 유일하고 각
+    lookup 에는 그 타입의 rawId 만 들어 있으므로, `raw_id in lookup` 하나로 "그 입력이
+    stay 다" 까지 보장된다. `source_lookup` 이 정리해 둔 "LLM 이 붙인 타입 라벨을 믿지 말고
+    rawId 로 입력을 찾아 그 입력의 타입을 믿는다" 와 같은 원칙이다.
 
-def _place_label_candidates(event: TimelineEventDraft, evidence: _Evidence) -> Iterator[str]:
-    """사용자가 정한 우선순위대로 장소명 후보를 내놓는다."""
-
-    for stay in _referenced(event, EventSourceType.STAY, evidence.stays):
-        yield from (stay.place, *stay.places)
-
-    # 이동은 도착지가 그 event 의 장소를 더 잘 설명한다.
-    for movement in _referenced(event, EventSourceType.MOVEMENT, evidence.movements):
-        for geo in (movement.end, movement.start):
-            if geo is not None:
-                yield from (geo.place, *geo.places)
-
-    for calendar in _referenced(event, EventSourceType.CALENDAR, evidence.calendars):
-        yield calendar_place_label(calendar.location_text)
-
-    # PHOTO 에는 place 필드가 없다(좌표뿐). 사진에서 읽은 상호명은 LLM 만 알 수 있다.
-
-
-def _address_candidates(event: TimelineEventDraft, evidence: _Evidence) -> Iterator[str]:
-    """`address` 로 그대로 쓸 수 있는 실제 주소 문자열."""
-
-    for stay in _referenced(event, EventSourceType.STAY, evidence.stays):
-        yield stay.address
-    for movement in _referenced(event, EventSourceType.MOVEMENT, evidence.movements):
-        for geo in (movement.end, movement.start):
-            if geo is not None:
-                yield geo.address
-
-
-def _address_support(event: TimelineEventDraft, evidence: _Evidence) -> Iterator[str]:
-    """LLM 이 쓴 주소가 근거에 실재하는지 확인할 때 대조할 문자열들.
-
-    캘린더 메모(`집(경기도 오산시 운암로 90)`)는 그대로 address 로 쓰기엔 지저분하지만,
-    주소를 품고 있으므로 검증 근거로는 쓴다.
+    draft 는 `normalize_source_types` 가 타입을 미리 정정해 주지만 **candidate 단계에는
+    그 정정이 없다.** 타입 조건을 함께 보면 Event Agent 가 라벨을 틀린 후보는 근거를 영영
+    찾지 못한다.
     """
 
-    yield from _address_candidates(event, evidence)
-    for calendar in _referenced(event, EventSourceType.CALENDAR, evidence.calendars):
-        yield calendar.location_text
+    for ref in refs:
+        item = lookup.get(ref.raw_id)
+        if item is not None:
+            yield item
+
+
+def _stay_places(stay: StayItem) -> Iterator[str | None]:
+    yield stay.place
+    yield from stay.places
+
+
+def _movement_places(movement: MovementItem) -> Iterator[str | None]:
+    # 이동은 도착지가 그 event 의 장소를 더 잘 설명한다.
+    for geo in (movement.end, movement.start):
+        if geo is not None:
+            yield geo.place
+            yield from geo.places
+
+
+def _calendar_places(calendar: CalendarItem) -> Iterator[str | None]:
+    yield calendar_place_label(calendar.location_text)
+
+
+def _stay_addresses(stay: StayItem) -> Iterator[str | None]:
+    yield stay.address
+
+
+def _movement_addresses(movement: MovementItem) -> Iterator[str | None]:
+    for geo in (movement.end, movement.start):
+        if geo is not None:
+            yield geo.address
+
+
+def _calendar_address_support(calendar: CalendarItem) -> Iterator[str | None]:
+    # 캘린더 메모(`집(경기도 오산시 운암로 90)`)는 그대로 address 로 쓰기엔 지저분하지만,
+    # 주소를 품고 있으므로 검증 근거로는 쓴다.
+    yield calendar.location_text
+
+
+#: 장소명 후보를 찾는 순서. 사용자가 정한 우선순위이며 `_Evidence` 의 필드명과 짝을 이룬다.
+#:
+#: PHOTO 는 아직 `place` 가 없어(좌표뿐) 빠져 있다. 입력에 장소 필드가 생기면 **MOVEMENT
+#: 다음, CALENDAR 앞**에 한 줄을 끼운다 — 사진 장소는 실제로 거기 있었다는 증거이고 캘린더
+#: `locationText` 는 사용자가 적어 둔 의도라 실제와 다를 수 있다(이슈 #72 후속).
+_PLACE_SOURCES: tuple[tuple[str, Callable[[Any], Iterator[str | None]]], ...] = (
+    ("stays", _stay_places),
+    ("movements", _movement_places),
+    ("calendars", _calendar_places),
+)
+
+#: `address` 로 그대로 쓸 수 있는 실제 주소 문자열의 출처.
+_ADDRESS_SOURCES: tuple[tuple[str, Callable[[Any], Iterator[str | None]]], ...] = (
+    ("stays", _stay_addresses),
+    ("movements", _movement_addresses),
+)
+
+#: 주소가 근거에 실재하는지 대조할 때만 추가로 보는 출처.
+_ADDRESS_SUPPORT_SOURCES: tuple[tuple[str, Callable[[Any], Iterator[str | None]]], ...] = (
+    ("calendars", _calendar_address_support),
+)
+
+
+def _from_sources(
+    refs: list[SourceRef],
+    evidence: _Evidence,
+    sources: tuple[tuple[str, Callable[[Any], Iterator[str | None]]], ...],
+) -> Iterator[str | None]:
+    for attr, extract in sources:
+        for item in _referenced(refs, getattr(evidence, attr)):
+            yield from extract(item)
+
+
+def _place_label_candidates(refs: list[SourceRef], evidence: _Evidence) -> Iterator[str | None]:
+    """사용자가 정한 우선순위대로 장소명 후보를 내놓는다."""
+
+    yield from _from_sources(refs, evidence, _PLACE_SOURCES)
+
+
+def _address_candidates(refs: list[SourceRef], evidence: _Evidence) -> Iterator[str | None]:
+    """`address` 로 그대로 쓸 수 있는 실제 주소 문자열."""
+
+    yield from _from_sources(refs, evidence, _ADDRESS_SOURCES)
+
+
+def _address_support(refs: list[SourceRef], evidence: _Evidence) -> Iterator[str | None]:
+    """LLM 이 쓴 주소가 근거에 실재하는지 확인할 때 대조할 문자열들."""
+
+    yield from _address_candidates(refs, evidence)
+    yield from _from_sources(refs, evidence, _ADDRESS_SUPPORT_SOURCES)
 
 
 def _first(values: Iterator[str | None], reject_vague: bool = False) -> str | None:
@@ -201,9 +263,13 @@ def resolve_places(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
     filled_addresses: list[str] = []
     invented_addresses: list[str] = []
 
+    memory_text = _user_memory_text(request)
+    unsupported_labels: list[str] = []
+
     for event in draft.events:
+        refs = event.source_refs
         if is_vague_place_label(event.place_label):
-            label = _first(_place_label_candidates(event, evidence), reject_vague=True)
+            label = _first(_place_label_candidates(refs, evidence), reject_vague=True)
             if label:
                 event.place_label = label
                 filled_labels.append(f"{event.title} → {label}")
@@ -211,8 +277,13 @@ def resolve_places(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
                 # 채울 장소명이 없다. 얼버무림을 남기느니 비운다.
                 cleared_labels.append(f"{event.title}({event.place_label})")
                 event.place_label = None
+        elif not _label_is_supported(event.place_label, refs, evidence, memory_text):
+            # 보존 검사(#72): Timeline 이 옮겨 적은 장소명이 정말 근거에서 왔는지 본다.
+            # **지우지는 않는다** — 사진에서 읽은 상호명처럼 코드가 재현할 수 없는 값이
+            # 있고, 지우면 그것까지 잃는다.
+            unsupported_labels.append(f"{event.title}({event.place_label})")
 
-        support = [text for text in _address_support(event, evidence) if text]
+        support = [text for text in _address_support(refs, evidence) if text]
         if event.address and not (
             is_exact_address(event.address)
             and any(place_text_contains(event.address, text) for text in support)
@@ -224,7 +295,7 @@ def resolve_places(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
             address = next(
                 (
                     candidate.strip()
-                    for candidate in _address_candidates(event, evidence)
+                    for candidate in _address_candidates(refs, evidence)
                     if is_exact_address(candidate)
                 ),
                 None,
@@ -233,10 +304,14 @@ def resolve_places(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
                 event.address = address
                 filled_addresses.append(event.title)
 
+    # 반복마다 자기 이전 warning 을 지우고 다시 잰다. Repair 가 event 를 병합·삭제하면
+    # 앞 회차의 지적이 사라진 event 를 가리키게 된다(`narrative_guard` 와 같은 방식).
+    draft.warnings = [w for w in draft.warnings if not w.warning_id.startswith(_WARNING_PREFIX)]
+
     if invented_addresses:
         draft.warnings.append(
             TimelineWarning(
-                warning_id=f"warning-place-{len(draft.warnings) + 1:03d}",
+                warning_id=f"{_WARNING_PREFIX}address-001",
                 severity=TimelineWarningSeverity.MEDIUM,
                 message=(
                     f"정확한 입력 근거가 없는 주소 {len(invented_addresses)}건을 지웠습니다: "
@@ -245,10 +320,128 @@ def resolve_places(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
             )
         )
 
+    if unsupported_labels:
+        draft.warnings.append(
+            TimelineWarning(
+                warning_id=f"{_WARNING_PREFIX}label-001",
+                severity=TimelineWarningSeverity.LOW,
+                message=(
+                    f"입력 근거와 User Memory 어디에도 없는 장소명 {len(unsupported_labels)}건: "
+                    f"{_examples(unsupported_labels)}"
+                ),
+            )
+        )
+
     logger.debug(
-        "장소 확정: placeLabel 보강=%d, placeLabel 제거=%d, address 보강=%d, address 제거=%d",
+        "장소 확정: placeLabel 보강=%d, placeLabel 제거=%d, address 보강=%d, "
+        "address 제거=%d, 근거 없는 placeLabel=%d",
         len(filled_labels),
         len(cleared_labels),
         len(filled_addresses),
         len(invented_addresses),
+        len(unsupported_labels),
     )
+
+
+def resolve_candidate_places(
+    result: AgentEventResult, request: TimelineDraftRequest
+) -> None:
+    """candidate 의 `place`/`places`/`address` 를 입력에서 그대로 복사한다(in-place, #72).
+
+    Event Agent 가 이 필드에 무엇을 써 보냈든 입력에서 복사한 값이 이긴다. 변환도 해석도
+    없고, `sourceRefs` 로 근거 입력을 찾아 문자열을 옮기기만 한다.
+
+    `places` 를 줄이지 않는 이유: 한 지점에 이름이 여럿일 수 있는데(`강남파이낸스센터` /
+    `스타벅스 강남점`), 어느 것이 사용자의 `회사` 인지는 User Memory 를 가진 Timeline 만
+    판단할 수 있다. 여기서 하나로 줄이면 그 대조 기회를 없앤다.
+    """
+
+    if not result.candidates:
+        return
+
+    evidence = _collect(request)
+    filled_places = 0
+    filled_addresses = 0
+    for candidate in result.candidates:
+        refs = candidate.source_refs
+        labels = _unique_labels(_place_label_candidates(refs, evidence))
+        candidate.place = labels[0] if labels else None
+        candidate.places = labels
+        candidate.address = next(
+            (
+                value.strip()
+                for value in _address_candidates(refs, evidence)
+                if is_exact_address(value)
+            ),
+            None,
+        )
+        filled_places += bool(labels)
+        filled_addresses += candidate.address is not None
+
+    logger.debug(
+        "후보 장소 복사: candidates=%d, place 채움=%d, address 채움=%d",
+        len(result.candidates),
+        filled_places,
+        filled_addresses,
+    )
+
+
+def _unique_labels(values: Iterator[str | None]) -> list[str]:
+    """장소명 후보를 순서를 지키며 디듀프한다. 얼버무림과 빈 값은 뺀다."""
+
+    seen: set[str] = set()
+    labels: list[str] = []
+    for value in values:
+        if not value or is_vague_place_label(value):
+            continue
+        stripped = value.strip()
+        key = normalize_place_text(stripped)
+        if key in seen:
+            continue
+        seen.add(key)
+        labels.append(stripped)
+    return labels
+
+
+def _user_memory_text(request: TimelineDraftRequest) -> str:
+    """User Memory 를 통째 문자열로 만든다(보존 검사 대조용).
+
+    자연어 필드를 골라 읽지 않고 통째로 검색한다. `notification_guard` 와 같은 방식이며,
+    결정론 코드가 User Memory 의 필드 이름이나 `customAttributes` 키에 구조적으로
+    의존하지 않게 하려는 것이다(#65).
+    """
+
+    memory = request.user_memory
+    if memory is None:
+        return ""
+    try:
+        return json.dumps(memory.prompt_payload(), ensure_ascii=False)
+    except (TypeError, ValueError):
+        # 보조 context 하나 때문에 장소 확정을 멈추지 않는다.
+        return ""
+
+
+def _label_is_supported(
+    label: str | None,
+    refs: list[SourceRef],
+    evidence: _Evidence,
+    memory_text: str,
+) -> bool:
+    """장소명이 입력 근거나 User Memory 중 하나에서 왔는가.
+
+    `집`·`회사` 같은 생활 장소명은 입력에 없고 User Memory 에만 있다. 그것을 붙이게 하는
+    것이 #72 의 목적이므로 두 곳 중 하나면 통과시킨다.
+    """
+
+    if not label:
+        return True
+    normalized = normalize_place_text(label)
+    if not normalized:
+        return True
+    for value in _place_label_candidates(refs, evidence):
+        if value and normalize_place_text(value) == normalized:
+            return True
+    for value in _address_candidates(refs, evidence):
+        if value and place_text_contains(value, label):
+            return True
+    return bool(memory_text) and normalized in normalize_place_text(memory_text)

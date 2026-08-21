@@ -166,7 +166,9 @@ def _build_graph():
             input={"eventResults": event_results},
             metadata={"agentCount": len(event_results)},
         ) as observation:
-            merged = merge_event_results(list(state["event_results"].values()))
+            merged = merge_event_results(
+                list(state["event_results"].values()), state["request"]
+            )
             update_observation(
                 observation,
                 output={

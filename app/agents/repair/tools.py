@@ -290,7 +290,7 @@ def _rerun_timeline_agent(ctx: RepairContext, args: dict) -> str:
     if ctx.timeline_agent is None:
         raise RepairToolError("Timeline Agent 가 연결되지 않아 재실행할 수 없습니다.")
 
-    merged = merge_event_results(list(ctx.event_results.values()))
+    merged = merge_event_results(list(ctx.event_results.values()), ctx.request)
     with execution_scope(ExecutionStage.TIMELINE_AGENT, agent="timeline"):
         ctx.draft = ctx.timeline_agent.generate(ctx.request, merged)
     return (
