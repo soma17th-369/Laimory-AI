@@ -42,7 +42,7 @@ def app_server() -> FakeAppServerClient:
 def fake_main_agent(monkeypatch):
     draft = TimelineDraft(user_id="u-1", date="2026-06-20", timezone="Asia/Seoul")
 
-    async def _run(request):
+    async def _run(request, **_kwargs):
         return draft
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", _run)
@@ -111,7 +111,7 @@ def test_background_task_marks_runtime_busy(app_server, monkeypatch):
 
     busy_during_run: list[bool] = []
 
-    async def _run(request):
+    async def _run(request, **_kwargs):
         busy_during_run.append(inflight.is_busy())
         return TimelineDraft(user_id="u-1", date="2026-06-20", timezone="Asia/Seoul")
 

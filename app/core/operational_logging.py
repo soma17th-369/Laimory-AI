@@ -114,6 +114,9 @@ _ALLOWED_FIELDS: dict[OperationalEvent, frozenset[str]] = {
             "callbackSent",
             "errorCode",
             "failureStage",
+            # 제한 시간이 끝나 개선을 못 끝낸 채 저장한 성공(이슈 #76). status 만으로는
+            # 정상 완료와 구분되지 않고, errorCode 는 실패가 아니라 비어 있다.
+            "timedOut",
         }
     ),
     OperationalEvent.USER_MEMORY_TASK_COMPLETED: frozenset(

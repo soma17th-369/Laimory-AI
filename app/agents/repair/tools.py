@@ -88,6 +88,9 @@ class RepairContext:
     event_agents: dict[str, EventAgent] = field(default_factory=dict)
     timeline_agent: TimelineAgent | None = None
     log: list[RepairToolResult] = field(default_factory=list)
+    #: 확정된 draft 를 밖으로 내보내는 콜백(이슈 #76). `_confirm` 만 호출한다.
+    #: 호출자는 제한 시간이 끝나 이 실행이 취소돼도 마지막 확정본을 손에 남긴다.
+    on_confirm: Callable[[TimelineDraft], None] | None = None
 
 
 @dataclass(frozen=True)

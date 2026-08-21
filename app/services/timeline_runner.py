@@ -85,6 +85,8 @@ from app.schemas import (
     TimelineCallbackPayload,
     TimelineDraft,
     TimelineDraftRequest,
+    TimelineWarning,
+    TimelineWarningSeverity,
 )
 from app.schemas.source_snapshot import TimelineWindow
 from app.services.app_server_client import AppServerClient, AppServerError, TaskToken
@@ -99,6 +101,56 @@ from app.services.timeline_validator import (
 logger = get_logger(__name__)
 
 
+def _observe_partial_save(
+    *,
+    task_id: str,
+    draft: TimelineDraft,
+    confirmed_count: int,
+) -> None:
+    """제한 시간 초과로 개선을 중단하고 확정본을 저장하는 경로를 기록한다(이슈 #76).
+
+    `report_error` 를 쓰지 않는다. 그 함수는 **실패에 코드를 부여하는** 통로라
+    성공한 작업의 로그에 `errorCode=1201` 을 남기게 되고, 그러면 지연 감시가 실제
+    실패와 부분 저장을 구분하지 못한다. `1201` 은 확정본이 없어 저장조차 못 한
+    경로에만 남는다.
+    """
+
+    with trace_observation(
+        "timeline-partial-save",
+        as_type="span",
+        input={
+            "taskId": task_id,
+            "timeoutSec": settings.pipeline_timeout_sec,
+        },
+        metadata={"reason": "pipeline_timeout"},
+    ) as observation:
+        update_observation(
+            observation,
+            output={
+                "partialSave": True,
+                "confirmedDraftCount": confirmed_count,
+                "eventCount": len(draft.events),
+                "questionCount": sum(
+                    1 for event in draft.events if event.question is not None
+                ),
+            },
+            level="WARNING",
+            status_message=(
+                "제한 시간 초과로 개선을 중단하고 마지막 확정본을 저장했습니다."
+            ),
+        )
+    logger.warning(
+        "제한 시간 초과: 개선을 중단하고 마지막 확정본을 저장합니다.",
+        extra=log_fields(
+            taskId=task_id,
+            stage=ExecutionStage.MAIN_AGENT.value,
+            timeoutSec=settings.pipeline_timeout_sec,
+            confirmedDraftCount=confirmed_count,
+            eventCount=len(draft.events),
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class _TimelineRunResult:
     status: TaskStatus
@@ -108,6 +160,9 @@ class _TimelineRunResult:
     #: 실패로 끊긴 단계. 성공이면 None. 운영 이벤트의 `failureStage` 로 나간다.
     failure_stage: ExecutionStage | None
     callback_sent: bool
+    #: 제한 시간이 끝나 개선을 마치지 못한 채 마지막 확정본을 저장했는지(이슈 #76).
+    #: 실패가 아니다 — 저장도 SUCCESS 콜백도 정상 경로로 나간 뒤에만 True 가 된다.
+    timed_out: bool = False
 
 
 async def process_timeline_task(
@@ -174,6 +229,11 @@ async def process_timeline_task(
                     "status": status.value,
                     "persisted": status is TaskStatus.SUCCESS,
                     "callbackSent": result.callback_sent,
+                    # 제한 시간이 끝나 개선을 못 끝낸 채 저장했는지(이슈 #76).
+                    # status 만으로는 정상 완료와 구분되지 않아 따로 싣는다.
+                    "timedOut": result.timed_out,
+                    "partialSave": result.timed_out
+                    and status is TaskStatus.SUCCESS,
                     # 토큰 값은 남기지 않는다. 몇 번 갈렸는지만 본다.
                     "tokenRefreshCount": token.refresh_count,
                     "durationMs": (perf_counter() - started) * 1000,
@@ -258,6 +318,10 @@ async def process_timeline_task(
                 durationMs=round((perf_counter() - started) * 1000, 3),
                 callbackSent=result.callback_sent if result is not None else False,
                 errorCode=int(failure_code) if failure_code is not None else None,
+                # 제한 시간이 끝나 개선을 못 끝낸 채 저장한 성공(이슈 #76). 이 이벤트가
+                # Elasticsearch 로 나가는 유일한 건이므로, 여기 없으면 운영에서 부분 저장을
+                # 셀 방법이 없다. errorCode 는 비어 있다 — 실패가 아니다.
+                timedOut=result.timed_out if result is not None else False,
                 failureStage=(
                     result.failure_stage.value
                     if result is not None and result.failure_stage is not None
@@ -292,6 +356,9 @@ async def _process_observed(
     active_stage = ExecutionStage.REQUEST
     request: TimelineDraftRequest | None = None
     draft: TimelineDraft | None = None
+    # 제한 시간이 끝나 마지막 확정본을 저장했는지(이슈 #76). 실패가 아니라 성공이므로
+    # failure_code 와 짝이 되지 않는다 — 둘이 동시에 채워지는 경우는 없다.
+    timed_out = False
     # 401/404/409 는 콜백도 같은 이유로 거절된다. 보내 봐야 실패 로그만 하나 더
     # 남으므로 통보를 포기한다.
     abort_callback = False
@@ -386,10 +453,38 @@ async def _process_observed(
                 request_outcome["userMemory"] = request.user_memory.trace_summary()
 
         active_stage = ExecutionStage.MAIN_AGENT
-        draft = await asyncio.wait_for(
-            run_main_agent(request),
-            timeout=settings.pipeline_timeout_sec,
-        )
+        # Repair 는 매 반복을 코드 확정으로 끝내므로 언제 끊겨도 저장 가능한 draft 를
+        # 손에 들고 있다(이슈 #76). 그 확정본을 여기로 받아 두면, 제한 시간이 끝나
+        # `run_main_agent` 이 취소돼 반환값이 없어도 하루 기록을 잃지 않는다.
+        confirmed: list[TimelineDraft] = []
+        try:
+            draft = await asyncio.wait_for(
+                run_main_agent(request, on_confirm=confirmed.append),
+                timeout=settings.pipeline_timeout_sec,
+            )
+        except asyncio.TimeoutError:
+            if not confirmed:
+                # 확정본이 하나도 없다. 저장할 것이 없으므로 바깥 핸들러가 1201 로
+                # 끝내게 그대로 올린다.
+                raise
+            timed_out = True
+            draft = confirmed[-1]
+            draft.warnings.append(
+                TimelineWarning(
+                    warning_id=f"warning-timeout-{len(draft.warnings) + 1:03d}",
+                    severity=TimelineWarningSeverity.MEDIUM,
+                    message=(
+                        "제한 시간이 끝나 개선을 마치지 못한 채 하루 기록을 저장했습니다."
+                    ),
+                )
+            )
+            _observe_partial_save(
+                task_id=task_id,
+                draft=draft,
+                confirmed_count=len(confirmed),
+            )
+        # 아래 저장 블록으로 그대로 진행한다. 저장 경로를 한 벌로 두어야
+        # 자체검증 실패(1301)·저장 실패(1303)와 #40 순서 계약이 두 벌로 갈라지지 않는다.
 
         # 확정 결과를 App Server 결과 저장 API 로 보낸다. 저장/검증 실패는 아래
         # except 로 잡혀 FAILED 로 처리된다.
@@ -513,6 +608,7 @@ async def _process_observed(
         failure_code=failure_code,
         failure_stage=active_stage if status is not TaskStatus.SUCCESS else None,
         callback_sent=callback_sent,
+        timed_out=timed_out,
     )
 
 

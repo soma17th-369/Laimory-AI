@@ -29,6 +29,7 @@ Event Agent 결과는 **Agent 이름을 키로** 들고 다닌다. Repair Agent 
 """
 
 import asyncio
+from collections.abc import Callable
 from time import perf_counter
 from typing import TypedDict
 
@@ -69,6 +70,7 @@ class _MainAgentState(TypedDict, total=False):
     event_results: dict[str, AgentEventResult]
     merged_result: AgentEventResult
     draft: TimelineDraft
+    on_confirm: Callable[[TimelineDraft], None] | None
 
 
 def _name_agents(agents: list[EventAgent]) -> dict[str, EventAgent]:
@@ -283,6 +285,7 @@ def _build_graph():
                     event_results=state["event_results"],
                     event_agents=state["event_agents"],
                     timeline_agent=state["timeline_agent"],
+                    on_confirm=state.get("on_confirm"),
                 )
             )
             update_observation(
@@ -396,6 +399,7 @@ async def run_main_agent(
     timeline_agent: TimelineAgent | None = None,
     repair_agent: RepairAgent | None = None,
     question_agent: QuestionAgent | None = None,
+    on_confirm: Callable[[TimelineDraft], None] | None = None,
 ) -> TimelineDraft:
     """요청을 받아 확정된 `TimelineDraft` 를 생성한다.
 
@@ -405,6 +409,9 @@ async def run_main_agent(
         timeline_agent: 사용할 Timeline Agent. 기본값은 새 `TimelineAgent()`.
         repair_agent: 사용할 Repair Agent. 기본값은 새 `RepairAgent()`.
         question_agent: 사용할 Question Agent. 기본값은 새 `QuestionAgent()`.
+        on_confirm: Repair 가 draft 를 확정할 때마다 그 복사본을 받을 콜백(이슈 #76).
+            호출자가 `asyncio.wait_for` 로 이 실행을 취소해도 마지막 확정본이 호출자
+            손에 남는다. 취소된 뒤에는 반환값이 없으므로 결과를 건네는 통로가 이것뿐이다.
 
     Event Agent 들은 각각 블로킹 LLM 호출을 하므로 `asyncio.to_thread` 로
     스레드에 올려 동시에 실행한다. Timeline/Repair Agent 역시 블로킹이라 스레드에서
@@ -453,6 +460,7 @@ async def run_main_agent(
                 "timeline_agent": timeline,
                 "repair_agent": repair,
                 "question_agent": question,
+                "on_confirm": on_confirm,
             }
         )
         draft = final_state["draft"]

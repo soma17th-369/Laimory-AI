@@ -11,7 +11,15 @@ from app.core.error_codes import ErrorCode, message_for
 from app.core.execution_context import ExecutionStage
 from app.core.operational_logging import OperationalEvent
 from app.core.structured import StructuredOutputError
-from app.schemas import TaskStatus, TimelineDraft
+from app.schemas import (
+    EventSourceType,
+    EventType,
+    InferenceLevel,
+    SourceRef,
+    TaskStatus,
+    TimelineDraft,
+    TimelineEventDraft,
+)
 from app.services import timeline_runner
 from app.services.app_server_client import AppServerError
 from app.services.timeline_validator import (
@@ -55,7 +63,7 @@ def _run(client: FakeAppServerClient, task_token: str = _TASK_TOKEN) -> TaskStat
 
 
 def _patch_agent(monkeypatch, draft: TimelineDraft | None = None) -> None:
-    async def fake_main_agent(request):
+    async def fake_main_agent(request, **_kwargs):
         return draft if draft is not None else _draft()
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
@@ -198,7 +206,7 @@ def test_failure_event_carries_the_code_and_the_broken_stage(monkeypatch, caplog
 
 
 def test_timeout_is_also_closed_by_one_event(monkeypatch, caplog):
-    async def slow(request):
+    async def slow(request, **_kwargs):
         await asyncio.sleep(5)
         return _draft()
 
@@ -251,6 +259,7 @@ def test_task_event_never_carries_user_content(monkeypatch, caplog):
         "callbackSent",
         "errorCode",
         "failureStage",
+        "timedOut",
     }
 
 
@@ -302,7 +311,7 @@ def test_input_fetch_failure_sends_failed_callback(monkeypatch):
 
 
 def test_agent_exception_returns_failed_callback(monkeypatch):
-    async def boom(request):
+    async def boom(request, **_kwargs):
         raise RuntimeError("메인 에이전트 오류")
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", boom)
@@ -320,7 +329,7 @@ def test_agent_exception_returns_failed_callback(monkeypatch):
 
 
 def test_structured_output_failure_keeps_specific_callback_code(monkeypatch):
-    async def boom(request):
+    async def boom(request, **_kwargs):
         raise StructuredOutputError("rawId=내부값이 잘못됐습니다")
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", boom)
@@ -424,8 +433,129 @@ def test_storage_validation_failure_logs_safe_codes_without_raw_id(
     assert unknown_raw_id not in str(failure.fields)
 
 
+def _confirming_agent(confirmed: TimelineDraft, *, then_sleep: float = 5.0):
+    """확정본을 하나 발행한 뒤 제한 시간을 넘기는 가짜 main agent."""
+
+    async def agent(request, on_confirm=None, **_kwargs):
+        if on_confirm is not None:
+            on_confirm(confirmed)
+        await asyncio.sleep(then_sleep)
+        return _draft()
+
+    return agent
+
+
+def test_timeout_with_confirmed_draft_stores_it_and_succeeds(monkeypatch):
+    """제한 시간이 끝나도 확정본이 있으면 버리지 않고 저장한다(이슈 #76).
+
+    저장까지 갔으므로 SUCCESS 이고, 순서 계약도 정상 경로와 같아야 한다.
+    """
+
+    confirmed = _draft()
+    monkeypatch.setattr(
+        timeline_runner, "run_main_agent", _confirming_agent(confirmed)
+    )
+    monkeypatch.setattr(timeline_runner.settings, "pipeline_timeout_sec", 0.05)
+    client = _client()
+
+    status = _run(client)
+
+    assert status is TaskStatus.SUCCESS
+    assert client.order == ["input", "result", "callback"]
+    assert client.last_callback.status is TaskStatus.SUCCESS
+    assert client.last_callback.error_code is None
+
+
+def test_timeout_without_confirmed_draft_still_fails_with_1201(monkeypatch):
+    """확정본이 없으면 저장할 것이 없다. 지금과 같이 1201 로 끝난다."""
+
+    async def slow(request, **_kwargs):
+        await asyncio.sleep(5)
+        return _draft()
+
+    monkeypatch.setattr(timeline_runner, "run_main_agent", slow)
+    monkeypatch.setattr(timeline_runner.settings, "pipeline_timeout_sec", 0.05)
+    client = _client()
+
+    status = _run(client)
+
+    assert status is TaskStatus.FAILED
+    assert client.order == ["input", "callback"]
+    assert client.last_callback.error_code == int(ErrorCode.PIPELINE_TIMEOUT)
+
+
+def test_partial_save_marks_the_event_without_an_error_code(monkeypatch, caplog):
+    """부분 저장은 성공이다. errorCode 가 붙으면 지연 감시가 실패로 센다."""
+
+    monkeypatch.setattr(
+        timeline_runner, "run_main_agent", _confirming_agent(_draft())
+    )
+    monkeypatch.setattr(timeline_runner.settings, "pipeline_timeout_sec", 0.05)
+
+    with caplog.at_level(logging.DEBUG):
+        _run(_client())
+
+    event = _task_events(caplog)[-1]
+    assert event["status"] == TaskStatus.SUCCESS.value
+    assert event["timedOut"] is True
+    # emitter 는 None 필드를 아예 싣지 않는다. 없다는 것이 곧 "실패가 아니다" 다.
+    assert "errorCode" not in event
+    assert "failureStage" not in event
+
+
+def test_normal_completion_is_not_marked_as_timed_out(monkeypatch, caplog):
+    _patch_agent(monkeypatch)
+
+    with caplog.at_level(logging.DEBUG):
+        _run(_client())
+
+    assert _task_events(caplog)[-1]["timedOut"] is False
+
+
+def test_stored_draft_is_a_snapshot_taken_at_confirm_time(monkeypatch):
+    """취소된 뒤에도 스레드가 draft 를 계속 고친다. 저장본이 그때 바뀌면 안 된다.
+
+    `_confirm` 이 복사본을 발행하므로, 발행 뒤의 변경은 저장 payload 에 닿지 못한다.
+    """
+
+    live = _draft()
+    live.events.append(
+        TimelineEventDraft(
+            client_event_id="event-001",
+            event_type=EventType.REST,
+            title="발행 시점의 제목",
+            start_time="2026-06-20T10:00:00+09:00",
+            end_time="2026-06-20T10:30:00+09:00",
+            confidence=0.5,
+            inference_level=InferenceLevel.EVIDENCE_BASED,
+            source_refs=[
+                SourceRef(
+                    source_type=EventSourceType.STAY,
+                    raw_id=fixture_raw_id("source-101"),
+                )
+            ],
+        )
+    )
+
+    async def agent(request, on_confirm=None, **_kwargs):
+        if on_confirm is not None:
+            # 실제 `_confirm` 과 같은 방식으로 복사본을 발행한다.
+            on_confirm(live.model_copy(deep=True))
+        # 취소된 뒤에도 살아 있는 스레드가 하는 일을 흉내 낸다.
+        live.events[0].title = "취소 뒤에 바뀐 제목"
+        await asyncio.sleep(5)
+        return _draft()
+
+    monkeypatch.setattr(timeline_runner, "run_main_agent", agent)
+    monkeypatch.setattr(timeline_runner.settings, "pipeline_timeout_sec", 0.05)
+    client = _client()
+
+    assert _run(client) is TaskStatus.SUCCESS
+    assert client.last_result.events[0].title == "발행 시점의 제목"
+
+
 def test_timeout_returns_failed(monkeypatch):
-    async def slow(request):
+    async def slow(request, **_kwargs):
         await asyncio.sleep(5)
         return _draft()
 
