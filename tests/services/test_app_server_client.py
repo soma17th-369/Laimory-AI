@@ -443,6 +443,17 @@ def _dependency_events(caplog, action: str) -> list[dict]:
     ]
 
 
+def _dependency_messages(caplog, action: str) -> list[str]:
+    """사람이 읽는 문구만 뽑는다. payload 가 아니라 로그 줄의 message 다(이슈 #78)."""
+
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if (payload := getattr(record, "operational_event", None)) is not None
+        and payload.get("event.action") == action
+    ]
+
+
 async def test_successful_call_emits_one_terminal_event(caplog):
     """재시도가 몇 번이든 논리적 호출 하나는 종료 이벤트 한 건이다."""
 
@@ -665,3 +676,47 @@ async def test_user_memory_dependency_event_uses_its_own_operation(caplog):
     assert event["operation"] == "user-memory-result"
     assert event["dependency"] == DEPENDENCY_NAME
     assert "30대 개발자입니다." not in json.dumps(event, ensure_ascii=False)
+
+
+async def test_terminal_event_message_names_the_actual_operation(caplog):
+    """Kibana 목록의 message 만 읽어도 어떤 App Server 호출인지 알 수 있어야 한다(#78)."""
+
+    with caplog.at_level("DEBUG"):
+        await _client(
+            lambda request: httpx.Response(200, json=_input_body())
+        ).fetch_input(_TASK_ID, TaskToken("tok-1"))
+
+    assert _dependency_messages(
+        caplog, OperationalEvent.DEPENDENCY_REQUEST_COMPLETED.value
+    ) == ["App Server 타임라인 입력 조회 성공"]
+
+
+async def test_retry_and_failure_messages_name_the_actual_operation(caplog):
+    with caplog.at_level("DEBUG"):
+        with pytest.raises(AppServerError):
+            await _client(lambda request: httpx.Response(503)).fetch_input(
+                _TASK_ID, TaskToken("tok-1")
+            )
+
+    assert (
+        _dependency_messages(caplog, OperationalEvent.DEPENDENCY_REQUEST_RETRY.value)
+        == ["App Server 타임라인 입력 조회 재시도"] * 2
+    )
+    assert _dependency_messages(
+        caplog, OperationalEvent.DEPENDENCY_REQUEST_COMPLETED.value
+    ) == ["App Server 타임라인 입력 조회 실패"]
+
+
+async def test_user_memory_message_is_distinct_from_the_timeline_calls(caplog):
+    """User Memory 결과 저장은 Timeline 결과 저장과 문구로 구분된다(#78)."""
+
+    with caplog.at_level("DEBUG"):
+        await _client(lambda request: httpx.Response(200)).submit_user_memory(
+            _TASK_ID, TaskToken("tok-1"), _user_memory_request()
+        )
+
+    messages = _dependency_messages(
+        caplog, OperationalEvent.DEPENDENCY_REQUEST_COMPLETED.value
+    )
+    assert messages == ["App Server User Memory 결과 저장 성공"]
+    assert "타임라인" not in messages[0]

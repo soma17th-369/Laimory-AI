@@ -34,6 +34,8 @@ Elasticsearch 수집 대상은 `emit_event`만 붙일 수 있는 `event.dataset=
 
 HTTP request는 response start 시점에 요청당 한 건, Timeline·User Memory background task는 task당 한 건, App Server logical call은 retry 횟수와 무관하게 완료 한 건을 남긴다. 개별 retry는 별도 retry event다. 같은 `taskId`와 `errorCode`로 경계를 연결한다.
 
+`message`는 사람이 읽는 한 줄이고 집계 계약은 여전히 `event.action`이다. 다만 dependency event만 문구를 `dependency`·`operation`·`event.outcome`의 고정 label 매핑으로 구체화한다(#78) — Kibana 목록에서 field를 펼치기 전에 timeline 입력 조회·결과 저장·완료 callback·User Memory 결과 저장을 구분해야 하기 때문이다. 문구에 들어가는 값은 emitter가 소유한 label 상수뿐이고, 등록되지 않은 `dependency`/`operation`은 문구에 싣지 않고 일반 문구로 통째로 폴백한다. 새 operation을 추가하면 label도 함께 등록한다. label이 없어도 field와 event 건수는 그대로다.
+
 `usermemory.task.completed`에서 먼저 볼 field는 `resultSent`다. callback이 없는 계약이라 결과 저장 호출 한 번이 통보의 전부이고, `false`면 App Server는 아무 연락도 받지 못한 상태다. `droppedDailyTimelineCount`/`droppedEventCount`는 입력을 얼마나 잘랐는지를 남긴다 — 조용히 자르면 결과만 보고 "다 보고 이 정도"인지 "못 본 게 있어서 이 정도"인지 구분할 수 없다.
 
 `ErrorCode`는 영역별 정수 대역, 외부 안전 메시지, 필요한 HTTP status의 단일 카탈로그다. 예약된 과거 번호는 재사용하지 않는다. `report_error`는 최종/흡수 경계의 local 진단이며 외부 response·callback·운영 event는 같은 code를 참조한다. 원본 exception message와 traceback은 외부 안전 메시지로 변환된다.
@@ -61,6 +63,7 @@ Langfuse client 생성·span 시작/종료·flush 실패와 운영 event 조립�
 - 일반 로그를 추가해도 자동으로 Elasticsearch 수집 범위가 넓어지지 않아야 한다.
 - 운영 이벤트에는 사용자 title, 장소, 주소, filename, prompt/response, URL, token, exception 원문을 넣지 않는다.
 - event action 이름과 field 의미는 dashboard/search 계약이므로 임의 변경하지 않는다.
+- 호출부가 넘긴 문자열은 어떤 경로로도 운영 event의 `message`가 되지 않는다. 문구는 emitter가 소유한 고정 label 조합뿐이고, 모르는 값은 문구에서 뺀다.
 - 같은 실패는 API/callback/운영 event에서 같은 정수 code를 쓴다.
 - 관측 실패가 Timeline 결과를 바꾸지 않는다.
 - `taskToken` 값은 Langfuse와 모든 로그에서 금지하고 갱신 횟수만 허용한다.
@@ -77,7 +80,7 @@ Langfuse client 생성·span 시작/종료·flush 실패와 운영 event 조립�
 
 ## Update When
 
-log format, operational marker/action/allowlist, 수집 sink, request/task/dependency cardinality, ErrorCode 규칙, Langfuse tree/content policy, redaction, failure isolation이 바뀔 때 갱신한다.
+log format, operational marker/action/allowlist, operational `message` 결정 규칙, 수집 sink, request/task/dependency cardinality, ErrorCode 규칙, Langfuse tree/content policy, redaction, failure isolation이 바뀔 때 갱신한다.
 
 ## Validation
 

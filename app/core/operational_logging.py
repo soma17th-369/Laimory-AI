@@ -23,6 +23,18 @@
 traceback 은 어떤 이벤트에도 넣지 않는다. 예외 상세가 필요하면 ``errorCode`` 와
 ``errorType`` 까지다.
 
+## 사람이 읽는 ``message`` (이슈 #78)
+
+집계 계약은 ``event.action``/``event.outcome`` 이고 ``message`` 는 사람이 읽는 한
+줄이다. 그래도 Kibana 목록에서 구조화 필드를 펼치기 전에 무슨 일이 있었는지 보여야
+쓸모가 있다. 그래서 외부 연동 이벤트의 문구는 ``dependency``·``operation``·
+``event.outcome`` 의 **고정 매핑**으로 정한다(:func:`_message_for`).
+
+문구에 들어가는 값은 :data:`_DEPENDENCY_LABELS` 와 :data:`_OPERATION_LABELS` 의
+상수뿐이다. 라벨을 모르는 값은 문구에 **넣지 않고** 일반 문구로 통째로 폴백한다.
+호출부가 넘긴 문자열이 문구로 흘러가는 경로를 하나도 만들지 않는 것이 이 설계의
+전부다 — 그 경로가 생기면 사용자 콘텐츠와 고카디널리티 값이 곧 따라 들어온다.
+
 ## 실패 격리
 
 로깅이 요청 처리를 깨뜨리면 안 된다. :func:`emit_event` 는 어떤 이유로도 예외를
@@ -155,8 +167,10 @@ _ALLOWED_FIELDS: dict[OperationalEvent, frozenset[str]] = {
     ),
 }
 
-#: 사람이 읽는 고정 문구. 호출부가 문자열을 만들지 못하게 여기서 소유한다 —
+#: 사람이 읽는 기본 문구. 호출부가 문자열을 만들지 못하게 여기서 소유한다 —
 #: 포맷 인자를 받는 순간 사용자 콘텐츠가 message 로 들어올 자리가 생긴다.
+#: 외부 연동 이벤트는 여기 값을 **폴백**으로 쓰고, 라벨을 아는 호출은
+#: :func:`_message_for` 가 더 구체적인 문구로 바꾼다(이슈 #78).
 _MESSAGES: dict[OperationalEvent, str] = {
     OperationalEvent.HTTP_REQUEST_COMPLETED: "HTTP 요청 완료",
     OperationalEvent.SERVER_STARTED: "서버 기동 완료",
@@ -166,6 +180,36 @@ _MESSAGES: dict[OperationalEvent, str] = {
     OperationalEvent.DEPENDENCY_REQUEST_COMPLETED: "외부 연동 호출 완료",
     OperationalEvent.DEPENDENCY_REQUEST_RETRY: "외부 연동 호출 재시도",
 }
+
+#: 외부 연동 이벤트 문구에 쓰는 라벨. `dependency`/`operation` 값은 **여기 등록된
+#: 것만** 문구가 된다. 등록되지 않은 값은 문구에 들어가지 않고 통째로 폴백한다 —
+#: 그래야 App Server 가 새 operation 을 보내든 값이 오염되든 원문이 message 로
+#: 새지 않는다. 라벨을 늘리는 것이 곧 지원하는 작업을 늘리는 것이다.
+_DEPENDENCY_LABELS: dict[str, str] = {
+    "app-server": "App Server",
+}
+
+_OPERATION_LABELS: dict[str, str] = {
+    "input": "타임라인 입력 조회",
+    "result": "타임라인 결과 저장",
+    "callback": "타임라인 완료 콜백 전송",
+    "user-memory-result": "User Memory 결과 저장",
+}
+
+#: 완료 이벤트 문구의 상태 접미사. 재시도 이벤트는 성공/실패가 아니라 재시도라는
+#: 사실 자체가 상태라 이 표를 쓰지 않는다.
+_OUTCOME_SUFFIXES: dict[EventOutcome, str] = {
+    EventOutcome.SUCCESS: "성공",
+    EventOutcome.FAILURE: "실패",
+}
+
+#: 문구를 구체화하는 대상. 여기 없는 이벤트는 `_MESSAGES` 문구를 그대로 쓴다.
+_DEPENDENCY_EVENTS = frozenset(
+    {
+        OperationalEvent.DEPENDENCY_REQUEST_COMPLETED,
+        OperationalEvent.DEPENDENCY_REQUEST_RETRY,
+    }
+)
 
 #: 운영 이벤트는 이 로거 하나로만 나간다. `logger` 필드로 바로 구분되고, 호출부
 #: 모듈이 늘어나도 수집 대상 로거가 흩어지지 않는다.
@@ -216,14 +260,58 @@ def emit_event(
 
     try:
         payload = _build_payload(event, outcome, fields)
+        message = _message_for(event, outcome, payload)
     except Exception:  # noqa: BLE001 - 관측이 처리를 깨뜨리지 않는다.
         _diagnostic.debug("운영 이벤트 조립 실패: %s", event.value, exc_info=True)
         return
 
     try:
-        _logger.log(level, "%s", _MESSAGES[event], extra={OPERATIONAL_ATTR: payload})
+        _logger.log(level, "%s", message, extra={OPERATIONAL_ATTR: payload})
     except Exception:  # noqa: BLE001 - 핸들러 오류까지 방어한다.
         _diagnostic.debug("운영 이벤트 기록 실패: %s", event.value, exc_info=True)
+
+
+def _message_for(
+    event: OperationalEvent,
+    outcome: EventOutcome,
+    payload: dict[str, Any],
+) -> str:
+    """이벤트 한 건의 사람이 읽는 `message` 를 고른다(이슈 #78).
+
+    외부 연동 이벤트는 `dependency`·`operation`·`event.outcome` 의 고정 매핑으로
+    **어떤 작업이 어떻게 끝났는지**를 문구에 드러낸다. Kibana 목록에서 `operation`
+    을 따로 펼치지 않아도 입력 조회·결과 저장·콜백·User Memory 결과 저장을 구분할 수
+    있어야 하기 때문이다.
+
+    문구에 들어가는 값은 **라벨 사전의 상수뿐이다.** payload 의 원본 문자열은 어떤
+    경로로도 문구가 되지 않는다. 라벨을 모르는 dependency/operation 은 기존 일반
+    문구로 통째로 폴백한다 — 알 수 없는 값을 문구에 실어 보내면 그 자리가 곧
+    사용자 콘텐츠와 고카디널리티 값이 들어오는 통로가 된다.
+
+    `event.action`/`event.outcome`/`operation` 필드는 건드리지 않는다. 집계 계약은
+    여전히 그쪽이고 여기는 사람이 읽는 한 줄이다.
+    """
+
+    fallback = _MESSAGES[event]
+    if event not in _DEPENDENCY_EVENTS:
+        return fallback
+
+    dependency_value = payload.get("dependency")
+    operation_value = payload.get("operation")
+    # 문자열이 아니면 라벨 조회조차 하지 않는다. 해시할 수 없는 값이 들어와
+    # 여기서 터지면 이벤트 한 건이 통째로 사라진다 — 문구 하나 때문에 관측을
+    # 잃지 않는다.
+    if not isinstance(dependency_value, str) or not isinstance(operation_value, str):
+        return fallback
+
+    dependency = _DEPENDENCY_LABELS.get(dependency_value)
+    operation = _OPERATION_LABELS.get(operation_value)
+    if dependency is None or operation is None:
+        return fallback
+
+    if event is OperationalEvent.DEPENDENCY_REQUEST_RETRY:
+        return f"{dependency} {operation} 재시도"
+    return f"{dependency} {operation} {_OUTCOME_SUFFIXES[outcome]}"
 
 
 def _build_payload(
