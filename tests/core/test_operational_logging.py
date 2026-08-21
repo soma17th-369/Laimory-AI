@@ -6,6 +6,11 @@
 2. 이벤트마다 허용된 필드만 나간다. 임의 필드·본문·예외 원문은 버려진다.
 3. 운영 이벤트에는 예외 traceback 이 붙지 않는다.
 4. 로깅 실패가 호출부를 깨뜨리지 않는다.
+
+여기에 사람이 읽는 `message` 계약이 하나 더 붙는다(이슈 #78).
+
+5. 외부 연동 이벤트의 문구는 dependency·operation·outcome 의 고정 매핑으로 정해지고,
+   라벨을 모르는 값은 문구에 실리지 않는다.
 """
 
 import json
@@ -211,3 +216,176 @@ def test_http_level_and_outcome_follow_the_status_code() -> None:
     assert http_level(500) == logging.ERROR
     assert http_outcome(204) is EventOutcome.SUCCESS
     assert http_outcome(404) is EventOutcome.FAILURE
+
+
+# --- 사람이 읽는 message (이슈 #78) -------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("operation", "outcome", "expected"),
+    [
+        ("input", EventOutcome.SUCCESS, "App Server 타임라인 입력 조회 성공"),
+        ("input", EventOutcome.FAILURE, "App Server 타임라인 입력 조회 실패"),
+        ("result", EventOutcome.SUCCESS, "App Server 타임라인 결과 저장 성공"),
+        ("result", EventOutcome.FAILURE, "App Server 타임라인 결과 저장 실패"),
+        ("callback", EventOutcome.SUCCESS, "App Server 타임라인 완료 콜백 전송 성공"),
+        ("callback", EventOutcome.FAILURE, "App Server 타임라인 완료 콜백 전송 실패"),
+        (
+            "user-memory-result",
+            EventOutcome.SUCCESS,
+            "App Server User Memory 결과 저장 성공",
+        ),
+        (
+            "user-memory-result",
+            EventOutcome.FAILURE,
+            "App Server User Memory 결과 저장 실패",
+        ),
+    ],
+)
+def test_completed_message_names_the_operation_and_the_outcome(
+    capture, operation, outcome, expected
+) -> None:
+    """`operation` 을 펼치지 않아도 어떤 호출이 어떻게 끝났는지 보여야 한다."""
+
+    emit_event(
+        OperationalEvent.DEPENDENCY_REQUEST_COMPLETED,
+        outcome=outcome,
+        dependency="app-server",
+        operation=operation,
+        httpStatus=200,
+        attempts=1,
+        durationMs=12.0,
+    )
+
+    assert _events(capture)[-1]["message"] == expected
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected"),
+    [
+        ("input", "App Server 타임라인 입력 조회 재시도"),
+        ("result", "App Server 타임라인 결과 저장 재시도"),
+        ("callback", "App Server 타임라인 완료 콜백 전송 재시도"),
+        ("user-memory-result", "App Server User Memory 결과 저장 재시도"),
+    ],
+)
+def test_retry_message_names_the_actual_operation(capture, operation, expected) -> None:
+    """재시도도 어느 작업이 흔들리는지 문구에서 바로 보여야 한다."""
+
+    emit_event(
+        OperationalEvent.DEPENDENCY_REQUEST_RETRY,
+        outcome=EventOutcome.FAILURE,
+        level=logging.WARNING,
+        dependency="app-server",
+        operation=operation,
+        attempt=1,
+        maxAttempts=3,
+        reason="server_error",
+        httpStatus=503,
+    )
+
+    assert _events(capture)[-1]["message"] == expected
+
+
+@pytest.mark.parametrize(
+    ("dependency", "operation"),
+    [
+        # 앞으로 추가될 operation
+        ("app-server", "timeline-summary"),
+        # 앞으로 추가될 dependency
+        ("search-index", "input"),
+        # 값이 오염된 경우. 이런 것이 문구가 되면 message 가 곧 유출 통로다.
+        ("app-server", "result?taskToken=tok-secret"),
+        ("app-server", ""),
+    ],
+)
+def test_unknown_labels_fall_back_without_reaching_the_message(
+    capture, dependency, operation
+) -> None:
+    """라벨을 모르는 값은 문구에 **넣지 않고** 통째로 일반 문구로 폴백한다."""
+
+    emit_event(
+        OperationalEvent.DEPENDENCY_REQUEST_COMPLETED,
+        outcome=EventOutcome.SUCCESS,
+        dependency=dependency,
+        operation=operation,
+        httpStatus=200,
+    )
+
+    payload = _events(capture)[-1]
+    assert payload["message"] == "외부 연동 호출 완료"
+    assert dependency not in payload["message"]
+    if operation:
+        assert operation not in payload["message"]
+    # 구조화 필드로는 그대로 나간다. 문구만 폴백이고 집계 계약은 손대지 않는다.
+    assert payload["operation"] == operation
+    assert payload["dependency"] == dependency
+
+
+def test_message_wording_does_not_move_the_structured_contract(capture) -> None:
+    """문구가 구체화돼도 `event.action`·`event.outcome`·필드·건수는 그대로다."""
+
+    emit_event(
+        OperationalEvent.DEPENDENCY_REQUEST_COMPLETED,
+        outcome=EventOutcome.FAILURE,
+        level=logging.ERROR,
+        dependency="app-server",
+        operation="result",
+        httpStatus=500,
+        attempts=3,
+        durationMs=980.5,
+        errorCode=1203,
+        taskId="task-9",
+        tokenRefreshCount=1,
+    )
+
+    events = _events(capture)
+    assert len(events) == 1, "문구를 바꿔도 논리 호출 하나는 이벤트 한 건이다."
+    payload = events[0]
+    assert payload[ACTION_FIELD] == OperationalEvent.DEPENDENCY_REQUEST_COMPLETED.value
+    assert payload[OUTCOME_FIELD] == EventOutcome.FAILURE.value
+    assert payload["dependency"] == "app-server"
+    assert payload["operation"] == "result"
+    assert payload["httpStatus"] == 500
+    assert payload["attempts"] == 3
+    assert payload["errorCode"] == 1203
+    assert payload["taskId"] == "task-9"
+    assert payload["message"] == "App Server 타임라인 결과 저장 실패"
+
+
+def test_message_never_carries_the_url_or_the_token(capture) -> None:
+    """문구는 고정 라벨 조합이라 고카디널리티·민감값이 들어갈 자리가 없다."""
+
+    emit_event(
+        OperationalEvent.DEPENDENCY_REQUEST_COMPLETED,
+        outcome=EventOutcome.SUCCESS,
+        dependency="app-server",
+        operation="input",
+        httpStatus=200,
+        # 허용 목록 밖이라 버려지는 값들. 문구에도 절대 나타나지 않는다.
+        url="https://app.example/s/api/v1/timelines/task-1/input",
+        taskToken="tok-secret",
+    )
+
+    payload = _events(capture)[-1]
+    assert payload["message"] == "App Server 타임라인 입력 조회 성공"
+    serialized = json.dumps(payload, ensure_ascii=False)
+    for leaked in ("app.example", "tok-secret", "task-1/input"):
+        assert leaked not in serialized
+
+
+def test_odd_label_values_fall_back_without_losing_the_event(capture) -> None:
+    """문구를 고르다 터져서 이벤트가 통째로 사라지면 안 된다."""
+
+    emit_event(
+        OperationalEvent.DEPENDENCY_REQUEST_COMPLETED,
+        outcome=EventOutcome.SUCCESS,
+        dependency=["app-server"],  # 해시할 수 없는 값
+        operation=7,
+        httpStatus=200,
+    )
+
+    events = _events(capture)
+    assert len(events) == 1
+    assert events[0]["message"] == "외부 연동 호출 완료"
+    assert events[0][ACTION_FIELD] == OperationalEvent.DEPENDENCY_REQUEST_COMPLETED.value
