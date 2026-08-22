@@ -100,8 +100,17 @@ rawId가 task 안에서 중복되지 않는지 확인한다. normalizer는 itemT
 
 ### PhotoItem
 
-`rawId`, `takenAt`, `dateTaken?`, `latitude?`, `longitude?`, `description?`,
-`photoUrl?`
+`rawId`, `takenAt`, `dateTaken?`, `latitude?`, `longitude?`, `places[]`, `address?`,
+`description?`, `photoUrl?`
+
+`places`와 `address`는 촬영 지점의 장소다. **둘 다 비어 있을 수 있고**, 그때는 촬영 시각에
+걸치는 STAY의 장소를 대신 쓴다. 장소 확정 우선순위에서 PHOTO는 MOVEMENT 다음·CALENDAR
+앞이다 — 사진 장소는 실제로 거기 있었다는 증거이고 캘린더 `locationText`는 사용자가 적어 둔
+의도이기 때문이다.
+
+`latitude`/`longitude`는 계속 받지만 **프롬프트에는 싣지 않는다**. Agent가 좌표를 직접
+해석할 일이 없고 input token만 차지한다. 좌표가 필요한 판단은 코드가 파생 지표로 계산해
+결론만 넘긴다.
 
 `photoUrl`은 App Server가 주는 S3 이미지 URL이다. Photo Agent가 이 URL에서 실제
 이미지를 내려받아 vision 모델로 `description`을 만든다. presigned URL이면 query에

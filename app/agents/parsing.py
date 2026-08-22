@@ -54,6 +54,47 @@ def items_to_text(items: list) -> str:
     return json.dumps(dumped, ensure_ascii=False, indent=2)
 
 
+#: 프롬프트에 싣지 않는 키. 좌표는 **코드만** 쓴다(이슈 #80).
+_COORDINATE_KEYS = frozenset({"latitude", "longitude"})
+
+
+def strip_coordinates(payload):
+    """직렬화한 payload 에서 위경도를 걷어낸다.
+
+    좌표는 사람이 읽고 판단할 값이 아니다. Agent 가 직접 해석할 일이 없는데도 원본 항목마다
+    실려 나가면서 input token 만 차지한다. 좌표가 필요한 판단(연속 MOVEMENT 사이 끝점 거리
+    등)은 코드가 `derivedMetrics` 로 계산해 결론만 넘기므로, 원본에서 빼도 근거가 줄지 않는다.
+
+    `MovementItem` 은 `start`/`end` 안에 좌표를 중첩하므로 재귀로 훑는다. 입력 스키마에서
+    좌표를 없애는 것이 아니다 — request 로는 그대로 받고 프롬프트에만 싣지 않는다.
+    """
+
+    if isinstance(payload, dict):
+        return {
+            key: strip_coordinates(value)
+            for key, value in payload.items()
+            if key not in _COORDINATE_KEYS
+        }
+    if isinstance(payload, list):
+        return [strip_coordinates(item) for item in payload]
+    return payload
+
+
+def items_to_text_without_coordinates(items: list) -> str:
+    """`items_to_text` 와 같되 위경도만 뺀다.
+
+    위치 원본을 프롬프트에 싣는 곳(Location·Photo Agent)이 함께 쓴다.
+    """
+
+    if not items:
+        return items_to_text(items)
+    return json.dumps(
+        strip_coordinates([m.model_dump(by_alias=True, mode="json") for m in items]),
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
 def user_memory_to_text(user_memory: UserMemory | None) -> str:
     """user memory를 프롬프트용 문자열로 직렬화한다 (#65).
 

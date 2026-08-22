@@ -159,6 +159,19 @@ class LLMPhotoDescriber(PhotoDescriber):
         return parse_descriptions(text, {photo.raw_id for photo in targets})
 
 
+def _photo_place(photo: PhotoItem) -> str | None:
+    """사진에 직접 실려 온 장소명. 없으면 None (#80).
+
+    App Server 가 촬영 지점의 장소를 줄 때가 있고 안 줄 때가 있다. 없으면 없는 대로 두고
+    호출부가 촬영 시각으로 STAY 를 대조하는 기존 경로로 넘어간다.
+    """
+
+    for value in (*photo.places, photo.address):
+        if value and value.strip():
+            return value.strip()
+    return None
+
+
 def _place_at(
     stays: list[StayItem], taken_at: datetime | None, tz: tzinfo
 ) -> str | None:
@@ -193,10 +206,12 @@ def _metadata_prompt(
         row: dict[str, object] = {
             "rawId": photo.raw_id,
             "takenAt": photo.taken_at,
-            "lat": photo.latitude,
-            "lon": photo.longitude,
         }
-        place = _place_at(stays, parse_datetime(photo.taken_at, tz), tz)
+        # 좌표는 싣지 않는다(#80). 사진 자체 장소가 있으면 그것을, 없으면 촬영 시각에
+        # 걸치는 STAY 의 장소를 쓴다.
+        place = _photo_place(photo) or _place_at(
+            stays, parse_datetime(photo.taken_at, tz), tz
+        )
         if place:
             row["place"] = place
         rows.append(row)
@@ -241,11 +256,9 @@ class MetadataPhotoDescriber(PhotoDescriber):
         else:
             parts.append("촬영 시각을 알 수 없는 사진")
 
-        place = _place_at(self._stays, taken_at, self._tz)
+        place = _photo_place(photo) or _place_at(self._stays, taken_at, self._tz)
         if place:
             parts.append(f"{place}에서 촬영된 것으로 보인다")
-        elif photo.latitude is not None and photo.longitude is not None:
-            parts.append("촬영 위치 좌표가 함께 기록돼 있다")
 
         parts.append("이미지를 확인하지 못해 무엇이 담겼는지는 알 수 없다")
         return ". ".join(parts) + "."

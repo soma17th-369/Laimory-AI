@@ -75,6 +75,7 @@ Repair는 시작할 때 LLM 호출 여부와 무관하게 `repair_draft`를 한 
 ## Invariants
 
 - Event Agent 병렬 실행 후 명시적인 merge를 거쳐야 Timeline Agent로 간다.
+- 위경도는 프롬프트에 싣지 않는다. request로는 계속 받고 코드가 파생 지표 계산에만 쓴다. 장소 확정 우선순위는 `STAY → MOVEMENT → PHOTO → CALENDAR`이며, PHOTO의 장소는 들어오지 않을 수 있다.
 - 장소 문자열은 코드가 입력에서 복사하고 LLM은 고르기만 한다. candidate 단계에서 복사하고, 확정 pass에서 draft의 `place`가 입력 또는 User Memory에서 왔는지 검사한다. 근거 없는 `place`는 warning만 남기고 지우지 않으며, 근거 없는 `address`는 지운다.
 - rawId 무결성과 request window는 candidate와 final draft 양쪽에서 방어한다.
 - Calendar 누락 방지, 정렬, ID, source/시간 확정은 LLM 선택에 의존하지 않는다.
