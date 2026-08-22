@@ -47,7 +47,7 @@ def test_runner_trace_contains_every_boundary_input_and_output(
         timezone="Asia/Seoul",
     )
 
-    async def fake_main_agent(request):
+    async def fake_main_agent(request, **_kwargs):
         return draft
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
@@ -124,3 +124,73 @@ def test_runner_trace_contains_every_boundary_input_and_output(
         ensure_ascii=False,
     )
     assert "must-never-appear" not in serialized_attributes
+
+
+def test_partial_save_is_visible_in_the_trace(monkeypatch) -> None:
+    """제한 시간 초과로 끊고 저장한 경우 trace 에서 정상 완료와 구분돼야 한다(이슈 #76).
+
+    `status` 는 SUCCESS 라 그것만으로는 구분되지 않고, `errorCode` 는 실패가 아니라
+    비어 있다. 구분은 `timedOut`·`partialSave` 와 전용 span 이 한다.
+    """
+
+    exporter = InMemorySpanExporter()
+    client = Langfuse(
+        public_key="pk-lf-runner-partial",
+        secret_key="sk-lf-test",
+        base_url="http://127.0.0.1:1",
+        span_exporter=exporter,
+    )
+    monkeypatch.setattr(langfuse_tracing, "get_langfuse_client", lambda: client)
+    monkeypatch.setattr(
+        langfuse_tracing.settings,
+        "langfuse_content_capture",
+        "SANITIZED",
+    )
+    monkeypatch.setattr(timeline_runner.settings, "langfuse_enabled", False)
+    monkeypatch.setattr(timeline_runner.settings, "pipeline_timeout_sec", 0.05)
+
+    confirmed = TimelineDraft(user_id="u-1", date="2026-06-20", timezone="Asia/Seoul")
+
+    async def slow_after_confirm(request, on_confirm=None, **_kwargs):
+        if on_confirm is not None:
+            on_confirm(confirmed)
+        await asyncio.sleep(5)
+        return confirmed
+
+    monkeypatch.setattr(timeline_runner, "run_main_agent", slow_after_confirm)
+
+    app_server = FakeAppServerClient(
+        snapshot=make_snapshot(
+            task_id=_TASK_ID,
+            source_items=default_source_items(),
+        )
+    )
+
+    status = asyncio.run(
+        timeline_runner.process_timeline_task(
+            _TASK_ID,
+            app_server,
+            42,
+            _WINDOW_START,
+            _WINDOW_END,
+            "must-never-appear",
+        )
+    )
+    client.flush()
+
+    assert status is TaskStatus.SUCCESS
+    spans = {span.name: span for span in exporter.get_finished_spans()}
+    assert "timeline-partial-save" in spans
+
+    partial = spans["timeline-partial-save"]
+    partial_output = _json_attribute(partial, "langfuse.observation.output")
+    assert partial_output["partialSave"] is True
+    assert partial_output["confirmedDraftCount"] == 1
+    assert partial.attributes["langfuse.observation.level"] == "WARNING"
+
+    root_output = _json_attribute(spans["generate-timeline"], "langfuse.observation.output")
+    assert root_output["status"] == "SUCCESS"
+    assert root_output["timedOut"] is True
+    assert root_output["partialSave"] is True
+    assert root_output["persisted"] is True
+    assert "errorCode" not in root_output

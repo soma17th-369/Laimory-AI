@@ -51,7 +51,7 @@ def client() -> FakeAppServerClient:
 def fake_main_agent(monkeypatch):
     draft = TimelineDraft(user_id="u-1", date="2026-06-20", timezone="Asia/Seoul")
 
-    async def _run(request):
+    async def _run(request, **_kwargs):
         return draft
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", _run)

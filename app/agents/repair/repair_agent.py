@@ -23,6 +23,7 @@ draft**(첫 확정 또는 마지막 성공 반복의 결과)를 돌려주고 war
 """
 
 import json
+from collections.abc import Callable
 from time import perf_counter
 from typing import TypedDict
 
@@ -128,13 +129,22 @@ def _fragment_raw_ids(ctx: RepairContext) -> set[str]:
 
 
 def _confirm(ctx: RepairContext) -> None:
-    """코드 확정 패스. 매 반복의 끝이자 다음 분석의 시작 상태를 만든다."""
+    """코드 확정 패스. 매 반복의 끝이자 다음 분석의 시작 상태를 만든다.
+
+    확정이 끝나면 `ctx.on_confirm` 으로 **복사본**을 발행한다(이슈 #76). 발행 지점이
+    여기 하나뿐인 것은 의도다 — 정렬·`clientEventId` 가 맞은 draft 만 저장 대상이 될 수
+    있어야 한다. 복사본인 것도 의도다. 호출자가 제한 시간으로 이 실행을 취소해도
+    `asyncio.to_thread` 위의 스레드는 계속 돌며 `ctx.draft` 를 마저 고치므로, 참조를
+    넘기면 이미 발행한 값이 뒤늦게 바뀐다.
+    """
 
     repair_draft(ctx.draft, ctx.request)
     # 확정된 event 를 대상으로 본다. 병합·삭제로 구성이 바뀐 뒤라야 "이 event 의 근거가
     # 정말 fragment 뿐인가" 를 옳게 판정한다.
     verify_fragment_usage(ctx.draft, _fragment_raw_ids(ctx))
     _dedupe_warnings(ctx.draft)
+    if ctx.on_confirm is not None:
+        ctx.on_confirm(ctx.draft.model_copy(deep=True))
 
 
 class _State(TypedDict, total=False):
@@ -173,6 +183,7 @@ class RepairAgent(Agent):
         event_results: dict[str, AgentEventResult] | None = None,
         event_agents: dict[str, EventAgent] | None = None,
         timeline_agent: TimelineAgent | None = None,
+        on_confirm: Callable[[TimelineDraft], None] | None = None,
     ) -> TimelineDraft:
         """확정·개선을 마친 최종 `TimelineDraft` 를 돌려준다.
 
@@ -183,6 +194,9 @@ class RepairAgent(Agent):
                 다시 병합할 때 쓴다.
             event_agents: Agent 이름 → Event Agent. `rerun_event_agent` 가 다시 돌린다.
             timeline_agent: `rerun_timeline_agent` 로 다시 돌릴 Timeline Agent.
+            on_confirm: 확정된 draft 복사본을 받을 콜백(이슈 #76). 매 확정마다 불린다.
+                호출자가 제한 시간으로 이 실행을 취소해도 마지막 확정본을 저장할 수 있게
+                하는 통로다.
 
         `event_results` 와 `event_agents` 는 **같은 이름 키**를 써야 한다. 이름이
         어긋나면 다시 돌린 Agent 의 결과가 이전 결과를 대체하지 못하고 나란히 쌓여,
@@ -195,6 +209,7 @@ class RepairAgent(Agent):
             event_results=dict(event_results or {}),
             event_agents=dict(event_agents or {}),
             timeline_agent=timeline_agent,
+            on_confirm=on_confirm,
         )
 
         # LLM 이 무엇을 하든, 코드 확정은 반드시 한 번은 지나간다.

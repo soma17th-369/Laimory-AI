@@ -566,3 +566,94 @@ def test_prompt_carries_draft_sources_and_tools():
     assert "update_event" in prompt  # 도구 카탈로그
     assert "location" in prompt  # 다시 돌릴 수 있는 Event Agent
     assert llm.calls[0].system is not None
+
+
+# --- 확정본 발행 (이슈 #76) ----------------------------------------------------
+
+
+def test_every_confirm_publishes_a_draft():
+    """확정할 때마다 발행한다. 초기 확정 1회 + 반복마다 1회.
+
+    호출자는 제한 시간이 끝나 이 실행이 취소돼도 이 발행본으로 저장할 수 있어야 한다.
+    """
+
+    published: list[TimelineDraft] = []
+    never_done = _plan(
+        [
+            {
+                "tool": "update_event",
+                "args": {"clientEventId": "event-001", "fields": {"title": "고침"}},
+            }
+        ]
+    )
+
+    RepairAgent(llm=FakeLLM([never_done]), max_iterations=2).generate(
+        _request(),
+        _draft(_event("체류", "09:00", "10:00")),
+        on_confirm=published.append,
+    )
+
+    assert len(published) == 3  # 초기 확정 + 반복 2회
+    assert published[-1].events[0].title == "고침"
+
+
+def test_published_draft_is_already_confirmed():
+    """발행본은 정렬·clientEventId 재부여가 끝난 상태여야 한다.
+
+    중간 상태를 저장하면 질문의 `relatedEventIds` 가 가리키는 곳이 어긋난다.
+    """
+
+    published: list[TimelineDraft] = []
+    draft = _draft(
+        _event("오후", "15:00", "16:00", raw_id="s-2", client_event_id="event-001"),
+        _event("오전", "09:00", "10:00", raw_id="s-1", client_event_id="event-002"),
+    )
+
+    RepairAgent(llm=FakeLLM([_NOTHING_TO_FIX]), max_iterations=2).generate(
+        _request(), draft, on_confirm=published.append
+    )
+
+    first = published[0]
+    assert [event.title for event in first.events] == ["오전", "오후"]
+    assert [event.client_event_id for event in first.events] == [
+        "event-001",
+        "event-002",
+    ]
+
+
+def test_published_draft_is_a_copy_not_a_live_reference():
+    """발행 뒤의 변경이 이미 발행한 값에 닿으면 안 된다.
+
+    `asyncio.wait_for` 는 스레드를 끊지 못한다. 호출자가 취소한 뒤에도 이 Agent 는
+    계속 돌며 draft 를 고치므로, 참조를 넘기면 저장 직전에 값이 바뀐다.
+    """
+
+    published: list[TimelineDraft] = []
+    rename = _plan(
+        [
+            {
+                "tool": "update_event",
+                "args": {"clientEventId": "event-001", "fields": {"title": "나중 제목"}},
+            }
+        ]
+    )
+
+    result = RepairAgent(llm=FakeLLM([rename]), max_iterations=1).generate(
+        _request(),
+        _draft(_event("처음 제목", "09:00", "10:00")),
+        on_confirm=published.append,
+    )
+
+    # 초기 확정본은 수정 전 제목을 그대로 들고 있어야 한다.
+    assert published[0].events[0].title == "처음 제목"
+    assert result.events[0].title == "나중 제목"
+
+
+def test_on_confirm_is_optional():
+    """주지 않으면 지금과 똑같이 동작한다."""
+
+    result = RepairAgent(llm=FakeLLM([_NOTHING_TO_FIX]), max_iterations=1).generate(
+        _request(), _draft(_event("체류", "09:00", "10:00"))
+    )
+
+    assert result.events[0].title == "체류"

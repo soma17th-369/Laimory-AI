@@ -71,7 +71,7 @@ AI 서버가 밖으로 내보내는 실패는 **정수 하나로 식별**합니�
 
 | 코드 | 이름 | 의미 | HTTP | 흡수 |
 |---|---|---|---|---|
-| 1201 | `PIPELINE_TIMEOUT` | 메인 에이전트가 제한 시간 안에 끝나지 않았습니다. | | |
+| 1201 | `PIPELINE_TIMEOUT` | 메인 에이전트가 제한 시간 안에 끝나지 않았고, 저장할 확정 draft도 없었습니다. | | |
 | 1202 | `STRUCTURED_OUTPUT_INVALID` | 구조화 출력이 스키마 검증을 통과하지 못했습니다. | | |
 | 1203 | `LLM_CALL_FAILED` | LLM provider 호출이 실패했습니다. | | |
 | 1204 | `EVENT_AGENT_FAILED` | Event Agent가 실패해 그 결과 없이 진행했습니다. | | ✓ |
@@ -138,7 +138,7 @@ AI 서버가 밖으로 내보내는 실패는 **정수 하나로 식별**합니�
 ```java
 switch (response.errorCode()) {
     case 1101 -> // 수집 원본이 없다. 원본 적재를 확인한다.
-    case 1201 -> // 제한 시간 초과. 재시도 가능.
+    case 1201 -> // 제한 시간 초과이고 저장된 결과가 없다. 재시도 가능.
     default   -> // 그 밖은 총괄 실패로 처리한다.
 }
 ```
@@ -153,7 +153,7 @@ AI 서버는 원인이 새로 분류될 때마다 코드를 추가합니다. 클
 
 | 코드 | 재시도 |
 |---|---|
-| 1201 `PIPELINE_TIMEOUT` | 가능 — 일시적 지연일 수 있습니다. |
+| 1201 `PIPELINE_TIMEOUT` | 가능 — 일시적 지연일 수 있습니다. 이 코드는 저장된 결과가 없을 때만 나갑니다. 제한 시간을 넘겨도 확정된 draft가 있으면 그것을 저장하고 SUCCESS로 끝납니다. |
 | 1203 `LLM_CALL_FAILED` | 가능 — provider 일시 장애일 수 있습니다. |
 | 1105 `SOURCE_FETCH_FAILED` | 가능 — App Server 일시 장애일 수 있습니다. |
 | 1303 `TIMELINE_RESULT_SUBMIT_FAILED` | 가능 — 저장은 아직 되지 않았습니다. 같은 task로 다시 요청할 수 있습니다. |
