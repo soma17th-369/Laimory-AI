@@ -355,7 +355,7 @@ Runtime 의 `environmentVariables` 로 주입한다.
 | `BEDROCK_REGION` | | 기본 `ap-northeast-2` |
 | `BEDROCK_AWS_PROFILE` | | **넣지 않는다.** 비어 있어야 실행 역할 자격증명을 쓴다 |
 | `APP_SERVER_API_URL` | O | App Server 서버간 API 기본 URL(`/s/api/v1`까지). 유일한 데이터 경로라 비면 기동에 실패한다 |
-| `APP_SERVER_TIMEOUT_SEC` `APP_SERVER_MAX_ATTEMPTS` `APP_SERVER_RETRY_BACKOFF_SEC` | | 기본 10초 / 3회 / 0.5초. timeout·5xx 에만 재시도한다 |
+| `APP_SERVER_TIMEOUT_SEC` `APP_SERVER_MAX_ATTEMPTS` `APP_SERVER_RETRY_BACKOFF_SEC` | | 기본 3초 / 3회 / 0.5초. timeout·5xx 에만 재시도한다 |
 | `PIPELINE_TIMEOUT_SEC` | | 기본 120 |
 | `REPAIR_MAX_ITERATIONS` | | 기본 3 |
 | `LANGFUSE_ENABLED` `LANGFUSE_PUBLIC_KEY` `LANGFUSE_SECRET_KEY` `LANGFUSE_BASE_URL` | | 선택적 Langfuse tracing. 일본 리전 URL은 `https://jp.cloud.langfuse.com`. 라이프로그 본문 보호를 위해 기본 비활성 |
