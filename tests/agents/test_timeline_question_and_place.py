@@ -43,7 +43,7 @@ def test_timeline_question_is_rewritten_to_event_specific_sentence() -> None:
                     "title": "강남역 일정",
                     "description": "강남역 근처에 머문 일정으로 보인다.",
                     "address": "서울 강남구 강남대로 지하 396",
-                    "placeLabel": "강남역",
+                    "place": "강남역",
                     "tags": ["#이동", "#일정"],
                     "startTime": "2026-06-20T15:00:00+09:00",
                     "endTime": "2026-06-20T16:00:00+09:00",
@@ -78,7 +78,7 @@ def test_timeline_question_is_rewritten_to_event_specific_sentence() -> None:
     draft = run_timeline_pipeline(request, agent_result, response)
 
     assert draft.events[0].address == "서울 강남구 강남대로 지하 396"
-    assert draft.events[0].place_label == "강남역"
+    assert draft.events[0].place == "강남역"
     assert draft.events[0].tags == ["#이동", "#일정"]
     assert draft.questions[0].question == "오후 3시쯤 강남역 일정 활동이 맞나요?"
 

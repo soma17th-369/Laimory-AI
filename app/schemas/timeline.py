@@ -6,7 +6,7 @@ Timeline Agent returns this draft after merging and validating
 
 from enum import Enum
 
-from pydantic import AwareDatetime, Field, model_validator
+from pydantic import AliasChoices, AwareDatetime, Field, model_validator
 
 from app.schemas.common import CamelModel
 from app.schemas.event_candidate import EventType, InferenceLevel, SourceRef
@@ -32,7 +32,15 @@ class TimelineEventDraft(CamelModel):
     title: str = Field(min_length=1)
     description: str = Field(default="")
     address: str | None = None
-    place_label: str | None = Field(default=None, alias="placeLabel")
+    #: 이 event 가 있었던 장소명. 파이프라인 전체가 같은 이름을 쓴다 — 입력의
+    #: `stay.place`, candidate 의 `places`(고를 후보), 결과 저장 계약의 `place`.
+    #: 예전 이름 `placeLabel` 도 계속 받는다. 동결된 프롬프트(`timeline_v2.0.0.md`)나
+    #: 이전 버전으로 롤백해 모델이 옛 키를 내도 값이 조용히 사라지지 않게 하기 위한
+    #: 것이다 — 이 모델은 모르는 키를 무시하므로 alias 가 없으면 장소가 그냥 없어진다.
+    place: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("place", "placeLabel"),
+    )
     tags: list[str] = Field(default_factory=list)
     start_time: AwareDatetime = Field(alias="startTime")
     end_time: AwareDatetime = Field(alias="endTime")

@@ -184,7 +184,7 @@ def _draft_texts(draft: TimelineDraft) -> list[str]:
     texts: list[str] = []
     for event in draft.events:
         texts.extend([event.title, event.description])
-        texts.extend([event.place_label or "", event.address or ""])
+        texts.extend([event.place or "", event.address or ""])
         texts.extend(event.tags)
         texts.extend(event.uncertainty)
         texts.extend(ref.reason or "" for ref in event.source_refs)

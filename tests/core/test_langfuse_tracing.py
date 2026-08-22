@@ -130,7 +130,7 @@ def test_none_capture_suppresses_keys_missing_from_denylist(monkeypatch) -> None
     )
 
     captured = langfuse_tracing.capture_langfuse_body(
-        {"timeline": {"events": [{"placeLabel": "서울 자택"}]}}
+        {"timeline": {"events": [{"place": "서울 자택"}]}}
     )
 
     assert "서울 자택" not in str(captured)

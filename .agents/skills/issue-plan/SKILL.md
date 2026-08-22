@@ -12,6 +12,9 @@ GitHub 이슈를 `plan-work` 규약에 연결해 계획 → 승인 → 구현 �
 - 이슈 번호는 명령 인자, 현재 브랜치명의 `#번호` 순서로 결정한다. 둘 다 없으면 번호를 요청한다.
 - 이슈 본문과 관련 코드를 끝까지 읽은 뒤 계획을 작성한다.
 - 계획은 `.agents/plans/`의 Markdown 파일이 정본이다. 채팅에만 계획을 남기지 않는다.
+- 계획·worklog는 `plan-work`의 「저장 위치」에 따라 **주 워크트리** 아래에 모은다.
+  worktree 안에 만들면 계획이 흩어지고 git으로 추적되지 않는다.
+- 계획은 두괄식으로 쓴다. 승인에 필요한 것(요약·실행 단계·결정·검증)이 먼저다.
 - 사용자의 명시적 승인 전에는 제품 코드·설정·문서를 수정하지 않는다.
 - 승인 뒤에는 계획 전체를 진행한다. 각 단계마다 추가 승인을 요구하지 않되 실질적인 계획 변경은 재승인받는다.
 - 완료 후 계획 상태와 체크리스트를 갱신하고 `.agents/worklog/`에 결과를 기록한다.
@@ -40,8 +43,9 @@ python .agents/skills/issue-plan/scripts/issue_plan.py fetch
 
 ## 3. 계획 파일 저장하고 승인받기
 
-- `plan-work`의 [계획 템플릿](../plan-work/references/plan-template.md)을 사용한다.
-- 파일명은 `.agents/plans/YYYY-MM-DD-issue-N-짧은-슬러그.md`로 정한다.
+- `plan-work`의 [계획 템플릿](../plan-work/references/plan-template.md)을 순서 그대로 사용한다.
+- 파일 경로는 `<주 워크트리>/.agents/plans/YYYY-MM-DD-issue-N-짧은-슬러그.md`로 정한다.
+  주 워크트리는 `git rev-parse --path-format=absolute --git-common-dir` 출력의 부모 디렉터리다.
 - frontmatter의 `issue`에 번호를 기록하고 최초 상태는 `draft`로 둔다.
 - 계획 파일 링크와 핵심 단계·결정 사항을 사용자에게 보여주고 명시적 승인을 기다린다.
 - 수정 요청이 있으면 계획을 갱신한 뒤 다시 확인받는다.
@@ -57,7 +61,7 @@ python .agents/skills/issue-plan/scripts/issue_plan.py fetch
 
 - 완료 조건과 검증 결과를 확인하고 계획을 `completed`로 바꾼다.
 - `plan-work`의 [worklog 템플릿](../plan-work/references/worklog-template.md)을 사용해
-  `.agents/worklog/YYYY-MM-DD-issue-N-같은-슬러그.md`를 작성한다.
+  `<주 워크트리>/.agents/worklog/YYYY-MM-DD-issue-N-같은-슬러그.md`를 작성한다.
 - 계획 대비 실제 변경, 주요 판단, 검증, 변경 파일, 남은 일을 기록한다.
 - 사용자에게 이슈 번호·변경 요약·검증 결과·계획 및 worklog 경로를 보고한다.
 

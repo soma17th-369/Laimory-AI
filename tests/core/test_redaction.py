@@ -115,7 +115,7 @@ def test_external_none_policy_blocks_by_default_and_keeps_diagnostics() -> None:
             "ok": True,
             "durationMs": 12.5,
             # `timeline` 은 `_CONTENT_KEYS` 에 없다. denylist 였다면 그대로 나갔다.
-            "timeline": {"events": [{"placeLabel": "서울 자택"}]},
+            "timeline": {"events": [{"place": "서울 자택"}]},
         },
         ContentCapture.NONE,
         max_bytes=4096,

@@ -150,7 +150,7 @@ def test_kakao_direct_meeting_mention_is_appointment_signal() -> None:
     )
 
 
-def test_kakao_topic_without_meeting_does_not_allow_place_label() -> None:
+def test_kakao_topic_without_meeting_does_not_allow_place() -> None:
     item = NotificationItem(
         rawId=fixture_raw_id("kakao-ssafy-topic-1"),
         postedAt="2026-06-20T13:00:00",
@@ -164,11 +164,11 @@ def test_kakao_topic_without_meeting_does_not_allow_place_label() -> None:
 
     assert notification["timelineUseGuidance"]["contextOnly"] is True
     assert notification["timelineUseGuidance"]["requiresOtherSourcesForSchedule"] is True
-    assert notification["timelineUseGuidance"]["placeLabelAllowedFromNotification"] is False
+    assert notification["timelineUseGuidance"]["placeAllowedFromNotification"] is False
     assert notification["messengerInterpretation"]["hasDirectMeetingMention"] is False
 
 
-def test_kakao_direct_place_meeting_allows_place_label_signal() -> None:
+def test_kakao_direct_place_meeting_allows_place_signal() -> None:
     item = NotificationItem(
         rawId=fixture_raw_id("kakao-place-meeting-1"),
         postedAt="2026-06-20T18:00:00",
@@ -180,9 +180,9 @@ def test_kakao_direct_place_meeting_allows_place_label_signal() -> None:
     payload = json.loads(_notification_items_to_text([item]))
     notification = payload["notifications"][0]
 
-    assert notification["timelineUseGuidance"]["placeLabelAllowedFromNotification"] is True
+    assert notification["timelineUseGuidance"]["placeAllowedFromNotification"] is True
     assert notification["timelineUseGuidance"]["explicitPlaceMention"] == "이따 수성못"
-    assert notification["messengerInterpretation"]["placeLabelAllowed"] is True
+    assert notification["messengerInterpretation"]["placeAllowed"] is True
     assert notification["messengerInterpretation"]["explicitPlaceMention"] == "이따 수성못"
 
 

@@ -25,7 +25,7 @@ class _Sample(CamelModel):
 
     title: str = Field(min_length=1)
     score: float = Field(ge=0.0, le=1.0)
-    place_label: str | None = Field(default=None, alias="placeLabel")
+    place: str | None = Field(default=None, alias="place")
     start_idx: int = Field(alias="startIdx")
     end_idx: int = Field(alias="endIdx")
 
@@ -151,7 +151,7 @@ def test_provider_structured_passthrough_and_validates():
 
 def test_schema_hint_uses_field_aliases():
     hint = schema_hint(_Sample)
-    assert "placeLabel" in hint and "startIdx" in hint and "endIdx" in hint
+    assert "place" in hint and "startIdx" in hint and "endIdx" in hint
 
 
 # --- to_strict_schema --------------------------------------------------------
@@ -165,7 +165,7 @@ def test_to_strict_schema_forces_required_and_strips_value_constraints():
     assert set(schema["required"]) == {
         "title",
         "score",
-        "placeLabel",
+        "place",
         "startIdx",
         "endIdx",
     }

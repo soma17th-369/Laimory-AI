@@ -439,6 +439,8 @@ Task-Token: {taskToken}
       "eventType": "MEAL",
       "title": "점심",
       "subtitle": null,
+      "place": "두꺼비 감자탕 지산점",
+      "address": "경기도 오산시 운암로 90",
       "startAt": "2026-07-22T12:00:00+09:00",
       "endAt": "2026-07-22T13:00:00+09:00",
       "sourceRawIds": ["b1f0b6d5-5c3e-4a4e-9a37-2f1f0d2f3b71"],
@@ -453,6 +455,8 @@ Task-Token: {taskToken}
 | `eventType` | `string` | 아래 13종 중 하나입니다. |
 | `title` | `string` | 이벤트 제목입니다. 255자로 자릅니다. |
 | `subtitle` | `string \| null` | 부제입니다. 내용이 없으면 `null`입니다. 255자로 자릅니다. |
+| `place` | `string \| null` | 사용자가 알아보는 장소명입니다(`집`, `두꺼비 감자탕 지산점`). 확정할 근거가 없으면 `null`입니다. 255자로 자릅니다. |
+| `address` | `string \| null` | 주소입니다. **수집 원본에 실제로 있던 주소만** 보냅니다 — 좌표로 주소를 만들어 내지 않고, 근거로 뒷받침되지 않는 값은 저장 전에 지웁니다. `인근`·`부근` 같은 근사 표현이 붙은 값도 보내지 않습니다. 255자로 자릅니다. |
 | `startAt` | `datetime` | 시작 시각입니다. `recordTimeZone` 기준 offset으로 보냅니다. |
 | `endAt` | `datetime` | 종료 시각입니다. `startAt` 이상입니다. |
 | `sourceRawIds` | `string[]` | 근거 원본의 `rawId`입니다. 1개 이상이며 중복은 제거합니다. |

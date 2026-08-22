@@ -290,7 +290,7 @@ def _rerun_timeline_agent(ctx: RepairContext, args: dict) -> str:
     if ctx.timeline_agent is None:
         raise RepairToolError("Timeline Agent 가 연결되지 않아 재실행할 수 없습니다.")
 
-    merged = merge_event_results(list(ctx.event_results.values()))
+    merged = merge_event_results(list(ctx.event_results.values()), ctx.request)
     with execution_scope(ExecutionStage.TIMELINE_AGENT, agent="timeline"):
         ctx.draft = ctx.timeline_agent.generate(ctx.request, merged)
     return (
@@ -315,7 +315,7 @@ _TOOLS: dict[str, RepairTool] = {
             usage='update_event(clientEventId="event-003", fields={"title": "...", "endTime": "..."})',
             description=(
                 "event 한 건의 지정한 필드만 고친다. 바꿀 수 있는 필드: eventType, title, "
-                "description, address, placeLabel, tags, startTime, endTime, confidence, "
+                "description, address, place, tags, startTime, endTime, confidence, "
                 "inferenceLevel, sourceRefs, uncertainty."
             ),
             run=_update_event,
@@ -348,7 +348,7 @@ _TOOLS: dict[str, RepairTool] = {
         ),
         _service_tool(
             "resolve_places",
-            "placeLabel 을 근거의 장소명으로 확정하고, 근거에 없는 address 를 지운다.",
+            "place 를 근거의 장소명으로 확정하고, 근거에 없는 address 를 지운다.",
             lambda ctx: resolve_places(ctx.draft, ctx.request),
         ),
         _service_tool(

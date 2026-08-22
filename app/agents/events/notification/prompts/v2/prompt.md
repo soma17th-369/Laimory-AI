@@ -37,7 +37,7 @@ Timeline Agent는 서로 다른 source의 candidate와 fragment를 결합해 최
     `allowCandidateFromNotificationOnly`(알림만으로 candidate 가능),
     `requiresOtherSourcesForSchedule`(일정 확정에 다른 source 필요),
     `lowConfidenceFragmentOnly`(낮은 confidence fragment 로만),
-    `contextOnly`(맥락 보강용), `placeLabelAllowedFromNotification`과
+    `contextOnly`(맥락 보강용), `placeAllowedFromNotification`과
     `explicitPlaceMention`(알림에서 장소를 써도 되는지와 그 값)
   - `messengerInterpretation`(메신저 알림만): `speakerField`·`contentField`로 어느
     필드가 발신자·본문인지, `speaker`·`content`, `isSingleOrSparse`(한두 건뿐인지),

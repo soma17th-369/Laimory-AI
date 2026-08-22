@@ -184,7 +184,18 @@ app/
     │                           #   warning 으로 남기고 **자르거나 나누지 않는다** — 어디서
     │                           #   끊을지는 Repair 의 판단이다. CALENDAR_EVENT·SLEEP·MOVEMENT
     │                           #   ·MEAL 은 제외(지속 구간이 근거에 직접 있거나 meal_guard 담당)
-    ├── place_resolver.py       # placeLabel을 근거 place로 확정, 근거 없는 address 제거
+    ├── place_resolver.py       # 장소 확정의 유일한 자리. 우선순위(STAY→MOVEMENT→CALENDAR)를
+    │                          #   `_PLACE_SOURCES` 목록 하나가 소유한다. 세 가지 일을 한다.
+    │                          #   (1) resolve_candidate_places (#72): candidate 의 places/
+    │                          #       address 를 sourceRefs 로 찾은 입력에서 **그대로
+    │                          #       복사**한다. 단수 place 를 두지 않는다 — 복수는 고를
+    │                          #       후보(입력), 단수는 고른 결과(출력 place)다. Event Agent 는 채우지 않는다 — 한 지점에
+    │                          #       이름이 여럿일 때 어느 것이 맞는지 판단할 근거가 없다.
+    │                          #       places 를 줄이지 않는 이유도 그것이다(고르는 건 Timeline)
+    │                          #   (2) place 를 근거 place 로 확정, 근거 없는 address 제거
+    │                          #   (3) 보존 검사 (#72): Timeline 이 쓴 place 가 입력이나
+    │                          #       User Memory 에 있는지 본다. 없으면 LOW warning 만 남기고
+    │                          #       **지우지 않는다**. address 만 지운다
     ├── place_text.py           # 장소 문자열 정규화·비교 (calendar_location/place_resolver/stay_merge 공용)
     ├── timeline_runner.py     # 백그라운드(무상태): 입력 조회→정규화→main agent→결과 저장→콜백. 최종 상태 반환
     ├── user_memory_limits.py  # 갱신 크기 정책 (#64). dailyTimelines 는 schema 에서 최대 5건,
@@ -229,6 +240,10 @@ app/
 #   남아 있지만 저장 연결은 App Server 담당이라 AI 는 관측 상관값으로만 쓴다.
 # main agent 그래프: run_event_agents → merge_results → run_timeline_agent → repair_draft
 #   → run_question_agent
+#   merge_results 는 취합만 하지 않는다. `merge_event_results` 가 candidate 의 places/address 를
+#   입력에서 복사한다(#72). 이 자리인 이유는 Timeline Agent 로 들어가는 fan-in 이
+#   여기 하나뿐이기 때문이다 — Repair 의 `rerun_timeline_agent` 도 같은 함수를 지나므로
+#   최초 실행과 재실행이 같은 입력을 본다.
 #   앞 3개는 LLM 이 의미를 판단하는 확률적 단계, repair_draft 는 코드가 확정하는 결정론적 단계다.
 # repair_draft 순서: sourceType 정정 → 캘린더 복원 → duration → 근거 구간 정렬 → MEAL
 #   → 수면 경계 → window → 장소 확정 → 정렬 → 체류 병합 → 겹침 정리 → confidence 보강

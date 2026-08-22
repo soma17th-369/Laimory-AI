@@ -135,8 +135,8 @@ def project_event(event: TimelineEventDraft) -> dict:
     }
     if event.description:
         projected["description"] = event.description
-    if event.place_label:
-        projected["place"] = event.place_label
+    if event.place:
+        projected["place"] = event.place
     return projected
 
 

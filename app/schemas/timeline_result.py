@@ -34,11 +34,20 @@ class TimelineResultEvent(CamelModel):
     식별자를 따로 두지 않고 중첩으로 참조를 대신한다** — 이 계약에는
     ``clientEventId`` 가 없어서 최상위 질문 목록은 event 를 안정적으로 가리킬 수
     없다(이슈 #66).
+
+    ``place``/``address`` 는 draft 의 ``place``/``address`` 다(이슈 #72). 그전에는
+    확정해 놓고도 내보내지 않아 Repair 가 근거로 확정한 장소가 저장되지 않고 버려졌다.
+    ``place`` 는 사용자가 알아보는 장소명(``집``, ``두꺼비 감자탕 지산점``)이고
+    ``address`` 는 입력 근거에 실재하는 주소만 담는다 — 근거로 뒷받침되지 않는 주소는
+    ``place_resolver`` 가 저장 전에 지운다. ``places`` 는 내보내지 않는다. 여러 후보 중
+    고르는 것은 AI 의 일이고 App Server 에는 확정된 하나만 준다.
     """
 
     event_type: EventType = Field(alias="eventType")
     title: str = Field(min_length=1)
     subtitle: str | None = None
+    place: str | None = None
+    address: str | None = None
     start_at: AwareDatetime = Field(alias="startAt")
     end_at: AwareDatetime = Field(alias="endAt")
     source_raw_ids: list[RawId] = Field(alias="sourceRawIds", min_length=1)

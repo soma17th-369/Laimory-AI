@@ -18,14 +18,14 @@ repair 순서와 이유:
     3. `MEAL repair`     : 과장된 식사 시간을 20~60분으로 되돌린다.
     4. `수면 경계 강제`  : 기상 이전 event 를 제거하고, 수면에 걸친 event 를 잘라 낸다.
     5. `window 강제`     : 요청 시간 범위 밖 event 를 제거하고 경계를 클램프한다.
-    6. `장소 확정`       : placeLabel 을 근거의 장소명으로 채우고, 근거에 없는 주소를 지운다.
+    6. `장소 확정`       : place 를 근거의 장소명으로 채우고, 근거에 없는 주소를 지운다.
     7. `정렬`            : startTime → endTime → confidence(내림차순) → eventType → title.
     8. `체류 병합`       : 이동 없이 같은 장소에서 이어진 체류 event 를 하나로 합친다.
     9. `겹침 정리`       : 중복 event 를 병합하고, 모순되는 부분 겹침은 경고로 남긴다.
    10. `confidence 보강` : 캘린더 장소와 체류 장소가 일치하면 confidence 를 올린다.
    11. `clientEventId`   : 최종 정렬 결과에 1번부터 다시 부여하고 질문 참조를 보정한다.
 
-`장소 확정`이 `겹침 정리`보다 앞에 있는 이유: 중복 판별이 placeLabel 을 쓰므로,
+`장소 확정`이 `겹침 정리`보다 앞에 있는 이유: 중복 판별이 place 를 쓰므로,
 장소가 확정되기 전에 겹침을 보면 같은 곳의 두 event 를 다른 곳으로 오인한다.
 
 `수면 경계 강제`가 `겹침 정리`보다 앞에 있는 이유: 수면 중 event 를 먼저 걷어 내지
@@ -345,7 +345,7 @@ def align_location_events(draft: TimelineDraft, request: TimelineDraftRequest) -
 
 
 def _place_key(event: TimelineEventDraft) -> tuple[str, str]:
-    return (event.place_label or "", event.address or "")
+    return (event.place or "", event.address or "")
 
 
 def _overlaps(left: TimelineEventDraft, right: TimelineEventDraft) -> bool:
@@ -394,7 +394,7 @@ def _absorb(target: TimelineEventDraft, other: TimelineEventDraft) -> None:
     target.end_time = max(target.end_time, other.end_time)
     target.confidence = max(target.confidence, other.confidence)
     target.address = target.address or other.address
-    target.place_label = target.place_label or other.place_label
+    target.place = target.place or other.place
     target.tags = list(dict.fromkeys([*target.tags, *other.tags]))
     target.uncertainty = list(dict.fromkeys([*target.uncertainty, *other.uncertainty]))
     target.source_refs = _dedupe_refs([*target.source_refs, *other.source_refs])
@@ -608,7 +608,7 @@ def repair_draft(draft: TimelineDraft, request: TimelineDraftRequest) -> Timelin
     if bounds is not None:
         validate_draft_to_window(draft, bounds)
 
-    # 겹침 정리가 장소로 중복을 판별하므로, 그 전에 placeLabel 을 확정한다.
+    # 겹침 정리가 장소로 중복을 판별하므로, 그 전에 place 를 확정한다.
     resolve_places(draft, request)
 
     sort_events(draft)

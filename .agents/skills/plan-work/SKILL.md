@@ -10,6 +10,8 @@ description: 여러 단계의 구현·수정 작업을 시작하기 전에 실�
 ## 핵심 규칙
 
 - 모든 계획과 worklog를 한글 중심의 Markdown으로 작성한다.
+- 계획은 두괄식으로 쓴다. 「무엇을 할 것인가」가 먼저, 근거와 배경은 뒤다.
+- 계획과 worklog는 항상 **주 워크트리** 아래에 모은다([저장 위치](#저장-위치) 참고).
 - 계획이 필요한 작업에서는 관련 파일을 읽고 계획 파일을 만드는 것까지만 먼저 수행한다.
 - 사용자가 계획 파일을 확인하고 명시적으로 승인하기 전에는 제품 코드·설정·문서를 수정하지 않는다.
 - 최초 작업 요청 자체를 계획 승인으로 간주하지 않는다.
@@ -18,17 +20,35 @@ description: 여러 단계의 구현·수정 작업을 시작하기 전에 실�
 - 기존 작업 트리 변경을 사용자 작업으로 보고 되돌리지 않는다.
 - 커밋·push·PR은 사용자가 별도로 요청한 경우에만 수행한다.
 
+## 저장 위치
+
+계획과 worklog는 **주 워크트리(main worktree)**의 `.agents/` 아래 한 곳에 모은다.
+
+```text
+<주 워크트리>/.agents/plans/YYYY-MM-DD[-issue-N]-짧은-슬러그.md
+<주 워크트리>/.agents/worklog/YYYY-MM-DD[-issue-N]-같은-슬러그.md
+```
+
+주 워크트리 경로는 다음으로 구한다. 출력된 `.git`의 **부모 디렉터리**가 주 워크트리다.
+
+```text
+git rev-parse --path-format=absolute --git-common-dir
+```
+
+`git worktree`를 쓰면 worktree마다 `.agents/plans/`가 따로 생긴다. 이 경로들은 git이
+무시하도록 설정돼 있어 **어느 worktree에 무엇이 남았는지 git으로 추적할 수 없고**,
+계획이 조용히 흩어진다. worktree를 쓰지 않는 환경에서는 주 워크트리가 곧 저장소
+루트이므로 결과가 달라지지 않는다.
+
 ## 1. 계획 파일 만들기
 
 1. 관련 코드, 문서, 테스트와 현재 git 상태를 먼저 확인한다.
-2. 같은 작업의 기존 계획이 있으면 새 파일을 만들지 말고 이어서 갱신한다.
-3. [plan-template.md](references/plan-template.md)를 따라 다음 경로에 저장한다.
-
-```text
-.agents/plans/YYYY-MM-DD[-issue-N]-짧은-슬러그.md
-```
-
-4. 최초 상태는 `draft`로 둔다. 계획에는 목표, 범위와 제외 범위, 현재 구조, 단계별 변경, 검증, 위험·결정 사항을 포함한다.
+2. 같은 작업의 기존 계획이 있으면 새 파일을 만들지 말고 이어서 갱신한다. 다른
+   worktree에서 시작한 계획도 주 워크트리에 있으므로 거기서 찾는다.
+3. [plan-template.md](references/plan-template.md)의 순서를 그대로 따른다. 요약 →
+   실행 단계 → 승인 전 결정 → 검증까지가 승인에 필요한 전부이고, 범위·현재 구조·위험은
+   `---` 아래에 둔다.
+4. 최초 상태는 `draft`로 둔다.
 5. 구현 단계는 완료 여부를 갱신할 수 있는 체크박스로 작성한다.
 
 ## 2. 승인받기
@@ -50,10 +70,11 @@ description: 여러 단계의 구현·수정 작업을 시작하기 전에 실�
 
 1. 완료 조건과 검증 결과를 재확인한다.
 2. 계획의 체크박스를 마무리하고 `status: completed`, `completed_at`을 기록한다.
-3. [worklog-template.md](references/worklog-template.md)를 따라 다음 파일을 작성한다.
+3. [worklog-template.md](references/worklog-template.md)를 따라 주 워크트리의 다음
+   파일을 작성한다([저장 위치](#저장-위치) 참고).
 
 ```text
-.agents/worklog/YYYY-MM-DD[-issue-N]-같은-슬러그.md
+<주 워크트리>/.agents/worklog/YYYY-MM-DD[-issue-N]-같은-슬러그.md
 ```
 
 4. worklog에는 승인된 계획 링크, 실제 변경, 중요한 판단, 검증 결과, 변경 파일, 남은 일을 기록한다.

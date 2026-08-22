@@ -34,7 +34,7 @@ _EDITABLE_FIELDS = frozenset(
         "title",
         "description",
         "address",
-        "placeLabel",
+        "place",
         "tags",
         "startTime",
         "endTime",

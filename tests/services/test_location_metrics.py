@@ -158,7 +158,7 @@ def test_short_coverage_gap_is_not_reported():
     assert build_location_metrics(request).coverage_gap_minutes is None
 
 
-def test_region_change_is_reported_by_place_labels():
+def test_region_change_is_reported_by_places():
     request = make_request(
         stays=[
             stay_item("s1", start="2026-06-20T08:00:00", end="2026-06-20T09:00:00", place="집"),
@@ -173,7 +173,7 @@ def test_region_change_is_reported_by_place_labels():
     assert metrics.region_changed is True
 
 
-def test_region_change_is_unknown_without_place_labels():
+def test_region_change_is_unknown_without_places():
     request = make_request(
         stays=[stay_item("s1", start="2026-06-20T08:00:00", end="2026-06-20T09:00:00", place=None, address=None)]
     )

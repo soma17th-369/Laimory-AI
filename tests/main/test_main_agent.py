@@ -292,3 +292,50 @@ def test_question_failure_keeps_the_timeline():
     # 원본 예외 메시지는 draft 로 새지 않는다.
     assert all("의도된 실패" not in w.message for w in draft.warnings)
 
+
+
+def test_timeline_agent_receives_candidate_places_from_the_input():
+    """fan-in 이 candidate 에 입력 장소를 실어 Timeline Agent 로 넘긴다 (#72).
+
+    Event Agent 는 이 필드를 채우지 않는다. 코드가 sourceRefs 로 입력을 찾아 복사하므로,
+    Timeline Agent 가 받는 취합 결과에 장소 문자열이 이미 들어 있어야 한다.
+    """
+
+    seen: dict[str, AgentEventResult] = {}
+
+    class _CapturingTimelineAgent(TimelineAgent):
+        def generate(self, request, agent_result):
+            seen["merged"] = agent_result
+            return super().generate(request, agent_result)
+
+    request = make_request(
+        stays=[
+            stay_item(
+                1,
+                raw_id="s-1",
+                place="오산운암3단지 주공아파트",
+                address="경기도 오산시 운암로 90",
+                places=["강남파이낸스센터"],
+            )
+        ]
+    )
+    timeline = _CapturingTimelineAgent(
+        llm=_timeline_agent_returning_one_event().llm
+    )
+
+    asyncio.run(
+        run_main_agent(
+            request,
+            event_agents=[
+                _StubAgent("a", AgentEventResult(candidates=[_candidate("s-1")]))
+            ],
+            timeline_agent=timeline,
+            repair_agent=confirm_only_repair_agent(),
+            question_agent=silent_question_agent(),
+        )
+    )
+
+    candidate = seen["merged"].candidates[0]
+    assert candidate.address == "경기도 오산시 운암로 90"
+    # 후보를 줄이지 않는다. 고르는 것은 Timeline 의 일이다.
+    assert candidate.places == ["오산운암3단지 주공아파트", "강남파이낸스센터"]
