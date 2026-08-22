@@ -160,8 +160,14 @@ class Settings(BaseSettings):
     # 없으므로 기동 시점에 실패하는 편이 낫다.
     app_server_api_url: str
 
-    # App Server API 요청 timeout(초). 입력 조회·결과 저장·콜백에 공통 적용한다.
-    app_server_timeout_sec: float = 10.0
+    # App Server API 요청 timeout(초). 입력 조회·결과 저장·콜백·User Memory 결과 저장에
+    # 공통 적용한다.
+    #
+    # 값의 근거는 호출 1회가 아니라 재시도까지 합친 총예산이다(이슈 #86). timeout 장애에서
+    # 3초 × 3회 시도 + 대기(0.5 + 1.0초) ≒ 10.5초에 최종 실패가 확정된다. 10초였을 때는
+    # 같은 장애가 31.5초까지 매달렸다.
+    # 정상 응답이 3초를 넘는 환경이라면 이 기본값이 아니라 APP_SERVER_TIMEOUT_SEC 를 올린다.
+    app_server_timeout_sec: float = 3.0
 
     # App Server API 시도 횟수 상한(최초 1회 + 재시도). timeout/5xx 에만 재시도한다.
     # 4xx 는 재시도해도 같은 답이 오므로 즉시 중단한다.
