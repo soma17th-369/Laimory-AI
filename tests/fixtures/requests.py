@@ -121,13 +121,22 @@ def notification_item(item_id, app_name, title, posted=WINDOW_START, raw_id=None
 
 
 def photo_item(
-    item_id, taken=WINDOW_START, lat=None, lon=None, raw_id=None, photo_url=None
+    item_id,
+    taken=WINDOW_START,
+    lat=None,
+    lon=None,
+    raw_id=None,
+    photo_url=None,
+    places=None,
+    address=None,
 ) -> PhotoItem:
     return PhotoItem(
         raw_id=fixture_raw_id(raw_id or f"photo-{item_id}"),
         taken_at=taken,
         latitude=lat,
         longitude=lon,
+        places=places or [],
+        address=address,
         description="사진 설명",
         photo_url=photo_url,
     )

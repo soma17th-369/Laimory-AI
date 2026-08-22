@@ -5,6 +5,10 @@
 선택 값이다. `description` 은 수집 단계에서 미리 생성된 이미지 설명이며,
 보통 비어 있어 Photo Agent 가 채운다.
 
+`places`/`address` 는 촬영 지점의 장소다(이슈 #80). 사진이 처음으로 장소 확정 근거가 되며,
+`place_resolver` 의 우선순위에서 MOVEMENT 다음·CALENDAR 앞에 들어간다. 단수 `place` 를 두지
+않는 이유는 candidate 와 같다 — 복수는 고를 후보이고 고른 결과는 draft 의 `place` 다.
+
 `photo_url` 은 App Server 가 주는 S3 이미지 URL 이다(이슈 #52). Photo Agent 가
 이 URL 로 실제 이미지를 내려받아 vision 모델에 넘긴다.
 
@@ -33,6 +37,10 @@ class PhotoItem(CamelModel):
     date_taken: int | None = Field(default=None, alias="dateTaken")
     latitude: Latitude | None = None
     longitude: Longitude | None = None
+    #: 촬영 지점의 장소명 후보와 주소(이슈 #80). **둘 다 안 들어올 수 있다.**
+    #: 없으면 없는 대로 두고, 촬영 시각으로 STAY 를 대조하는 기존 경로가 답한다.
+    places: list[str] = Field(default_factory=list)
+    address: str | None = None
     description: str | None = None
     #: S3 이미지 URL. 직렬화에서 제외한다(위 docstring 참고).
     photo_url: str | None = Field(default=None, alias="photoUrl", exclude=True)

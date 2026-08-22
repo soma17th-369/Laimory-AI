@@ -130,7 +130,7 @@ def test_vague_place_without_any_evidence_is_cleared_not_invented():
 
     resolve_places(draft, _request())
 
-    # 사진에는 place 필드가 없다. 얼버무림을 남기느니 비운다.
+    # 이 요청의 사진에는 장소가 없다(#80: 안 들어올 수 있다). 얼버무림을 남기느니 비운다.
     assert draft.events[0].place is None
 
 
@@ -179,7 +179,7 @@ def test_missing_address_is_filled_from_the_stay_address():
 
 
 def test_photo_only_event_gets_no_address():
-    # 사진에는 좌표만 있다. 좌표로 주소를 만들지 않는다.
+    # 이 요청의 사진에는 address 가 없다. 좌표로 주소를 만들지 않는다.
     draft = _draft(_event(PHOTO_REF))
 
     resolve_places(draft, _request())
@@ -344,7 +344,7 @@ def test_candidate_without_place_evidence_is_left_empty():
 
     resolve_candidate_places(result, _request())
 
-    # PHOTO 에는 아직 place 필드가 없다. 코드가 재현할 수 없는 값은 남기지 않는다.
+    # 이 요청의 사진에는 장소가 없다. 코드가 재현할 수 없는 값은 남기지 않는다.
     assert result.candidates[0].places == []
 
 
@@ -494,3 +494,78 @@ def test_the_draft_serializes_place_under_the_unified_name():
 
     assert body["place"] == "집"
     assert "placeLabel" not in body
+
+
+# --- PHOTO 장소 근거 (#80) -------------------------------------------------------
+#
+# 사진이 처음으로 장소 확정 근거가 된다. 우선순위는 MOVEMENT 다음·CALENDAR 앞이다 —
+# 사진 장소는 실제로 거기 있었다는 증거이고 캘린더 locationText 는 사용자가 적은 의도다.
+# 다만 places·address 는 안 들어올 수 있고, 그때는 그냥 후보를 내놓지 않는다.
+
+
+def _request_with_photo_place(places=None, address=None):
+    request = _request()
+    request.photos[0].places = places or []
+    request.photos[0].address = address
+    return request
+
+
+def test_photo_place_fills_a_photo_only_event():
+    draft = _draft(_event(PHOTO_REF))
+
+    resolve_places(draft, _request_with_photo_place(places=["한강공원"]))
+
+    assert draft.events[0].place == "한강공원"
+
+
+def test_photo_address_fills_a_photo_only_event():
+    draft = _draft(_event(PHOTO_REF))
+
+    resolve_places(
+        draft, _request_with_photo_place(address="서울 영등포구 여의동로 330")
+    )
+
+    assert draft.events[0].address == "서울 영등포구 여의동로 330"
+
+
+def test_photo_place_loses_to_stay_and_movement():
+    draft = _draft(_event(CALENDAR_REF, PHOTO_REF, MOVE_REF, STAY_REF))
+
+    resolve_places(draft, _request_with_photo_place(places=["사진 장소"]))
+
+    assert draft.events[0].place == APARTMENT
+
+
+def test_photo_place_wins_over_calendar():
+    draft = _draft(_event(CALENDAR_REF, PHOTO_REF))
+
+    resolve_places(draft, _request_with_photo_place(places=["사진 장소"]))
+
+    # 캘린더 locationText 의 `집` 보다 사진 장소가 앞선다.
+    assert draft.events[0].place == "사진 장소"
+
+
+def test_photo_without_place_falls_through_as_before():
+    # places·address 가 안 들어오는 것이 정상 경로다. 기존 동작이 그대로 유지된다.
+    draft = _draft(_event(PHOTO_REF, place="근처"))
+
+    resolve_places(draft, _request_with_photo_place())
+
+    assert draft.events[0].place is None
+    assert draft.events[0].address is None
+
+
+def test_photo_approximate_address_is_not_used():
+    draft = _draft(_event(PHOTO_REF))
+
+    resolve_places(draft, _request_with_photo_place(address="서울 영등포구 여의동로 330 인근"))
+
+    assert draft.events[0].address is None
+
+
+def test_candidate_takes_photo_place_too():
+    result = AgentEventResult(candidates=[_candidate(PHOTO_REF)])
+
+    resolve_candidate_places(result, _request_with_photo_place(places=["한강공원"]))
+
+    assert result.candidates[0].places == ["한강공원"]
