@@ -95,7 +95,7 @@ def ensure_calendar_events(draft: TimelineDraft, request: TimelineDraftRequest) 
                 event_type=EventType.CALENDAR_EVENT,
                 title=item.title,
                 description="캘린더에 적어 둔 일정이다.",
-                place_label=calendar_place_label(item.location_text),
+                place=calendar_place_label(item.location_text),
                 start_time=start,
                 end_time=end,
                 confidence=_RESTORED_CONFIDENCE,

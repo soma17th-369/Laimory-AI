@@ -1,6 +1,6 @@
-"""event 의 장소 출력(`placeLabel` / `address`) 확정.
+"""event 의 장소 출력(`place` / `address`) 확정.
 
-`placeLabel` 은 사용자가 알아보는 **실제 장소**여야 한다. `두꺼비 감자탕 지산점`,
+`place` 은 사용자가 알아보는 **실제 장소**여야 한다. `두꺼비 감자탕 지산점`,
 `서울드래곤시티` 같은 상호·건물명이거나 `집`, `학교`, `회사` 같은 친숙한 생활 장소다.
 `한 곳`, `근처`, `주변` 은 장소가 아니라 얼버무림이다.
 
@@ -9,11 +9,11 @@
 
 ## LLM 값을 덮어쓰지 않는 이유
 
-`placeLabel` 을 근거의 `place` 로 **항상** 덮어쓰면 안 된다. live 출력의
+`place` 을 근거의 `place` 로 **항상** 덮어쓰면 안 된다. live 출력의
 `배스킨라빈스` 는 어떤 입력 필드에도 없다. 사진 속 영수증을 vision 이 읽어 낸
 값이라 코드가 다시 만들어 낼 수 없다. 그래서 규칙은 이렇다.
 
-    - `placeLabel`: 비어 있거나 얼버무림일 때만 근거의 `place` 로 채운다.
+    - `place`: 비어 있거나 얼버무림일 때만 근거의 `place` 로 채운다.
       채울 근거가 없으면 얼버무림을 그냥 지운다(없는 장소를 지어내는 것보다 낫다).
     - `address`  : 비어 있으면 근거의 주소로 채운다. 근거로 뒷받침되지 않는 주소는
       LLM 이 지어낸 것이므로 지우고 경고한다.
@@ -44,7 +44,7 @@ from app.services.source_lookup import raw_id_of
 
 logger = get_logger(__name__)
 
-#: 장소가 아니라 얼버무림인 표현들. placeLabel 로 두지 않는다.
+#: 장소가 아니라 얼버무림인 표현들. place 로 두지 않는다.
 _VAGUE_PLACE_LABELS = frozenset(
     {
         "한 곳",
@@ -62,7 +62,7 @@ _VAGUE_PLACE_LABELS = frozenset(
 )
 
 #: 근사 위치를 뜻하는 꼬리말. 수집 원본이 `경기도 오산시 운암로 90 인근` 처럼 주는데,
-#: 이것은 정확한 주소가 아니므로 `address` 로 쓰지 않는다(placeLabel 로는 쓸 수 있다).
+#: 이것은 정확한 주소가 아니므로 `address` 로 쓰지 않는다(place 로는 쓸 수 있다).
 _APPROXIMATE_MARKERS = ("인근", "부근", "근처", "주변", "일대")
 
 _MAX_EXAMPLES = 3
@@ -179,6 +179,31 @@ def _movement_addresses(movement: MovementItem) -> Iterator[str | None]:
             yield geo.address
 
 
+def _movement_destination_places(movement: MovementItem) -> Iterator[str | None]:
+    """이동에서 **도착지 이름만** 내놓는다(candidate 전용).
+
+    draft 쪽 `_movement_places` 와 달리 출발지를 섞지 않는다. candidate 의 `places` 는
+    Timeline 이 User Memory 와 대조할 후보인데, 출발지가 섞여 있으면 `집` 을 보고
+    "이 이동의 장소는 집" 으로 읽어 **집에서 나온 것을 집에 있었던 것으로 뒤집는다.**
+    """
+
+    if movement.end is not None:
+        yield movement.end.place
+        yield from movement.end.places
+
+
+def _movement_destination_addresses(movement: MovementItem) -> Iterator[str | None]:
+    """이동에서 **도착지 주소만** 내놓는다(candidate 전용).
+
+    출발지로 넘어가면 `place` 는 도착지인데 `address` 는 출발지가 되어 짝이 어긋난다.
+    도착지 주소가 근사값(`인근`)이면 채우지 않고 비운다 — 다른 지점의 정확한 주소보다
+    빈 값이 낫다.
+    """
+
+    if movement.end is not None:
+        yield movement.end.address
+
+
 def _calendar_address_support(calendar: CalendarItem) -> Iterator[str | None]:
     # 캘린더 메모(`집(경기도 오산시 운암로 90)`)는 그대로 address 로 쓰기엔 지저분하지만,
     # 주소를 품고 있으므로 검증 근거로는 쓴다.
@@ -205,6 +230,23 @@ _ADDRESS_SOURCES: tuple[tuple[str, Callable[[Any], Iterator[str | None]]], ...] 
 #: 주소가 근거에 실재하는지 대조할 때만 추가로 보는 출처.
 _ADDRESS_SUPPORT_SOURCES: tuple[tuple[str, Callable[[Any], Iterator[str | None]]], ...] = (
     ("calendars", _calendar_address_support),
+)
+
+#: candidate 전용 출처. draft 와 다른 점은 **이동에서 도착지만 본다**는 것뿐이다.
+#:
+#: draft 의 `place` 은 `_first` 로 하나만 고르므로 출발지가 뒤에 있어도 도착지가
+#: 이긴다. 하지만 candidate 의 `places` 는 **목록 전체**가 Timeline 으로 가고 `address` 는
+#: 도착지 주소가 근사값이면 출발지로 넘어간다. 그래서 candidate 에서는 아예 도착지로
+#: 좁힌다(이슈 #72).
+_CANDIDATE_PLACE_SOURCES: tuple[tuple[str, Callable[[Any], Iterator[str | None]]], ...] = (
+    ("stays", _stay_places),
+    ("movements", _movement_destination_places),
+    ("calendars", _calendar_places),
+)
+
+_CANDIDATE_ADDRESS_SOURCES: tuple[tuple[str, Callable[[Any], Iterator[str | None]]], ...] = (
+    ("stays", _stay_addresses),
+    ("movements", _movement_destination_addresses),
 )
 
 
@@ -255,7 +297,7 @@ def _examples(items: list[str]) -> str:
 
 
 def resolve_places(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
-    """event 의 `placeLabel` / `address` 를 근거로 확정한다(in-place)."""
+    """event 의 `place` / `address` 를 근거로 확정한다(in-place)."""
 
     evidence = _collect(request)
     filled_labels: list[str] = []
@@ -268,20 +310,20 @@ def resolve_places(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
 
     for event in draft.events:
         refs = event.source_refs
-        if is_vague_place_label(event.place_label):
+        if is_vague_place_label(event.place):
             label = _first(_place_label_candidates(refs, evidence), reject_vague=True)
             if label:
-                event.place_label = label
+                event.place = label
                 filled_labels.append(f"{event.title} → {label}")
-            elif event.place_label is not None:
+            elif event.place is not None:
                 # 채울 장소명이 없다. 얼버무림을 남기느니 비운다.
-                cleared_labels.append(f"{event.title}({event.place_label})")
-                event.place_label = None
-        elif not _label_is_supported(event.place_label, refs, evidence, memory_text):
+                cleared_labels.append(f"{event.title}({event.place})")
+                event.place = None
+        elif not _label_is_supported(event.place, refs, evidence, memory_text):
             # 보존 검사(#72): Timeline 이 옮겨 적은 장소명이 정말 근거에서 왔는지 본다.
             # **지우지는 않는다** — 사진에서 읽은 상호명처럼 코드가 재현할 수 없는 값이
             # 있고, 지우면 그것까지 잃는다.
-            unsupported_labels.append(f"{event.title}({event.place_label})")
+            unsupported_labels.append(f"{event.title}({event.place})")
 
         support = [text for text in _address_support(refs, evidence) if text]
         if event.address and not (
@@ -333,8 +375,8 @@ def resolve_places(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
         )
 
     logger.debug(
-        "장소 확정: placeLabel 보강=%d, placeLabel 제거=%d, address 보강=%d, "
-        "address 제거=%d, 근거 없는 placeLabel=%d",
+        "장소 확정: place 보강=%d, place 제거=%d, address 보강=%d, "
+        "address 제거=%d, 근거 없는 place=%d",
         len(filled_labels),
         len(cleared_labels),
         len(filled_addresses),
@@ -346,14 +388,15 @@ def resolve_places(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
 def resolve_candidate_places(
     result: AgentEventResult, request: TimelineDraftRequest
 ) -> None:
-    """candidate 의 `place`/`places`/`address` 를 입력에서 그대로 복사한다(in-place, #72).
+    """candidate 의 `places`/`address` 를 입력에서 그대로 복사한다(in-place, #72).
 
     Event Agent 가 이 필드에 무엇을 써 보냈든 입력에서 복사한 값이 이긴다. 변환도 해석도
     없고, `sourceRefs` 로 근거 입력을 찾아 문자열을 옮기기만 한다.
 
     `places` 를 줄이지 않는 이유: 한 지점에 이름이 여럿일 수 있는데(`강남파이낸스센터` /
     `스타벅스 강남점`), 어느 것이 사용자의 `회사` 인지는 User Memory 를 가진 Timeline 만
-    판단할 수 있다. 여기서 하나로 줄이면 그 대조 기회를 없앤다.
+    판단할 수 있다. 여기서 하나로 줄이면 그 대조 기회를 없앤다. 목록은 근거가 확실한
+    순서(STAY → MOVEMENT 도착지 → CALENDAR)로 담기므로 순서 자체가 우선순위다.
     """
 
     if not result.candidates:
@@ -364,13 +407,14 @@ def resolve_candidate_places(
     filled_addresses = 0
     for candidate in result.candidates:
         refs = candidate.source_refs
-        labels = _unique_labels(_place_label_candidates(refs, evidence))
-        candidate.place = labels[0] if labels else None
+        labels = _unique_labels(
+            _from_sources(refs, evidence, _CANDIDATE_PLACE_SOURCES)
+        )
         candidate.places = labels
         candidate.address = next(
             (
                 value.strip()
-                for value in _address_candidates(refs, evidence)
+                for value in _from_sources(refs, evidence, _CANDIDATE_ADDRESS_SOURCES)
                 if is_exact_address(value)
             ),
             None,

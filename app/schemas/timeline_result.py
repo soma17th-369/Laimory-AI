@@ -35,7 +35,7 @@ class TimelineResultEvent(CamelModel):
     ``clientEventId`` 가 없어서 최상위 질문 목록은 event 를 안정적으로 가리킬 수
     없다(이슈 #66).
 
-    ``place``/``address`` 는 draft 의 ``placeLabel``/``address`` 다(이슈 #72). 그전에는
+    ``place``/``address`` 는 draft 의 ``place``/``address`` 다(이슈 #72). 그전에는
     확정해 놓고도 내보내지 않아 Repair 가 근거로 확정한 장소가 저장되지 않고 버려졌다.
     ``place`` 는 사용자가 알아보는 장소명(``집``, ``두꺼비 감자탕 지산점``)이고
     ``address`` 는 입력 근거에 실재하는 주소만 담는다 — 근거로 뒷받침되지 않는 주소는

@@ -51,7 +51,7 @@ def _event(
     event_type=EventType.REST,
     title=None,
     confidence=0.7,
-    place_label=None,
+    place=None,
 ) -> TimelineEventDraft:
     # sourceRefs 는 스키마상 최소 1개다. 근거가 관심사가 아닌 테스트는 STAY 하나로 둔다.
     used = refs or ((EventSourceType.STAY, "stay-1"),)
@@ -63,7 +63,7 @@ def _event(
         end_time=_t(end),
         confidence=confidence,
         inference_level=InferenceLevel.EVIDENCE_BASED,
-        place_label=place_label,
+        place=place,
         source_refs=[
             SourceRef(source_type=st, raw_id=fixture_raw_id(raw_id))
             for st, raw_id in used
@@ -262,8 +262,8 @@ def test_meal_duration_is_left_to_the_meal_guard():
 
 def test_duplicate_events_at_the_same_place_are_merged():
     draft = _draft(
-        _event("event-001", "14:26", "14:36", STAY_REF, place_label="집", title="집에 머문 시간", confidence=0.6),
-        _event("event-002", "14:30", "15:00", PHOTO_REF, place_label="집", title="집에서 쉰 시간", confidence=0.9),
+        _event("event-001", "14:26", "14:36", STAY_REF, place="집", title="집에 머문 시간", confidence=0.6),
+        _event("event-002", "14:30", "15:00", PHOTO_REF, place="집", title="집에서 쉰 시간", confidence=0.9),
     )
 
     resolve_overlaps(draft)
@@ -282,8 +282,8 @@ def test_duplicate_events_at_the_same_place_are_merged():
 def test_a_short_meal_nested_in_a_long_stay_is_never_merged_away():
     # 우리가 프롬프트로 요구한 정상적인 모양이다. 겹침 정리가 이것을 뭉개면 안 된다.
     draft = _draft(
-        _event("event-001", "12:00", "15:00", STAY_REF, place_label="카페", title="카페에서 보낸 오후"),
-        _event("event-002", "13:20", "13:50", PHOTO_REF, event_type=EventType.MEAL, place_label="카페", title="카페에서 점심"),
+        _event("event-001", "12:00", "15:00", STAY_REF, place="카페", title="카페에서 보낸 오후"),
+        _event("event-002", "13:20", "13:50", PHOTO_REF, event_type=EventType.MEAL, place="카페", title="카페에서 점심"),
     )
 
     resolve_overlaps(draft)
@@ -294,8 +294,8 @@ def test_a_short_meal_nested_in_a_long_stay_is_never_merged_away():
 
 def test_partial_overlap_between_different_places_is_warned_not_trimmed():
     draft = _draft(
-        _event("event-001", "14:26", "14:36", STAY_REF, place_label="집", title="집에 머문 시간"),
-        _event("event-002", "14:33", "15:07", PHOTO_REF, event_type=EventType.MEAL, place_label="배스킨라빈스", title="아이스크림"),
+        _event("event-001", "14:26", "14:36", STAY_REF, place="집", title="집에 머문 시간"),
+        _event("event-002", "14:33", "15:07", PHOTO_REF, event_type=EventType.MEAL, place="배스킨라빈스", title="아이스크림"),
     )
 
     resolve_overlaps(draft)
@@ -309,8 +309,8 @@ def test_partial_overlap_between_different_places_is_warned_not_trimmed():
 
 def test_touching_boundaries_are_not_an_overlap():
     draft = _draft(
-        _event("event-001", "22:33", "23:31", STAY_REF, place_label="집"),
-        _event("event-002", "23:31", "23:53", MOVE_REF, event_type=EventType.MOVEMENT, place_label="집"),
+        _event("event-001", "22:33", "23:31", STAY_REF, place="집"),
+        _event("event-002", "23:31", "23:53", MOVE_REF, event_type=EventType.MOVEMENT, place="집"),
     )
 
     resolve_overlaps(draft)
@@ -345,7 +345,7 @@ def test_an_unknown_raw_id_drops_the_unsupported_event():
     assert any("입력에 없는 rawId 참조" in warning.message for warning in draft.warnings)
 
 
-def test_repair_fills_place_label_and_drops_an_unsupported_address():
+def test_repair_fills_place_and_drops_an_unsupported_address():
     request = make_request(
         stays=[
             stay_item(
@@ -362,13 +362,13 @@ def test_repair_fills_place_label_and_drops_an_unsupported_address():
     draft = _draft(
         _event("event-001", "12:00", "13:00", STAY_REF, title="한 곳에서 머문 시간"),
     )
-    draft.events[0].place_label = "한 곳"
+    draft.events[0].place = "한 곳"
     draft.events[0].address = "서울특별시 강남구 테헤란로 152"
 
     repair_draft(draft, request)
 
     event = draft.events[0]
-    assert event.place_label == "두꺼비 감자탕 지산점"  # 얼버무림 → 근거의 장소명
+    assert event.place == "두꺼비 감자탕 지산점"  # 얼버무림 → 근거의 장소명
     assert event.address == "경기도 오산시 운암로 90"  # 지어낸 주소 → 근거의 주소
     assert any("정확한 입력 근거가 없는 주소" in w.message for w in draft.warnings)
 

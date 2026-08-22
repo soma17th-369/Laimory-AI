@@ -4,7 +4,7 @@
 좁히는 규칙을 한 곳에 모아 둔다.
 
 - ``subtitle`` 은 draft 의 ``description`` 이다. 비어 있으면 ``null`` 로 보낸다.
-- ``place``/``address`` 는 draft 의 ``placeLabel``/``address`` 를 그대로 옮긴다(이슈 #72).
+- ``place``/``address`` 는 draft 의 ``place``/``address`` 를 그대로 옮긴다(이슈 #72).
   여기서 검증하지 않는다 — ``place_resolver`` 가 근거로 확정하고 근거 없는 주소를 이미
   지웠다. 같은 검증을 두 곳에서 하면 규칙이 갈라진다.
 - draft 의 ``places``(후보 목록)는 내보내지 않는다. 여러 이름 중 고르는 것은 AI 의 일이고
@@ -42,7 +42,7 @@ def build_result_request(draft: TimelineDraft) -> TimelineResultRequest:
             event_type=event.event_type,
             title=event.title[:_TITLE_MAX],
             subtitle=_subtitle(event.description),
-            place=_place(event.place_label),
+            place=_place(event.place),
             address=_place(event.address),
             start_at=_localized(event.start_time, tz),
             end_at=_localized(event.end_time, tz),

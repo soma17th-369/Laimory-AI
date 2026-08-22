@@ -26,7 +26,7 @@ def _event(client_event_id: str, title: str = "체류", start: str = "09:00", en
         event_type=EventType.REST,
         title=title,
         description="설명",
-        place_label="카페",
+        place="카페",
         tags=["휴식"],
         start_time=f"2026-06-20T{start}:00+09:00",
         end_time=f"2026-06-20T{end}:00+09:00",
@@ -72,7 +72,7 @@ def test_update_event_touches_only_given_fields():
     assert updated.end_time.hour == 14
     # 지정하지 않은 필드는 원래 값 그대로다.
     assert updated.title == "체류"
-    assert updated.place_label == "카페"
+    assert updated.place == "카페"
     assert updated.tags == ["휴식"]
     assert [ref.raw_id for ref in updated.source_refs] == [fixture_raw_id("s-1")]
 

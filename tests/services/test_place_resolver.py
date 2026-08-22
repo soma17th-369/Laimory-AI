@@ -1,6 +1,6 @@
-"""장소 출력(placeLabel/address) 확정 검증.
+"""장소 출력(place/address) 확정 검증.
 
-placeLabel 은 실제 장소명이거나 친숙한 생활 장소여야 하고, address 는 입력 근거에
+place 은 실제 장소명이거나 친숙한 생활 장소여야 하고, address 는 입력 근거에
 실제 주소 문자열이 있을 때만 채워야 한다. LLM 이 사진에서 읽어 낸 상호명처럼 코드가
 알 수 없는 값은 덮어쓰지 않는다.
 """
@@ -59,7 +59,7 @@ def _request():
     )
 
 
-def _event(*refs, place_label=None, address=None, title="이벤트") -> TimelineEventDraft:
+def _event(*refs, place=None, address=None, title="이벤트") -> TimelineEventDraft:
     return TimelineEventDraft(
         client_event_id="event-001",
         event_type=EventType.REST,
@@ -68,7 +68,7 @@ def _event(*refs, place_label=None, address=None, title="이벤트") -> Timeline
         end_time="2026-06-20T10:00:00+09:00",
         confidence=0.7,
         inference_level=InferenceLevel.EVIDENCE_BASED,
-        place_label=place_label,
+        place=place,
         address=address,
         source_refs=[
             SourceRef(source_type=st, raw_id=fixture_raw_id(raw_id))
@@ -106,41 +106,41 @@ def test_calendar_label_without_parentheses_is_used_whole():
     assert calendar_place_label(None) is None
 
 
-# --- placeLabel ---------------------------------------------------------------
+# --- place ---------------------------------------------------------------
 
 
-def test_missing_place_label_is_filled_from_the_stay_place():
+def test_missing_place_is_filled_from_the_stay_place():
     draft = _draft(_event(STAY_REF))
 
     resolve_places(draft, _request())
 
-    assert draft.events[0].place_label == APARTMENT
+    assert draft.events[0].place == APARTMENT
 
 
-def test_vague_place_label_is_replaced_by_the_evidence_place():
-    draft = _draft(_event(STAY_REF, place_label="한 곳"))
+def test_vague_place_is_replaced_by_the_evidence_place():
+    draft = _draft(_event(STAY_REF, place="한 곳"))
 
     resolve_places(draft, _request())
 
-    assert draft.events[0].place_label == APARTMENT
+    assert draft.events[0].place == APARTMENT
 
 
-def test_vague_place_label_without_any_evidence_is_cleared_not_invented():
-    draft = _draft(_event(PHOTO_REF, place_label="근처"))
+def test_vague_place_without_any_evidence_is_cleared_not_invented():
+    draft = _draft(_event(PHOTO_REF, place="근처"))
 
     resolve_places(draft, _request())
 
     # 사진에는 place 필드가 없다. 얼버무림을 남기느니 비운다.
-    assert draft.events[0].place_label is None
+    assert draft.events[0].place is None
 
 
 def test_a_place_name_read_from_a_photo_is_never_overwritten():
     # `배스킨라빈스` 는 어떤 입력 필드에도 없다. vision 이 영수증에서 읽은 값이다.
-    draft = _draft(_event(STAY_REF, PHOTO_REF, place_label="배스킨라빈스"))
+    draft = _draft(_event(STAY_REF, PHOTO_REF, place="배스킨라빈스"))
 
     resolve_places(draft, _request())
 
-    assert draft.events[0].place_label == "배스킨라빈스"
+    assert draft.events[0].place == "배스킨라빈스"
 
 
 def test_stay_place_wins_over_movement_and_calendar():
@@ -148,7 +148,7 @@ def test_stay_place_wins_over_movement_and_calendar():
 
     resolve_places(draft, _request())
 
-    assert draft.events[0].place_label == APARTMENT
+    assert draft.events[0].place == APARTMENT
 
 
 def test_movement_prefers_its_destination_place():
@@ -156,7 +156,7 @@ def test_movement_prefers_its_destination_place():
 
     resolve_places(draft, _request())
 
-    assert draft.events[0].place_label == "도착 공원"
+    assert draft.events[0].place == "도착 공원"
 
 
 def test_calendar_supplies_the_friendly_label_when_no_location_evidence():
@@ -164,7 +164,7 @@ def test_calendar_supplies_the_friendly_label_when_no_location_evidence():
 
     resolve_places(draft, _request())
 
-    assert draft.events[0].place_label == "집"
+    assert draft.events[0].place == "집"
 
 
 # --- address ------------------------------------------------------------------
@@ -219,7 +219,7 @@ def test_approximate_evidence_address_is_skipped_when_filling():
 
     # 도착지가 근사값이라 건너뛰고, 정확한 출발지 주소로 채운다.
     assert draft.events[0].address == "경기도 오산시 운암로 90"
-    assert draft.events[0].place_label == "도착 공원"  # placeLabel 은 근사여도 이름이다
+    assert draft.events[0].place == "도착 공원"  # place 은 근사여도 이름이다
 
 
 def test_llm_address_with_an_approximate_suffix_is_removed():
@@ -258,7 +258,7 @@ def test_a_supported_address_is_kept_verbatim():
 # Timeline 만 판단할 수 있으므로, 후보를 줄이지 않고 places 로 전부 넘긴다.
 
 
-def _candidate(*refs, place=None, places=None, address=None) -> AiEventCandidate:
+def _candidate(*refs, places=None, address=None) -> AiEventCandidate:
     return AiEventCandidate(
         event_type=EventType.REST,
         time_range=CandidateTimeRange(
@@ -267,7 +267,6 @@ def _candidate(*refs, place=None, places=None, address=None) -> AiEventCandidate
         ),
         title="후보",
         description="설명",
-        place=place,
         places=places or [],
         address=address,
         confidence=0.7,
@@ -285,7 +284,7 @@ def test_candidate_place_is_copied_from_the_stay():
     resolve_candidate_places(result, _request())
 
     candidate = result.candidates[0]
-    assert candidate.place == APARTMENT
+    assert candidate.places == [APARTMENT]
     assert candidate.address == HOME_ADDRESS
 
 
@@ -297,8 +296,7 @@ def test_candidate_keeps_every_place_name_of_the_referenced_input():
 
     resolve_candidate_places(result, request)
 
-    # place 는 대표값(우선순위 첫 값)이고, places 는 순서를 지켜 디듀프한 전부다.
-    assert result.candidates[0].place == APARTMENT
+    # 순서를 지켜 디듀프한다. 목록의 순서가 곧 근거 우선순위다.
     assert result.candidates[0].places == [APARTMENT, "강남파이낸스센터"]
 
 
@@ -308,8 +306,8 @@ def test_candidate_stay_place_wins_over_movement_and_calendar():
     resolve_candidate_places(result, _request())
 
     candidate = result.candidates[0]
-    assert candidate.place == APARTMENT
-    # 여러 rawId 를 참조하면 그 근거들의 장소명이 모두 실린다.
+    # STAY 가 우선이라 목록 맨 앞이고, 나머지 근거의 장소명도 뒤에 실린다.
+    assert candidate.places[0] == APARTMENT
     assert "도착 공원" in candidate.places
     assert "집" in candidate.places
 
@@ -319,15 +317,15 @@ def test_candidate_movement_prefers_its_destination_place():
 
     resolve_candidate_places(result, _request())
 
-    assert result.candidates[0].place == "도착 공원"
+    assert result.candidates[0].places == ["도착 공원"]
 
 
-def test_candidate_place_written_by_the_agent_is_replaced_by_the_input():
-    result = AgentEventResult(candidates=[_candidate(STAY_REF, place="지어낸 장소")])
+def test_candidate_places_written_by_the_agent_are_replaced_by_the_input():
+    result = AgentEventResult(candidates=[_candidate(STAY_REF, places=["지어낸 장소"])])
 
     resolve_candidate_places(result, _request())
 
-    assert result.candidates[0].place == APARTMENT
+    assert result.candidates[0].places == [APARTMENT]
 
 
 def test_candidate_address_written_by_the_agent_is_dropped_without_evidence():
@@ -342,12 +340,11 @@ def test_candidate_address_written_by_the_agent_is_dropped_without_evidence():
 
 
 def test_candidate_without_place_evidence_is_left_empty():
-    result = AgentEventResult(candidates=[_candidate(PHOTO_REF, place="배스킨라빈스")])
+    result = AgentEventResult(candidates=[_candidate(PHOTO_REF, places=["배스킨라빈스"])])
 
     resolve_candidate_places(result, _request())
 
     # PHOTO 에는 아직 place 필드가 없다. 코드가 재현할 수 없는 값은 남기지 않는다.
-    assert result.candidates[0].place is None
     assert result.candidates[0].places == []
 
 
@@ -359,7 +356,7 @@ def test_candidate_evidence_is_found_even_when_the_agent_mislabels_source_type()
 
     resolve_candidate_places(result, _request())
 
-    assert result.candidates[0].place == APARTMENT
+    assert result.candidates[0].places == [APARTMENT]
 
 
 def test_candidate_approximate_address_is_not_used():
@@ -380,26 +377,25 @@ def test_candidate_vague_place_names_are_not_copied():
 
     resolve_candidate_places(result, request)
 
-    assert result.candidates[0].place is None
     assert result.candidates[0].places == []
 
 
 # --- 보존 검사 (#72) ------------------------------------------------------------
 
 
-def test_a_place_label_with_no_evidence_anywhere_is_warned_but_kept():
-    draft = _draft(_event(PHOTO_REF, place_label="배스킨라빈스", title="사진 event"))
+def test_a_place_with_no_evidence_anywhere_is_warned_but_kept():
+    draft = _draft(_event(PHOTO_REF, place="배스킨라빈스", title="사진 event"))
 
     resolve_places(draft, _request())
 
     # 지우지 않는다 — 코드가 재현할 수 없는 값이라 지우면 그것까지 잃는다.
-    assert draft.events[0].place_label == "배스킨라빈스"
+    assert draft.events[0].place == "배스킨라빈스"
     warning = next(w for w in draft.warnings if "없는 장소명" in w.message)
     assert warning.severity is TimelineWarningSeverity.LOW
 
 
-def test_a_place_label_backed_by_the_input_is_not_warned():
-    draft = _draft(_event(STAY_REF, place_label=APARTMENT))
+def test_a_place_backed_by_the_input_is_not_warned():
+    draft = _draft(_event(STAY_REF, place=APARTMENT))
 
     resolve_places(draft, _request())
 
@@ -412,16 +408,16 @@ def test_a_home_label_from_user_memory_is_not_warned():
     request.user_memory = UserMemory(
         life_context=f"평일에는 {APARTMENT}에 있는 집에서 지냅니다."
     )
-    draft = _draft(_event(STAY_REF, place_label="집"))
+    draft = _draft(_event(STAY_REF, place="집"))
 
     resolve_places(draft, request)
 
-    assert draft.events[0].place_label == "집"
+    assert draft.events[0].place == "집"
     assert not any("없는 장소명" in w.message for w in draft.warnings)
 
 
 def test_place_warnings_are_remeasured_on_every_pass():
-    draft = _draft(_event(PHOTO_REF, place_label="배스킨라빈스"))
+    draft = _draft(_event(PHOTO_REF, place="배스킨라빈스"))
     request = _request()
 
     resolve_places(draft, request)
@@ -429,3 +425,72 @@ def test_place_warnings_are_remeasured_on_every_pass():
 
     # 반복마다 자기 이전 warning 을 지우고 다시 잰다.
     assert len([w for w in draft.warnings if "없는 장소명" in w.message]) == 1
+
+
+def test_candidate_movement_takes_only_the_destination():
+    """이동의 장소는 도착지 하나다. 출발지를 섞으면 방향이 뒤집힌다."""
+
+    request = _request()
+    request.movements[0].start = GeoPlace(place="집", address="경기도 오산시 운암로 90")
+    request.movements[0].end = GeoPlace(place="한강공원", address="서울 영등포구 여의동로 330")
+    result = AgentEventResult(candidates=[_candidate(MOVE_REF)])
+
+    resolve_candidate_places(result, request)
+
+    candidate = result.candidates[0]
+    # `집` 이 섞이면 Timeline 이 User Memory 와 대조해 "집에 있었다" 로 뒤집어 읽는다.
+    assert candidate.places == ["한강공원"]
+    assert candidate.address == "서울 영등포구 여의동로 330"
+
+
+def test_candidate_address_is_empty_rather_than_the_other_endpoint():
+    """도착지 주소가 근사값이면 비운다. 출발지 주소로 넘어가면 place 와 짝이 어긋난다."""
+
+    request = _request()
+    request.movements[0].start = GeoPlace(place="집", address="경기도 오산시 운암로 90")
+    request.movements[0].end = GeoPlace(place="한강공원", address="서울 영등포구 여의동로 330 인근")
+    result = AgentEventResult(candidates=[_candidate(MOVE_REF)])
+
+    resolve_candidate_places(result, request)
+
+    candidate = result.candidates[0]
+    assert candidate.places == ["한강공원"]
+    assert candidate.address is None
+
+
+# --- 이름 통일 back-compat (#72) ------------------------------------------------
+
+
+def test_the_old_place_label_key_is_still_accepted():
+    """동결 프롬프트나 롤백으로 모델이 옛 키를 내도 값이 사라지지 않아야 한다.
+
+    `TimelineEventDraft` 는 모르는 키를 무시하므로, alias 가 없으면 장소가 조용히
+    없어진다. 에러도 warning 도 남지 않아 추적이 안 되는 실패다.
+    """
+
+    event = TimelineEventDraft.model_validate(
+        {
+            "clientEventId": "event-001",
+            "eventType": "REST",
+            "title": "이벤트",
+            "startTime": "2026-06-20T09:00:00+09:00",
+            "endTime": "2026-06-20T10:00:00+09:00",
+            "confidence": 0.7,
+            "inferenceLevel": "EVIDENCE_BASED",
+            "sourceRefs": [
+                {"sourceType": "STAY", "rawId": fixture_raw_id("stay-1")}
+            ],
+            "placeLabel": "두꺼비 감자탕 지산점",
+        }
+    )
+
+    assert event.place == "두꺼비 감자탕 지산점"
+
+
+def test_the_draft_serializes_place_under_the_unified_name():
+    event = _event(STAY_REF, place="집")
+
+    body = event.model_dump(by_alias=True, mode="json")
+
+    assert body["place"] == "집"
+    assert "placeLabel" not in body

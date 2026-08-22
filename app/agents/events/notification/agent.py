@@ -129,7 +129,7 @@ def _annotate_notification_use(items: list[dict]) -> None:
             "shouldNotCreateTimelineEvent": is_low_priority and not direct_meeting,
             "contextOnly": is_context_only,
             "lowConfidenceFragmentOnly": is_low_priority or is_context_only,
-            "placeLabelAllowedFromNotification": bool(explicit_place and direct_meeting),
+            "placeAllowedFromNotification": bool(explicit_place and direct_meeting),
             "explicitPlaceMention": explicit_place,
         }
 
@@ -153,7 +153,7 @@ def _messenger_analysis(items: list[dict]) -> dict:
                 "postedAt": [],
                 "hasDirectMeetingMention": False,
                 "explicitPlaceMention": None,
-                "placeLabelAllowed": False,
+                "placeAllowed": False,
                 "interpretation": "",
             },
         )
@@ -171,7 +171,7 @@ def _messenger_analysis(items: list[dict]) -> dict:
             conversation["hasDirectMeetingMention"] = True
         if explicit_place and direct_meeting:
             conversation["explicitPlaceMention"] = explicit_place
-            conversation["placeLabelAllowed"] = True
+            conversation["placeAllowed"] = True
 
         item["messengerInterpretation"] = {
             "speakerField": "title",
@@ -181,7 +181,7 @@ def _messenger_analysis(items: list[dict]) -> dict:
             "isSingleOrSparse": conversation["count"] <= 2,
             "hasDirectMeetingMention": conversation["hasDirectMeetingMention"],
             "explicitPlaceMention": explicit_place if direct_meeting else None,
-            "placeLabelAllowed": bool(explicit_place and direct_meeting),
+            "placeAllowed": bool(explicit_place and direct_meeting),
         }
 
     for conversation in conversations.values():

@@ -84,7 +84,7 @@ def test_a_calendar_event_dropped_by_the_llm_is_restored():
     assert restored.event_type is EventType.CALENDAR_EVENT
     assert restored.start_time.isoformat() == _t("09:00")
     assert restored.end_time.isoformat() == _t("23:00")
-    assert restored.place_label == "집"  # locationText 의 라벨만
+    assert restored.place == "집"  # locationText 의 라벨만
     assert restored.inference_level is InferenceLevel.DIRECT
     assert restored.confidence == 0.6  # 일정이 있었다 ≠ 그 일을 했다
     assert restored.uncertainty  # 한계를 남긴다

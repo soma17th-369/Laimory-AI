@@ -336,7 +336,6 @@ def test_timeline_agent_receives_candidate_places_from_the_input():
     )
 
     candidate = seen["merged"].candidates[0]
-    assert candidate.place == "오산운암3단지 주공아파트"
     assert candidate.address == "경기도 오산시 운암로 90"
     # 후보를 줄이지 않는다. 고르는 것은 Timeline 의 일이다.
     assert candidate.places == ["오산운암3단지 주공아파트", "강남파이낸스센터"]

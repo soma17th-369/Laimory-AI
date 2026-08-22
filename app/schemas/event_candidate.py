@@ -83,14 +83,18 @@ class AiEventCandidate(CamelModel):
     후보는 최종 timeline event가 아니다. Timeline Agent가 여러 후보와 단서를 병합하고
     검토해 최종 draft event를 만든다.
 
-    ``place``/``places``/``address`` 는 **Agent 가 채우는 필드가 아니다**(이슈 #72).
-    코드가 ``sourceRefs`` 로 근거 입력을 찾아 문자열을 그대로 복사한다
+    ``places``/``address`` 는 **Agent 가 채우는 필드가 아니다**(이슈 #72). 코드가
+    ``sourceRefs`` 로 근거 입력을 찾아 문자열을 그대로 복사한다
     (:func:`app.services.place_resolver.resolve_candidate_places`).
 
     Agent 에게 맡기지 않는 이유는, 한 지점에 장소명이 여럿일 때 **어느 것이 맞는지
     Event Agent 가 판단할 근거가 없기** 때문이다. Location Agent 는 위치 데이터만 본다.
     고르는 것은 User Memory 를 가진 Timeline Agent 의 일이므로, 후보를 줄이지 않고
     ``places`` 로 전부 넘긴다.
+
+    **단수 필드를 두지 않는 것도 같은 이유다.** ``places`` 는 고를 후보(입력)이고, 고른
+    결과는 draft 의 ``place``(출력)이다. 후보 단계에 대표값을 하나 더 두면 같은 값이
+    두 키로 중복되고, 모델은 둘 중 무엇을 믿어야 하는지 알 수 없다.
     """
 
     event_type: EventType = Field(alias="eventType")
@@ -107,17 +111,11 @@ class AiEventCandidate(CamelModel):
         alias="semanticTags",
         description="사진 description 등에서 추출한 활동/장소/상황 태그",
     )
-    place: str | None = Field(
-        default=None,
-        description=(
-            "근거 입력에 기록된 대표 장소명. 입력에서 그대로 복사된다. Agent 는 비워 둔다."
-        ),
-    )
     places: list[str] = Field(
         default_factory=list,
         description=(
-            "같은 지점을 가리키는 장소명 전부. 입력에서 그대로 복사된다. "
-            "Agent 는 비워 둔다."
+            "이 후보의 장소가 될 수 있는 이름들. 근거가 확실한 순서로 담긴다. "
+            "이동은 도착지 이름만 담는다. 입력에서 그대로 복사된다. Agent 는 비워 둔다."
         ),
     )
     address: str | None = Field(

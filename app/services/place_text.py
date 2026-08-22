@@ -4,7 +4,7 @@
 주소(`경기도 오산시 운암로 90`)는 같은 곳을 서로 다른 문자열로 부른다. 이 모듈은
 그 문자열들을 비교 가능한 형태로 정규화하고, 같은 장소를 가리키는지 판정한다.
 
-`calendar_location`(확증 시 confidence 보강)과 `place_resolver`(placeLabel/address
+`calendar_location`(확증 시 confidence 보강)과 `place_resolver`(place/address
 확정)가 함께 쓴다.
 """
 

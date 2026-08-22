@@ -44,6 +44,9 @@
 | Question Agent | Repair가 확정한 event에 사용자 회고 유도 질문을 선택적으로 붙이는 Agent. |
 | 내부 모호성 질문 | `TimelineDraft.questions`. 불확실한 시간·장소를 확인하는 내부 draft 정보이며 App Server로 보내지 않는다. |
 | 회고 유도 질문 | `TimelineEventDraft.question`/result event의 `question`. 사용자가 경험·감정·이유를 덧붙이도록 event에 중첩해 저장하는 질문. |
+| `place` | 장소명. 파이프라인 전 구간이 이 한 이름을 쓴다 — 입력 `StayItem.place`/`GeoPlace.place`, draft event의 `place`, result event의 `place`. 예전 draft 필드명 `placeLabel`은 #72에서 통합됐고 back-compat alias로만 남는다. |
+| `places` | 한 지점을 가리킬 수 있는 장소명 **후보 목록**. 입력(`StayItem.places`)과 candidate에만 있다. 복수는 고를 후보(Timeline 입력), 단수 `place`는 고른 결과(Timeline 출력)라는 뜻이며, 그래서 candidate에는 단수 필드를 두지 않는다. |
+| `address` | 수집 원본에 실제로 있던 주소 문자열. 좌표에서 만들어 내지 않고, `인근`·`부근` 같은 근사 표현이 붙은 값은 주소로 쓰지 않는다. 근거로 뒷받침되지 않으면 확정 pass가 지운다. |
 | Warning | 복구 가능한 누락·충돌·품질 문제를 드러내는 내부 진단. task 실패와 동의어가 아니다. |
 | Confidence | event/candidate 확신도를 0~1로 표현한 값. 불확실성을 문장에 헤지하는 대신 metadata로 전달한다. |
 | Inference level | DIRECT, EVIDENCE_BASED, INFERRED, UNCERTAIN으로 판단 근거 수준을 표현한다. |
