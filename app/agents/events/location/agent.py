@@ -23,7 +23,7 @@ from app.agents.parsing import (
     SupportsComplete,
     build_infer_prompt,
     default_llm,
-    items_to_text,
+    items_to_text_without_coordinates,
 )
 from app.agents.prompt_loader import load_prompt
 from app.core.config import settings
@@ -109,9 +109,11 @@ def _location_data_text(request: TimelineDraftRequest, items: list) -> str:
     프롬프트가 평균 속도·구간 공백·마지막 관측 같은 값을 근거로 판단하라고 하는데,
     입력 DTO 에는 그 필드가 없다. LLM 이 매 구간 암산하는 대신 코드가 계산해 준다(#56 §4.4).
     raw 항목의 형태는 그대로 두고 파생값을 별도 블록으로 덧붙인다.
+
+    좌표는 프롬프트에 싣지 않는다(#80). request 로는 계속 받고 코드가 파생 지표 계산에 쓴다.
     """
 
-    payload = json.loads(items_to_text(items))
+    payload = json.loads(items_to_text_without_coordinates(items))
     metrics = build_location_metrics(request).as_prompt_dict()
     return json.dumps(
         {"locationItems": payload, "derivedMetrics": metrics},

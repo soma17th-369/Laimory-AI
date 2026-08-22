@@ -184,7 +184,7 @@ app/
     │                           #   warning 으로 남기고 **자르거나 나누지 않는다** — 어디서
     │                           #   끊을지는 Repair 의 판단이다. CALENDAR_EVENT·SLEEP·MOVEMENT
     │                           #   ·MEAL 은 제외(지속 구간이 근거에 직접 있거나 meal_guard 담당)
-    ├── place_resolver.py       # 장소 확정의 유일한 자리. 우선순위(STAY→MOVEMENT→CALENDAR)를
+    ├── place_resolver.py       # 장소 확정의 유일한 자리. 우선순위(STAY→MOVEMENT→PHOTO→CALENDAR)를
     │                          #   `_PLACE_SOURCES` 목록 하나가 소유한다. 세 가지 일을 한다.
     │                          #   (1) resolve_candidate_places (#72): candidate 의 places/
     │                          #       address 를 sourceRefs 로 찾은 입력에서 **그대로
@@ -291,6 +291,13 @@ app/
 #   `dailyTimelines` 키를 비식별 요약(schemaVersion·채워진 필드 수·크기 / 타임라인 수·event 수·memo 수)
 #   으로 바꾸므로 호출부가 스냅샷이나 요청을 통째로 덤프해도 본문이 새지 않는다.
 #   Langfuse generation input(프롬프트 본문)에는 값이 들어가지만 운영은 콘텐츠 정책이 NONE 이다.
+# 좌표 경계(#80): `latitude`/`longitude` 는 request 로 계속 받지만 **프롬프트에는 싣지
+#   않는다.** 사람이 읽고 판단할 값이 아니라 input token 만 차지하고, 좌표가 필요한 판단
+#   (연속 MOVEMENT 사이 끝점 거리 등)은 코드가 `derivedMetrics` 로 계산해 결론만 넘긴다.
+#   제외 지점은 `parsing.items_to_text_without_coordinates`(Location·Photo Agent)와
+#   `repair/tools._lookup_source` 다. 입력 스키마에서 필드를 없애는 것이 아니다.
+#   PHOTO 는 `places`/`address` 를 받아 처음으로 장소 근거가 된다 — 다만 **안 들어올 수
+#   있고**, 없으면 촬영 시각으로 STAY 를 대조하는 기존 경로가 답한다.
 # 프롬프트 동결본: 활성 프롬프트를 크게 바꿀 때 같은 디렉터리에 `<활성파일명>_v<버전>.md`
 #   로 직전 버전을 복사해 둔다(예: `timeline_v2.0.0.md`). load_prompt 는 정확한 파일명만
 #   읽으므로 동결본은 실행에 영향이 없다. **활성 파일은 `timeline.md`·`prompt.md`·

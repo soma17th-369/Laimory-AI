@@ -28,7 +28,7 @@ from app.agents.parsing import (
     SupportsComplete,
     build_infer_prompt,
     default_llm,
-    items_to_text,
+    items_to_text_without_coordinates,
 )
 from app.agents.prompt_loader import load_prompt
 from app.core.langfuse_tracing import trace_observation, update_observation
@@ -174,6 +174,9 @@ def _photo_items_to_text(items: list) -> str:
     event 를 만들지 말고 STAY·CALENDAR 에 병합하라" 를 실었는데, 이 agent 의 입력은
     `request.photos` 뿐이라 STAY·CALENDAR 를 볼 수 없었다. 따를 수 없는 지시라
     자기 candidate 억제만 남았다. 병합 판단은 Timeline Agent 소관이다(#56).
+
+    좌표는 싣지 않는다(#80). 사진의 위치는 `place`/`places`/`address` 로 오고, 그것이 없으면
+    촬영 시각으로 STAY 를 대조하는 기존 경로가 답한다.
     """
 
-    return items_to_text(items)
+    return items_to_text_without_coordinates(items)

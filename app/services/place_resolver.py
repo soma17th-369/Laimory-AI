@@ -4,8 +4,8 @@
 `서울드래곤시티` 같은 상호·건물명이거나 `집`, `학교`, `회사` 같은 친숙한 생활 장소다.
 `한 곳`, `근처`, `주변` 은 장소가 아니라 얼버무림이다.
 
-`address` 는 **입력 근거에 실제 주소 문자열이 있을 때만** 채운다. 사진에는 좌표만
-있으므로, 좌표를 보고 주소를 지어내면 안 된다.
+`address` 는 **입력 근거에 실제 주소 문자열이 있을 때만** 채운다. 좌표를 보고 주소를
+지어내면 안 된다 — 좌표는 프롬프트에 실리지도 않는다(이슈 #80).
 
 ## LLM 값을 덮어쓰지 않는 이유
 
@@ -18,8 +18,8 @@
     - `address`  : 비어 있으면 근거의 주소로 채운다. 근거로 뒷받침되지 않는 주소는
       LLM 이 지어낸 것이므로 지우고 경고한다.
 
-`place` 후보는 사용자가 정한 우선순위 STAY → MOVEMENT → CALENDAR 순으로 찾는다.
-PHOTO 는 `place` 필드가 없어(좌표뿐) 후보를 제공하지 못한다.
+`place` 후보는 사용자가 정한 우선순위 STAY → MOVEMENT → PHOTO → CALENDAR 순으로 찾는다.
+PHOTO 의 장소는 안 들어올 수 있고, 그때는 그냥 후보를 내놓지 않는다.
 """
 
 import json
@@ -32,6 +32,7 @@ from app.schemas import (
     AgentEventResult,
     CalendarItem,
     MovementItem,
+    PhotoItem,
     SourceRef,
     StayItem,
     TimelineDraft,
@@ -77,6 +78,7 @@ class _Evidence:
 
     stays: dict[str, StayItem]
     movements: dict[str, MovementItem]
+    photos: dict[str, PhotoItem]
     calendars: dict[str, CalendarItem]
 
 
@@ -90,6 +92,11 @@ def _collect(request: TimelineDraftRequest) -> _Evidence:
         movements={
             identifier: item
             for item in request.movements
+            if (identifier := raw_id_of(item))
+        },
+        photos={
+            identifier: item
+            for item in request.photos
             if (identifier := raw_id_of(item))
         },
         calendars={
@@ -204,6 +211,14 @@ def _movement_destination_addresses(movement: MovementItem) -> Iterator[str | No
         yield movement.end.address
 
 
+def _photo_places(photo: PhotoItem) -> Iterator[str | None]:
+    yield from photo.places
+
+
+def _photo_addresses(photo: PhotoItem) -> Iterator[str | None]:
+    yield photo.address
+
+
 def _calendar_address_support(calendar: CalendarItem) -> Iterator[str | None]:
     # 캘린더 메모(`집(경기도 오산시 운암로 90)`)는 그대로 address 로 쓰기엔 지저분하지만,
     # 주소를 품고 있으므로 검증 근거로는 쓴다.
@@ -212,12 +227,12 @@ def _calendar_address_support(calendar: CalendarItem) -> Iterator[str | None]:
 
 #: 장소명 후보를 찾는 순서. 사용자가 정한 우선순위이며 `_Evidence` 의 필드명과 짝을 이룬다.
 #:
-#: PHOTO 는 아직 `place` 가 없어(좌표뿐) 빠져 있다. 입력에 장소 필드가 생기면 **MOVEMENT
-#: 다음, CALENDAR 앞**에 한 줄을 끼운다 — 사진 장소는 실제로 거기 있었다는 증거이고 캘린더
-#: `locationText` 는 사용자가 적어 둔 의도라 실제와 다를 수 있다(이슈 #72 후속).
+#: PHOTO 가 MOVEMENT 다음·CALENDAR 앞인 이유(이슈 #80): 사진 장소는 실제로 거기 있었다는
+#: 증거이고, 캘린더 `locationText` 는 사용자가 적어 둔 의도라 실제와 다를 수 있다.
 _PLACE_SOURCES: tuple[tuple[str, Callable[[Any], Iterator[str | None]]], ...] = (
     ("stays", _stay_places),
     ("movements", _movement_places),
+    ("photos", _photo_places),
     ("calendars", _calendar_places),
 )
 
@@ -225,6 +240,7 @@ _PLACE_SOURCES: tuple[tuple[str, Callable[[Any], Iterator[str | None]]], ...] = 
 _ADDRESS_SOURCES: tuple[tuple[str, Callable[[Any], Iterator[str | None]]], ...] = (
     ("stays", _stay_addresses),
     ("movements", _movement_addresses),
+    ("photos", _photo_addresses),
 )
 
 #: 주소가 근거에 실재하는지 대조할 때만 추가로 보는 출처.
@@ -241,12 +257,14 @@ _ADDRESS_SUPPORT_SOURCES: tuple[tuple[str, Callable[[Any], Iterator[str | None]]
 _CANDIDATE_PLACE_SOURCES: tuple[tuple[str, Callable[[Any], Iterator[str | None]]], ...] = (
     ("stays", _stay_places),
     ("movements", _movement_destination_places),
+    ("photos", _photo_places),
     ("calendars", _calendar_places),
 )
 
 _CANDIDATE_ADDRESS_SOURCES: tuple[tuple[str, Callable[[Any], Iterator[str | None]]], ...] = (
     ("stays", _stay_addresses),
     ("movements", _movement_destination_addresses),
+    ("photos", _photo_addresses),
 )
 
 

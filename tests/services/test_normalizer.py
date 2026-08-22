@@ -115,3 +115,47 @@ def test_documented_timeline_request_sample_matches_current_contract():
         str(UUID(item.raw_id)) == item.raw_id
         for item in request.iter_source_items()
     )
+
+
+def test_photo_place_fields_are_preserved_verbatim():
+    """PHOTO 장소는 정규화·요약·치환 없이 원문 그대로 실려야 한다 (#80).
+
+    `normalizer._photo` 는 payload 를 그대로 `model_validate` 하므로 코드 변경이 없었다.
+    그 사실이 유지되는지 확인한다.
+    """
+
+    snapshot = make_snapshot(
+        source_items=[
+            source_item(
+                1,
+                ItemType.PHOTO,
+                {
+                    "places": ["한강공원", "여의도한강공원"],
+                    "address": "서울 영등포구 여의동로 330",
+                    "latitude": 37.5285,
+                    "longitude": 126.9327,
+                },
+            )
+        ]
+    )
+
+    request = normalize(snapshot)
+
+    photo = request.photos[0]
+    assert photo.places == ["한강공원", "여의도한강공원"]
+    assert photo.address == "서울 영등포구 여의동로 330"
+    # 좌표는 계속 받는다. 프롬프트에만 싣지 않는다.
+    assert photo.latitude == 37.5285
+
+
+def test_photo_without_place_fields_is_valid():
+    """`places`·`address` 는 안 들어올 수 있다 (#80)."""
+
+    snapshot = make_snapshot(
+        source_items=[source_item(1, ItemType.PHOTO, {"takenAt": "2026-06-20T10:00:00"})]
+    )
+
+    photo = normalize(snapshot).photos[0]
+
+    assert photo.places == []
+    assert photo.address is None

@@ -24,7 +24,8 @@ Photo Event Agent는 사진 description, 촬영 시각, 위치 메타데이터�
 
 - `draft metadata`: 대상 날짜, timezone, `windowStart`, `windowEnd`입니다.
 - 사진 데이터는 **배열 하나**로 들어옵니다. 각 항목은 `rawId`, `takenAt`(촬영 시각),
-  `dateTaken`, `latitude`, `longitude`, `description`을 가집니다.
+  `dateTaken`, `places`, `address`, `description`을 가집니다. `places`와 `address`는
+  촬영 지점의 장소로, **비어 있을 수 있습니다.**
 - `description`은 Vision 또는 metadata fallback이 이미 채워 넣은 값입니다.
   값이 비어 있으면 그 사진은 설명을 만들지 못한 사진입니다.
 - 입력에 있는 사진은 **모두 사용자가 직접 선택한 사진**입니다. 별도의 선택 상태 필드는
@@ -55,7 +56,7 @@ Photo Event Agent는 사진 description, 촬영 시각, 위치 메타데이터�
 - 풍경, 교통수단, 이동 중 장면은 이동 또는 방문 맥락을 보강하는 근거로 사용합니다.
 - 사람과 함께한 장면은 신원 및 관계 근거가 제공되는 범위에서 `SOCIAL`, `MEETING` 후보를 제안합니다.
 - 사진에 직접 보이는 상호명과 건물명은 `evidenceSummary`, `semanticTags`에 보존합니다.
-- 좌표는 같은 시간대의 Location candidate와 연결하기 위한 위치 근거로 사용합니다. 주소와 상호명은 입력 또는 이미지에서 직접 확인된 값을 사용합니다.
+- `places`와 `address`는 입력에 있는 문자열을 **그대로** 사용합니다. 요약하거나 다른 이름으로 바꾸지 않고, 비어 있으면 지어내지 않습니다. 이미지에서 직접 읽은 상호명은 `evidenceSummary`와 `semanticTags`에 남깁니다.
 
 ## 시간과 지속시간
 
