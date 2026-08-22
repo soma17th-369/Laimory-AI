@@ -60,9 +60,17 @@ def test_app_server_api_url_is_required(monkeypatch) -> None:
 def test_app_server_retry_defaults() -> None:
     configured = _settings()
 
-    assert configured.app_server_timeout_sec == 10.0
+    assert configured.app_server_timeout_sec == 3.0
     assert configured.app_server_max_attempts == 3
     assert configured.app_server_retry_backoff_sec == 0.5
+
+
+def test_app_server_timeout_sec_is_read_from_environment(monkeypatch) -> None:
+    """기본값을 3초로 줄여도(이슈 #86) 명시 설정이 계속 이긴다."""
+
+    monkeypatch.setenv("APP_SERVER_TIMEOUT_SEC", "7")
+
+    assert _settings().app_server_timeout_sec == 7.0
 
 
 def test_prompt_version_defaults_to_v1(monkeypatch) -> None:
