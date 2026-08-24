@@ -150,6 +150,9 @@ class ErrorCode(IntEnum):
     #: 사진 이미지 다운로드에 실패했다(HTTP 오류·timeout·형식/크기 거부·URL 정책 위반).
     #: 해당 사진만 메타데이터 설명으로 대체하고 진행한다(흡수 경로).
     PHOTO_IMAGE_FETCH_FAILED = 1407
+    #: 외부 시크릿 저장소에서 값을 읽지 못했다(#30). 기동을 막지 않고 빈 값으로 진행하며,
+    #: 그 키가 실제로 필요한 시점에 provider 생성이 실패한다(흡수 경로).
+    SECRET_RESOLUTION_FAILED = 1408
 
     # --- 1900~1999 미분류 -------------------------------------------------
     #: 위 어디에도 분류되지 않은 내부 오류.
@@ -198,6 +201,7 @@ _MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.APP_SERVER_TASK_NOT_FOUND: "작업을 찾을 수 없습니다.",
     ErrorCode.APP_SERVER_CONFLICT: "작업 처리 순서가 맞지 않습니다.",
     ErrorCode.PHOTO_IMAGE_FETCH_FAILED: "사진 이미지를 가져오지 못했습니다.",
+    ErrorCode.SECRET_RESOLUTION_FAILED: "설정 값을 읽지 못했습니다.",
     ErrorCode.INTERNAL_ERROR: "타임라인 생성 중 오류가 발생했습니다.",
 }
 

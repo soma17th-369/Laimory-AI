@@ -89,6 +89,14 @@ class Settings(BaseSettings):
     bedrock_region: str = "ap-northeast-2"
     bedrock_model: str = ""
 
+    # 외부 시크릿 번들(#30). AWS Secrets Manager 시크릿 하나의 이름 또는 ARN 이며, 값은
+    # `{"OPENAI_API_KEY": "...", "LANGFUSE_SECRET_KEY": "..."}` 형태의 JSON 객체다.
+    #
+    # **비어 있으면 AWS 를 호출하지 않는다.** 로컬은 지금처럼 `.env` 만 보고, 배포 환경에서만
+    # 이 이름을 주입한다. 어떤 키가 번들에 드는지는 코드가 알지 않는다 — 있는 키를 쓰고
+    # 없으면 비운다(app/core/secrets.py). 시크릿 **값** 은 어디에도 커밋하지 않는다.
+    secrets_bundle_name: str = ""
+
     # --- 사진 이미지 다운로드 (이슈 #52) ---
     # App Server 가 PHOTO payload 에 실어 주는 `photoUrl` 에서 실제 이미지를 내려받아
     # vision 모델에 넘기기 위한 정책이다. 장당 크기·형식·장수 기본값은 App Server 의
