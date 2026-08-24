@@ -21,7 +21,7 @@ LLM provider 선택·인증·vision/structured output·token 관측과 전역 pr
 
 ## Current Implementation
 
-`LLM_PROVIDER`가 전역 provider를 고르고 `{PROVIDER}_MODEL`이 모델을 정한다. OpenAI와 Gemini는 각각 API key가 필요하며 값은 `app/core/secrets.py`가 해석한다 — 환경변수/`.env`가 먼저이고 없으면 `SECRETS_BUNDLE_NAME`이 가리키는 AWS Secrets Manager JSON 번들에서 채운다. provider는 출처를 모른다. Bedrock은 API key 필드 없이 boto3 credential chain을 사용하며 local에서는 optional profile, 배포에서는 EC2 instance role 또는 AgentCore execution role을 사용한다. 실제 값은 Knowledge나 Git에 기록하지 않는다.
+`LLM_PROVIDER`가 전역 provider를 고르고 `{PROVIDER}_MODEL`이 모델을 정한다. OpenAI와 Gemini는 각각 API key가 필요하며 값은 `app/core/secrets.py`의 `resolve_secret`으로 온다. 시크릿 번들이 `Settings`보다 우선하는 값 공급원이라 대부분 `settings` 필드로 채워지고, 설정 필드가 없는 키는 번들에서 직접 찾는다. provider는 출처를 모른다. Bedrock은 API key 필드 없이 boto3 credential chain을 사용하며 local에서는 optional profile, 배포에서는 EC2 instance role 또는 AgentCore execution role을 사용한다. 실제 값은 Knowledge나 Git에 기록하지 않는다.
 
 세 provider 모두 text structured output과 vision input을 지원하는 구현으로 등록돼 있다. provider는 가능한 경우 native JSON schema/response schema/tool 형식을 사용한다. 자유형 object 때문에 strict schema 변환이 불가능하면 일반 JSON mode와 prompt schema hint로 내려가며 최종 검증은 항상 Pydantic이 수행한다.
 

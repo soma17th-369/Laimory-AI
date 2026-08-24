@@ -1,149 +1,167 @@
 # 시크릿 번들 운영 매뉴얼
 
 > 기준일: 2026-08-24
-> 대상: Laimory AI 서버의 외부 Provider 키를 AWS Secrets Manager로 옮기고 운영하는 절차 (이슈 #30)
+> 대상: Laimory AI 서버의 설정·시크릿을 AWS Secrets Manager로 옮기고 운영하는 절차 (이슈 #30)
+> 이 문서는 **AWS 웹 콘솔** 기준이다. CLI 절차는 [AgentCore 배포 가이드](deploy-agentcore.md)를 참고한다.
 
-애플리케이션 시크릿을 EC2의 `runtime.env`나 AgentCore `environmentVariables`에 평문으로 두지
-않고, **Secrets Manager 시크릿 하나(JSON 번들)** 에서 기동 시 읽어 온다. 키를 바꿀 때 이미지를
-다시 만들 필요가 없다.
+## 1. 값을 어디에 두나
 
-## 1. 동작 방식
+| 종류 | 두는 곳 | 예 |
+|---|---|---|
+| 비밀, 환경마다 달라지는 값 | **Secrets Manager 시크릿 번들** | `OPENAI_API_KEY`, `LANGFUSE_SECRET_KEY`, `APP_SERVER_API_URL`, `BEDROCK_MODEL` |
+| 부트스트랩·배포 주입값 | EC2 `runtime.env` 또는 AgentCore 환경 변수 | `APP_ENV`, `SECRETS_BUNDLE_NAME`, `AGENT_VERSION` |
+| 그 밖의 고정값 | `app/core/config.py` 기본값 (코드) | 타임아웃, 재시도 횟수, 사진 다운로드 상한 |
 
-애플리케이션이 시크릿을 읽는 자리는 `app/core/secrets.py` 하나이고, 순서는 다음과 같다.
+환경별 구성은 다음과 같다.
 
-```text
-환경변수 / .env  →  Secrets Manager 번들  →  빈 문자열
-```
+- **dev** — EC2 컨테이너. `runtime.env` + 시크릿 번들
+- **prod** — AgentCore Runtime. 환경 변수 + 시크릿 번들
+- **로컬** — `.env`만. `SECRETS_BUNDLE_NAME`이 없으면 **AWS를 호출하지 않는다**
 
-- `SECRETS_BUNDLE_NAME`이 **비어 있으면 AWS를 호출하지 않는다.** 로컬 개발은 지금까지와 같다.
-- 번들은 **기동 시 1회** 읽어 프로세스가 사는 동안 캐시한다. 값을 바꾸면 컨테이너를 재시작한다.
-- **어떤 키를 넣을지는 운영이 정한다.** 애플리케이션은 대상 목록을 갖지 않고, 번들에 있는 키를
-  쓰며 없는 키는 빈 값이다. 키를 추가해도 코드는 바뀌지 않는다.
-- 조회에 실패해도 **기동은 된다.** 오류코드 `1408`을 남기고 빈 값으로 진행하므로, 그 키가
-  실제로 필요한 provider를 쓰고 있었다면 그 시점에 실패한다. 실패는 캐시하지 않아 일시적인
-  오류는 다음 호출에서 회복된다.
-- ⚠️ **환경변수가 번들보다 우선한다.** 번들로 옮긴 키는 `runtime.env`에서 **지워야** 한다.
-  남겨 두면 번들 값을 고쳐도 반영되지 않는다.
-
-## 2. 최초 준비 (한 번만)
-
-### 2.1 시크릿 생성
-
-리전은 애플리케이션과 같은 `ap-northeast-2`를 쓴다. 값은 **JSON 객체 하나**이고, 키 이름은
-`.env`에서 쓰던 환경변수 이름과 같다(대소문자·하이픈 무관).
-
-```json
-{
-  "LANGFUSE_PUBLIC_KEY": "...",
-  "LANGFUSE_SECRET_KEY": "...",
-  "OPENAI_API_KEY": "...",
-  "GEMINI_API_KEY": "..."
-}
-```
-
-콘솔은 **Secrets Manager → 새 보안 암호 저장 → 다른 유형의 보안 암호 → 일반 텍스트**에 위
-JSON을 붙여 넣고 이름을 `laimory-ai/prod/app`으로 저장한다. CLI는 다음과 같다.
-
-```bash
-aws secretsmanager create-secret \
-  --name laimory-ai/prod/app \
-  --description "Laimory AI 애플리케이션 시크릿 번들" \
-  --secret-string file://bundle.json \
-  --region ap-northeast-2
-```
-
-`bundle.json`은 커밋하지 않고 작업 뒤 삭제한다.
-
-`BEDROCK_*`, `APP_SERVER_API_URL`, `LOG_*`처럼 **비밀이 아닌 설정은 번들에 넣지 않는다.**
-그 값들은 계속 환경변수로 둔다. Bedrock은 API key가 없고 IAM 역할로 인증한다.
-
-### 2.2 실행 역할에 읽기 권한 부여
-
-EC2 Instance Role(예: `laimory-ai-ec2-runtime`)의 인라인 정책에 다음 문을 추가한다.
-
-```json
-{
-  "Sid": "ReadSecretBundle",
-  "Effect": "Allow",
-  "Action": "secretsmanager:GetSecretValue",
-  "Resource": "arn:aws:secretsmanager:ap-northeast-2:392900063927:secret:laimory-ai/prod/app-*"
-}
-```
-
-Secrets Manager는 ARN 끝에 6자리 임의 접미사를 붙이므로 `-*`로 끝낸다. 다른 시크릿까지
-열리지 않도록 `Resource`를 `*`로 두지 않는다.
-
-AgentCore Runtime으로 전환한 뒤에는 **Runtime 실행 역할**에 같은 문을 준다.
-
-### 2.3 번들 이름 주입
-
-EC2는 `/opt/laimory-ai/runtime.env`에 한 줄을 추가한다.
-
-```dotenv
-SECRETS_BUNDLE_NAME=laimory-ai/prod/app
-```
-
-AgentCore Runtime은 `environmentVariables`에 같은 이름을 넣는다. 자세한 절차는
-[AgentCore 배포 가이드](deploy-agentcore.md) 7장을 따른다.
-
-### 2.4 평문 제거 — 순서를 지킨다
+## 2. 우선순위와 실패 규칙
 
 ```text
-① 이 기능이 포함된 이미지 배포  →  ② 번들에 값 입력  →  ③ runtime.env 에서 해당 키 삭제
+시크릿 번들  >  환경변수 / .env  >  config.py 기본값
 ```
 
-거꾸로 하면 그 사이에 컨테이너가 키 없이 뜬다. ③까지 끝나면 컨테이너를 재시작한다.
+- **번들이 이긴다.** `runtime.env`에 옛 값이 남아 있어도 번들 값이 적용되므로, 옮긴 뒤 파일을
+  정리하지 않아도 동작이 달라지지 않는다(정리는 권장한다).
+- 번들에 **없는** 키는 그대로 환경변수 → `.env` → 코드 기본값으로 내려간다. 그래서 번들에는
+  넣을 것만 넣으면 된다.
+- 번들은 **기동 시 1회** 읽는다. 값을 바꾸면 컨테이너를 재시작해야 반영된다.
+- 조회에 실패하면 그 값들만 없는 것으로 보고 아래 단계로 내려간다. 실패는 오류코드 `1408`로
+  로그에 남는다.
+  ⚠️ 다만 **필수 설정(`APP_SERVER_API_URL` 등)을 번들에만 두었다면 조회 실패는 곧 기동
+  실패**다. 그 값이 어디에도 없기 때문이다.
+- `SECRETS_BUNDLE_NAME`은 번들에서 올 수 없다. 어느 번들을 읽을지 정하는 값이라 환경변수나
+  `.env`로만 온다.
+- `AGENT_VERSION`은 번들에 넣지 않는다. 배포 스크립트가 이미지 태그로 주입하는 값이라
+  번들에 있으면 그것이 이겨 버전 표기가 틀어진다.
+
+## 3. 최초 준비 (환경마다 한 번)
+
+### 3.1 시크릿 만들기
+
+1. AWS 콘솔에서 리전을 **아시아 태평양(서울) `ap-northeast-2`** 로 맞춘다.
+2. **Secrets Manager → 새 보안 암호 저장** 을 누른다.
+3. **보안 암호 유형**에서 **다른 유형의 보안 암호** 를 고른다.
+4. **키/값 페어** 탭에서 키와 값을 하나씩 넣거나, **일반 텍스트** 탭에 아래 JSON을 붙여 넣는다.
+   키 이름은 `.env`에서 쓰던 환경변수 이름과 같다(대소문자·하이픈은 가리지 않는다).
+
+   ```json
+   {
+     "LLM_PROVIDER": "bedrock",
+     "BEDROCK_MODEL": "...",
+     "APP_SERVER_API_URL": "https://api.example.com/s/api/v1",
+     "LANGFUSE_PUBLIC_KEY": "...",
+     "LANGFUSE_SECRET_KEY": "...",
+     "OPENAI_API_KEY": "...",
+     "GEMINI_API_KEY": "..."
+   }
+   ```
+
+5. **암호화 키**는 기본값(`aws/secretsmanager`)을 그대로 둔다.
+6. **보안 암호 이름**을 환경별로 정한다. 예: `laimory-ai/dev/app`, `laimory-ai/prod/app`.
+7. 자동 교체(로테이션)는 **비활성화** 상태로 둔다. 외부 서비스 키라 AWS가 대신 바꿀 수 없다.
+8. **저장** 후 상세 화면의 **보안 암호 ARN** 을 복사해 둔다. 다음 단계에서 쓴다.
+
+Bedrock은 API 키가 없고 IAM 역할로 인증하므로 `BEDROCK_AWS_PROFILE` 같은 값은 번들에 넣지
+않는다.
+
+### 3.2 읽기 권한 주기
+
+권한을 받을 역할은 환경에 따라 다르다.
+
+- **dev** — EC2 인스턴스에 붙은 역할 (예: `laimory-ai-ec2-runtime`)
+- **prod** — AgentCore Runtime의 실행 역할
+
+1. **IAM → 역할** 에서 해당 역할을 연다.
+2. **권한 추가 → 인라인 정책 생성** 을 누른다.
+3. **JSON** 탭에 아래를 붙여 넣는다. `Resource`에는 3.1에서 복사한 ARN을 넣되, 끝의 6자리
+   임의 접미사 자리에 `*`를 쓴다.
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Sid": "ReadSecretBundle",
+         "Effect": "Allow",
+         "Action": "secretsmanager:GetSecretValue",
+         "Resource": "arn:aws:secretsmanager:ap-northeast-2:392900063927:secret:laimory-ai/prod/app-*"
+       }
+     ]
+   }
+   ```
+
+4. 정책 이름을 `ReadSecretBundle` 정도로 주고 **정책 생성** 을 누른다.
+
+`Resource`를 `*`로 두지 않는다. 그 계정의 다른 시크릿까지 읽을 수 있게 된다.
+
+### 3.3 번들 이름 알려주기
+
+애플리케이션에 "어느 시크릿을 읽을지"만 알려주면 된다. 이 값은 비밀이 아니다.
+
+**dev (EC2)** — 인스턴스에 접속해 env 파일에 한 줄을 추가한다.
 
 ```bash
-sudo vi /opt/laimory-ai/runtime.env    # 옮긴 키 줄을 지운다
+sudo vi /opt/laimory-ai/runtime.env
+# SECRETS_BUNDLE_NAME=laimory-ai/dev/app
 sudo docker restart laimory-ai
 ```
 
-## 3. 확인
+**prod (AgentCore Runtime)** — Runtime의 환경 변수에 같은 이름을 넣는다. 콘솔에서
+**Amazon Bedrock → AgentCore → 해당 Agent Runtime → 환경 변수** 를 편집하고, 콘솔에서
+편집이 지원되지 않으면 [AgentCore 배포 가이드](deploy-agentcore.md) 7장의 절차를 따른다.
+환경 변수를 바꾸면 새 Runtime 버전이 만들어진다.
 
-기동 로그(JSON)에서 다음을 본다. **값은 어떤 로그에도 남지 않는다.**
+### 3.4 옛 값 정리 (선택)
+
+번들이 환경변수를 이기므로 급하지 않지만, 값이 두 곳에 남아 있으면 나중에 어느 쪽이 적용
+중인지 헷갈린다. 번들로 옮긴 키는 `runtime.env`(또는 Runtime 환경 변수)에서 지우는 편이 낫다.
+
+## 4. 확인
+
+기동 로그(JSON)에서 아래를 본다. **값은 어떤 로그에도 남지 않는다.**
 
 | 로그 | 의미 |
 |---|---|
-| `시크릿 번들 로드 완료` + `secretNameCount` | 번들을 읽었다. 개수가 기대와 같은지 본다 |
-| `errorCode: 1408` | 번들을 읽지 못했다. 이름·IAM 권한·리전을 확인한다 |
-| `shadowedSecretNames` 경고 | 환경변수가 번들을 덮어쓰고 있다. §2.4 ③이 남았다 |
+| `시크릿 번들 로드 완료` + `secretNameCount` | 번들을 읽었다. 개수가 넣은 키 수와 같은지 본다 |
+| `errorCode: 1408` | 번들을 읽지 못했다. 이름·권한·리전을 확인한다 |
 | 아무 로그도 없음 | `SECRETS_BUNDLE_NAME`이 비어 있다(AWS 호출 안 함) |
 
-`shadowedSecretNames` 경고는 `APP_ENV`가 `prod`/`staging`일 때만 나온다. 로컬·dev에서
-`.env`로 덮어쓰는 것은 정상이라 조용하다.
+값이 실제로 적용됐는지는 동작으로 확인한다. 예를 들어 `APP_SERVER_API_URL`을 번들로 옮겼다면
+타임라인 요청이 정상 처리되는지 본다.
 
-## 4. 키 교체
+## 5. 값 바꾸기
 
 이미지를 다시 만들지 않는다.
 
-```bash
-aws secretsmanager put-secret-value \
-  --secret-id laimory-ai/prod/app \
-  --secret-string file://bundle.json \
-  --region ap-northeast-2
+1. **Secrets Manager → 해당 보안 암호 → 보안 암호 값 검색 → 편집**
+2. 값을 고치고 **저장**
+3. 컨테이너를 재시작한다 (dev: `sudo docker restart laimory-ai`, prod: Runtime 재배포)
 
-sudo docker restart laimory-ai    # 값은 기동 시 1회만 읽는다
-```
+값은 기동 시 1회만 읽으므로 **재시작 전에는 예전 값으로 동작한다.**
 
-교체 전 값이 필요하면 `aws secretsmanager list-secret-version-ids`로 이전 버전을 확인하고
-`--version-stage AWSPREVIOUS`로 되돌릴 수 있다.
+이전 값이 필요하면 같은 화면의 **버전** 탭에서 이전 버전(`AWSPREVIOUS`)을 확인할 수 있다.
 
-## 5. 롤백
+## 6. 되돌리기
 
-번들을 쓰기 전으로 되돌리려면 `runtime.env`에 키를 다시 넣고 `SECRETS_BUNDLE_NAME`을 비운다.
-애플리케이션 코드는 두 경로를 모두 지원하므로 이미지를 바꾸지 않아도 된다.
+번들을 쓰기 전 상태로 돌아가려면 `SECRETS_BUNDLE_NAME`을 비우고(또는 그 줄을 지우고) 값을
+`runtime.env`에 되돌린 뒤 재시작한다. 애플리케이션은 두 경로를 모두 지원하므로 이미지를
+바꾸지 않아도 된다.
 
-## 6. 문제 해결
+## 7. 문제 해결
 
 | 증상 | 원인과 조치 |
 |---|---|
-| `1408` + `AccessDeniedException` | 실행 역할에 §2.2 문이 없거나 `Resource` ARN이 다르다 |
+| `1408` + `AccessDeniedException` | 역할에 3.2 정책이 없거나 `Resource` ARN이 다르다 |
 | `1408` + `ResourceNotFoundException` | 이름 오타이거나 시크릿이 다른 리전에 있다 |
-| `1408` + `NoRegionError` | 리전을 정할 수 없다. EC2 밖에서 실행 중이면 `AWS_REGION`을 준다 |
-| `1408` + `JSONDecodeError` | 번들 값이 JSON 객체가 아니다. 최상위가 `{ }`인지 확인한다 |
-| 번들을 고쳤는데 반영되지 않음 | `runtime.env`에 같은 키가 남아 있거나 컨테이너를 재시작하지 않았다 |
-| `OPENAI_API_KEY 가 설정되지 않았습니다` | 번들에도 환경변수에도 그 키가 없다. provider가 정말 그 키를 쓰는지 확인한다(Bedrock은 키가 필요 없다) |
+| `1408` + `NoRegionError` | 리전을 정할 수 없다. EC2·Runtime 밖에서 실행 중이면 `AWS_REGION`을 준다 |
+| `1408` + `JSONDecodeError` | 값이 JSON 객체가 아니다. 최상위가 `{ }`인지 확인한다 |
+| 기동 자체가 실패 (`APP_SERVER_API_URL` 검증 오류 등) | 필수 값을 번들에만 뒀는데 조회가 실패했다. 위 1408 원인부터 본다 |
+| 값을 고쳤는데 그대로다 | 컨테이너를 재시작하지 않았다 |
+| 버전 표기가 배포 태그와 다르다 | `AGENT_VERSION`을 번들에 넣었다. 번들에서 지운다 |
 
 ## 관련 문서
 

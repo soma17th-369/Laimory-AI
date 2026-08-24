@@ -29,7 +29,8 @@ app/
 │   │                          #   event.dataset 표식 + 이벤트별 필드 allowlist
 │   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형)
 │   ├── inflight.py            # 진행 중 백그라운드 처리 카운터 (GET /ping 상태 판단용)
-│   └── secrets.py             # 시크릿 해석 (#30). 환경변수/.env → AWS Secrets Manager 번들 순
+│   ├── secret_bundle.py       # 시크릿 번들 로딩 + pydantic-settings 소스 (#30)
+│   └── secrets.py             # 시크릿 조회 진입점 (#30). 번들 > 환경변수/.env > 기본값
 │
 ├── api/
 │   ├── agentcore.py           # AgentCore Runtime 계약 (POST /invocations, GET /ping)
