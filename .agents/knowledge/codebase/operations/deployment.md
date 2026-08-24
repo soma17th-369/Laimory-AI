@@ -34,6 +34,8 @@ image default는 prod/json/bedrock/v1이고 환경별 model, App Server URL, Lan
 
 EC2에는 앱 `runtime.env`, Filebeat 설정·env·registry data가 GitHub 밖 `/opt/laimory-ai`에 있어야 한다. 장기 AWS access key 대신 instance role과 GitHub OIDC를 사용한다.
 
+비밀과 환경별 값은 `SECRETS_BUNDLE_NAME`이 가리키는 Secrets Manager 시크릿 하나에 JSON 객체로 둔다(#30). 이름이 비면 AWS를 호출하지 않는다. 번들은 `Settings`의 값 공급원으로 붙어 **환경변수·`.env`보다 우선**하고, 번들에 없는 키만 환경변수 → `.env` → `config.py` 기본값으로 내려간다. dev는 EC2 `runtime.env` + 번들, prod는 AgentCore 환경 변수 + 번들이며 고정값은 코드 기본값이다. `SECRETS_BUNDLE_NAME`과 `AGENT_VERSION`은 번들에 넣지 않는다(부트스트랩·배포 주입값). 번들은 기동 시 1회 읽고 변경은 재시작으로 반영한다. 조회 실패는 1408로 남고 그 값들만 없는 것으로 보므로, 필수 값을 번들에만 두면 조회 실패가 기동 실패가 된다. 실행 역할에는 해당 secret ARN의 `secretsmanager:GetSecretValue`가 필요하다.
+
 deploy script는 architecture와 env file, Docker daemon을 확인하고 image를 pull한다. 앱 교체 전에 Filebeat를 확인·기동하되 Filebeat 실패는 앱 배포를 중단하지 않는다. 기존 앱 `/ping`이 `HealthyBusy`이면 10초 간격으로 최대 20분 기다리고, 알 수 없는 상태면 교체를 중단한다.
 
 기존 image URI를 기록한 뒤 컨테이너를 교체한다. 새 container가 정해진 시간 안에 `Healthy` 또는 `HealthyBusy`가 아니면 새 container 로그를 남기고 직전 image로 자동 복구를 시도한다. 성공 뒤 현재 image와 실제 직전 image만 보존하도록 ECR을 정리한다.

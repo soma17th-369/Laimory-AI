@@ -31,6 +31,7 @@ from app.core.langfuse_tracing import (
 )
 from app.core.execution_context import ExecutionStage, current_execution_context
 from app.core.logging import get_logger, log_fields
+from app.core.secrets import resolve_secret
 from app.core.structured import ModelT, run_structured, to_strict_schema
 
 logger = get_logger(__name__)
@@ -93,12 +94,14 @@ class LLMProvider(ABC):
     sdk_package: str = ""
 
     def __init__(self, model: str | None = None) -> None:
-        self.api_key: str = getattr(settings, f"{self.name}_api_key", "")
+        # 키는 환경변수/`.env` 가 먼저이고 없으면 시크릿 번들에서 온다(#30).
+        self.api_key: str = resolve_secret(f"{self.name}_api_key")
         self.model: str = model or getattr(settings, f"{self.name}_model", "")
 
         if self.requires_api_key and not self.api_key:
             raise ValueError(
-                f"{self.name.upper()}_API_KEY 가 설정되지 않았습니다. .env 를 확인하세요."
+                f"{self.name.upper()}_API_KEY 가 설정되지 않았습니다. "
+                ".env 또는 시크릿 번들을 확인하세요."
             )
         if not self.model:
             raise ValueError(

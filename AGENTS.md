@@ -95,6 +95,13 @@ app/
 │   ├── exceptions.py          # AppError 예외 계층(자기 ErrorCode 보유) + report_error: 로그와 관측을 같은 코드로 남기는 유일한 통로
 │   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형) + LLM 관측/토큰 emit
 │   ├── inflight.py            # 진행 중 백그라운드 처리 카운터 (GET /ping 의 Healthy/HealthyBusy 판단용, 프로세스 로컬)
+│   ├── secret_bundle.py       # 시크릿 번들 로딩 + pydantic-settings 소스 (#30). config 보다 먼저
+│   │                          #   필요해 app.core 를 import 하지 않는다(순환 방지). 조회 실패는
+│   │                          #   붙잡아 두고 로깅 준비 뒤 secrets.prefetch_secrets 가 1408 로 보고한다
+│   ├── secrets.py             # 시크릿 조회 진입점 (#30). 우선순위는 **번들 > 환경변수/.env >
+│   │                          #   config.py 기본값** 이다 — 정본이 하나여서 env 파일에 옛 값이 남아도
+│   │                          #   결과가 같다. 대상 키 목록을 코드가 갖지 않는다.
+│   │                          #   dev=EC2 runtime.env+번들, prod=AgentCore+번들, 고정값=코드 기본값
 │   └── observability/         # Timeline 실행 관측 (#28). taskId 단일 키, SANITIZED 본문·메타데이터
 │       ├── models.py          #   ObservationEvent 계약 (taskId/sequence/stage/token/version)
 │       ├── context.py         #   contextvars 로 to_thread 까지 taskId 전파, emit_observation

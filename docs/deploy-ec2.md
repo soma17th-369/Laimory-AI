@@ -154,10 +154,19 @@ AmazonSSMManagedInstanceCore
         "bedrock:InvokeModelWithResponseStream"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "ReadSecretBundle",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:ap-northeast-2:392900063927:secret:laimory-ai/prod/app-*"
     }
   ]
 }
 ```
+
+`ReadSecretBundle`은 시크릿 번들(§8)을 쓸 때만 필요하다. `Resource`는 번들 하나의 ARN으로
+좁힌다 — Secrets Manager ARN 끝에는 6자리 임의 접미사가 붙으므로 `-*`로 끝낸다.
 
 EC2 콘솔에서 **인스턴스 선택 → 작업 → 보안 → IAM 역할 수정**으로 연결한다.
 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`는 EC2나 env 파일에 넣지 않는다.
@@ -247,6 +256,10 @@ BEDROCK_MODEL=<모델 또는 추론 프로필 ID>
 BEDROCK_REGION=ap-northeast-2
 BEDROCK_AWS_PROFILE=
 
+# 외부 시크릿 번들(이슈 #30). Secrets Manager 시크릿 **이름 또는 ARN 하나**다.
+# 비워 두면 AWS를 호출하지 않고 이 파일의 값만 쓴다(예전 동작).
+SECRETS_BUNDLE_NAME=laimory-ai/prod/app
+
 APP_SERVER_API_URL=<App Server 서버간 API 기본 URL, 예: https://api.example.com/s/api/v1>
 APP_SERVER_TIMEOUT_SEC=3
 APP_SERVER_MAX_ATTEMPTS=3
@@ -301,6 +314,33 @@ App Server는 장당 5MB·요청당 20장을 허용하되 총합을 제한하지
 
 `BEDROCK_AWS_PROFILE`은 비워 둔다. boto3가 EC2 Instance Role의 임시 자격증명을
 사용한다.
+
+### 시크릿 번들(이슈 #30)
+
+키 값은 이 파일 대신 Secrets Manager 시크릿 하나에 JSON 객체로 모을 수 있다.
+최초 준비·키 교체·롤백 절차는 [시크릿 번들 운영 매뉴얼](secret-bundle.md)에 있다.
+
+```json
+{
+  "OPENAI_API_KEY": "...",
+  "GEMINI_API_KEY": "...",
+  "LANGFUSE_PUBLIC_KEY": "...",
+  "LANGFUSE_SECRET_KEY": "..."
+}
+```
+
+- 키 이름은 이 파일에서 쓰던 환경변수 이름과 같다(대소문자·하이픈 무관).
+- **어떤 키를 넣을지는 운영이 정한다.** 애플리케이션은 목록을 갖지 않는다. 비밀뿐 아니라
+  환경마다 달라지는 설정(`APP_SERVER_API_URL`, `BEDROCK_MODEL` 등)도 담을 수 있다.
+- **번들 값이 이 파일의 값을 이긴다.** 그래서 옮긴 키를 여기서 지우지 않아도 동작은 같다
+  (헷갈리지 않게 정리하는 편이 낫다). 번들에 없는 키는 이 파일 → 코드 기본값 순이다.
+- `SECRETS_BUNDLE_NAME`과 `AGENT_VERSION`은 번들에 넣지 않는다. 앞은 어느 번들을 읽을지
+  정하는 값이고, 뒤는 배포 스크립트가 이미지 태그로 주입하는 값이다.
+- 조회 실패는 1408로 남고 그 값들만 없는 것으로 본다. **필수 값을 번들에만 뒀다면 조회
+  실패가 곧 기동 실패**다([오류 코드](error-codes.md) 참고).
+
+값 변경·확인·롤백은 콘솔 기준으로 [시크릿 번들 운영 매뉴얼](secret-bundle.md)에 있다.
+이미지를 다시 만들지 않고, 값을 고친 뒤 컨테이너만 재시작한다.
 
 `APP_SERVER_API_URL`은 **필수**다(이슈 #40). AI 서버의 유일한 데이터 경로이며,
 비어 있으면 컨테이너가 기동 시점에 실패한다. task별 경로를 제외하고 버전 경로까지

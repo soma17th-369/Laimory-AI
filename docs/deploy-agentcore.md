@@ -354,6 +354,7 @@ Runtime 의 `environmentVariables` 로 주입한다.
 | `BEDROCK_MODEL` | O | Nova 모델 id 또는 추론 프로필 id. 비면 provider 생성 시 실패한다 |
 | `BEDROCK_REGION` | | 기본 `ap-northeast-2` |
 | `BEDROCK_AWS_PROFILE` | | **넣지 않는다.** 비어 있어야 실행 역할 자격증명을 쓴다 |
+| `SECRETS_BUNDLE_NAME` | | 외부 시크릿 번들(#30). Secrets Manager 시크릿 이름/ARN 하나. **번들 값이 이 표의 환경 변수를 이긴다** — 비밀과 환경별 값을 번들에 두고 여기에는 부트스트랩 값만 남긴다. 비우면 AWS를 호출하지 않는다. 실행 역할에 해당 ARN의 `secretsmanager:GetSecretValue` 가 필요하다. 절차는 [시크릿 번들 매뉴얼](secret-bundle.md) |
 | `APP_SERVER_API_URL` | O | App Server 서버간 API 기본 URL(`/s/api/v1`까지). 유일한 데이터 경로라 비면 기동에 실패한다 |
 | `APP_SERVER_TIMEOUT_SEC` `APP_SERVER_MAX_ATTEMPTS` `APP_SERVER_RETRY_BACKOFF_SEC` | | 기본 3초 / 3회 / 0.5초. timeout·5xx 에만 재시도한다 |
 | `PIPELINE_TIMEOUT_SEC` | | 기본 120 |
@@ -464,8 +465,8 @@ docker image inspect laimory-ai:local --format '{{.Architecture}}'
 
 ## 12. 알려진 한계
 
-- **DB 비밀번호가 Runtime 환경 변수에 평문으로 들어간다.** `GetAgentRuntime` 을 부를 수
-  있는 사람에게 노출된다. Secrets Manager 로 옮기려면 앱이 기동 시 시크릿을 읽도록
-  코드를 바꿔야 해서 이번 범위에 넣지 않았다.
+- **환경 변수에 넣은 값은 `GetAgentRuntime` 을 부를 수 있는 사람에게 평문으로 보인다.**
+  비밀과 환경별 값은 `SECRETS_BUNDLE_NAME`(#30) 이 가리키는 Secrets Manager 번들에 두고
+  환경 변수에는 `APP_ENV` 같은 부트스트랩 값만 남긴다. 고정값은 `config.py` 기본값이다.
 - 배포 워크플로에 수동 승인 게이트가 없다. 필요하면 `deploy` job 에
   `environment:` 를 달고 그 환경에 reviewer 를 지정한다.
