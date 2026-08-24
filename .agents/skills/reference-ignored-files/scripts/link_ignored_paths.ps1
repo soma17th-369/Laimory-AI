@@ -1,7 +1,6 @@
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
-    [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateNotNullOrEmpty()]
+    [Parameter(Position = 0)]
     [string[]]$TargetPath
 )
 
@@ -47,6 +46,19 @@ if ((Split-Path -Leaf $commonGitDirectory) -ne '.git') {
 
 $mainWorktreeRoot = [IO.Path]::GetFullPath((Split-Path -Parent $commonGitDirectory))
 $worktreePrefix = $worktreeRoot.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+$usingDefaultTargets = -not $PSBoundParameters.ContainsKey('TargetPath') -or $TargetPath.Count -eq 0
+if ($usingDefaultTargets) {
+    $TargetPath = @(
+        '.env'
+        '.env.local'
+        '.env.dev'
+        'runtime-env.json'
+        '.venv'
+        '.agents/plans'
+        '.agents/worklog'
+    )
+}
+
 $seenTargets = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 $operations = [Collections.Generic.List[object]]::new()
 $skipped = [Collections.Generic.List[object]]::new()
@@ -73,6 +85,7 @@ foreach ($rawTarget in $TargetPath) {
         $skipped.Add([pscustomobject]@{
             RelativePath = $relativePath
             Destination = $destination
+            Reason = 'the destination already exists.'
         })
         continue
     }
@@ -82,6 +95,14 @@ foreach ($rawTarget in $TargetPath) {
         throw "The source path escapes the main worktree: $relativePath"
     }
     if (-not (Test-Path -LiteralPath $source)) {
+        if ($usingDefaultTargets) {
+            $skipped.Add([pscustomobject]@{
+                RelativePath = $relativePath
+                Destination = $destination
+                Reason = 'the source does not exist in the main worktree.'
+            })
+            continue
+        }
         throw "The source does not exist in the main worktree: $relativePath"
     }
 
@@ -95,6 +116,14 @@ foreach ($rawTarget in $TargetPath) {
     & git -C $worktreeRoot check-ignore -q -- $ignoreProbe
     $ignoreExitCode = $LASTEXITCODE
     if ($ignoreExitCode -eq 1) {
+        if ($usingDefaultTargets) {
+            $skipped.Add([pscustomobject]@{
+                RelativePath = $relativePath
+                Destination = $destination
+                Reason = 'the target is not ignored by Git.'
+            })
+            continue
+        }
         throw "The target is not ignored by Git: $relativePath"
     }
     if ($ignoreExitCode -ne 0) {
@@ -121,7 +150,7 @@ foreach ($rawTarget in $TargetPath) {
 }
 
 foreach ($item in $skipped) {
-    Write-Output "[SKIPPED] $($item.RelativePath) - the destination already exists."
+    Write-Output "[SKIPPED] $($item.RelativePath) - $($item.Reason)"
 }
 
 foreach ($operation in $operations) {
