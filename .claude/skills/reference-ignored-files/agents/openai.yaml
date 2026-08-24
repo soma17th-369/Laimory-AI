@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ignored File Links"
+  short_description: "Link missing ignored files without copying"
+  default_prompt: "Use $reference-ignored-files to link missing ignored files from the main worktree without copying them."
