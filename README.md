@@ -28,7 +28,8 @@ app/
 │   ├── operational_logging.py # Elasticsearch 로 나가는 운영 이벤트의 유일한 통로 (#53).
 │   │                          #   event.dataset 표식 + 이벤트별 필드 allowlist
 │   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형)
-│   └── inflight.py            # 진행 중 백그라운드 처리 카운터 (GET /ping 상태 판단용)
+│   ├── inflight.py            # 진행 중 백그라운드 처리 카운터 (GET /ping 상태 판단용)
+│   └── secrets.py             # 시크릿 해석 (#30). 환경변수/.env → AWS Secrets Manager 번들 순
 │
 ├── api/
 │   ├── agentcore.py           # AgentCore Runtime 계약 (POST /invocations, GET /ping)

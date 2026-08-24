@@ -95,6 +95,10 @@ app/
 │   ├── exceptions.py          # AppError 예외 계층(자기 ErrorCode 보유) + report_error: 로그와 관측을 같은 코드로 남기는 유일한 통로
 │   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형) + LLM 관측/토큰 emit
 │   ├── inflight.py            # 진행 중 백그라운드 처리 카운터 (GET /ping 의 Healthy/HealthyBusy 판단용, 프로세스 로컬)
+│   ├── secrets.py             # 시크릿 해석 (#30). 값을 읽는 유일한 자리. 환경변수/.env 가 먼저이고
+│   │                          #   없으면 AWS Secrets Manager 번들(JSON 하나)에서 채운다. 대상 키 목록을
+│   │                          #   코드가 갖지 않는다 — 번들에 있는 키를 쓰고 없으면 빈 값이다.
+│   │                          #   조회 실패는 기동을 막지 않고 1408 로 남긴다(캐시하지 않아 회복된다)
 │   └── observability/         # Timeline 실행 관측 (#28). taskId 단일 키, SANITIZED 본문·메타데이터
 │       ├── models.py          #   ObservationEvent 계약 (taskId/sequence/stage/token/version)
 │       ├── context.py         #   contextvars 로 to_thread 까지 taskId 전파, emit_observation

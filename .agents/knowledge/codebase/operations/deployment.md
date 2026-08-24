@@ -34,6 +34,8 @@ image default는 prod/json/bedrock/v1이고 환경별 model, App Server URL, Lan
 
 EC2에는 앱 `runtime.env`, Filebeat 설정·env·registry data가 GitHub 밖 `/opt/laimory-ai`에 있어야 한다. 장기 AWS access key 대신 instance role과 GitHub OIDC를 사용한다.
 
+키 계열 값은 `SECRETS_BUNDLE_NAME`이 가리키는 Secrets Manager 시크릿 하나에 JSON 객체로 둘 수 있다(#30). 이름이 비면 AWS를 호출하지 않는다. **환경변수가 번들보다 우선**하므로 번들로 옮긴 키는 `runtime.env`와 Runtime `environmentVariables`에서 지워야 하며, `APP_ENV=prod`에서 남아 있으면 기동 로그가 경고한다. 조회 실패는 기동을 막지 않고 1408로 남는다. 번들을 쓰는 환경의 실행 역할에는 해당 secret ARN의 `secretsmanager:GetSecretValue`가 필요하다.
+
 deploy script는 architecture와 env file, Docker daemon을 확인하고 image를 pull한다. 앱 교체 전에 Filebeat를 확인·기동하되 Filebeat 실패는 앱 배포를 중단하지 않는다. 기존 앱 `/ping`이 `HealthyBusy`이면 10초 간격으로 최대 20분 기다리고, 알 수 없는 상태면 교체를 중단한다.
 
 기존 image URI를 기록한 뒤 컨테이너를 교체한다. 새 container가 정해진 시간 안에 `Healthy` 또는 `HealthyBusy`가 아니면 새 container 로그를 남기고 직전 image로 자동 복구를 시도한다. 성공 뒤 현재 image와 실제 직전 image만 보존하도록 ECR을 정리한다.
