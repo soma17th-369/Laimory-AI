@@ -83,11 +83,61 @@ Content-Type: application/json
 | `POST` | `/v1/timeline` | 타임라인 생성 작업 접수 |
 | `POST` | `/v1/user-memory` | User Memory 갱신 작업 접수 |
 | `GET` | `/health` | AI 서버 상태 확인 |
-| `POST` | `/invocations` | AgentCore Runtime 호출 진입점. `/v1/timeline`과 동일하게 처리 |
+| `POST` | `/invocations` | AgentCore Runtime 호출 진입점. 타임라인 생성과 User Memory 갱신을 모두 접수 |
 | `GET` | `/ping` | AgentCore Runtime 헬스체크 |
 
 `/invocations`와 `/ping`은 AgentCore Runtime이 컨테이너에 요구하는 고정 경로입니다.
-`/invocations`는 타임라인 전용이며 User Memory 갱신을 받지 않습니다.
+`/v1/timeline`과 `/v1/user-memory`는 그대로 열려 있으며, App Server는 HTTP 직접 호출과
+AgentCore `InvokeAgentRuntime` 두 경로를 모두 사용할 수 있습니다.
+
+## 3.1 AgentCore 호출 계약
+
+AgentCore Runtime은 진입점이 `POST /invocations` 하나뿐이라 경로로 요청 종류를 구분할 수
+없습니다. 그래서 요청 종류를 본문 최상위에 명시합니다.
+
+```json
+{
+  "requestType": "TIMELINE",
+  "payload": { }
+}
+```
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---:|---|
+| `requestType` | `string` | O | `TIMELINE` 또는 `USER_MEMORY_UPDATE`입니다. |
+| `payload` | `object` | O | 해당 엔드포인트의 요청 본문 **그대로**입니다. |
+
+| `requestType` | `payload` 형식 | 위임 대상 |
+|---|---|---|
+| `TIMELINE` | [`POST /v1/timeline`](#post-v1timeline) 요청 본문 | 타임라인 생성 접수 |
+| `USER_MEMORY_UPDATE` | [`POST /v1/user-memory`](#post-v1user-memory) 요청 본문 | User Memory 갱신 접수 |
+
+`requestType`이 `payload`의 형식을 결정합니다. AI 서버는 `payload` 안의 필드를 보고 요청
+종류를 추측하지 않습니다. `taskId`와 `taskToken`은 두 요청에 모두 있고 나머지는 선택
+필드라, 모양으로 판별하면 필드 하나를 생략한 요청이 엉뚱한 처리로 들어갑니다.
+
+`requestType`이 목록에 없거나 `payload`가 해당 형식을 어기면 `422`(errorCode `1001`)입니다.
+
+### envelope 없는 요청 본문
+
+`requestType` 키가 아예 없는 본문은 타임라인 생성 요청으로 처리합니다.
+
+```json
+{
+  "taskId": "task-20260722-001",
+  "taskToken": "task-token-001",
+  "dailyRecordId": 42,
+  "window": { "startAt": "...", "endAt": "..." }
+}
+```
+
+이 형식은 `/invocations`가 **계속 지원하는 두 번째 정식 형식**이며 제거 예정이 아닙니다.
+판별은 `requestType` 키의 존재 여부만으로 하고, 본문 안의 다른 필드는 보지 않습니다.
+
+### 응답
+
+두 요청 종류 모두 접수 즉시 `202 Accepted`와 `{ "taskId": ..., "status": "PROCESSING" }`을
+반환합니다. 최종 결과는 타임라인이면 완료 콜백, User Memory면 결과 저장 호출로 통보합니다.
 
 ## 4. 타임라인 생성 요청
 
@@ -97,7 +147,7 @@ Content-Type: application/json
 
 `202 Accepted`는 타임라인 생성 완료가 아니라 요청 접수 완료를 의미합니다.
 
-AgentCore Runtime에 배포한 환경에서는 `POST /invocations`가 동일한 요청 본문을 받아 같은 방식으로 처리합니다. 요청·응답 형식이 같으므로 아래 명세를 그대로 사용합니다.
+AgentCore Runtime에 배포한 환경에서는 `POST /invocations`가 같은 요청 본문을 받아 같은 방식으로 처리합니다. `requestType`을 `TIMELINE`으로 지정해 `payload`에 넣거나, 아래 본문을 그대로 보내면 됩니다([3.1 AgentCore 호출 계약](#31-agentcore-호출-계약)).
 
 ### 사전 조건
 
@@ -190,6 +240,11 @@ AgentCore Runtime에 배포한 환경에서는 `POST /invocations`가 동일한 
 
 **완료 콜백이 없습니다.** 결과 저장 API 한 번이 결과 전달과 종료 통보를 겸하며
 성공·실패 모두 그 경로로 나갑니다(5.4 참고).
+
+AgentCore Runtime에 배포한 환경에서는 `POST /invocations`에 `requestType`을
+`USER_MEMORY_UPDATE`로 지정하고 아래 본문을 `payload`에 넣습니다
+([3.1 AgentCore 호출 계약](#31-agentcore-호출-계약)). 접수 상한과 콜백 없음 계약은
+경로와 무관하게 같습니다.
 
 ```text
 앱 → App Server   일기 저장 (DailyRecord DRAFT → SAVED)

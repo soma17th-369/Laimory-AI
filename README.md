@@ -33,7 +33,8 @@ app/
 │   └── secrets.py             # 시크릿 조회 진입점 (#30). 번들 > 환경변수/.env > 기본값
 │
 ├── api/
-│   ├── agentcore.py           # AgentCore Runtime 계약 (POST /invocations, GET /ping)
+│   ├── agentcore.py           # AgentCore Runtime 계약 (POST /invocations, GET /ping).
+│   │                          #   requestType(TIMELINE/USER_MEMORY_UPDATE)으로 기존 핸들러에 위임
 │   └── v1/
 │       ├── router.py          # v1 라우터 취합
 │       └── timeline.py        # POST /v1/timeline (taskId+taskToken 접수 → 202)
@@ -100,6 +101,7 @@ Dockerfile                     # EC2/AgentCore 공용 배포 이미지 (non-root
 scripts/deploy-ec2.sh          # SSM에서 실행하는 EC2 교체·자동 복구 스크립트
 docs/deploy-ec2.md             # EC2 운영 배포 절차
 docs/deploy-agentcore.md       # AgentCore 수동 복구 절차
+docs/agentcore-cutover-manual.md # AgentCore 전환 수동 작업 매뉴얼(#89)
 ```
 
 처리 흐름은 `taskId 접수 → 202 즉시 응답 → DB 조회 → normalize → main agent → timeline_events/timeline_items 저장 → 완료 상태 콜백` 순서입니다.
@@ -341,6 +343,7 @@ AgentCore Runtime 배포 환경에서는 `GET /ping`을 함께 제공합니다.
 유지합니다.
 
 - EC2 자동 배포와 초기 준비: [docs/deploy-ec2.md](docs/deploy-ec2.md)
+- AgentCore 전환 시 사람이 AWS·GitHub에서 해야 하는 작업: [docs/agentcore-cutover-manual.md](docs/agentcore-cutover-manual.md)
 - AgentCore 수동 배포와 롤백: [docs/deploy-agentcore.md](docs/deploy-agentcore.md)
 
 로컬에서 이미지를 확인하려면:

@@ -74,6 +74,8 @@ AgentCore Runtime 은 장애가 해소됐을 때 사용할 수동 복구 경로�
 
 - EC2 절차와 AWS 사전 준비는 [docs/deploy-ec2.md](docs/deploy-ec2.md)를 따릅니다.
 - AgentCore 수동 배포·롤백은 [docs/deploy-agentcore.md](docs/deploy-agentcore.md)를 따릅니다.
+- AgentCore 를 운영 경로로 올릴 때 사람이 AWS·GitHub 에서 해야 하는 작업은
+  [docs/agentcore-cutover-manual.md](docs/agentcore-cutover-manual.md)를 따릅니다(#89).
 - 컨테이너는 8080 포트에서 `POST /v1/timeline`, `POST /invocations`, `GET /ping` 을 제공합니다.
 - uvicorn worker 를 늘리지 않습니다. `app/core/inflight.py` 의 진행 중 처리 카운터가 프로세스 로컬이라 worker 가 여럿이면 `/ping` 이 잘못된 상태를 답합니다.
 
@@ -113,7 +115,12 @@ app/
 │       └── runtime.py         #   요청별 Observer/buffer 생성 + flush(로컬 + ES)
 │
 ├── api/
-│   ├── agentcore.py           # AgentCore Runtime 컨테이너 계약 (POST /invocations, GET /ping). 처리는 v1/timeline 에 위임하는 어댑터
+│   ├── agentcore.py           # AgentCore Runtime 컨테이너 계약 (POST /invocations, GET /ping).
+│   │                          #   진입점이 하나뿐이라 payload 최상위 requestType 이 요청 종류를 말한다(#89).
+│   │                          #   TIMELINE→v1/timeline, USER_MEMORY_UPDATE→v1/user-memory 로 위임하는 어댑터고
+│   │                          #   처리 구현을 갖지 않는다. requestType 키가 없는 body 는 TIMELINE 으로 감싼다 —
+│   │                          #   **영구 계약이지 전환 기간용 임시 호환이 아니다.** payload 필드 모양으로
+│   │                          #   종류를 추측하지 않는다(taskId·taskToken 이 양쪽에 다 있어 갈리지 않는다)
 │   ├── error_handlers.py      # 전역 예외 처리기 (#42). 검증오류/HTTPException/AppError/미처리 4종을 ErrorResponse 로 통일 + OpenAPI ERROR_RESPONSES
 │   └── v1/
 │       ├── router.py          # v1 라우터 취합
@@ -326,4 +333,5 @@ Dockerfile                     # amd64/arm64 공용, uv 멀티스테이지, non-
 scripts/deploy-ec2.sh          # EC2 컨테이너 교체·헬스체크·실패 시 직전 이미지 복구
 docs/deploy-ec2.md             # EC2 AWS 준비·배포·운영 절차
 docs/deploy-agentcore.md       # AgentCore 수동 배포·롤백 절차
+docs/agentcore-cutover-manual.md # AgentCore 전환 시 사람이 AWS·GitHub 에서 하는 작업(#89)
 ```

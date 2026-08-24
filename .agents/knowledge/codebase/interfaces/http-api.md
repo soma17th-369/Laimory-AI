@@ -23,7 +23,7 @@ AI 서버가 직접 노출하는 inbound HTTP 경로, 요청·응답·오류·he
 |---|---|---|
 | `POST /v1/timeline` | Timeline task 일반 접수 | 202, `taskId`와 `PROCESSING`; 처리는 background에서 계속됨 |
 | `POST /v1/user-memory` | User Memory 갱신 접수 (#64) | 202, `taskId`와 `PROCESSING`; 결과는 App Server 저장 호출 한 번으로 통보 |
-| `POST /invocations` | AgentCore 고정 호출 경로 | `/v1/timeline`과 같은 request/response와 handler 사용. User Memory는 받지 않는다 |
+| `POST /invocations` | AgentCore 고정 호출 경로 | `{requestType, payload}` envelope로 Timeline과 User Memory를 모두 접수하고 같은 handler에 위임. 202, `taskId`와 `PROCESSING` |
 | `GET /ping` | AgentCore·배포 health | 200, `Healthy` 또는 `HealthyBusy`; inflight만 확인 |
 | `GET /health` | 단순 process health | 200, `{"status":"ok"}` |
 | `GET /debug/env` | 일부 설정 존재 여부 진단 | `APP_ENV`와 OpenAI key 존재 여부 boolean; key 값은 반환하지 않음 |
@@ -34,13 +34,17 @@ Timeline 접수 request는 빈 문자열이 아닌 `taskId`·`taskToken`, 정수
 
 User Memory 접수 request는 `taskId`·`taskToken`과 optional `userMemory`, `dailyTimelines`를 받는다. `dailyTimelines`는 App Server 재시도 배치 계약에 따라 최대 5건이며 6건 이상은 422/1001이다. 그 안의 계약은 **일부러 느슨하다** — `eventType`은 자유 문자열이고 `endAt`·`subtitle`·`question`·`memo`·`emotionType`은 nullable이며 event 수와 본문 길이 상한을 schema에서 강제하지 않는다. 이벤트가 많은 정상적인 하루는 prompt 조립 단계에서 자른다. 기존 `userMemory`는 원본 dict로 받고 background에서 따로 검증한다 — 여기서 엄격히 선언하면 읽지 못하는 프로필 하나가 접수 자체를 막고, 그 사용자는 이후 어떤 날도 갱신되지 않는다.
 
+`/invocations`는 AgentCore가 컨테이너에 진입점을 하나만 요구하기 때문에 요청 종류를 body 최상위 `requestType`(`TIMELINE`, `USER_MEMORY_UPDATE`)으로 받는다(#89). `payload`는 해당 `/v1` 엔드포인트의 request body 그대로이며 필드를 선별하거나 이름을 바꾸지 않는다. `requestType`이 `payload` schema를 결정하는 discriminated union이라 payload 필드 모양으로 종류를 추측하지 않는다 — `taskId`·`taskToken`은 양쪽에 있고 나머지는 optional이라 모양으로 판별하면 생략된 필드 하나가 요청을 다른 pipeline으로 보낸다. `requestType` 키가 없는 body는 Timeline 직접 payload로 감싸며, 이는 **제거 예정이 아닌 두 번째 정식 형식**이다. 판별은 키 존재 여부만 보고 payload 내부는 읽지 않는다.
+
 모든 실패 response는 `ErrorResponse {errorCode: int, error: string}` 한 형태로 통일한다. request validation은 422/1001, route 404는 1003, method 405는 1004, 그 밖의 4xx는 1002, 미처리 5xx는 1901을 쓴다. `error`는 카탈로그의 외부 안전 메시지이며 validation input과 원본 exception은 response에 포함하지 않는다.
 
 RequestLoggingMiddleware는 response header가 시작되는 시점에 요청당 운영 이벤트 한 건을 남긴다. BackgroundTasks 전체 시간을 HTTP latency에 포함하지 않는다. 정상 `/ping`, `/health` 요청은 로그 소음을 피하려고 수집하지 않지만 실패는 수집한다. query string과 임의 path 원문을 그대로 적재하지 않는다.
 
 ## Invariants
 
-- `/invocations`와 `/v1/timeline`의 Timeline 계약과 처리 구현은 갈라지지 않는다.
+- `/invocations`는 처리 구현을 갖지 않고 `/v1` handler에 위임한다. 두 경로의 계약이 갈라지지 않는다.
+- `/v1` POST 접수 경로는 전부 `requestType`으로 도달할 수 있다. 접수 endpoint를 추가하면 `InvocationRequestType`도 함께 늘어난다(`tests/api/test_agentcore_endpoint.py`의 coverage guard가 강제한다). health·diagnostic 경로는 대상이 아니다.
+- `/v1/timeline`과 `/v1/user-memory`는 AgentCore 전환 뒤에도 계속 열어 둔다. App Server는 HTTP 직접 호출과 `InvokeAgentRuntime` 두 경로를 모두 쓴다.
 - 202는 완료가 아니라 접수다. 최종 상태는 Timeline이면 App Server callback, User Memory면 결과 저장 호출로 통보한다.
 - User Memory 접수는 `dailyTimelines` 5건 상한을 넘으면 422/1001을 내고, 그 안의 event 수와 본문 길이는 background에서 자른다.
 - API 오류에 validation input, token, 원본 exception message를 반환하지 않는다.
