@@ -7,6 +7,11 @@
 수동으로 재개하거나 기존 Runtime 버전으로 롤백하는 절차를 설명한다. EC2 운영 경로는
 [EC2 컨테이너 배포 가이드](deploy-ec2.md)를 따른다.
 
+> AgentCore 를 처음 올리는 중이라면 [AgentCore 전환 수동 작업 매뉴얼](agentcore-cutover-manual.md)
+> 을 먼저 본다. 이 문서의 절차를 어떤 순서로 밟고 무엇으로 끝났는지 확인하는지를
+> 체크리스트로 정리해 두었다. App Server 의 `InvokeAgentRuntime` 호출 권한처럼 이 문서가
+> 다루지 않는 항목도 거기에 있다.
+
 ## 1. 배포 구조
 
 ```text
@@ -24,6 +29,11 @@ Actions에서 Deploy AgentCore Runtime 수동 실행
 App Server 는 이 엔드포인트를 `bedrock-agentcore:InvokeAgentRuntime` 으로 호출하고,
 호출 payload 는 컨테이너의 `POST /invocations` 로 그대로 전달된다.
 
+진입점이 하나뿐이라 요청 종류는 payload 최상위의 `requestType`(`TIMELINE` /
+`USER_MEMORY_UPDATE`)이 말한다. 형식은 [AI 서버 API 명세](ai-server-api.md#31-agentcore-호출-계약)
+에 있다. `POST /v1/timeline` 과 `POST /v1/user-memory` 도 계속 열려 있어 App Server 는 HTTP
+직접 호출과 AgentCore 두 경로를 모두 쓸 수 있다.
+
 ## 2. 컨테이너 계약
 
 AgentCore Runtime 은 컨테이너에 아래를 고정으로 요구한다. 하나라도 어긋나면 Runtime 이
@@ -33,7 +43,7 @@ AgentCore Runtime 은 컨테이너에 아래를 고정으로 요구한다. 하�
 |---|---|
 | 이미지 아키텍처 `linux/arm64` | `deploy-agentcore.yml` 의 Buildx `platforms: linux/arm64` |
 | HTTP 포트 `8080` | `EXPOSE 8080` + `uvicorn --host 0.0.0.0 --port 8080` |
-| `POST /invocations` | `app/api/agentcore.py` (내부적으로 `POST /v1/timeline` 과 동일 처리) |
+| `POST /invocations` | `app/api/agentcore.py` (`requestType` 으로 타임라인·User Memory 를 구분해 기존 핸들러에 위임) |
 | `GET /ping` → `{"status": "Healthy"\|"HealthyBusy"}` | `app/api/agentcore.py` |
 | 이미지 위치 | 같은 계정·같은 리전의 Amazon ECR |
 
