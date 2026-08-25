@@ -1,15 +1,15 @@
 # AgentCore Runtime 배포 가이드
 
-> 기준일: 2026-08-25
-> 대상: Laimory AI 서버(FastAPI)를 AWS 웹 콘솔에서 Amazon Bedrock AgentCore Runtime으로 배포하는 절차
+> 기준일: 2026-08-25 (이슈 #90 배포 경계 분리 반영)
+> 대상: Laimory AI 서버(FastAPI)를 AWS 웹 콘솔에서 Amazon Bedrock AgentCore Runtime으로 올리는 절차
 
-기본 자동 배포 경로는 EC2다. 이 문서는 AgentCore 장애가 해소됐을 때 AWS 웹 콘솔에서
-Runtime을 최초 구성하고, 필요할 때 수동 배포·검증·롤백하는 복구 절차를 설명한다.
-EC2 운영 경로는 [EC2 컨테이너 배포 가이드](deploy-ec2.md)를 따른다.
+**AgentCore Runtime이 production 운영 경로다**(이슈 #90). `main` push가
+`deploy-production.yml`을 돌려 자동 배포하며, 그 승격·승인·설정 절차는
+[Production 배포 가이드](deploy-production.md)에 있다. 개발 경로인 EC2 는
+[EC2 컨테이너 배포 가이드](deploy-ec2.md)를 따른다.
 
-AWS 자원 생성과 Runtime 관리는 웹 콘솔을 기준으로 한다. 다만 AWS 콘솔은 이 저장소의
-Docker 이미지를 직접 빌드하지 않으므로, `linux/arm64` 이미지 빌드와 ECR 업로드에는
-GitHub Actions의 **Deploy AgentCore Runtime** 워크플로를 사용한다.
+이 문서는 그 아래 계층 — **컨테이너 계약과 AWS 자원 준비** — 를 다룬다. 어느 워크플로가
+언제 도는지가 궁금하면 Production 배포 가이드를 먼저 본다.
 
 > AgentCore 를 처음 올리는 중이라면 [AgentCore 전환 수동 작업 매뉴얼](agentcore-cutover-manual.md)
 > 을 먼저 본다. 이 문서의 절차를 어떤 순서로 밟고 무엇으로 끝났는지 확인하는지를
@@ -17,26 +17,36 @@ GitHub Actions의 **Deploy AgentCore Runtime** 워크플로를 사용한다.
 
 ## 1. 전체 순서
 
-최초 배포는 다음 순서로 진행한다.
+```text
+main push (dev → main PR merge) 또는 Actions 수동 실행
+→ GitHub Actions (deploy-production.yml)
+→ Environment production 승인 대기
+→ OIDC 로 AWS 임시 자격증명 발급
+→ linux/arm64 이미지 빌드 → Amazon ECR push (laimory-ai-prod, 불변 태그)
+→ UpdateAgentRuntime  → 새 Runtime 버전 생성 (1, 2, 3 ...)
+→ UpdateAgentRuntimeEndpoint → 엔드포인트를 새 버전으로 전환
+```
+
+최초 구성은 다음 순서로 진행한다.
 
 1. AWS 콘솔에서 ECR 리포지토리를 만든다.
 
-2. IAM 콘솔에서 GitHub OIDC 공급자, GitHub 배포 역할, Runtime 실행 역할을 만든다.
+2. IAM 콘솔에서 GitHub OIDC 공급자, dev·production 공용 GitHub 배포 역할, Runtime 실행 역할을 준비한다.
 
 3. VPC의 private subnet, security group, VPC endpoint와 Langfuse용 NAT Gateway를 준비한다.
 
-4. GitHub 웹 화면에 AWS 설정 세 개를 등록하고 워크플로를 한 번 실행해 이미지를 ECR에 올린다.
+4. `laimory-ai-prod`에 최초 `linux/arm64` 이미지를 올린다.
 
 5. AgentCore 콘솔에서 ECR 이미지를 선택해 Runtime을 만든다.
 
 6. Runtime 버전 `1`을 가리키는 전용 Endpoint `prod`를 만든다.
 
-7. Runtime ID와 Endpoint 이름을 GitHub에 등록한다.
+7. Runtime ID와 Endpoint 이름을 GitHub Environment `production`에 등록한다.
 
 8. 실제 App Server 요청으로 호출하고 CloudWatch Logs·Langfuse·Elasticsearch 수집을 확인한다.
 
-이후 배포는 GitHub Actions 화면에서 수동 실행한다. 문제가 생기면 AgentCore 콘솔에서
-`prod` Endpoint가 가리키는 Runtime 버전만 직전 버전으로 되돌린다.
+이후 배포는 `dev → main` PR merge로 시작하고 Environment 승인을 거친다. 문제가 생기면
+`prod` Endpoint가 가리키는 Runtime 버전을 직전 버전으로 되돌린다.
 
 ### 먼저 기록할 값
 
@@ -44,7 +54,7 @@ GitHub Actions의 **Deploy AgentCore Runtime** 워크플로를 사용한다.
 |---|---|
 | AWS 리전 | `ap-northeast-2` (서울) |
 | AWS 계정 ID | `<12자리 계정 ID>` |
-| ECR 리포지토리 | `laimory-ai` |
+| production ECR 리포지토리 | `laimory-ai-prod` |
 | Runtime 이름 | `laimory_ai` |
 | Runtime 실행 역할 | `laimory-ai-agentcore-runtime` |
 | GitHub 배포 역할 | `laimory-ai-github-deploy` |
@@ -62,6 +72,13 @@ GitHub Actions의 **Deploy AgentCore Runtime** 워크플로를 사용한다.
 콘솔 작업을 시작하기 전에 우측 상단 리전이 항상 **Asia Pacific (Seoul) / ap-northeast-2**인지
 확인한다. IAM은 전역 서비스지만 ECR, VPC, AgentCore, CloudWatch는 리전 선택이 중요하다.
 
+**ECR 에 이미지가 올라가는 것만으로는 아무 일도 일어나지 않는다.** AgentCore 는 ECR 을
+감시하지 않는다. 위 두 API 호출이 있어야 반영되며, 그래서 이동 태그(`latest`·`dev`)를
+`containerUri` 에 쓰지 않는다 — Runtime 버전과 이미지가 1:1 이어야 롤백이 성립한다.
+
+App Server 는 이 엔드포인트를 `bedrock-agentcore:InvokeAgentRuntime` 으로 호출하고,
+호출 payload 는 컨테이너의 `POST /invocations` 로 그대로 전달된다.
+
 진입점이 하나뿐이라 요청 종류는 payload 최상위의 `requestType`(`TIMELINE` /
 `USER_MEMORY_UPDATE`)이 말한다. 형식은 [AI 서버 API 명세](ai-server-api.md#31-agentcore-호출-계약)
 에 있다. `POST /v1/timeline` 과 `POST /v1/user-memory` 도 계속 열려 있어 App Server 는 HTTP
@@ -74,7 +91,7 @@ AgentCore Runtime은 컨테이너에 아래 계약을 요구한다. 하나라도
 
 | 요구사항 | 이 저장소의 구현 |
 |---|---|
-| 이미지 아키텍처 `linux/arm64` | `deploy-agentcore.yml`의 Buildx `platforms: linux/arm64` |
+| 이미지 아키텍처 `linux/arm64` | `deploy-production.yml` 의 Buildx `platforms: linux/arm64` |
 | HTTP 포트 `8080` | `EXPOSE 8080` + `uvicorn --host 0.0.0.0 --port 8080` |
 | `POST /invocations` | `app/api/agentcore.py` (`requestType` 으로 타임라인·User Memory 를 구분해 기존 핸들러에 위임) |
 | `GET /ping` → `{"status": "Healthy"\|"HealthyBusy"}` | `app/api/agentcore.py` |
@@ -98,16 +115,20 @@ worker가 여러 개면 한 worker가 처리 중이어도 다른 worker가 `Heal
 
    | 설정 | 값 |
    |---|---|
-   | Repository name | `laimory-ai` |
-   | Image tag mutability | `Mutable` |
+   | Repository name | `laimory-ai-prod` |
+   | Image tag mutability | `Immutable` |
    | Encryption | 기본 `AES-256` |
    | Image scanning | 가능하면 scan on push 활성화 |
 
+**production 은 `laimory-ai-prod` 를 쓴다**(이슈 #90). 개발용 `laimory-ai` 와 나뉜 이유와
+lifecycle policy 를 걸지 않는 이유는
+[Production 배포 가이드 §4.1](deploy-production.md)에 있다.
+
 4. **Create repository**를 누른 뒤 Repository URI를 기록한다.
 
-`dev` 태그는 워크플로가 매번 덮어쓰므로 `Mutable`이 가장 단순하다. 실제 배포에는 매번
-새로 생기는 `sha-<커밋12자>` 태그만 사용한다. 리포지토리를 Immutable로 만들고 싶다면
-`dev`만 mutable tag exclusion으로 허용해야 한다.
+production은 이동 태그를 사용하지 않는다. 워크플로가 매번 만드는
+`prod-sha-<커밋12자>-arm64-run-<실행 ID>-<시도>` 불변 태그만 Runtime에 사용하고,
+Runtime 버전의 롤백 이미지를 보존하기 위해 lifecycle policy도 설정하지 않는다.
 
 자세한 화면 설명은 [ECR private repository 생성 공식 문서](https://docs.aws.amazon.com/AmazonECR/latest/userguide/repository-create.html)를 참고한다.
 
@@ -131,6 +152,10 @@ OIDC를 쓰면 GitHub에 장기 AWS Access Key를 저장하지 않아도 된다.
 공식 절차는 [IAM OIDC 공급자 생성 문서](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_create_oidc.html)를 참고한다.
 
 ### 3.3 GitHub 배포 역할 만들기
+
+> **이 역할은 dev와 production이 공용으로 사용한다**(이슈 #90). 신뢰 정책에는
+> `ref:refs/heads/dev`와 `environment:production`을 모두 허용해야 한다. 전체 정책은
+> [Production 배포 가이드 §4.2](deploy-production.md)를 정본으로 따른다.
 
 먼저 IAM 콘솔 → **Policies** → **Create policy** → **JSON**에서 아래 정책을 만든다.
 `123456789012`는 실제 계정 ID로 바꾼다. 정책 이름은
@@ -251,10 +276,32 @@ repo:soma17th-369/Laimory-AI:ref:refs/heads/dev
 4. 역할의 **Permissions** → **Add permissions** → **Create inline policy** → **JSON**에서
    아래 정책을 추가한다. 계정 ID는 실제 값으로 바꾼다.
 
+> **pull 대상은 `laimory-ai-prod` 다**(이슈 #90). production 이 저장소를 따로 쓰므로 이
+> 역할이 개발 저장소만 허용하고 있으면 Runtime 생성이 다음 오류로 실패한다.
+>
+> ```text
+> Access denied while validating ECR URI '...'. The execution role requires
+> permissions for ecr:GetAuthorizationToken, ecr:BatchGetImage, and
+> ecr:GetDownloadUrlForLayer operations.
+> ```
+>
+> `ecr:GetAuthorizationToken` 은 **저장소 단위로 좁힐 수 없다.** AWS 스펙이라 반드시
+> 별도 문장에서 `"Resource": "*"` 로 둔다. 나머지만 저장소 ARN 으로 좁힌다.
+>
+> **아래는 최소 집합이지 전체 정책이 아니다.** 콘솔이 만들어 주는 실행 역할에는 X-Ray,
+> `cloudwatch:PutMetricData`, `logs:PutResourcePolicy` 등이 함께 들어 있다. 이 JSON 으로
+> 통째로 덮어쓰면 그것들이 사라진다. ECR 문장만 고친다.
+
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
+    {
+      "Sid": "EcrAuth",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
     {
       "Sid": "EcrImageAccess",
       "Effect": "Allow",
@@ -262,13 +309,7 @@ repo:soma17th-369/Laimory-AI:ref:refs/heads/dev
         "ecr:BatchGetImage",
         "ecr:GetDownloadUrlForLayer"
       ],
-      "Resource": "arn:aws:ecr:ap-northeast-2:123456789012:repository/laimory-ai"
-    },
-    {
-      "Sid": "EcrTokenAccess",
-      "Effect": "Allow",
-      "Action": "ecr:GetAuthorizationToken",
-      "Resource": "*"
+      "Resource": "arn:aws:ecr:ap-northeast-2:123456789012:repository/laimory-ai-prod"
     },
     {
       "Sid": "RuntimeLogs",
@@ -643,41 +684,20 @@ NAT route 구성은 [VPC NAT 공식 문서](https://docs.aws.amazon.com/vpc/late
 AgentCore stdout log group 형식은 [AgentCore 관측 데이터 조회 공식 문서](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-view.html),
 CloudWatch Logs 구독 대상과 형식은 [CloudWatch Logs subscription filter 공식 문서](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/SubscriptionFilters.html)를 참고한다.
 
-## 5. GitHub 웹 화면에서 최초 이미지 올리기
+## 5. 최초 production 이미지 올리기
 
-### 5.1 저장소 변수 등록
+production 워크플로는 Runtime ID와 Endpoint 이름을 빌드 전에 검사한다. 두 값은 Runtime을
+만들어야 생기므로 **최초 한 번은 워크플로 밖에서** `linux/arm64` 이미지를 올린다.
 
-GitHub 저장소 → **Settings** → **Secrets and variables** → **Actions**로 이동한다.
+1. [Production 배포 가이드 §5](deploy-production.md)의 bootstrap 명령으로
+   `laimory-ai-prod`에 이미지를 push한다.
 
-먼저 아래 세 개만 등록한다.
+2. 태그는 `prod-sha-<커밋12자>-arm64-bootstrap`처럼 불변 값으로 지정한다.
 
-| 이름 | 종류 | 값 |
-|---|---|---|
-| `AWS_REGION` | Variable | `ap-northeast-2` |
-| `ECR_REPOSITORY` | Variable | `laimory-ai` |
-| `AWS_DEPLOY_ROLE_ARN` | Secret | `arn:aws:iam::<계정 ID>:role/laimory-ai-github-deploy` |
+3. ECR 콘솔 → `laimory-ai-prod` → **Images**에서 아키텍처가 `arm64`인 이미지 URI를 복사한다.
 
-AWS Access Key와 Secret Access Key는 등록하지 않는다.
-
-### 5.2 최초 build 실행
-
-1. GitHub 저장소 → **Actions** → **Deploy AgentCore Runtime**으로 이동한다.
-
-2. **Run workflow**에서 branch를 `dev`로 선택하고 실행한다.
-
-3. `빌드 & ECR 업로드` job이 성공했는지 확인한다.
-
-4. 아직 Runtime ID가 없으므로 `AgentCore Runtime 배포` job이
-   `AGENTCORE_RUNTIME_ID` 누락으로 실패하는 것은 최초 한 번에 한해 정상이다.
-
-5. 실행 요약에서 `sha-<커밋12자>` 태그와 digest를 기록한다.
-
-6. ECR 콘솔 → `laimory-ai` → **Images**에서 같은 `sha-...` 이미지가 있는지 확인하고
-   Image URI를 복사한다.
-
-`dev` 태그가 아니라 반드시 `sha-...` 태그가 포함된 URI를 Runtime에 사용한다.
-`sha-...-amd64-run-...` 태그는 EC2 배포용 이미지이므로 선택하지 않는다. AgentCore에는
-**Deploy AgentCore Runtime** 워크플로가 만든 `linux/arm64` 이미지가 필요하다.
+`-amd64-run-...` 태그는 EC2 개발 배포용 이미지이므로 선택하지 않는다. bootstrap 이후에는
+`dev → main` PR merge와 **Deploy Production** 워크플로가 production 이미지를 만든다.
 
 ## 6. AgentCore 콘솔에서 최초 Runtime 만들기
 
@@ -696,7 +716,7 @@ AgentCore 콘솔 화면 명칭은 서비스 업데이트에 따라 **Host agent*
    | 설정 | 값 |
    |---|---|
    | Runtime name | `laimory_ai` |
-   | Container image URI | ECR에서 복사한 `.../laimory-ai:sha-<커밋12자>` |
+   | Container image URI | ECR에서 복사한 `.../laimory-ai-prod:prod-sha-<커밋12자>-arm64-bootstrap` |
    | Protocol | `HTTP` |
    | Execution role | 기존 역할 `laimory-ai-agentcore-runtime` |
    | Network mode | `VPC` |
@@ -791,8 +811,8 @@ Runtime 생성 시 `DEFAULT` Endpoint가 자동으로 보일 수 있다. `DEFAUL
 
    - Endpoint name 또는 qualifier: `prod`
 
-6. GitHub 저장소 → **Settings** → **Secrets and variables** → **Actions** →
-   **Variables**에 아래 값을 추가한다.
+6. GitHub 저장소 → **Settings** → **Environments** → **production** →
+   **Environment variables**에 아래 값을 추가한다.
 
    | 이름 | 값 |
    |---|---|
@@ -927,15 +947,15 @@ group을 바꾸지 않는다. CloudWatch subscription filter, 전달 Lambda 로�
 
 ### 9.1 GitHub 웹 화면에서 배포하기
 
-정상적인 반복 배포는 기존 워크플로를 사용한다.
+정상적인 반복 배포는 `dev`에서 `main`으로 승격하는 PR을 사용한다.
 
 1. 배포할 변경이 `dev`에 반영됐는지 확인한다.
 
-2. GitHub 저장소 → **Actions** → **Deploy AgentCore Runtime** → **Run workflow**로 이동한다.
+2. `dev → main` PR을 열고 `dev 브랜치에서 온 PR 인지 확인` check가 통과했는지 확인한다.
 
-3. branch를 `dev`로 선택하고 실행한다.
+3. PR을 merge하면 **Deploy Production** 워크플로가 시작되고 Environment 승인을 기다린다.
 
-4. 워크플로가 새 `linux/arm64` 이미지를 ECR에 올리고 새 Runtime 버전을 만든다.
+4. 승인 후 워크플로가 새 `linux/arm64` 이미지를 `laimory-ai-prod`에 올리고 새 Runtime 버전을 만든다.
 
 5. 새 Runtime이 `READY`가 되면 워크플로가 `prod` Endpoint를 새 버전으로 전환한다.
 
@@ -943,12 +963,12 @@ group을 바꾸지 않는다. CloudWatch subscription filter, 전달 Lambda 로�
 
 7. AgentCore 콘솔에서 `prod`의 live version과 상태를 확인한다.
 
-이 워크플로는 자동 실행되지 않는다. `dev` push의 기본 배포 대상은 EC2이며 AgentCore는
-복구가 필요할 때만 수동으로 실행한다.
+`dev` push는 EC2 개발 배포만 실행한다. production 배포의 정본은 `main`이며 상세 승인·복구
+절차는 [Production 배포 가이드](deploy-production.md)를 따른다.
 
 ### 9.2 콘솔에서 직접 새 버전으로 바꾸기
 
-ECR에 새 `sha-...` 이미지가 이미 있는 경우에는 콘솔에서도 배포할 수 있다.
+ECR에 새 `prod-sha-...-arm64-...` 이미지가 이미 있는 경우에는 콘솔에서도 배포할 수 있다.
 
 1. AgentCore 콘솔 → `laimory_ai` Runtime 세부 화면으로 이동한다.
 
@@ -956,7 +976,7 @@ ECR에 새 `sha-...` 이미지가 이미 있는 경우에는 콘솔에서도 배
 
 3. **Update hosting**을 선택한다.
 
-4. 새 ECR `sha-...` image URI를 선택하고 execution role, VPC, protocol, 환경 변수가
+4. 새 ECR `prod-sha-...-arm64-...` image URI를 선택하고 execution role, VPC, protocol, 환경 변수가
    기존 값과 같은지 전부 확인한다.
 
 5. 저장하면 새 Runtime 버전이 만들어진다. 그 버전이 `READY`가 될 때까지 기다린다.
@@ -989,8 +1009,8 @@ Runtime 갱신은 부분 수정이 아니라 새 버전 생성이다. 환경 변
 `DEFAULT` Endpoint가 아니라 반드시 `prod`를 바꾼다. 배포 직전 버전을 모르면 GitHub Actions
 실행 요약이나 Runtime의 Versions 목록에서 image URI와 생성 시각을 대조한다.
 
-GitHub Actions의 **Rollback AgentCore Runtime**도 남아 있다. 버전을 비워 실행하면 목록만
-출력하고, 버전을 입력하면 같은 Endpoint 전환을 자동으로 수행한다.
+GitHub Actions의 **Rollback Production**도 사용할 수 있다. `main` 브랜치에서 버전을 비워
+실행하면 목록만 출력하고, 버전을 입력하면 같은 Endpoint 전환을 자동으로 수행한다.
 
 ## 11. 로컬 Docker 검증
 
@@ -1023,13 +1043,13 @@ docker run --rm -p 8080:8080 --env-file .env laimory-ai:local
 
 | 증상 | AWS 콘솔에서 확인할 곳과 조치 |
 |---|---|
-| 최초 GitHub workflow 전체가 실패로 표시됨 | `빌드 & ECR 업로드`가 성공했고 ECR에 `sha-...` 이미지가 있으면 정상이다. Runtime ID가 없어서 deploy job만 의도적으로 멈춘 것이다 |
+| `Environment 'production'의 변수/시크릿이 비어 있다` | `PROD_ECR_REPOSITORY`, `AGENTCORE_RUNTIME_ID`, `AGENTCORE_ENDPOINT_NAME`을 저장소 변수가 아니라 Environment `production`에 등록했는지 확인한다 |
 | `AccessDenied`로 ECR push 실패 | IAM → `laimory-ai-github-deploy`의 ECR 정책과 OIDC trust의 organization/repository/branch를 확인한다 |
 | `AccessDenied`와 `iam:PassRole` 표시 | 콘솔 작업자 또는 GitHub 배포 역할이 `laimory-ai-agentcore-runtime`을 AgentCore에 전달할 수 있는지 확인한다 |
 | service-linked role 생성 실패 | 콘솔 작업자에 `iam:CreateServiceLinkedRole` 권한이 있는지 확인한다 |
 | subnet 선택 또는 Runtime 생성 실패 | subnet의 AZ ID가 `apne2-az1`, `apne2-az2`, `apne2-az3` 중 하나인지 확인한다 |
 | Runtime `CREATE_FAILED` / `UPDATE_FAILED` | Runtime 버전 세부 화면의 failure reason을 본다. arm64 이미지, 포트 8080, `/ping`, 실행 역할 ECR pull 권한 순으로 확인한다 |
-| `Architecture incompatible` / `Supported platforms: [arm64]` | `-amd64-run-...` 태그가 붙은 EC2용 이미지를 선택했다. **Deploy AgentCore Runtime** 워크플로가 만든 `sha-<커밋12자>` arm64 이미지 URI로 새 Runtime 버전을 만든다 |
+| `Architecture incompatible` / `Supported platforms: [arm64]` | `-amd64-run-...` 태그가 붙은 EC2용 이미지를 선택했다. `laimory-ai-prod`의 `prod-sha-...-arm64-...` 이미지 URI로 새 Runtime 버전을 만든다 |
 | ECR image pull timeout | ECR DKR/API interface endpoint, S3 gateway endpoint, endpoint security group과 route table을 확인한다 |
 | Bedrock 호출 timeout | NAT 경로나 `bedrock-runtime` interface endpoint와 private DNS를 확인한다 |
 | App Server에서 AgentCore 호출 timeout | `bedrock-agentcore` data plane VPC endpoint의 private DNS, App Server outbound `443`, endpoint security group inbound `443`을 확인한다 |

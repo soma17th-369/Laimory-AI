@@ -1,12 +1,19 @@
-# EC2 컨테이너 배포 가이드
+# EC2 컨테이너 배포 가이드 (개발)
 
-> 기준일: 2026-07-31 (이슈 #47 로그 수집기 반영)
+> 기준일: 2026-08-25 (이슈 #90 배포 경계 분리 반영)
 > 대상: 기존 `t3.micro` EC2에서 Laimory AI 서버를 단일 Docker 컨테이너로 운영
 
-AgentCore 장애 우회용 운영 경로다. `dev` 브랜치에 배포 대상 파일이 반영되면 GitHub
-Actions가 `linux/amd64` 이미지를 ECR에 올리고, AWS Systems Manager Run Command로
-EC2의 컨테이너를 교체한다. AgentCore 워크플로는 자동 실행하지 않고 수동 복구 경로로
-남긴다.
+**개발 경로다.** `dev` 브랜치에 배포 대상 파일이 반영되면 GitHub Actions가 `linux/amd64`
+이미지를 ECR(`laimory-ai`)에 올리고, AWS Systems Manager Run Command로 EC2의 컨테이너를
+교체한다.
+
+production은 `main` push가 AgentCore Runtime에 배포한다
+([Production 배포 가이드](deploy-production.md)). 두 경로는 브랜치, 워크플로, ECR 저장소,
+Environment 가 갈라져 있다. IAM 배포 역할은 공용이다(§3). 이 문서가 다루는 것은 개발
+경로뿐이다.
+
+이 워크플로는 `dev` 이외 브랜치에서는 수동 실행도 막는다. `workflow_dispatch`가 아무
+브랜치에서나 돌면 운영 코드가 개발 EC2로, 개발 자격증명으로 나갈 수 있기 때문이다.
 
 ## 1. 배포 구조
 
@@ -51,8 +58,11 @@ POST http://<EC2_PRIVATE_IP>:8080/v1/timeline
 
 | 워크플로 | 플랫폼 | 실행 방식 |
 |---|---|---|
-| `deploy-ec2.yml` | `linux/amd64` | `t3.micro` Docker |
-| `deploy-agentcore.yml` | `linux/arm64` | AgentCore 수동 복구 |
+| `deploy-ec2.yml` | `linux/amd64` | `t3.micro` Docker (개발) |
+| `deploy-production.yml` | `linux/arm64` | AgentCore Runtime (운영) |
+
+`linux/arm64`는 AgentCore Runtime의 요구사항이고 `linux/amd64`는 `t3.micro`가 x86_64여서
+그렇다. 서로 바꿔 쓸 수 없다.
 
 EC2 태그는 같은 커밋의 재실행도 덮어쓰지 않도록 아래처럼 만든다.
 
@@ -66,13 +76,21 @@ sha-<커밋12자리>-amd64-run-<GitHub run id>-<attempt>
 
 | 이름 | 종류 | 값 |
 |---|---|---|
-| `AWS_REGION` | Variable | `ap-northeast-2` |
-| `ECR_REPOSITORY` | Variable | `laimory-ai` |
+| `AWS_REGION` | Variable | `ap-northeast-2` (운영과 공용) |
+| `ECR_REPOSITORY` | Variable | `laimory-ai` (**개발 전용**) |
 | `EC2_INSTANCE_ID` | Variable | 대상 EC2의 `i-...` |
-| `AWS_DEPLOY_ROLE_ARN` | Secret | 기존 GitHub OIDC 배포 Role ARN |
+| `AWS_DEPLOY_ROLE_ARN` | Secret | 개발 배포 Role ARN (**개발 전용**) |
 
-AgentCore용 `AGENTCORE_RUNTIME_ID`, `AGENTCORE_ENDPOINT_NAME`은 남겨도 EC2
-워크플로에서 읽지 않는다.
+**production 값을 저장소 수준에 만들지 않는다.** `PROD_ECR_REPOSITORY`,
+`AGENTCORE_RUNTIME_ID`, `AGENTCORE_ENDPOINT_NAME`은 전부 Environment `production`에만
+둔다([Production 배포 가이드 §3.4](deploy-production.md)). 저장소 수준에 같은 이름이
+생기면, Environment 등록을 빠뜨렸을 때 오류 대신 저장소 값이 조용히 쓰인다.
+
+이 워크플로는 Environment를 선언하지 않으므로 production 변수에 닿지 못한다.
+
+`AWS_DEPLOY_ROLE_ARN`은 **production과 공용이다.** 그 역할의 신뢰 정책에
+`ref:refs/heads/dev`와 `environment:production`이 함께 들어 있으므로, 정책을 고칠 때
+`dev` 항목을 지우면 이 배포가 `AccessDenied`로 멈춘다.
 
 ## 4. GitHub 배포 Role
 
@@ -472,7 +490,12 @@ Filebeat는 컨테이너 이름으로 수집 대상을 고르기 위해 Docker a
 > 반대로 **아무것도 적재되지 않는다.** 교체 후 §11의 확인 절차로 적재를 반드시 본다.
 
 배포 성공 후 workflow는 ECR에서 현재 배포 이미지와 실제로 교체된 직전 이미지의
-태그를 확인하고, 나머지 tagged/untagged 이미지 digest를 삭제한다. 단순 push 시각의
+태그를 확인하고, 나머지 tagged/untagged 이미지 digest를 삭제한다.
+
+> **이 정리는 `laimory-ai` 저장소 전체를 대상으로 하며 아키텍처나 태그 접두어를 가리지
+> 않는다.** production 이미지가 같은 저장소에 있으면 dev 배포 한 번에 지워진다. 그래서
+> production은 `laimory-ai-prod`를 따로 쓴다(이슈 #90). 정리 대상을 늘리거나 저장소를
+> 합치지 않는다. 단순 push 시각의
 최신 2개가 아니라 실행 중이던 직전 컨테이너 이미지를 보존하므로, 중간에 배포 실패
 이미지가 push돼 있어도 롤백 후보가 바뀌지 않는다. 현재 또는 직전 태그를 ECR에서
 확인할 수 없으면 안전을 위해 정리를 건너뛰거나 실패 처리하며 기존 이미지를 삭제하지

@@ -1,7 +1,12 @@
 name: Deploy EC2
 
-# dev에 반영된 애플리케이션을 t3 계열 EC2용 amd64 이미지로 만들고,
+# **개발 경로다.** dev에 반영된 애플리케이션을 t3 계열 EC2용 amd64 이미지로 만들고,
 # Systems Manager Run Command로 기존 EC2의 단일 컨테이너를 교체한다.
+#
+# production은 main push가 deploy-production.yml로 AgentCore Runtime에 배포한다. 두 경로는
+# ECR 저장소(laimory-ai / laimory-ai-prod), IAM 역할, 변수·시크릿이 전부 갈라져 있다.
+# 이 워크플로는 저장소 수준 값만 읽고 Environment를 선언하지 않으므로 production 값에
+# 닿을 수 없다.
 on:
   push:
     branches: [dev]
@@ -41,6 +46,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # push 트리거는 dev로 묶여 있지만 workflow_dispatch는 아무 브랜치에서나 실행된다.
+      # main에서 수동 실행하면 운영 코드가 개발 EC2로, 개발 자격증명으로 나간다.
+      # 배포 대상이 갈렸으니 실행 브랜치도 갈라 둔다.
+      - name: dev 브랜치에서 실행했는지 확인
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF}" != "refs/heads/dev" ]; then
+            echo "::error::EC2(개발) 배포는 dev 브랜치에서만 실행한다(현재: ${GITHUB_REF}). production 배포는 Deploy Production 워크플로다."
+            exit 1
+          fi
 
       - name: 필수 설정 확인
         env:
