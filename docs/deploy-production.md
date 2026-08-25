@@ -321,13 +321,31 @@ IAM 이 막는다.
 
 ## 5. AgentCore Runtime 과 엔드포인트
 
-[AgentCore 전환 수동 작업 매뉴얼](agentcore-cutover-manual.md) 2장을 따른다. 이 문서 기준으로
-달라지는 것은 두 가지다.
+[AgentCore 전환 수동 작업 매뉴얼](agentcore-cutover-manual.md) 2장을 따른다. 이미지를 올릴
+저장소가 `laimory-ai-prod` 라는 점만 다르다.
 
-- 이미지를 올릴 저장소가 `laimory-ai-prod` 다.
-- 첫 이미지는 Actions → **Deploy Production** → `Run workflow` 를 `main` 에서 돌려 만든다.
-  `AGENTCORE_RUNTIME_ID` 가 비어 있어 「필수 설정 확인」에서 **의도적으로 멈추지만**,
-  그전에 빌드가 끝나 이미지가 올라간다.
+### 부트스트랩 순서 — 닭과 달걀
+
+`AGENTCORE_RUNTIME_ID` 와 `AGENTCORE_ENDPOINT_NAME` 은 **Runtime 과 엔드포인트를 만들어야
+생기는 값**이고, Runtime 은 **ECR 에 이미지가 있어야 만들 수 있다.** 그래서 순서가 정해져
+있다.
+
+```text
+1. Deploy Production 을 main 에서 수동 실행
+   → 빌드·ECR push 까지 끝나고 「AgentCore 설정 확인」에서 의도적으로 멈춘다
+   → 요약과 로그에서 이미지 태그를 적어 둔다
+2. 그 이미지로 Runtime 을 만든다        → agentRuntimeId 를 받는다
+3. 전용 엔드포인트를 만든다(--name prod) → 이름은 직접 정한다
+4. 두 값을 Environment production 에 등록한다
+5. Deploy Production 을 다시 실행한다   → 이번에는 끝까지 간다
+```
+
+1번에서 **워크플로가 빨간불로 끝나는 것이 정상이다.** 「빌드 설정 확인」은 통과하고
+빌드가 끝난 뒤 「AgentCore 설정 확인」이 막는다. 이미지는 이미 ECR 에 올라가 있다.
+
+> 워크플로의 스텝 순서가 이 부트스트랩을 만든다. AgentCore 값 검사를 빌드 앞으로 옮기면
+> 첫 실행이 이미지를 만들기도 전에 죽어 고리가 끊기지 않는다.
+> `tests/scripts/test_workflow_contracts.py` 가 이 순서를 고정한다.
 
 > 엔드포인트는 반드시 **전용 엔드포인트**(예: `prod`)로 만든다. `DEFAULT` 는 최신 버전을
 > 따라가므로 롤백 지점으로 쓸 수 없다.

@@ -65,12 +65,13 @@ aws iam get-role --role-name laimory-ai-agentcore-runtime --query 'Role.Arn' --o
 `AGENTCORE_RUNTIME_ID` 는 Runtime 을 만들어야 생기고, Runtime 은 ECR 에 이미지가 있어야
 만들 수 있다. 그래서 **이미지 먼저**다.
 
-**2-1. 이미지를 올린다.** Actions → **Deploy Production** → `Run workflow`.
+**2-1. 이미지를 올린다.** Actions → **Deploy Production** → `Run workflow` (`main` 브랜치).
 
-- `build` job 은 성공하고 arm64 이미지가 ECR 에 올라간다.
-- `deploy` job 은 `AGENTCORE_RUNTIME_ID` 가 비어 있어 첫 스텝에서 **의도적으로 멈춘다.**
-  `저장소 변수가 비어 있다: AGENTCORE_RUNTIME_ID ...` 가 나오면 정상이다.
-- 빌드 요약에 적힌 `sha-<커밋12자>` 태그를 적어 둔다.
+- 승인 게이트를 통과하면 arm64 이미지가 `laimory-ai-prod` 에 올라간다.
+- 그다음 「AgentCore 설정 확인」에서 **의도적으로 멈춘다.** `AGENTCORE_RUNTIME_ID` 가 아직
+  없기 때문이다. `Environment 'production' 의 변수가 비어 있다: AGENTCORE_RUNTIME_ID ...`
+  가 나오면 정상이고, **워크플로가 빨간불로 끝나는 것도 정상이다.**
+- 요약의 `이미지 태그` 를 적어 둔다(`prod-sha-<커밋12자>-arm64-run-...`).
 
 **2-2. 환경 변수 파일을 만든다.** [7장 표](deploy-agentcore.md#7-운영-환경-변수)를 보고
 `runtime-env.json` 을 만든다. **커밋하지 않는다**(`.gitignore` 에 있다).
@@ -257,7 +258,7 @@ ruleset(§3.2), Environment 승인자·배포 브랜치(§3.3), production ECR·
 
 | 증상 | 원인과 조치 |
 |---|---|
-| 워크플로가 `저장소 변수가 비어 있다` 로 멈춤 | 3장을 안 했다. 부트스트랩 중(2-1)이라면 정상 동작이다 |
+| 워크플로가 `변수가 비어 있다` 로 멈춤 | 3장을 안 했다. 부트스트랩 중(2-1)이라면 정상 동작이다 — 이미지는 이미 올라가 있다 |
 | `AccessDenied` (`iam:PassRole`) | 배포 역할에 `PassRuntimeRole` 문이 빠졌다(1장) |
 | Runtime 이 `CREATE_FAILED` / `UPDATE_FAILED` | `failureReason` 을 먼저 본다. 이미지 아키텍처(arm64), 포트(8080), `/ping` 응답, 실행 역할의 ECR pull 권한 순으로 확인한다 |
 | App Server 가 `AccessDeniedException` | 4-2 의 호출 권한이 없다. control plane 권한이 있어도 data plane 호출은 따로다 |
