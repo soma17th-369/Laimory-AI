@@ -272,3 +272,12 @@ def test_config_check_precedes_the_build(deploy_production) -> None:
     names = [step.get("name", "") for step in deploy_production["jobs"]["deploy"]["steps"]]
 
     assert names.index("필수 설정 확인") < names.index("arm64 빌드 & ECR 푸시")
+
+
+def test_production_omits_immutable_service_s3_endpoint_on_runtime_update() -> None:
+    """신규 Runtime의 조회 전용 VPC 필드를 Update 요청에 되돌려 보내지 않는다."""
+
+    body = DEPLOY_PRODUCTION.read_text(encoding="utf-8")
+
+    assert "del(.requireServiceS3Endpoint)" in body
+    assert '--network-configuration "$network"' in body
