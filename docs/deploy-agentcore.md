@@ -229,7 +229,11 @@ aws iam create-open-id-connect-provider \
 > ```
 >
 > `ecr:GetAuthorizationToken` 은 **저장소 단위로 좁힐 수 없다.** AWS 스펙이라 반드시
-> 별도 문장에서 `"Resource": "*"` 로 둔다. 나머지 셋만 저장소 ARN 으로 좁힌다.
+> 별도 문장에서 `"Resource": "*"` 로 둔다. 나머지만 저장소 ARN 으로 좁힌다.
+>
+> **아래는 최소 집합이지 전체 정책이 아니다.** 콘솔이 만들어 주는 실행 역할에는 X-Ray,
+> `cloudwatch:PutMetricData`, `logs:PutResourcePolicy` 등이 함께 들어 있다. 이 JSON 으로
+> 통째로 덮어쓰면 그것들이 사라진다. ECR 문장만 고친다.
 
 ```json
 {
@@ -242,10 +246,9 @@ aws iam create-open-id-connect-provider \
       "Resource": "*"
     },
     {
-      "Sid": "EcrPullProd",
+      "Sid": "EcrImageAccess",
       "Effect": "Allow",
       "Action": [
-        "ecr:BatchCheckLayerAvailability",
         "ecr:BatchGetImage",
         "ecr:GetDownloadUrlForLayer"
       ],

@@ -325,27 +325,39 @@ permissions for ecr:GetAuthorizationToken, ecr:BatchGetImage, and
 ecr:GetDownloadUrlForLayer operations.
 ```
 
+AWS 콘솔이 만들어 주는 기본 실행 역할에는 이미 두 문장이 있다. **고칠 것은 한 곳뿐이다.**
+
 ```json
 {
-  "Sid": "EcrAuth",
-  "Effect": "Allow",
-  "Action": "ecr:GetAuthorizationToken",
-  "Resource": "*"
-},
-{
-  "Sid": "EcrPullProd",
+  "Sid": "EcrImageAccess",
   "Effect": "Allow",
   "Action": [
-    "ecr:BatchCheckLayerAvailability",
     "ecr:BatchGetImage",
     "ecr:GetDownloadUrlForLayer"
   ],
   "Resource": "arn:aws:ecr:ap-northeast-2:392900063927:repository/laimory-ai-prod"
+},
+{
+  "Sid": "EcrTokenAccess",
+  "Effect": "Allow",
+  "Action": "ecr:GetAuthorizationToken",
+  "Resource": "*"
 }
 ```
 
-`ecr:GetAuthorizationToken` 은 저장소 단위로 좁힐 수 없어 별도 문장에서 `"*"` 로 둔다.
-전체 정책은 [AgentCore 배포 가이드 §3.4](deploy-agentcore.md#34-runtime-실행-역할-컨테이너가-쓰는-역할)에 있다.
+`EcrImageAccess` 의 `Resource` 를 `laimory-ai` 에서 `laimory-ai-prod` 로 바꾸면 끝난다.
+AgentCore 는 production 저장소에서만 pull 하므로 둘 다 둘 필요는 없다(두려면 배열로 쓴다).
+
+`EcrTokenAccess` 는 이미 맞게 돼 있다. `ecr:GetAuthorizationToken` 은 **저장소 단위로 좁힐
+수 없어** 반드시 별도 문장에서 `"*"` 다. 한 문장에 뭉치고 ARN 을 넣으면 인증 자체가 막힌다.
+
+필요한 액션은 오류 메시지가 말한 셋뿐이다. `ecr:BatchCheckLayerAvailability` 는 push 쪽
+액션이라 실행 역할에는 넣지 않아도 된다.
+
+> **기본 역할을 통째로 덮어쓰지 않는다.** 콘솔이 만든 실행 역할에는 CloudWatch Logs 외에
+> X-Ray(`xray:PutTraceSegments` 등), 메트릭(`cloudwatch:PutMetricData`,
+> `namespace: bedrock-agentcore` 조건), `logs:PutResourcePolicy` 가 함께 들어 있다.
+> ECR 문장 하나만 고치고 나머지는 그대로 둔다.
 
 **ECR 저장소를 가르면 역할이 둘 바뀐다** — 배포 역할(§4.2)과 이 실행 역할이다. 하나만
 고치면 배포는 되는데 Runtime 이 안 뜨거나, 그 반대가 된다.

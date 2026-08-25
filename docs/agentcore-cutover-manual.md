@@ -55,11 +55,11 @@ aws iam get-role --role-name laimory-ai-github-deploy --query 'Role.Arn' --outpu
 aws iam get-role --role-name laimory-ai-agentcore-runtime --query 'Role.Arn' --output text
 ```
 
-**실행 역할에 `laimory-ai-prod` pull 권한이 있어야 한다.** production 은 ECR 저장소를
-따로 쓴다(#90). `ecr:GetAuthorizationToken`(Resource `*`) 과
-`ecr:BatchGetImage`·`ecr:GetDownloadUrlForLayer`·`ecr:BatchCheckLayerAvailability`
-(Resource `laimory-ai-prod`) 가 필요하다. 없으면 2-3 의 Runtime 생성이
-`Access denied while validating ECR URI` 로 실패한다.
+**실행 역할의 ECR 대상이 `laimory-ai-prod` 여야 한다.** production 은 ECR 저장소를 따로
+쓴다(#90). 콘솔 기본 역할에는 `EcrImageAccess`(`ecr:BatchGetImage`·
+`ecr:GetDownloadUrlForLayer`)와 `EcrTokenAccess`(`ecr:GetAuthorizationToken`, Resource
+`*`)가 이미 있으므로, **앞 문장의 `Resource` 를 `laimory-ai-prod` 로 바꾸면 된다.**
+그대로 두면 2-3 의 Runtime 생성이 `Access denied while validating ECR URI` 로 실패한다.
 
 **배포용 역할에 AgentCore 권한이 붙어 있어야 한다.** EC2 배포만 하던 역할이면
 `bedrock-agentcore:*` 와 `iam:PassRole` 이 빠져 있다. [3.3 절](deploy-agentcore.md#33-배포용-iam-역할-github-actions-가-맡는-역할)의
