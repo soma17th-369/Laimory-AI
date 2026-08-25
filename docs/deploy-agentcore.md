@@ -1,112 +1,130 @@
 # AgentCore Runtime 배포 가이드
 
-> 기준일: 2026-07-24
-> 대상: Laimory AI 서버(FastAPI)를 Amazon Bedrock AgentCore Runtime 으로 수동 복구하는 절차
+> 기준일: 2026-08-25
+> 대상: Laimory AI 서버(FastAPI)를 AWS 웹 콘솔에서 Amazon Bedrock AgentCore Runtime으로 배포하는 절차
 
-기본 자동 배포 경로는 EC2다. 이 문서는 AgentCore 장애가 해소됐을 때 Runtime 배포를
-수동으로 재개하거나 기존 Runtime 버전으로 롤백하는 절차를 설명한다. EC2 운영 경로는
-[EC2 컨테이너 배포 가이드](deploy-ec2.md)를 따른다.
+기본 자동 배포 경로는 EC2다. 이 문서는 AgentCore 장애가 해소됐을 때 AWS 웹 콘솔에서
+Runtime을 최초 구성하고, 필요할 때 수동 배포·검증·롤백하는 복구 절차를 설명한다.
+EC2 운영 경로는 [EC2 컨테이너 배포 가이드](deploy-ec2.md)를 따른다.
 
-## 1. 배포 구조
+AWS 자원 생성과 Runtime 관리는 웹 콘솔을 기준으로 한다. 다만 AWS 콘솔은 이 저장소의
+Docker 이미지를 직접 빌드하지 않으므로, `linux/arm64` 이미지 빌드와 ECR 업로드에는
+GitHub Actions의 **Deploy AgentCore Runtime** 워크플로를 사용한다.
 
-```text
-Actions에서 Deploy AgentCore Runtime 수동 실행
-→ GitHub Actions (deploy-agentcore.yml)
-→ OIDC 로 AWS 임시 자격증명 발급
-→ linux/arm64 이미지 빌드 → Amazon ECR push (태그: sha-<커밋12자>)
-→ UpdateAgentRuntime  → 새 Runtime 버전 생성 (1, 2, 3 ...)
-→ UpdateAgentRuntimeEndpoint → 엔드포인트를 새 버전으로 전환
-```
+## 1. 전체 순서
 
-배포의 실체는 **엔드포인트가 어느 Runtime 버전을 가리키는가**다. 롤백은 이미지를 다시
-빌드하지 않고 엔드포인트를 이전 버전으로 되돌리는 것으로 끝난다.
+최초 배포는 다음 순서로 진행한다.
 
-App Server 는 이 엔드포인트를 `bedrock-agentcore:InvokeAgentRuntime` 으로 호출하고,
-호출 payload 는 컨테이너의 `POST /invocations` 로 그대로 전달된다.
+1. AWS 콘솔에서 ECR 리포지토리를 만든다.
+
+2. IAM 콘솔에서 GitHub OIDC 공급자, GitHub 배포 역할, Runtime 실행 역할을 만든다.
+
+3. VPC의 private subnet, security group, VPC endpoint와 Langfuse용 NAT Gateway를 준비한다.
+
+4. GitHub 웹 화면에 AWS 설정 세 개를 등록하고 워크플로를 한 번 실행해 이미지를 ECR에 올린다.
+
+5. AgentCore 콘솔에서 ECR 이미지를 선택해 Runtime을 만든다.
+
+6. Runtime 버전 `1`을 가리키는 전용 Endpoint `prod`를 만든다.
+
+7. Runtime ID와 Endpoint 이름을 GitHub에 등록한다.
+
+8. 실제 App Server 요청으로 호출하고 CloudWatch Logs·Langfuse·Elasticsearch 수집을 확인한다.
+
+이후 배포는 GitHub Actions 화면에서 수동 실행한다. 문제가 생기면 AgentCore 콘솔에서
+`prod` Endpoint가 가리키는 Runtime 버전만 직전 버전으로 되돌린다.
+
+### 먼저 기록할 값
+
+| 항목 | 이 문서의 값 또는 기록할 값 |
+|---|---|
+| AWS 리전 | `ap-northeast-2` (서울) |
+| AWS 계정 ID | `<12자리 계정 ID>` |
+| ECR 리포지토리 | `laimory-ai` |
+| Runtime 이름 | `laimory_ai` |
+| Runtime 실행 역할 | `laimory-ai-agentcore-runtime` |
+| GitHub 배포 역할 | `laimory-ai-github-deploy` |
+| VPC | `<App Server에 접근 가능한 VPC>` |
+| private subnet | `<서로 다른 지원 AZ의 subnet 두 개 이상>` |
+| Runtime security group | `<sg-...>` |
+| Langfuse | `https://jp.cloud.langfuse.com`의 운영 프로젝트와 key pair |
+| Elasticsearch | `<ES 주소>`와 `logs-laimory.ai-prod` 수집 전용 API key |
+| 로그 전달 | `AgentCore CloudWatch Logs → Lambda → Elasticsearch` |
+| Bedrock 모델 | `<BEDROCK_MODEL 값>` |
+| App Server API | `<http://내부-DNS:8080/s/api/v1 또는 /s/v1>` |
+| 전용 Endpoint | `prod` |
+
+콘솔 작업을 시작하기 전에 우측 상단 리전이 항상 **Asia Pacific (Seoul) / ap-northeast-2**인지
+확인한다. IAM은 전역 서비스지만 ECR, VPC, AgentCore, CloudWatch는 리전 선택이 중요하다.
 
 ## 2. 컨테이너 계약
 
-AgentCore Runtime 은 컨테이너에 아래를 고정으로 요구한다. 하나라도 어긋나면 Runtime 이
-`READY` 로 올라오지 않는다.
+AgentCore Runtime은 컨테이너에 아래 계약을 요구한다. 하나라도 어긋나면 Runtime이
+`READY`로 올라오지 않는다.
 
 | 요구사항 | 이 저장소의 구현 |
 |---|---|
-| 이미지 아키텍처 `linux/arm64` | `deploy-agentcore.yml` 의 Buildx `platforms: linux/arm64` |
+| 이미지 아키텍처 `linux/arm64` | `deploy-agentcore.yml`의 Buildx `platforms: linux/arm64` |
 | HTTP 포트 `8080` | `EXPOSE 8080` + `uvicorn --host 0.0.0.0 --port 8080` |
-| `POST /invocations` | `app/api/agentcore.py` (내부적으로 `POST /v1/timeline` 과 동일 처리) |
-| `GET /ping` → `{"status": "Healthy"\|"HealthyBusy"}` | `app/api/agentcore.py` |
+| `POST /invocations` | `app/api/agentcore.py`에서 타임라인 처리기로 위임 |
+| `GET /ping` → `Healthy` 또는 `HealthyBusy` | `app/api/agentcore.py` |
 | 이미지 위치 | 같은 계정·같은 리전의 Amazon ECR |
 
-### `HealthyBusy` 가 필요한 이유
+AI 서버는 요청을 `202`로 접수하고 실제 처리는 백그라운드에서 이어간다. 처리 중에는
+`/ping`이 `HealthyBusy`를 반환해 AgentCore가 컨테이너를 유휴 상태로 회수하지 못하게 한다.
 
-AI 서버는 요청을 `202` 로 접수하고 실제 처리는 백그라운드에서 이어간다. HTTP 응답이
-이미 나간 뒤에도 파이프라인이 돌고 있으므로, 이때 `/ping` 이 `Healthy`(유휴)를 답하면
-AgentCore 가 컨테이너를 회수해 처리가 통째로 사라질 수 있다.
+이 때문에 **uvicorn worker를 늘리면 안 된다.** 진행 중 처리 카운터는 프로세스 로컬이라
+worker가 여러 개면 한 worker가 처리 중이어도 다른 worker가 `Healthy`를 반환할 수 있다.
 
-`app/core/inflight.py` 가 진행 중인 처리 수를 세고, 하나라도 있으면 `/ping` 이
-`HealthyBusy` 를 돌려준다. 이 값은 task 상태 저장소가 아니다 — taskId 를 담지 않고,
-조회 수단이 없고, 프로세스와 함께 사라진다. task 상태는 여전히 App Server 가 소유한다.
+## 3. AWS 콘솔 사전 준비
 
-이 때문에 **uvicorn worker 를 늘리면 안 된다.** 카운터가 프로세스 로컬이라 worker 가
-여럿이면 A 가 처리 중인데 B 가 `/ping` 에 `Healthy` 를 답한다.
+### 3.1 ECR 리포지토리 만들기
 
-## 3. AWS 사전 준비
+1. [Amazon ECR 콘솔](https://console.aws.amazon.com/ecr/repositories)을 열고 리전을 서울로 맞춘다.
 
-아래는 저장소 밖에서 한 번만 하는 작업이다. 예시의 `123456789012` 는 AWS 계정 번호,
-리전은 `ap-northeast-2` 로 가정한다.
+2. **Private repositories** → **Create repository**를 선택한다.
 
-### 3.1 ECR 리포지토리
+3. 다음 값을 입력한다.
 
-```bash
-aws ecr create-repository \
-  --repository-name laimory-ai \
-  --image-scanning-configuration scanOnPush=true \
-  --region ap-northeast-2
-```
+   | 설정 | 값 |
+   |---|---|
+   | Repository name | `laimory-ai` |
+   | Image tag mutability | `Mutable` |
+   | Encryption | 기본 `AES-256` |
+   | Image scanning | 가능하면 scan on push 활성화 |
 
-### 3.2 GitHub OIDC 자격증명 공급자
+4. **Create repository**를 누른 뒤 Repository URI를 기록한다.
 
-계정에 아직 없을 때만 만든다(계정당 하나면 된다).
+`dev` 태그는 워크플로가 매번 덮어쓰므로 `Mutable`이 가장 단순하다. 실제 배포에는 매번
+새로 생기는 `sha-<커밋12자>` 태그만 사용한다. 리포지토리를 Immutable로 만들고 싶다면
+`dev`만 mutable tag exclusion으로 허용해야 한다.
 
-```bash
-aws iam create-open-id-connect-provider \
-  --url https://token.actions.githubusercontent.com \
-  --client-id-list sts.amazonaws.com
-```
+자세한 화면 설명은 [ECR private repository 생성 공식 문서](https://docs.aws.amazon.com/AmazonECR/latest/userguide/repository-create.html)를 참고한다.
 
-### 3.3 배포용 IAM 역할 (GitHub Actions 가 맡는 역할)
+### 3.2 GitHub Actions용 OIDC 공급자 만들기
 
-신뢰 정책 — `dev` 브랜치에서 도는 워크플로만 이 역할을 맡을 수 있게 좁힌다.
+계정에 `token.actions.githubusercontent.com` 공급자가 이미 있으면 이 절차는 건너뛴다.
+OIDC를 쓰면 GitHub에 장기 AWS Access Key를 저장하지 않아도 된다.
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Federated": "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
-      },
-      "Action": "sts:AssumeRoleWithWebIdentity",
-      "Condition": {
-        "StringEquals": {
-          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
-        },
-        "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:soma17th-369/Laimory-AI:ref:refs/heads/dev"
-        }
-      }
-    }
-  ]
-}
-```
+1. [IAM 콘솔](https://console.aws.amazon.com/iam/) → **Identity providers** → **Add provider**로 이동한다.
 
-> 롤백 워크플로도 `dev` 브랜치에서 실행해야 이 조건을 통과한다. 다른 브랜치에서도
-> 수동 실행하려면 `sub` 조건에 항목을 추가한다. 넓히는 만큼 권한도 넓어진다.
+2. 다음 값을 입력한다.
 
-권한 정책 — ECR push 와 AgentCore 갱신, 그리고 **`iam:PassRole`** 이 필요하다.
-`UpdateAgentRuntime` 이 Runtime 실행 역할 ARN 을 인자로 받기 때문에, 이게 없으면
-배포가 `AccessDenied` 로 떨어진다.
+   | 설정 | 값 |
+   |---|---|
+   | Provider type | `OpenID Connect` |
+   | Provider URL | `https://token.actions.githubusercontent.com` |
+   | Audience | `sts.amazonaws.com` |
+
+3. **Add provider**를 누른다.
+
+공식 절차는 [IAM OIDC 공급자 생성 문서](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_create_oidc.html)를 참고한다.
+
+### 3.3 GitHub 배포 역할 만들기
+
+먼저 IAM 콘솔 → **Policies** → **Create policy** → **JSON**에서 아래 정책을 만든다.
+`123456789012`는 실제 계정 ID로 바꾼다. 정책 이름은
+`laimory-ai-github-deploy-policy`로 둔다.
 
 ```json
 {
@@ -161,57 +179,124 @@ aws iam create-open-id-connect-provider \
 }
 ```
 
-> IAM 액션 접두사는 control plane(`bedrock-agentcore-control`)과 data plane
-> (`bedrock-agentcore`)이 같은 `bedrock-agentcore:` 를 쓴다(두 서비스의 `signingName`
-> 이 모두 `bedrock-agentcore`).
+정책을 만든 뒤 역할을 만든다.
 
-### 3.4 Runtime 실행 역할 (컨테이너가 쓰는 역할)
+1. IAM 콘솔 → **Roles** → **Create role**로 이동한다.
 
-신뢰 정책:
+2. Trusted entity type에서 **Web identity**를 선택한다.
+
+3. Identity provider는 `token.actions.githubusercontent.com`, Audience는
+   `sts.amazonaws.com`을 선택한다.
+
+4. GitHub organization은 `soma17th-369`, repository는 `Laimory-AI`, branch는
+   `dev`를 입력한다.
+
+5. 앞에서 만든 `laimory-ai-github-deploy-policy`를 연결한다.
+
+6. 역할 이름을 `laimory-ai-github-deploy`로 지정하고 만든다.
+
+7. 역할의 **Trust relationships**를 열어 subject가 아래 값으로 제한됐는지 확인한다.
+
+```text
+repo:soma17th-369/Laimory-AI:ref:refs/heads/dev
+```
+
+다른 저장소나 모든 브랜치를 뜻하는 `*`로 넓히지 않는다. 공식 화면과 제한 방법은
+[GitHub OIDC 역할 생성 문서](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-idp_oidc.html)를 참고한다.
+
+### 3.4 Runtime 실행 역할 만들기
+
+이 역할은 GitHub Actions가 아니라 실제 AgentCore 컨테이너가 사용한다.
+
+1. IAM 콘솔 → **Roles** → **Create role** → **Custom trust policy**로 이동한다.
+
+2. 아래 신뢰 정책을 붙여 넣는다. 계정 ID는 실제 값으로 바꾼다.
 
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
     {
+      "Sid": "AssumeRolePolicy",
       "Effect": "Allow",
-      "Principal": { "Service": "bedrock-agentcore.amazonaws.com" },
-      "Action": "sts:AssumeRole"
+      "Principal": {
+        "Service": "bedrock-agentcore.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": {
+          "aws:SourceAccount": "123456789012"
+        },
+        "ArnLike": {
+          "aws:SourceArn": "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:*"
+        }
+      }
     }
   ]
 }
 ```
 
-권한 정책 — ECR pull, CloudWatch Logs, Bedrock 모델 호출.
+3. 역할 이름을 `laimory-ai-agentcore-runtime`으로 지정해 만든다.
+
+4. 역할의 **Permissions** → **Add permissions** → **Create inline policy** → **JSON**에서
+   아래 정책을 추가한다. 계정 ID는 실제 값으로 바꾼다.
 
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "EcrPull",
+      "Sid": "EcrImageAccess",
       "Effect": "Allow",
       "Action": [
-        "ecr:GetAuthorizationToken",
-        "ecr:BatchCheckLayerAvailability",
         "ecr:BatchGetImage",
         "ecr:GetDownloadUrlForLayer"
       ],
+      "Resource": "arn:aws:ecr:ap-northeast-2:123456789012:repository/laimory-ai"
+    },
+    {
+      "Sid": "EcrTokenAccess",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
       "Resource": "*"
     },
     {
-      "Sid": "Logs",
+      "Sid": "RuntimeLogs",
       "Effect": "Allow",
       "Action": [
         "logs:CreateLogGroup",
         "logs:CreateLogStream",
         "logs:PutLogEvents",
-        "logs:DescribeLogStreams"
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams",
+        "logs:PutResourcePolicy"
       ],
       "Resource": "*"
     },
     {
-      "Sid": "BedrockInvoke",
+      "Sid": "RuntimeTelemetry",
+      "Effect": "Allow",
+      "Action": [
+        "xray:PutTraceSegments",
+        "xray:PutTelemetryRecords",
+        "xray:GetSamplingRules",
+        "xray:GetSamplingTargets"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "RuntimeMetrics",
+      "Effect": "Allow",
+      "Action": "cloudwatch:PutMetricData",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "cloudwatch:namespace": "bedrock-agentcore"
+        }
+      }
+    },
+    {
+      "Sid": "BedrockModelInvocation",
       "Effect": "Allow",
       "Action": [
         "bedrock:InvokeModel",
@@ -223,249 +308,716 @@ aws iam create-open-id-connect-provider \
 }
 ```
 
-이 역할이 `BEDROCK_AWS_PROFILE` 을 비워 뒀을 때 `boto3` 기본 자격증명 체인이 집어가는
-자격증명이다(`app/core/llm.py`). `.env` 나 환경 변수로 AWS 키를 넣지 않는다.
+처음에는 실제 배포를 막지 않도록 Bedrock 모델 리소스를 `*`로 두되, 사용할
+`BEDROCK_MODEL`과 추론 프로필이 확정되면 해당 ARN으로 좁힌다. Runtime에 AWS Access Key를
+환경 변수로 넣지 않는다. `BEDROCK_AWS_PROFILE`을 비워 두면 boto3가 이 실행 역할의 임시
+자격증명을 사용한다.
 
-> VPC 모드(3.5)에서는 ENI 생성 권한(`ec2:CreateNetworkInterface`,
-> `ec2:DescribeNetworkInterfaces`, `ec2:DeleteNetworkInterface`)이 추가로 필요할 수
-> 있다. 콘솔의 AgentCore 생성 흐름으로 역할을 만들면 필요한 권한이 함께 붙으므로,
-> 직접 만든 역할로 Runtime 이 `CREATE_FAILED` 가 되면 `failureReason` 을 먼저 본다.
+AWS가 권장하는 최신 권한 항목과 콘솔 사용자 권한은
+[AgentCore Runtime IAM 권한 공식 문서](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html)에서 확인한다.
 
-### 3.5 네트워크 모드는 `VPC` 다
+### 3.5 콘솔 작업자 권한 확인
 
-`networkMode` 는 `PUBLIC` 과 `VPC` 중 하나인데, 이 프로젝트는 **`VPC` 를 써야 한다.**
-AI 서버는 입력 조회·결과 저장·완료 콜백을 전부 App Server 서버간 API 로 호출하므로
-(`app/services/app_server_client.py`), App Server 에 닿는 네트워크가 필요하다.
+Runtime을 만드는 로그인 사용자 또는 역할에는 AgentCore 자원 생성 권한과
+`laimory-ai-agentcore-runtime` 역할에 대한 `iam:PassRole`이 필요하다. VPC 모드를 처음
+사용할 때는 다음 service-linked role을 자동 생성할 수 있어야 한다.
 
-- subnet: App Server 에 접근 가능한 private subnet
-- security group: App Server security group 인바운드에 허용된 SG
-
-staging DB 직결은 이슈 #40 에서 제거됐다. DB security group 이나 3306 경로는 더 이상
-필요하지 않다.
-
-## 4. GitHub 저장소 설정
-
-저장소 → **Settings** → **Secrets and variables** → **Actions**
-
-`vars` 는 Actions 로그에 그대로 찍히고 `secrets` 는 마스킹된다. 계정 번호가 박히는 role
-ARN 만 secret 으로 둔다.
-
-| 이름 | 종류 | 예시 | 출처 |
-|---|---|---|---|
-| `AWS_REGION` | Variable | `ap-northeast-2` | 직접 정한다 |
-| `ECR_REPOSITORY` | Variable | `laimory-ai` | 리포지토리 **이름만**. `123456789012.dkr.ecr...` 는 ECR 로그인 액션이 자동으로 붙인다 |
-| `AWS_DEPLOY_ROLE_ARN` | **Secret** | `arn:aws:iam::123456789012:role/laimory-ai-github-deploy` | 3.3 에서 만든 역할 ARN |
-| `AGENTCORE_RUNTIME_ID` | Variable | `laimory_ai-a1B2c3D4e5` | `create-agent-runtime` 응답의 `agentRuntimeId` |
-| `AGENTCORE_ENDPOINT_NAME` | Variable | `prod` | `create-agent-runtime-endpoint --name` 으로 직접 정한다 |
-
-CLI 로 넣을 수도 있다.
-
-```bash
-gh variable set AWS_REGION --body "ap-northeast-2"
-gh variable set ECR_REPOSITORY --body "laimory-ai"
-gh secret   set AWS_DEPLOY_ROLE_ARN --body "arn:aws:iam::123456789012:role/laimory-ai-github-deploy"
+```text
+AWSServiceRoleForBedrockAgentCoreNetwork
 ```
 
-### 이름 규칙 주의
+조직의 관리자 역할로 최초 설정한다면 별도 조치가 없을 수 있다. 제한된 운영 역할이라면
+`BedrockAgentCoreFullAccess`만으로 실행 역할 생성까지 전부 되는 것은 아니므로, IAM 관리자에게
+`iam:PassRole`과 `iam:CreateServiceLinkedRole` 범위를 함께 요청한다. 운영이 안정되면 AWS
+관리형 전체 권한 대신 실제 Runtime ARN으로 제한한 사용자 지정 정책으로 좁힌다.
 
-Runtime 이름과 엔드포인트 이름은 `[a-zA-Z][a-zA-Z0-9_]{0,47}` 이라 **하이픈을 못 쓴다.**
+## 4. VPC 콘솔 준비
 
-- Runtime 이름: `laimory-ai` ❌ → `laimory_ai` ✅
-- ECR 리포지토리 이름: 규칙이 달라서 `laimory-ai` 로 둬도 된다
+이 프로젝트는 App Server 서버간 API로 입력 조회·결과 저장·완료 콜백을 수행하므로
+App Server에 접근 가능한 **VPC 모드**를 사용한다. DB에는 직접 연결하지 않는다.
 
-Runtime 버전은 `1`, `2`, `3` 같은 숫자 문자열이다.
+### 4.1 subnet 확인
 
-## 5. 최초 부트스트랩 순서
+1. VPC 콘솔 → **Subnets**에서 AgentCore에 사용할 private subnet을 고른다.
 
-`AGENTCORE_RUNTIME_ID` 는 Runtime 을 만들어야 생기고, Runtime 은 ECR 에 이미지가 이미
-있어야 만들 수 있다. 그래서 순서가 있다.
+2. 서로 다른 Availability Zone의 subnet을 두 개 이상 선택한다.
 
-**1)** 3장의 AWS 준비를 끝낸다(ECR, OIDC, 역할 2개).
+3. 서울 리전에서 AgentCore VPC 연결을 지원하는 AZ ID인지 확인한다.
 
-**2)** GitHub 에 먼저 3개만 등록한다 — `AWS_REGION`, `ECR_REPOSITORY`,
-`AWS_DEPLOY_ROLE_ARN`.
-
-**3)** Actions → **Deploy AgentCore Runtime** → `Run workflow` 로 수동 실행한다.
-
-- `build` job 은 **성공**하고 이미지가 ECR 에 올라간다.
-- `deploy` job 은 `AGENTCORE_RUNTIME_ID` 가 비어 있어 첫 스텝에서 **의도적으로 멈춘다.**
-  `저장소 변수가 비어 있다: AGENTCORE_RUNTIME_ID ...` 메시지가 나오면 정상이다.
-
-**4)** 올라간 이미지 태그를 확인하고(빌드 요약에 `sha-...` 로 적힌다) Runtime 을 만든다.
-
-```bash
-aws bedrock-agentcore-control create-agent-runtime \
-  --agent-runtime-name laimory_ai \
-  --agent-runtime-artifact '{"containerConfiguration":{"containerUri":"123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/laimory-ai:sha-0123456789ab"}}' \
-  --role-arn arn:aws:iam::123456789012:role/laimory-ai-agentcore-runtime \
-  --network-configuration '{"networkMode":"VPC","networkModeConfig":{"subnets":["subnet-aaaa","subnet-bbbb"],"securityGroups":["sg-cccc"]}}' \
-  --protocol-configuration '{"serverProtocol":"HTTP"}' \
-  --environment-variables file://runtime-env.json \
-  --region ap-northeast-2
+```text
+apne2-az1, apne2-az2, apne2-az3
 ```
 
-`runtime-env.json` 은 7장의 환경 변수 표를 참고해 만들고, **커밋하지 않는다.**
+계정마다 `ap-northeast-2a` 같은 AZ 이름과 실제 AZ ID의 매핑이 다를 수 있으므로
+**Availability Zone ID** 열을 기준으로 확인한다.
 
-**5)** `READY` 가 되면 전용 엔드포인트를 만든다.
+### 4.2 Runtime security group 만들기
 
-```bash
-aws bedrock-agentcore-control create-agent-runtime-endpoint \
-  --agent-runtime-id laimory_ai-a1B2c3D4e5 \
-  --name prod \
-  --agent-runtime-version 1 \
-  --region ap-northeast-2
+VPC 콘솔 → **Security groups** → **Create security group**에서
+`laimory-ai-agentcore-runtime` security group을 만든다.
+
+현재 구성에서는 같은 VPC의 서로 다른 subnet에 있는 App Server 두 대가 공통 security
+group을 사용하고, Runtime이 `HTTP 8080`으로 직접 호출한다. 다음 두 규칙을 설정한다.
+
+**Runtime security group outbound**
+
+| 유형 | 프로토콜 | 포트 | 대상 |
+|---|---|---:|---|
+| Custom TCP | TCP | `8080` | App Server 두 대가 함께 사용하는 security group |
+| HTTPS | TCP | `443` | `0.0.0.0/0` — Langfuse NAT 경로와 AWS Interface Endpoint |
+
+**App Server 공통 security group inbound**
+
+| 유형 | 프로토콜 | 포트 | 소스 |
+|---|---|---:|---|
+| Custom TCP | TCP | `8080` | `laimory-ai-agentcore-runtime` security group |
+
+`APP_SERVER_API_URL`도 `http://<사설 주소 또는 내부 DNS>:8080/s/api/v1` 또는
+`http://<사설 주소 또는 내부 DNS>:8080/s/v1` 형태로 맞춘다. 두 App Server가 같은
+security group을 사용하므로 서버별 규칙은 만들지 않는다. AgentCore에 선택하는 private
+subnet이 두 개여도 두 subnet에 같은 Runtime security group을 지정하므로 규칙은 한 번만
+설정한다.
+
+Runtime은 App Server의 사설 IP나 `8080` 포트로부터 직접 호출을 받지 않는다. App Server는
+AWS의 `InvokeAgentRuntime` API를 호출하고 AgentCore 관리 영역이 컨테이너의
+`POST /invocations`로 전달한다. 따라서 Runtime security group의 inbound 규칙은 필요하지
+않다.
+
+새 security group에는 기본으로 `All traffic → 0.0.0.0/0` outbound가 들어갈 수 있다.
+이 규칙을 그대로 두면 App Server 접근은 이미 허용되지만, 최소 권한으로 제한할 때는
+삭제하고 위 표의 `TCP 8080`과 `HTTPS 443` 두 규칙으로 교체한다. ECR, CloudWatch,
+Bedrock 같은 AWS 서비스는 다음 절의 VPC endpoint를 사용하고 Langfuse는 NAT를 사용하지만,
+Runtime security group에서는 둘 다 outbound HTTPS `443`으로 보인다.
+
+특히 `LANGFUSE_ENABLED=true`로 운영하려면 Runtime security group의 outbound `TCP 443`이
+반드시 허용되어야 한다. NAT Gateway 자체에는 security group을 연결하지 않으므로
+`Runtime security group → NAT security group` 규칙은 만들 수 없다. 목적지를
+`0.0.0.0/0`으로 두고 private subnet route table의 `0.0.0.0/0 → NAT Gateway`가 실제
+인터넷 경로를 결정한다.
+
+CIDR 전체를 열기보다 security group 간 참조를 우선한다.
+
+### 4.3 private subnet 통신 경로 준비
+
+현재 구성에서는 App Server EC2 두 대와 AgentCore Runtime이 모두 private subnet에 있다.
+AgentCore 호출과 AWS 서비스 접근은 VPC endpoint를 사용하고, Langfuse Cloud처럼 VPC 밖의
+공개 서비스로 나갈 때만 NAT Gateway를 사용한다.
+
+```text
+App Server EC2 → AgentCore data plane VPC endpoint → AgentCore Runtime
+AgentCore Runtime → Runtime VPC ENI → App Server HTTP 8080
+AgentCore Runtime → NAT Gateway → Langfuse Cloud HTTPS 443
+AgentCore Runtime stdout → CloudWatch Logs → 전달 Lambda → Elasticsearch
 ```
 
-> 롤백은 엔드포인트를 특정 버전에 고정하는 방식이다. `DEFAULT` 엔드포인트는 최신 버전을
-> 따라가도록 동작하므로 롤백 지점으로 쓸 수 없다. 반드시 전용 엔드포인트를 만든다.
+두 번째 경로는 4.2장의 security group 규칙이 담당한다. 첫 번째 경로를 위해 AgentCore
+data plane Interface VPC Endpoint를 별도로 만든다. 마지막 경로는 Runtime이
+Elasticsearch를 직접 호출하는 경로가 아니며 4.3.3장에서 따로 구성한다.
 
-**6)** 나머지 2개를 등록한다 — `AGENTCORE_RUNTIME_ID`, `AGENTCORE_ENDPOINT_NAME`.
+#### 4.3.1 App Server가 AgentCore를 호출하는 Endpoint
 
-**7)** 이후 필요할 때 Actions 에서 AgentCore 배포를 수동 실행한다.
+VPC 콘솔 → **Endpoints** → **Create endpoint**에서 다음 값으로 생성한다.
 
-## 6. 이미지 태그와 배포 이력
+| 설정 | 값 |
+|---|---|
+| Service category | AWS services |
+| Service name | `com.amazonaws.ap-northeast-2.bedrock-agentcore` |
+| Endpoint type | Interface |
+| VPC | App Server와 AgentCore가 사용하는 VPC |
+| Subnets | App Server EC2 두 대가 있는 private subnet 두 개 |
+| Private DNS | 활성화 |
+| Security group | 새 `laimory-ai-agentcore-vpce` security group |
 
-| 태그 | 성격 | 용도 |
+두 subnet이 서로 다른 AZ라면 각 AZ에 endpoint ENI가 하나씩 생긴다. VPC의 **DNS
+resolution**과 **DNS hostnames**도 모두 활성화한다. 그러면 App Server는 별도의 endpoint
+URL을 코드에 넣지 않아도 기본 주소 `bedrock-agentcore.ap-northeast-2.amazonaws.com`을
+사설 endpoint IP로 해석한다.
+
+`laimory-ai-agentcore-vpce` security group에는 다음 규칙을 둔다.
+
+**AgentCore VPC Endpoint security group inbound**
+
+| 유형 | 프로토콜 | 포트 | 소스 |
+|---|---|---:|---|
+| HTTPS | TCP | `443` | App Server EC2 두 대가 함께 사용하는 security group |
+
+**App Server 공통 security group outbound**
+
+| 유형 | 프로토콜 | 포트 | 대상 |
+|---|---|---:|---|
+| HTTPS | TCP | `443` | `laimory-ai-agentcore-vpce` security group |
+
+App Server security group에 기본 `All traffic → 0.0.0.0/0` outbound가 남아 있다면 이미
+허용된 상태다. 최소 권한으로 제한할 때 위 규칙으로 교체한다.
+
+Endpoint policy는 최초 연결 확인 때 **Full access**로 시작할 수 있다. 확인 후에는 App
+Server EC2 공통 역할과 해당 Runtime·`prod` Endpoint만 허용하도록 아래처럼 좁힌다.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::<계정 ID>:role/<App Server EC2 공통 역할>"
+      },
+      "Action": "bedrock-agentcore:InvokeAgentRuntime",
+      "Resource": [
+        "arn:aws:bedrock-agentcore:ap-northeast-2:<계정 ID>:runtime/<Runtime ID>",
+        "arn:aws:bedrock-agentcore:ap-northeast-2:<계정 ID>:runtime/<Runtime ID>/runtime-endpoint/prod"
+      ]
+    }
+  ]
+}
+```
+
+EC2는 Runtime 호출만 하므로 control plane endpoint인
+`com.amazonaws.ap-northeast-2.bedrock-agentcore-control`은 만들지 않는다. Runtime 생성과
+업데이트는 GitHub Actions와 AWS 콘솔에서 수행한다.
+
+#### 4.3.2 Runtime이 AWS 서비스에 접근하는 Endpoint
+
+AWS 서비스 트래픽을 NAT 대신 AWS 네트워크 안으로 보내려면 VPC 콘솔 → **Endpoints** →
+**Create endpoint**에서 다음도 준비한다.
+
+| 종류 | 서비스 이름 | 설정 |
 |---|---|---|
-| `sha-<커밋12자>` | 불변 | **배포에 쓰는 태그.** 어느 커밋이 떠 있는지의 정본 |
-| `dev` | 이동 | 마지막 AgentCore 수동 배포 이미지를 가리키는 편의 태그. 배포에 쓰지 않는다 |
+| Interface | `com.amazonaws.ap-northeast-2.ecr.dkr` | Runtime private subnet, private DNS 활성화 |
+| Interface | `com.amazonaws.ap-northeast-2.ecr.api` | Runtime private subnet, private DNS 활성화 |
+| Gateway | `com.amazonaws.ap-northeast-2.s3` | Runtime subnet의 route table 연결 |
+| Interface | `com.amazonaws.ap-northeast-2.logs` | Runtime private subnet, private DNS 활성화 |
+| Interface | `com.amazonaws.ap-northeast-2.bedrock-runtime` | Runtime private subnet, private DNS 활성화 |
 
-이동 태그로 배포하면 "지금 무엇이 떠 있는가" 가 사라져 롤백 기준이 없어진다. 그래서
-`UpdateAgentRuntime` 에는 항상 `sha-` 태그를 넘긴다.
+이 Interface endpoint들의 security group은 Runtime security group에서 들어오는 TCP
+`443`을 허용한다. ECR 이미지 layer는 S3에 저장되므로 ECR endpoint만 만들고 S3 Gateway
+endpoint를 빼면 이미지 pull이나 주기적 image refresh가 실패할 수 있다.
 
-배포가 끝나면 Actions 실행 요약에 아래가 표로 남는다.
+S3 Gateway Endpoint에는 시간당 요금이 없지만 Interface Endpoint는 선택한 AZ마다 시간당
+요금과 데이터 처리 요금이 발생한다. 두 subnet을 선택하면 각 Interface Endpoint에 endpoint
+ENI가 두 개 생긴다.
 
-- 커밋 SHA / 이미지 태그 / 이미지 digest
-- 새 Runtime 버전
-- 엔드포인트 이름
-- **직전 서비스 버전** (롤백할 대상)
+#### 4.3.3 Langfuse와 Elasticsearch 전송 경로
 
-## 7. 운영 환경 변수
+Langfuse와 Elasticsearch는 같은 관측 기능이지만 전송 주체와 네트워크 경로가 다르다.
 
-`Settings`(`app/core/config.py`)가 읽는 값이다. 이미지에는 기본값 4개만 굽고, 나머지는
-Runtime 의 `environmentVariables` 로 주입한다.
+| 대상 | 전송 주체 | 경로 | Runtime에 필요한 설정 |
+|---|---|---|---|
+| Langfuse | 애플리케이션의 Langfuse SDK | Runtime → NAT Gateway → Langfuse Cloud `443` | `LANGFUSE_*` 환경 변수 |
+| Elasticsearch | 별도 로그 전달 Lambda | Runtime stdout → CloudWatch Logs → Lambda → Elasticsearch | `LOG_FORMAT=json`만 필요 |
 
-| 변수 | 필수 | 비고 |
-|---|:---:|---|
-| `APP_ENV` | O | 이미지 기본값 `prod` |
-| `LOG_LEVEL` | O | 이미지 기본값 `INFO` |
-| `LOG_FORMAT` | | 이미지 기본값 `json`. CloudWatch Logs Insights 용 |
-| `LLM_PROVIDER` | O | 이미지 기본값 `bedrock` |
-| `BEDROCK_MODEL` | O | Nova 모델 id 또는 추론 프로필 id. 비면 provider 생성 시 실패한다 |
-| `BEDROCK_REGION` | | 기본 `ap-northeast-2` |
-| `BEDROCK_AWS_PROFILE` | | **넣지 않는다.** 비어 있어야 실행 역할 자격증명을 쓴다 |
-| `APP_SERVER_API_URL` | O | App Server 서버간 API 기본 URL(`/s/api/v1`까지). 유일한 데이터 경로라 비면 기동에 실패한다 |
-| `APP_SERVER_TIMEOUT_SEC` `APP_SERVER_MAX_ATTEMPTS` `APP_SERVER_RETRY_BACKOFF_SEC` | | 기본 3초 / 3회 / 0.5초. timeout·5xx 에만 재시도한다 |
-| `PIPELINE_TIMEOUT_SEC` | | 기본 120 |
-| `REPAIR_MAX_ITERATIONS` | | 기본 3 |
-| `LANGFUSE_ENABLED` `LANGFUSE_PUBLIC_KEY` `LANGFUSE_SECRET_KEY` `LANGFUSE_BASE_URL` | | 선택적 Langfuse tracing. 일본 리전 URL은 `https://jp.cloud.langfuse.com`. 라이프로그 본문 보호를 위해 기본 비활성 |
-| `LANGFUSE_SAMPLE_RATE` `LANGFUSE_CONTENT_CAPTURE` `LANGFUSE_MAX_PAYLOAD_BYTES` | | sampling 비율, 콘텐츠 정책, observation별 payload 상한. `LANGFUSE_CONTENT_CAPTURE`는 비워 두면 `APP_ENV`로 정해진다(local/dev=`SANITIZED`, 그 외=`NONE`). 운영에서 본문을 내보내지 않으려면 비워 두거나 `NONE`을 명시한다 |
+##### Langfuse Cloud용 NAT Gateway
 
-기존 Runtime에 `CALLBACK_URL`이 있으면 `APP_SERVER_API_URL`로 교체해야 한다.
-값에는 task별 경로를 제외하고 `/s/api/v1`까지 넣는다. 배포 워크플로는 기존
-환경변수를 그대로 보존하므로 이 이름 변경은 Runtime 설정에서 한 번 직접 반영한다.
+`LANGFUSE_BASE_URL=https://jp.cloud.langfuse.com`은 공개 인터넷 주소다. Interface VPC
+Endpoint가 없으므로 Runtime의 private subnet에 NAT 경로를 만든다.
 
-**환경 변수는 최초 생성 때 한 번만 넣으면 된다.** 이후 배포는 `GetAgentRuntime` 으로
-현재 설정을 읽어 그대로 되돌려 보내고 컨테이너 이미지 URI 만 교체한다. 덕분에 DB
-접속정보 같은 운영 설정이 GitHub 에 존재하지 않는다.
+1. VPC 콘솔 → **Internet gateways**에서 이 VPC에 연결된 Internet Gateway가 있는지
+   확인하고, 없으면 생성해 연결한다.
 
-값을 바꾸려면 콘솔이나 CLI 로 Runtime 을 직접 갱신한다. 그것도 새 버전을 만든다.
+2. 기존 public subnet이 있으면 사용한다. 새로 만들 때는 VPC CIDR 안에서 기존 subnet과
+   겹치지 않는 CIDR을 사용하고, 그 subnet의 route table에
+   `0.0.0.0/0 → Internet Gateway`를 둔다.
 
-> `UpdateAgentRuntime` 은 부분 수정이 아니라 전체 교체다. 직접 호출할 때
-> `--environment-variables` 를 빼면 기존 값이 지워진다.
+3. VPC 콘솔 → **NAT gateways** → **Create NAT gateway**에서 public subnet과 새 Elastic
+   IP를 선택해 `laimory-ai-agentcore-nat`를 만든다.
 
-## 8. 배포
+4. Runtime에 지정할 private subnet 두 개의 route table에
+   `0.0.0.0/0 → laimory-ai-agentcore-nat`를 추가한다. 최초 배포는 NAT 하나를 공유할 수
+   있지만, 한 AZ 장애에도 외부 관측을 유지해야 하면 AZ마다 NAT Gateway를 두고 각 private
+   subnet이 같은 AZ의 NAT를 사용하게 한다.
 
-AgentCore 배포는 자동 실행하지 않는다.
+5. Runtime security group outbound에 `HTTPS / TCP 443 → 0.0.0.0/0`을 허용한다. Security
+   group은 NAT Gateway를 대상으로 참조할 수 없으므로 목적지를 IPv4 전체로 두고, 실제
+   경로는 private subnet의 route table이 NAT로 제한한다.
 
-Actions → **Deploy AgentCore Runtime** → `Run workflow`에서 수동 실행한다. 현재
-기본 자동 배포는 `deploy-ec2.yml`이 담당한다.
+NAT는 Runtime이 시작한 연결의 응답만 되돌려 주므로 이 설정 때문에 Runtime inbound를
+열 필요는 없다. public photo URL 다운로드나 OpenAI·Gemini provider를 사용해도 같은 NAT
+경로를 쓴다. NAT Gateway에는 시간당 요금과 데이터 처리 요금이 발생한다.
 
-### 진행 순서
+##### CloudWatch Logs에서 Elasticsearch로 전달
 
-1. 현재 엔드포인트의 서비스 버전을 기록한다(롤백 지점).
-2. `UpdateAgentRuntime` 으로 새 버전을 만든다.
-3. Runtime 이 `READY` 가 될 때까지 기다린다(최대 15분).
-4. `UpdateAgentRuntimeEndpoint` 로 엔드포인트를 새 버전으로 전환한다.
-5. 엔드포인트가 `READY` 가 될 때까지 기다린다(최대 15분).
+AgentCore Runtime에는 EC2의 `laimory-filebeat` sidecar가 없다. 또한 이 애플리케이션은
+Elasticsearch를 직접 호출하지 않도록 설계되어 있으므로 Runtime 환경 변수에 `ES_URL`,
+`ES_API_KEY`, `OBS_*`를 추가하거나 Runtime security group에 ES 포트를 열지 않는다.
 
-배포와 롤백은 같은 concurrency 그룹을 써서 동시에 돌지 않는다.
+현재 저장소에는 AgentCore용 로그 전달 Lambda가 없다. 따라서 아래 전달 자원을 만들기
+전에는 CloudWatch Logs까지만 기록되고 Elasticsearch에는 들어가지 않는다. 이 파이프라인이
+준비되고 실제 이벤트 한 건이 도착하기 전에는 AgentCore 운영 준비가 끝난 것으로 보지 않는다.
 
-## 9. 롤백
+1. Lambda 콘솔에서 같은 리전의 전달 함수 `laimory-agentcore-logs-to-es`를 만든다. 함수는
+   CloudWatch Logs의 base64+gzip payload를 풀고 각 `logEvents[].message`를 JSON으로
+   해석해야 한다.
 
-Actions → **Rollback AgentCore Runtime** → `Run workflow`.
+2. 함수 안에서 애플리케이션이 출력한 dotted key를 중첩 객체로 펼친 뒤
+   `event.dataset == "laimory.api"`인 이벤트만 통과시킨다. 표식이 없거나 JSON 해석에
+   실패하면 버리는 fail-closed 방식이어야 한다. `timestamp`는 `@timestamp`로 옮긴다.
 
-**버전을 비워 두고 실행하면** 현재 서비스 버전과 사용 가능한 버전 목록만 요약에
-출력하고 끝난다. 무엇으로 되돌릴지 먼저 확인할 때 쓴다.
+3. [`observability/filebeat.example.yml`](observability/filebeat.example.yml)의 processor
+   순서와 `drop_fields`를 그대로 기준으로 삼아 민감 필드 제거를 적용하고, 목적지를
+   `logs-laimory.ai-prod` data stream으로 고정한다. 전체 필드 계약은
+   [운영 로그 문서](operational-logging.md)를 따른다.
 
-**버전을 지정해 실행하면** 엔드포인트를 그 버전으로 되돌린다. 이미지를 다시 빌드하지
-않는다 — 각 Runtime 버전이 그때 배포된 ECR 이미지를 그대로 물고 있다.
+4. Elasticsearch API key는 Lambda 환경 변수에 평문으로 넣지 않고 Secrets Manager에
+   저장한다. Lambda 실행 역할에는 해당 secret을 읽는 권한과 실패 로그를 CloudWatch에
+   쓰는 권한만 부여한다. API key의 Elasticsearch 권한은 `logs-laimory.ai-*`에 대한
+   `auto_configure`와 `create_doc`로 제한한다.
 
-지정한 버전이 존재하지 않거나 이미 서비스 중이면 전환하지 않고 실패한다.
+5. CloudWatch 콘솔 → **Log groups**에서 `/aws/bedrock-agentcore/runtimes/`로 시작하는 실제
+   Runtime log group을 선택하고 **Actions → Subscription filters → Create Lambda
+   subscription filter**로 이동한다. 대상 함수는 위 Lambda, filter pattern은 다음과 같다.
 
-CLI 로 직접 할 수도 있다.
+   ```text
+   { $.['event.dataset'] = "laimory.api" }
+   ```
 
-```bash
-aws bedrock-agentcore-control list-agent-runtime-versions \
-  --agent-runtime-id laimory_ai-a1B2c3D4e5 --region ap-northeast-2
+   수집 원본은 이 log group의 `[runtime-logs]` 표준 stdout/stderr 스트림에 있는 애플리케이션
+   JSON이다. AgentCore의 별도 `APPLICATION_LOGS` delivery는 요청·응답 payload를 포함할 수
+   있으므로 Elasticsearch 원본으로 사용하지 않는다. 같은 log group에 다른 스트림이 있어도
+   위 표식이 없는 이벤트는 subscription filter에서 제외된다.
 
-aws bedrock-agentcore-control update-agent-runtime-endpoint \
-  --agent-runtime-id laimory_ai-a1B2c3D4e5 \
-  --endpoint-name prod \
-  --agent-runtime-version 2 \
-  --region ap-northeast-2
+6. 콘솔의 **Test pattern**으로 운영 이벤트만 선택되는지 확인한 뒤 구독을 시작한다.
+   Lambda에서도 같은 표식을 다시 검사하므로 일반 진단 로그나 사용자 본문이 실수로 ES에
+   들어가지 않는다. 콘솔이 함수의 resource-based policy에 `logs.amazonaws.com`의 호출
+   권한을 추가했는지 Lambda의 **Configuration → Permissions**에서도 확인한다. 전달 Lambda
+   자신의 log group에는 이 구독을 걸지 않아 재귀 전송을 막는다.
+
+7. Lambda가 Elasticsearch bulk 요청에 실패하면 invocation 자체를 실패시켜 CloudWatch
+   Logs가 재시도하게 하고, `logEvents[].id`를 ES 문서 ID로 사용해 재시도 중복을 막는다.
+   같은 ID의 `create` 재시도에서 받은 `409`는 이미 저장된 이벤트이므로 성공으로 처리한다.
+   CloudWatch의 `AWS/Logs` namespace에서 `DeliveryErrors`와 `DeliveryThrottling`에 경보를
+   만든다. 재시도 가능한 전달 오류도 24시간 뒤에는 유실될 수 있으므로 경보를 운영 필수로 둔다.
+
+Elasticsearch가 같은 VPC의 사설 주소라면 Lambda를 ES에 도달 가능한 private subnet에
+연결하고 `laimory-agentcore-log-forwarder` security group을 부여한다.
+
+**전달 Lambda security group outbound**
+
+| 유형 | 프로토콜 | 포트 | 대상 |
+|---|---|---:|---|
+| Custom TCP | TCP | `9200` | Elasticsearch security group |
+| HTTPS | TCP | `443` | Secrets Manager Interface Endpoint security group |
+
+**Elasticsearch security group inbound**
+
+| 유형 | 프로토콜 | 포트 | 소스 |
+|---|---|---:|---|
+| Custom TCP | TCP | `9200` | `laimory-agentcore-log-forwarder` security group |
+
+실제 Elasticsearch가 HTTPS `443`을 사용한다면 첫 표의 `9200` outbound와 두 번째 표의
+`9200` inbound를 모두 `443`으로 맞춘다. Secrets Manager Interface Endpoint를 만들지
+않고 NAT로 접근한다면 Lambda outbound도 `HTTPS 443 → 0.0.0.0/0`으로 허용하고 Lambda
+private subnet의 route table이 NAT Gateway를 가리키게 한다. 전달 Lambda는 연결을
+시작하는 쪽이므로 inbound 규칙은 필요하지 않다.
+
+Elasticsearch가 Elastic Cloud 같은 공개 주소라면 Lambda를 VPC에 연결하지 않을 때 기본
+인터넷 경로를 사용할 수 있다. 고정 출발지 IP가 필요해 Lambda를 VPC에 연결한다면 private
+subnet과 NAT Gateway를 함께 사용하고 Lambda security group에
+`HTTPS 443 → 0.0.0.0/0` outbound를 허용한다. 어느 경우든 Elasticsearch 자격증명과 연결은
+전달 Lambda의 책임이며 AgentCore Runtime의 책임이 아니다.
+
+AgentCore 호출용 PrivateLink는 [AgentCore Interface VPC Endpoint 공식 문서](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/vpc-interface-endpoints.html),
+Runtime VPC 요구사항은 [AgentCore VPC 연결 공식 문서](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html),
+Bedrock endpoint 설정은 [Bedrock PrivateLink 공식 문서](https://docs.aws.amazon.com/bedrock/latest/userguide/vpc-interface-endpoints.html),
+NAT route 구성은 [VPC NAT 공식 문서](https://docs.aws.amazon.com/vpc/latest/userguide/vpc-nat.html),
+AgentCore stdout log group 형식은 [AgentCore 관측 데이터 조회 공식 문서](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-view.html),
+CloudWatch Logs 구독 대상과 형식은 [CloudWatch Logs subscription filter 공식 문서](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/SubscriptionFilters.html)를 참고한다.
+
+## 5. GitHub 웹 화면에서 최초 이미지 올리기
+
+### 5.1 저장소 변수 등록
+
+GitHub 저장소 → **Settings** → **Secrets and variables** → **Actions**로 이동한다.
+
+먼저 아래 세 개만 등록한다.
+
+| 이름 | 종류 | 값 |
+|---|---|---|
+| `AWS_REGION` | Variable | `ap-northeast-2` |
+| `ECR_REPOSITORY` | Variable | `laimory-ai` |
+| `AWS_DEPLOY_ROLE_ARN` | Secret | `arn:aws:iam::<계정 ID>:role/laimory-ai-github-deploy` |
+
+AWS Access Key와 Secret Access Key는 등록하지 않는다.
+
+### 5.2 최초 build 실행
+
+1. GitHub 저장소 → **Actions** → **Deploy AgentCore Runtime**으로 이동한다.
+
+2. **Run workflow**에서 branch를 `dev`로 선택하고 실행한다.
+
+3. `빌드 & ECR 업로드` job이 성공했는지 확인한다.
+
+4. 아직 Runtime ID가 없으므로 `AgentCore Runtime 배포` job이
+   `AGENTCORE_RUNTIME_ID` 누락으로 실패하는 것은 최초 한 번에 한해 정상이다.
+
+5. 실행 요약에서 `sha-<커밋12자>` 태그와 digest를 기록한다.
+
+6. ECR 콘솔 → `laimory-ai` → **Images**에서 같은 `sha-...` 이미지가 있는지 확인하고
+   Image URI를 복사한다.
+
+`dev` 태그가 아니라 반드시 `sha-...` 태그가 포함된 URI를 Runtime에 사용한다.
+
+## 6. AgentCore 콘솔에서 최초 Runtime 만들기
+
+AgentCore 콘솔 화면 명칭은 서비스 업데이트에 따라 **Host agent** 또는
+**Create runtime**으로 보일 수 있다. 핵심은 배포 소스로 ECR container image를 선택하는 것이다.
+
+1. [Amazon Bedrock AgentCore 콘솔](https://console.aws.amazon.com/bedrock-agentcore/home#)을 열고
+   리전을 서울로 맞춘다.
+
+2. **Agents** 또는 **Runtime** 목록에서 **Host agent / Create runtime**을 선택한다.
+
+3. 배포 소스로 **Container image / Amazon ECR**을 선택한다.
+
+4. 다음 값을 입력한다.
+
+   | 설정 | 값 |
+   |---|---|
+   | Runtime name | `laimory_ai` |
+   | Container image URI | ECR에서 복사한 `.../laimory-ai:sha-<커밋12자>` |
+   | Protocol | `HTTP` |
+   | Execution role | 기존 역할 `laimory-ai-agentcore-runtime` |
+   | Network mode | `VPC` |
+   | VPC | 4장에서 확인한 VPC |
+   | Subnets | 서로 다른 지원 AZ의 private subnet 두 개 이상 |
+   | Security groups | `laimory-ai-agentcore-runtime` |
+
+5. 별도의 JWT authorizer를 요구하지 않는다면 기본 AWS IAM 인증을 유지한다. App Server는
+   `bedrock-agentcore:InvokeAgentRuntime` 권한으로 호출한다.
+
+6. Lifecycle 설정은 최초 배포에서는 기본값을 유지한다. 애플리케이션의 처리 상한은
+   `PIPELINE_TIMEOUT_SEC`와 `USER_MEMORY_TIMEOUT_SEC`가 관리하며, 처리 중에는 `/ping`이
+   `HealthyBusy`를 반환한다.
+
+7. 다음 환경 변수를 입력한다.
+
+   | 변수 | 필수 | 권장값 또는 설명 |
+   |---|:---:|---|
+   | `APP_ENV` | O | `prod` |
+   | `LOG_LEVEL` | O | `INFO` |
+   | `LOG_FORMAT` | O | `json` |
+   | `LLM_PROVIDER` | O | `bedrock` |
+   | `PROMPT_VERSION` | | `v1` 또는 현재 검증된 버전 |
+   | `BEDROCK_MODEL` | O | 사용할 모델 ID 또는 추론 프로필 ID |
+   | `BEDROCK_REGION` | | `ap-northeast-2` |
+   | `APP_SERVER_API_URL` | O | `/s/api/v1` 또는 `/s/v1`까지 포함한 절대 URL |
+   | `APP_SERVER_TIMEOUT_SEC` | | 기본 `3` |
+   | `APP_SERVER_MAX_ATTEMPTS` | | 기본 `3` |
+   | `APP_SERVER_RETRY_BACKOFF_SEC` | | 기본 `0.5` |
+   | `PIPELINE_TIMEOUT_SEC` | | 기본 `120` |
+   | `REPAIR_MAX_ITERATIONS` | | 기본 `3` |
+   | `USER_MEMORY_TIMEOUT_SEC` | | 기본 `120` |
+   | `LANGFUSE_ENABLED` | O | `true` |
+   | `LANGFUSE_PUBLIC_KEY` | O | Langfuse 운영 프로젝트의 public key |
+   | `LANGFUSE_SECRET_KEY` | O | Langfuse 운영 프로젝트의 secret key |
+   | `LANGFUSE_BASE_URL` | O | `https://jp.cloud.langfuse.com` |
+   | `LANGFUSE_SAMPLE_RATE` | | 기본 `1.0` |
+   | `LANGFUSE_MAX_PAYLOAD_BYTES` | | 기본 `65536` |
+   | `LANGFUSE_CONTENT_CAPTURE` | O | 운영은 `NONE` |
+
+   `BEDROCK_AWS_PROFILE`은 만들지 않는다. `CALLBACK_URL`이라는 예전 변수가 남아 있다면
+   제거하고 `APP_SERVER_API_URL`을 사용한다. `ES_URL`, `ES_API_KEY`, `ES_EVENT_INDEX`,
+   `OBS_*`도 만들지 않는다. Elasticsearch 전송 설정은 4.3.3장의 전달 Lambda에만 둔다.
+
+8. 설정 요약에서 image URI, 역할, VPC, subnet, security group, 환경 변수를 다시 확인한 뒤
+   생성한다.
+
+9. Runtime 세부 화면에서 최초 버전의 상태가 `READY`가 될 때까지 기다린다. 실패하면
+   같은 화면의 failure reason을 먼저 확인한다.
+
+AWS 공식 콘솔 VPC 설정 순서는 [AgentCore Runtime VPC 구성 문서](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html)에 나와 있다.
+
+### 이름 규칙
+
+Runtime 이름과 Endpoint 이름에는 하이픈 대신 밑줄을 사용한다.
+
+- Runtime 이름: `laimory-ai` 대신 `laimory_ai`
+
+- ECR 리포지토리 이름: `laimory-ai`
+
+- 전용 Endpoint 이름: `prod`
+
+## 7. 전용 Endpoint 만들기
+
+Runtime 생성 시 `DEFAULT` Endpoint가 자동으로 보일 수 있다. `DEFAULT`는 최신 버전을
+따라갈 수 있으므로 명시적인 롤백 지점으로 사용하지 않는다.
+
+1. Runtime 세부 화면의 **Endpoints** 표에서 **Create endpoint**를 선택한다.
+
+2. 이름을 `prod`로 지정한다.
+
+3. Associated version 또는 Runtime version으로 최초 `READY` 버전인 `1`을 선택한다.
+
+4. Endpoint 상태가 `READY`가 될 때까지 기다린다.
+
+5. Runtime 세부 화면에서 다음 값을 기록한다.
+
+   - Runtime ID: `laimory_ai-...`
+
+   - Runtime ARN
+
+   - Endpoint name 또는 qualifier: `prod`
+
+6. GitHub 저장소 → **Settings** → **Secrets and variables** → **Actions** →
+   **Variables**에 아래 값을 추가한다.
+
+   | 이름 | 값 |
+   |---|---|
+   | `AGENTCORE_RUNTIME_ID` | 콘솔에서 복사한 Runtime ID |
+   | `AGENTCORE_ENDPOINT_NAME` | `prod` |
+
+Endpoint 생성과 버전 변경 화면은 [AgentCore 콘솔 배포 문서](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-get-started-code-deploy-python.html)의
+**Create endpoint**, **Update endpoint** 절차를 참고한다.
+
+## 8. 최초 배포 검증
+
+### 8.1 상태와 로그 확인
+
+1. AgentCore Runtime 상태와 `prod` Endpoint 상태가 모두 `READY`인지 확인한다.
+
+2. Runtime의 Observability 또는 Logs 링크를 열거나, CloudWatch 콘솔 → **Log groups**에서
+   `/aws/bedrock-agentcore/runtimes/`로 시작하는 log group을 찾는다.
+
+3. `[runtime-logs]`로 시작하는 표준 stdout/stderr log stream을 열고 기동 로그에 설정 검증
+   오류, ECR pull 오류, App Server 연결 오류가 없는지 확인한다.
+
+### 8.2 실제 호출 확인
+
+Endpoint의 **Test endpoint**를 누르면 Playground/Sandbox에서 payload를 보낼 수 있다.
+이 서버의 `/invocations`는 일반 채팅 prompt가 아니라 아래 계약을 받는다.
+
+```json
+{
+  "taskId": "<App Server가 만든 실제 task ID>",
+  "taskToken": "<App Server가 발급한 실제 task token>",
+  "dailyRecordId": 123,
+  "window": {
+    "startAt": "2026-08-25T00:00:00+09:00",
+    "endAt": "2026-08-26T00:00:00+09:00"
+  }
+}
 ```
 
-## 10. 로컬 Docker 검증
+가짜 task나 token으로 운영 Runtime을 호출하면 접수 후 백그라운드 처리가 실패하므로,
+실제 App Server가 만든 테스트 작업이 있을 때만 호출한다. `taskToken`은 문서, 스크린샷,
+CloudWatch 검색어에 남기지 않는다.
 
-`Dockerfile` 은 플랫폼을 고정하지 않는다. 아래 로컬 명령은 개발기 플랫폼으로
-빌드하며, AgentCore와 같은 arm64 이미지를 확인하려면
-`docker buildx build --platform linux/arm64 --load -t laimory-ai:local .`을 사용한다.
-x86 개발기에서 arm64 빌드는 에뮬레이션을 사용하므로 느릴 수 있다.
+정상 접수 응답은 HTTP `202`이며 body는 다음 형태다.
+
+```json
+{
+  "taskId": "<같은 task ID>",
+  "status": "PROCESSING"
+}
+```
+
+최종 성공 여부는 AI 서버가 저장하지 않는다. App Server의 결과 저장과 완료 콜백, 그리고
+CloudWatch 로그를 함께 확인한다.
+
+### 8.3 App Server에 전달할 값
+
+App Server 담당 설정에는 아래 세 값을 전달한다.
+
+- Runtime ARN
+
+- Runtime Endpoint ARN
+
+- Endpoint qualifier `prod`
+
+App Server EC2 두 대가 사용하는 공통 Instance Role에 Runtime과 `prod` Endpoint 모두에
+대한 호출 권한을 추가한다. 두 EC2가 같은 역할을 사용하면 정책은 한 번만 추가하면 된다.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "bedrock-agentcore:InvokeAgentRuntime",
+      "Resource": [
+        "arn:aws:bedrock-agentcore:ap-northeast-2:<계정 ID>:runtime/<Runtime ID>",
+        "arn:aws:bedrock-agentcore:ap-northeast-2:<계정 ID>:runtime/<Runtime ID>/runtime-endpoint/prod"
+      ]
+    }
+  ]
+}
+```
+
+App Server는 AWS SDK의 AgentCore data plane client에 Runtime ARN과 qualifier `prod`를
+넘겨 호출한다. 4.3.1장에서 Private DNS를 활성화했으므로 코드에 VPC Endpoint 전용 URL을
+넣지 않는다.
+
+반대 방향의 `APP_SERVER_API_URL`에는 App Server EC2 한 대의 사설 IP를 직접 넣지 않는다.
+두 대를 함께 가리키는 내부 ALB DNS 또는 private DNS를 사용하고, HTTP `8080` 경로를
+설정한다. 호출 payload의 `taskToken`은 요청 body로만 전달하고 운영 로그에 남기지 않는다.
+
+### 8.4 Langfuse와 Elasticsearch 수집 확인
+
+8.2장의 실제 작업 한 건을 완료한 뒤 같은 `taskId`로 세 경로를 차례로 확인한다.
+
+1. CloudWatch Logs Insights에서 Runtime log group을 선택하고 아래 쿼리로
+   `event.dataset=laimory.api` 운영 이벤트가 있는지 확인한다.
+
+   ```text
+   fields @timestamp, @message
+   | filter @message like /"event\.dataset"\s*:\s*"laimory\.api"/
+   | sort @timestamp desc
+   | limit 20
+   ```
+
+2. Langfuse 운영 프로젝트에서 `session:=<taskId>`로 검색해 `generate-timeline` trace와
+   하위 agent·generation이 보이는지 확인한다. 운영 설정이 `NONE`이면 trace 구조, model,
+   token usage는 보이되 prompt와 응답 본문은 마스킹되는 것이 정상이다.
+
+3. Lambda 콘솔 → `laimory-agentcore-logs-to-es` → **Monitor**에서 invocation error가
+   없는지 확인하고, CloudWatch의 `AWS/Logs` `DeliveryErrors`·`DeliveryThrottling`도 0인지
+   확인한다.
+
+4. Kibana Discover에서 `logs-laimory.ai-prod`를 열어 같은 `taskId`의 운영 이벤트가
+   도착했는지 확인한다. 모든 문서에 `event.dataset=laimory.api`와 `event.action`이 있어야
+   하며 `taskToken`, 인증 헤더, prompt, response, 오류 원문은 없어야 한다.
+
+CloudWatch에는 있는데 Elasticsearch에 없다면 Runtime 환경 변수나 Runtime security
+group을 바꾸지 않는다. CloudWatch subscription filter, 전달 Lambda 로그, Secrets Manager
+권한, Elasticsearch 인증과 Lambda→ES 네트워크 순으로 확인한다.
+
+## 9. 이후 배포
+
+### 9.1 GitHub 웹 화면에서 배포하기
+
+정상적인 반복 배포는 기존 워크플로를 사용한다.
+
+1. 배포할 변경이 `dev`에 반영됐는지 확인한다.
+
+2. GitHub 저장소 → **Actions** → **Deploy AgentCore Runtime** → **Run workflow**로 이동한다.
+
+3. branch를 `dev`로 선택하고 실행한다.
+
+4. 워크플로가 새 `linux/arm64` 이미지를 ECR에 올리고 새 Runtime 버전을 만든다.
+
+5. 새 Runtime이 `READY`가 되면 워크플로가 `prod` Endpoint를 새 버전으로 전환한다.
+
+6. 실행 요약의 이미지 태그, digest, 새 Runtime 버전, 직전 서비스 버전을 기록한다.
+
+7. AgentCore 콘솔에서 `prod`의 live version과 상태를 확인한다.
+
+이 워크플로는 자동 실행되지 않는다. `dev` push의 기본 배포 대상은 EC2이며 AgentCore는
+복구가 필요할 때만 수동으로 실행한다.
+
+### 9.2 콘솔에서 직접 새 버전으로 바꾸기
+
+ECR에 새 `sha-...` 이미지가 이미 있는 경우에는 콘솔에서도 배포할 수 있다.
+
+1. AgentCore 콘솔 → `laimory_ai` Runtime 세부 화면으로 이동한다.
+
+2. 현재 `prod` Endpoint의 live version을 메모한다.
+
+3. **Update hosting**을 선택한다.
+
+4. 새 ECR `sha-...` image URI를 선택하고 execution role, VPC, protocol, 환경 변수가
+   기존 값과 같은지 전부 확인한다.
+
+5. 저장하면 새 Runtime 버전이 만들어진다. 그 버전이 `READY`가 될 때까지 기다린다.
+
+6. **Endpoints** 표에서 `prod`를 선택하고 **Edit**을 누른다.
+
+7. Associated version을 새 `READY` 버전으로 바꾸고 저장한다.
+
+8. Endpoint가 `READY`가 된 뒤 실제 App Server 테스트 작업으로 검증한다.
+
+Runtime 갱신은 부분 수정이 아니라 새 버전 생성이다. 환경 변수나 VPC 설정이 비어 있지
+않은지 저장 전에 반드시 확인한다.
+
+## 10. AWS 콘솔에서 롤백하기
+
+롤백은 이미지를 다시 빌드하지 않고 `prod` Endpoint가 가리키는 Runtime 버전만 바꾼다.
+
+1. AgentCore 콘솔 → `laimory_ai` → **Versions**에서 이전 버전이 `READY`인지 확인한다.
+
+2. **Endpoints** 표에서 `prod`를 선택하고 **Edit**을 누른다.
+
+3. Associated version을 직전의 검증된 버전으로 바꾼다.
+
+4. 저장 후 Endpoint가 `READY`가 될 때까지 기다린다.
+
+5. `prod`의 live version이 선택한 값인지 확인한다.
+
+6. 실제 App Server 테스트 작업과 CloudWatch Logs로 복구를 확인한다.
+
+`DEFAULT` Endpoint가 아니라 반드시 `prod`를 바꾼다. 배포 직전 버전을 모르면 GitHub Actions
+실행 요약이나 Runtime의 Versions 목록에서 image URI와 생성 시각을 대조한다.
+
+GitHub Actions의 **Rollback AgentCore Runtime**도 남아 있다. 버전을 비워 실행하면 목록만
+출력하고, 버전을 입력하면 같은 Endpoint 전환을 자동으로 수행한다.
+
+## 11. 로컬 Docker 검증
+
+`Dockerfile`은 플랫폼을 고정하지 않는다. AgentCore와 같은 arm64 이미지를 확인하려면
+다음 명령을 사용한다. x86 개발기에서는 QEMU 에뮬레이션 때문에 느릴 수 있다.
 
 ```bash
-docker build -t laimory-ai:local .
+docker buildx build --platform linux/arm64 --load -t laimory-ai:local .
 docker run --rm -p 8080:8080 --name laimory-ai laimory-ai:local
 ```
 
-다른 터미널에서:
+다른 터미널에서 확인한다.
 
 ```bash
 curl http://127.0.0.1:8080/ping
 # {"status":"Healthy"}
+
+docker image inspect laimory-ai:local --format '{{.Architecture}}'
+# arm64
 ```
 
-`/ping` 은 DB 나 LLM 설정 없이도 응답한다(엔진과 provider 는 실제 처리 시점에 만든다).
-실제 처리까지 확인하려면 `.env` 를 그대로 넘긴다. `.env` 는 `.dockerignore` 로 이미지에
-들어가지 않으므로 실행 시점에만 주입된다.
+실제 처리까지 확인할 때만 `.env`를 실행 시점에 전달한다. `.env`는 `.dockerignore`에 의해
+이미지에 들어가지 않는다.
 
 ```bash
 docker run --rm -p 8080:8080 --env-file .env laimory-ai:local
 ```
 
-아키텍처 확인:
+## 12. 트러블슈팅
 
-```bash
-docker image inspect laimory-ai:local --format '{{.Architecture}}'
-# arm64
-```
-
-## 11. 트러블슈팅
-
-| 증상 | 원인과 조치 |
+| 증상 | AWS 콘솔에서 확인할 곳과 조치 |
 |---|---|
-| 워크플로가 `저장소 변수/시크릿이 비어 있다` 로 멈춤 | 4장의 표대로 등록한다. 부트스트랩 중이라면 5장 3) 단계에서는 정상 동작이다 |
-| `Invalid choice: 'bedrock-agentcore-control'` | AWS CLI 가 오래됐다. 워크플로는 자동으로 갱신하지만, 로컬에서는 AWS CLI v2 를 최신으로 올린다 |
-| Runtime 이 `CREATE_FAILED` / `UPDATE_FAILED` | `aws bedrock-agentcore-control get-agent-runtime ... --query 'failureReason'` 을 먼저 본다. 이미지 아키텍처(arm64), 포트(8080), `/ping` 응답, 실행 역할 ECR pull 권한 순으로 확인한다 |
-| 배포는 되는데 DB 처리가 전부 FAILED | `networkMode` 가 `PUBLIC` 인지 확인한다. private subnet 의 DB 에 붙으려면 `VPC` 여야 한다(3.5) |
-| 배포 후 `BEDROCK_MODEL` 등이 사라짐 | `UpdateAgentRuntime` 을 CLI 로 직접 부르면서 `--environment-variables` 를 뺐을 때 생긴다. 워크플로는 기존 값을 읽어 보존한다 |
-| `AccessDenied` (`iam:PassRole`) | 배포 역할에 3.3 의 `PassRuntimeRole` 문이 빠졌다 |
-| 백그라운드 처리가 중간에 끊김 | uvicorn worker 를 늘렸는지 확인한다. in-flight 카운터가 프로세스 로컬이라 단일 worker 여야 한다(2장) |
+| 최초 GitHub workflow 전체가 실패로 표시됨 | `빌드 & ECR 업로드`가 성공했고 ECR에 `sha-...` 이미지가 있으면 정상이다. Runtime ID가 없어서 deploy job만 의도적으로 멈춘 것이다 |
+| `AccessDenied`로 ECR push 실패 | IAM → `laimory-ai-github-deploy`의 ECR 정책과 OIDC trust의 organization/repository/branch를 확인한다 |
+| `AccessDenied`와 `iam:PassRole` 표시 | 콘솔 작업자 또는 GitHub 배포 역할이 `laimory-ai-agentcore-runtime`을 AgentCore에 전달할 수 있는지 확인한다 |
+| service-linked role 생성 실패 | 콘솔 작업자에 `iam:CreateServiceLinkedRole` 권한이 있는지 확인한다 |
+| subnet 선택 또는 Runtime 생성 실패 | subnet의 AZ ID가 `apne2-az1`, `apne2-az2`, `apne2-az3` 중 하나인지 확인한다 |
+| Runtime `CREATE_FAILED` / `UPDATE_FAILED` | Runtime 버전 세부 화면의 failure reason을 본다. arm64 이미지, 포트 8080, `/ping`, 실행 역할 ECR pull 권한 순으로 확인한다 |
+| ECR image pull timeout | ECR DKR/API interface endpoint, S3 gateway endpoint, endpoint security group과 route table을 확인한다 |
+| Bedrock 호출 timeout | NAT 경로나 `bedrock-runtime` interface endpoint와 private DNS를 확인한다 |
+| App Server에서 AgentCore 호출 timeout | `bedrock-agentcore` data plane VPC endpoint의 private DNS, App Server outbound `443`, endpoint security group inbound `443`을 확인한다 |
+| App Server에서 AgentCore 호출 `403` | EC2 Instance Role과 VPC endpoint policy가 Runtime ARN과 `prod` Runtime Endpoint ARN을 모두 허용하는지 확인한다 |
+| App Server 호출 timeout | `APP_SERVER_API_URL`, subnet route, Runtime outbound, App Server inbound와 사설 DNS를 확인한다. DB security group은 관련 없다 |
+| CloudWatch 로그가 비어 있음 | Runtime 실행 역할의 Logs 권한과 `logs` interface endpoint 또는 NAT 경로를 확인한다 |
+| Langfuse trace가 없음 | `LANGFUSE_ENABLED=true`, key pair, `LANGFUSE_BASE_URL`을 확인하고 Runtime private subnet의 NAT route, DNS, outbound `443`을 확인한다. 키가 불완전하면 애플리케이션은 Langfuse를 no-op으로 비활성화한다 |
+| CloudWatch에는 있지만 Elasticsearch에는 없음 | Runtime이 아니라 CloudWatch subscription filter와 전달 Lambda를 본다. filter pattern, Lambda 오류, `AWS/Logs`의 `DeliveryErrors`·`DeliveryThrottling`, Secrets Manager 권한, ES 인증과 Lambda→ES 경로를 확인한다 |
+| Elasticsearch에 일반 로그나 민감 필드가 들어감 | 구독을 즉시 중지하고 전달 Lambda가 `event.dataset == "laimory.api"`를 재검사하며 Filebeat 템플릿과 같은 `drop_fields`를 적용하는지 확인한다 |
+| 배포 후 환경 변수가 사라짐 | Runtime 갱신 시 전체 설정을 보존하지 않은 경우다. 직전 버전 설정을 대조해 다시 새 버전을 만든다 |
+| 백그라운드 처리가 중간에 끊김 | uvicorn worker를 늘리지 않았는지 확인한다. 반드시 단일 worker를 유지한다 |
+| 호출은 `202`인데 최종 실패 | CloudWatch에서 같은 `taskId`를 찾고 App Server 입력 조회·결과 저장·콜백 연결을 확인한다. taskToken 값 자체는 검색하거나 로그에 남기지 않는다 |
 
-## 12. 알려진 한계
+## 13. 보안과 운영 주의사항
 
-- **DB 비밀번호가 Runtime 환경 변수에 평문으로 들어간다.** `GetAgentRuntime` 을 부를 수
-  있는 사람에게 노출된다. Secrets Manager 로 옮기려면 앱이 기동 시 시크릿을 읽도록
-  코드를 바꿔야 해서 이번 범위에 넣지 않았다.
-- 배포 워크플로에 수동 승인 게이트가 없다. 필요하면 `deploy` job 에
-  `environment:` 를 달고 그 환경에 reviewer 를 지정한다.
+- Runtime 환경 변수는 `GetAgentRuntime` 권한이 있는 주체에게 보일 수 있다. Langfuse secret이나
+  외부 provider key를 넣는다면 해당 권한을 최소 인원으로 제한한다. Secrets Manager로 옮기려면
+  애플리케이션이 기동 시 secret을 읽도록 별도 구현이 필요하다.
+
+- Elasticsearch API key는 Runtime에 넣지 않는다. 전달 Lambda만 Secrets Manager에서 읽고,
+  운영 이벤트 수집에 필요한 data stream 권한만 갖는다.
+
+- Runtime 실행 역할의 Bedrock `Resource: "*"`는 최초 배포 성공 후 실제 모델과 추론
+  프로필 ARN으로 좁힌다.
+
+- GitHub OIDC 신뢰 조건은 `soma17th-369/Laimory-AI`의 `dev` 브랜치로 유지한다.
+
+- `sha-...` 태그와 Runtime 버전, Endpoint live version을 한 묶음으로 기록한다.
+
+- 배포 워크플로에는 수동 승인 gate가 없다. 필요하면 GitHub Environment reviewer를
+  별도로 설정한다.
+
+- AgentCore 콘솔 메뉴명은 AWS 업데이트로 달라질 수 있다. 화면이 문서와 다르면
+  [AgentCore 개발자 가이드](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/)의
+  Console 탭을 기준으로 판단한다.
