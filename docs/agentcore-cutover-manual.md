@@ -55,6 +55,12 @@ aws iam get-role --role-name laimory-ai-github-deploy --query 'Role.Arn' --outpu
 aws iam get-role --role-name laimory-ai-agentcore-runtime --query 'Role.Arn' --output text
 ```
 
+**실행 역할에 `laimory-ai-prod` pull 권한이 있어야 한다.** production 은 ECR 저장소를
+따로 쓴다(#90). `ecr:GetAuthorizationToken`(Resource `*`) 과
+`ecr:BatchGetImage`·`ecr:GetDownloadUrlForLayer`·`ecr:BatchCheckLayerAvailability`
+(Resource `laimory-ai-prod`) 가 필요하다. 없으면 2-3 의 Runtime 생성이
+`Access denied while validating ECR URI` 로 실패한다.
+
 **배포용 역할에 AgentCore 권한이 붙어 있어야 한다.** EC2 배포만 하던 역할이면
 `bedrock-agentcore:*` 와 `iam:PassRole` 이 빠져 있다. [3.3 절](deploy-agentcore.md#33-배포용-iam-역할-github-actions-가-맡는-역할)의
 `AgentCoreDeploy`·`PassRuntimeRole` 문을 확인한다. `iam:PassRole` 이 없으면 배포가
@@ -81,7 +87,14 @@ aws iam get-role --role-name laimory-ai-agentcore-runtime --query 'Role.Arn' --o
 않고 이 API 하나로만 데이터를 읽고 쓴다. `BEDROCK_AWS_PROFILE` 은 **넣지 않는다**(비어
 있어야 실행 역할 자격증명을 쓴다).
 
-**2-3. Runtime 을 만든다.** 네트워크 모드는 **`VPC`** 다. AI 서버가 입력 조회·결과 저장·
+**2-3. Runtime 을 만든다.**
+
+> 먼저 **실행 역할이 `laimory-ai-prod` 를 pull 할 수 있는지** 확인한다. production 이
+> ECR 저장소를 따로 쓰므로(#90), 개발 저장소만 허용된 역할이면 생성이 바로 실패한다.
+> `Access denied while validating ECR URI ...` 가 그 증상이다. 정책은
+> [Production 배포 가이드 §4.3](deploy-production.md) 에 있다.
+
+네트워크 모드는 **`VPC`** 다. AI 서버가 입력 조회·결과 저장·
 콜백을 전부 App Server 서버간 API 로 호출하므로 App Server 에 닿는 경로가 필요하다.
 
 ```bash

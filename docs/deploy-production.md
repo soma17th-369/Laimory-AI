@@ -313,7 +313,44 @@ EC2 배포용 `ssm:SendCommand`·`ssm:GetCommandInvocation`·`ecr:BatchDeleteIma
 **이 역할은 배포용이다.** 컨테이너가 Bedrock 을 부르거나 시크릿을 읽을 때 쓰는 것은
 Runtime 실행 역할(`laimory-ai-agentcore-runtime`)이며 별개다.
 
-### 4.3 ECR 정리 권한은 개발 저장소에만 둔다
+### 4.3 Runtime 실행 역할도 production 저장소를 봐야 한다
+
+배포 역할과 **별개**다. `laimory-ai-agentcore-runtime` 은 컨테이너를 띄울 때 이미지를
+pull 하는 역할이고, 저장소를 가른 뒤로 그 대상이 `laimory-ai-prod` 다. 개발 저장소만
+허용돼 있으면 Runtime 생성부터 실패한다.
+
+```text
+Access denied while validating ECR URI '...'. The execution role requires
+permissions for ecr:GetAuthorizationToken, ecr:BatchGetImage, and
+ecr:GetDownloadUrlForLayer operations.
+```
+
+```json
+{
+  "Sid": "EcrAuth",
+  "Effect": "Allow",
+  "Action": "ecr:GetAuthorizationToken",
+  "Resource": "*"
+},
+{
+  "Sid": "EcrPullProd",
+  "Effect": "Allow",
+  "Action": [
+    "ecr:BatchCheckLayerAvailability",
+    "ecr:BatchGetImage",
+    "ecr:GetDownloadUrlForLayer"
+  ],
+  "Resource": "arn:aws:ecr:ap-northeast-2:392900063927:repository/laimory-ai-prod"
+}
+```
+
+`ecr:GetAuthorizationToken` 은 저장소 단위로 좁힐 수 없어 별도 문장에서 `"*"` 로 둔다.
+전체 정책은 [AgentCore 배포 가이드 §3.4](deploy-agentcore.md#34-runtime-실행-역할-컨테이너가-쓰는-역할)에 있다.
+
+**ECR 저장소를 가르면 역할이 둘 바뀐다** — 배포 역할(§4.2)과 이 실행 역할이다. 하나만
+고치면 배포는 되는데 Runtime 이 안 뜨거나, 그 반대가 된다.
+
+### 4.4 ECR 정리 권한은 개발 저장소에만 둔다
 
 `ecr:BatchDeleteImage` 의 `Resource` 를 `laimory-ai` 하나로 유지한다. 역할을 공유해도
 `laimory-ai-prod` 에는 삭제 권한이 없어야, 정리 스크립트가 실수로 운영 저장소를 가리켜도
@@ -462,4 +499,5 @@ main** 이다. 둘 다 Settings → Environments → production 에 있다.
 | 필수 check 가 영원히 대기 중 | ruleset 의 `context` 문자열과 job `name` 이 다르다 |
 | 롤백하려는 버전의 이미지가 없음 | `laimory-ai-prod` 에 lifecycle policy 가 걸렸거나 수동 삭제됐다(§4.1) |
 | Runtime 이 `UPDATE_FAILED` | `failureReason` 부터 본다. arm64, 8080, `/ping`, 실행 역할의 ECR pull 권한 순으로 확인한다 |
+| Runtime 생성이 `Access denied while validating ECR URI` | 실행 역할에 `laimory-ai-prod` pull 권한이 없다(§4.3). 배포 역할과 다른 역할이다 |
 | 배포 후 환경변수가 사라짐 | CLI 로 `UpdateAgentRuntime` 을 직접 부르며 `--environment-variables` 를 뺐을 때 생긴다. 워크플로는 기존 값을 읽어 보존한다 |

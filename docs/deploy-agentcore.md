@@ -219,20 +219,37 @@ aws iam create-open-id-connect-provider \
 
 권한 정책 — ECR pull, CloudWatch Logs, Bedrock 모델 호출.
 
+> **pull 대상은 `laimory-ai-prod` 다**(이슈 #90). production 이 저장소를 따로 쓰므로 이
+> 역할이 개발 저장소만 허용하고 있으면 Runtime 생성이 다음 오류로 실패한다.
+>
+> ```text
+> Access denied while validating ECR URI '...'. The execution role requires
+> permissions for ecr:GetAuthorizationToken, ecr:BatchGetImage, and
+> ecr:GetDownloadUrlForLayer operations.
+> ```
+>
+> `ecr:GetAuthorizationToken` 은 **저장소 단위로 좁힐 수 없다.** AWS 스펙이라 반드시
+> 별도 문장에서 `"Resource": "*"` 로 둔다. 나머지 셋만 저장소 ARN 으로 좁힌다.
+
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "EcrPull",
+      "Sid": "EcrAuth",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "EcrPullProd",
       "Effect": "Allow",
       "Action": [
-        "ecr:GetAuthorizationToken",
         "ecr:BatchCheckLayerAvailability",
         "ecr:BatchGetImage",
         "ecr:GetDownloadUrlForLayer"
       ],
-      "Resource": "*"
+      "Resource": "arn:aws:ecr:ap-northeast-2:123456789012:repository/laimory-ai-prod"
     },
     {
       "Sid": "Logs",

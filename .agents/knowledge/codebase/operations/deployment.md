@@ -61,6 +61,8 @@ rollback workflow는 재build하지 않고 입력받은 기존 Runtime version�
 
 Environment 값은 같은 이름의 저장소 값을 덮어쓰지만, 등록 누락 시 저장소 값이 조용히 쓰인다. 그래서 ECR repository만 `PROD_ECR_REPOSITORY`로 가른다 — 이름을 공유하면 등록 누락이 곧 개발 repository로의 오배포이고, 그 image는 다음 dev 배포에 지워진다.
 
+ECR repository를 가르면 IAM role이 **둘** 바뀐다 — 배포 role과 Runtime 실행 role이다. 실행 role이 production repository를 pull하지 못하면 `CreateAgentRuntime`이 `Access denied while validating ECR URI`로 실패한다. `ecr:GetAuthorizationToken`은 repository 단위로 좁힐 수 없어 별도 statement에서 `*`로 둔다.
+
 IAM 배포 role은 dev와 **공용**이다(`AWS_DEPLOY_ROLE_ARN`, 저장소 수준). 그 role의 trust condition에 `ref:refs/heads/dev`와 `environment:production`이 모두 들어가고 권한은 두 경로의 합집합이므로, **role 자체는 권한 경계가 아니다.** 경계는 ECR repository 분리, Environment 승인 gate, deployment branch 정책, workflow별 실행 branch guard가 만든다.
 
 ## Invariants
