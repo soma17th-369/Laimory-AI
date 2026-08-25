@@ -49,8 +49,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 빌드에 필요한 값만 먼저 본다. AgentCore 값은 빌드 뒤에 확인한다(아래 참고).
-      - name: 빌드 설정 확인
+      # 설정이 빠졌으면 10분짜리 arm64 빌드를 시작하기 전에 멈춘다.
+      #
+      # Runtime 부트스트랩(최초 1회)은 이 앞단에서 걸린다. 그때는 워크플로로 이미지를
+      # 만들 수 없으므로 로컬에서 arm64 를 빌드해 ECR 에 올린 뒤 Runtime 을 만든다
+      # (docs/deploy-production.md §5). Runtime 이 있는 평상시에는 이 검사가 앞에 있는
+      # 편이 낫다 — 값 하나 빠진 것 때문에 빌드를 다 돌릴 이유가 없다.
+      - name: 필수 설정 확인
         env:
           ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
         run: |
@@ -58,6 +63,8 @@ jobs:
           missing=()
           [ -n "${AWS_REGION}" ] || missing+=(AWS_REGION)
           [ -n "${ECR_REPOSITORY}" ] || missing+=(PROD_ECR_REPOSITORY)
+          [ -n "${AGENTCORE_RUNTIME_ID}" ] || missing+=(AGENTCORE_RUNTIME_ID)
+          [ -n "${AGENTCORE_ENDPOINT_NAME}" ] || missing+=(AGENTCORE_ENDPOINT_NAME)
           [ -n "${ROLE_ARN}" ] || missing+=(AWS_DEPLOY_ROLE_ARN)
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error::Environment 'production' 의 변수/시크릿이 비어 있다: ${missing[*]}. docs/deploy-production.md 참고."
@@ -114,24 +121,6 @@ jobs:
           tags: ${{ steps.meta.outputs.image-uri }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      # AgentCore 값 확인은 **빌드 뒤**여야 한다. 부트스트랩 때문이다.
-      #
-      # Runtime 은 ECR 에 이미지가 있어야 만들 수 있고, AGENTCORE_RUNTIME_ID 는 Runtime 을
-      # 만들어야 생긴다. 이 검사를 맨 앞에 두면 첫 실행이 이미지를 만들기도 전에 죽어
-      # 그 고리를 못 끊는다. 여기 두면 첫 실행이 이미지를 올린 뒤 여기서 멈추므로,
-      # 그 이미지로 Runtime·엔드포인트를 만들고 변수를 등록한 다음 다시 돌리면 된다.
-      - name: AgentCore 설정 확인
-        run: |
-          set -euo pipefail
-          missing=()
-          [ -n "${AGENTCORE_RUNTIME_ID}" ] || missing+=(AGENTCORE_RUNTIME_ID)
-          [ -n "${AGENTCORE_ENDPOINT_NAME}" ] || missing+=(AGENTCORE_ENDPOINT_NAME)
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::Environment 'production' 의 변수가 비어 있다: ${missing[*]}."
-            echo "::notice::이미지는 ECR 에 올라갔다. 이 이미지로 Runtime 과 전용 엔드포인트를 만든 뒤 변수를 등록하고 다시 실행한다(docs/deploy-production.md §5)."
-            exit 1
-          fi
 
       # bedrock-agentcore-control 은 비교적 최근에 추가된 서비스라 러너에 미리 깔린
       # aws cli 가 모를 수 있다. 지원 여부를 보고 필요할 때만 갱신한다.

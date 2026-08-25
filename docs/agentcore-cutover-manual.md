@@ -71,13 +71,13 @@ aws iam get-role --role-name laimory-ai-agentcore-runtime --query 'Role.Arn' --o
 `AGENTCORE_RUNTIME_ID` 는 Runtime 을 만들어야 생기고, Runtime 은 ECR 에 이미지가 있어야
 만들 수 있다. 그래서 **이미지 먼저**다.
 
-**2-1. 이미지를 올린다.** Actions → **Deploy Production** → `Run workflow` (`main` 브랜치).
+**2-1. 이미지를 올린다.** **최초 1회는 로컬에서 만든다.** 워크플로는
+`AGENTCORE_RUNTIME_ID` 가 없으면 빌드 전에 멈추므로, 아직 Runtime 이 없는 지금은 쓸 수
+없다. 명령과 주의사항은
+[Production 배포 가이드 §5](deploy-production.md)에 있다.
 
-- 승인 게이트를 통과하면 arm64 이미지가 `laimory-ai-prod` 에 올라간다.
-- 그다음 「AgentCore 설정 확인」에서 **의도적으로 멈춘다.** `AGENTCORE_RUNTIME_ID` 가 아직
-  없기 때문이다. `Environment 'production' 의 변수가 비어 있다: AGENTCORE_RUNTIME_ID ...`
-  가 나오면 정상이고, **워크플로가 빨간불로 끝나는 것도 정상이다.**
-- 요약의 `이미지 태그` 를 적어 둔다(`prod-sha-<커밋12자>-arm64-run-...`).
+- `linux/arm64`, `--provenance=false`, `docker-container` 빌더가 필요하다.
+- 올린 이미지 태그를 적어 둔다. 2-3 의 `containerUri` 가 된다.
 
 **2-2. 환경 변수 파일을 만든다.** [7장 표](deploy-agentcore.md#7-운영-환경-변수)를 보고
 `runtime-env.json` 을 만든다. **커밋하지 않는다**(`.gitignore` 에 있다).

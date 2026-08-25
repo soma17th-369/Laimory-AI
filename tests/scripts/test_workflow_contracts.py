@@ -266,16 +266,9 @@ def test_production_records_rollback_target_before_switching(deploy_production) 
     assert "steps.switch.outputs.switched" in recovery["if"]
 
 
-def test_agentcore_check_comes_after_the_build(deploy_production) -> None:
-    """부트스트랩 고리를 끊는 순서다.
-
-    Runtime 은 ECR 에 이미지가 있어야 만들 수 있고 `AGENTCORE_RUNTIME_ID` 는 Runtime 을
-    만들어야 생긴다. AgentCore 값 검사를 빌드 앞에 두면 첫 실행이 이미지를 만들기도
-    전에 죽어 그 고리를 못 끊는다.
-    """
+def test_config_check_precedes_the_build(deploy_production) -> None:
+    """설정 하나 빠진 것 때문에 10분짜리 arm64 빌드를 돌리지 않는다."""
 
     names = [step.get("name", "") for step in deploy_production["jobs"]["deploy"]["steps"]]
 
-    assert names.index("빌드 설정 확인") < names.index("arm64 빌드 & ECR 푸시")
-    assert names.index("arm64 빌드 & ECR 푸시") < names.index("AgentCore 설정 확인")
-    assert names.index("AgentCore 설정 확인") < names.index("Runtime 새 버전 생성")
+    assert names.index("필수 설정 확인") < names.index("arm64 빌드 & ECR 푸시")
