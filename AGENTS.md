@@ -68,15 +68,30 @@ uv run uvicorn app.server:app --reload
 
 ## 배포
 
-기본 운영 경로는 EC2 단일 컨테이너입니다. `dev` 브랜치 push 가 GitHub Actions 를
-돌려 amd64 이미지를 ECR 에 올리고, Systems Manager 로 EC2 컨테이너를 교체합니다.
-AgentCore Runtime 은 장애가 해소됐을 때 사용할 수동 복구 경로로 유지합니다.
+배포 경로가 브랜치로 갈립니다(#90). `dev` 는 개발, `main` 은 production 의 정본입니다.
 
-- EC2 절차와 AWS 사전 준비는 [docs/deploy-ec2.md](docs/deploy-ec2.md)를 따릅니다.
-- AgentCore 수동 배포·롤백은 [docs/deploy-agentcore.md](docs/deploy-agentcore.md)를 따릅니다.
-- AgentCore 를 운영 경로로 올릴 때 사람이 AWS·GitHub 에서 해야 하는 작업은
+| 브랜치 | 워크플로 | 대상 | 아키텍처 | ECR |
+|---|---|---|---|---|
+| `dev` push | `deploy-ec2.yml` | EC2 단일 컨테이너 | `linux/amd64` | `laimory-ai` |
+| `main` push | `deploy-production.yml` | AgentCore Runtime | `linux/arm64` | `laimory-ai-prod` |
+
+`main` 에는 `dev` 에서 온 PR 로만 들어갑니다. merge 되면 production 배포가 승인 대기로
+뜨고, 승인해야 AWS 자격증명이 발급됩니다.
+
+- production 승격·배포·롤백과 GitHub·AWS 설정은 [docs/deploy-production.md](docs/deploy-production.md)를 따릅니다(#90).
+- EC2(개발) 절차와 AWS 사전 준비는 [docs/deploy-ec2.md](docs/deploy-ec2.md)를 따릅니다.
+- AgentCore Runtime 계약과 AWS 자원 준비는 [docs/deploy-agentcore.md](docs/deploy-agentcore.md)를 따릅니다.
+- Runtime·엔드포인트를 처음 만들 때 사람이 하는 작업은
   [docs/agentcore-cutover-manual.md](docs/agentcore-cutover-manual.md)를 따릅니다(#89).
 - 컨테이너는 8080 포트에서 `POST /v1/timeline`, `POST /invocations`, `GET /ping` 을 제공합니다.
+  Host `0.0.0.0`, Port `8080`, **`linux/arm64`** 는 AgentCore Runtime 이 요구하는 값입니다.
+- **ECR push 는 배포가 아닙니다.** AgentCore 는 ECR 을 감시하지 않습니다. `UpdateAgentRuntime`
+  이 새 Runtime 버전을 만들고, `UpdateAgentRuntimeEndpoint` 로 엔드포인트가 그 버전을
+  가리켜야 배포입니다. 롤백은 그 포인터를 되돌리는 것이라 재빌드가 없습니다.
+- production 이미지에 이동 태그(`latest`·`dev`)를 붙이지 않습니다. Runtime 버전과 이미지가
+  1:1 로 고정돼야 롤백이 성립합니다.
+- 두 경로는 ECR 저장소를 공유하지 않습니다. `scripts/prune_ecr_images.py` 가 저장소 전체에서
+  EC2 배포 태그가 없는 이미지를 지우므로, 한 저장소를 쓰면 dev 배포가 운영 이미지를 지웁니다.
 - uvicorn worker 를 늘리지 않습니다. `app/core/inflight.py` 의 진행 중 처리 카운터가 프로세스 로컬이라 worker 가 여럿이면 `/ping` 이 잘못된 상태를 답합니다.
 
 ## 스킬 공유
@@ -323,15 +338,30 @@ tests/
 ├── integration/               # 실제 LLM 통합 테스트(opt-in)
 └── fixtures/                  # 요청/스냅샷 빌더 + App Server 클라이언트 테스트 더블
 
-# 배포 (#29)
+# 배포 (#29, #90)
 Dockerfile                     # amd64/arm64 공용, uv 멀티스테이지, non-root, 8080
 .dockerignore                  # deny-all 후 app/·pyproject.toml·uv.lock 만 허용 (.env 유입 차단)
 .github/workflows/
-├── deploy-ec2.yml             # dev push → amd64 빌드 → ECR push → SSM 으로 EC2 교체
-├── deploy-agentcore.yml       # 수동 실행. arm64 빌드 → Runtime 새 버전 → 엔드포인트 전환
-└── rollback-agentcore.yml     # 수동 실행. 엔드포인트를 이전 Runtime 버전으로 되돌림(재빌드 없음)
+├── deploy-ec2.yml             # dev push → amd64 빌드 → ECR(laimory-ai) → SSM 으로 EC2 교체.
+│                              #   dev 이외 브랜치에서는 수동 실행도 막는다
+├── deploy-production.yml      # main push → 승인 → arm64 빌드 → ECR(laimory-ai-prod) →
+│                              #   Runtime 새 버전 → 엔드포인트 전환 → 실패 시 자동 복구.
+│                              #   Environment production 을 선언한 job 하나뿐이라
+│                              #   승인 게이트와 전용 자격증명이 같은 자리에 있다(#90)
+├── rollback-production.yml    # 수동 실행(main 에서). 엔드포인트를 이전 Runtime 버전으로
+│                              #   되돌림. 재빌드 없음 — 버전이 그때의 이미지를 물고 있다
+└── pr-main-guard.yml          # main 대상 PR 의 source branch 가 dev 인지 검사(#90).
+                               #   ruleset 의 **필수 check 로 등록해야** 효력이 생긴다.
+                               #   job name 이 곧 check 이름이라 바꾸면 보호가 조용히 풀린다
 scripts/deploy-ec2.sh          # EC2 컨테이너 교체·헬스체크·실패 시 직전 이미지 복구
-docs/deploy-ec2.md             # EC2 AWS 준비·배포·운영 절차
-docs/deploy-agentcore.md       # AgentCore 수동 배포·롤백 절차
-docs/agentcore-cutover-manual.md # AgentCore 전환 시 사람이 AWS·GitHub 에서 하는 작업(#89)
+scripts/prune_ecr_images.py    # EC2 배포 성공 후 dev ECR 정리. **저장소 전체**를 훑어
+                               #   현재·직전 태그가 없는 이미지를 지운다(아키텍처 구분 없음).
+                               #   production 이 저장소를 따로 쓰는 이유가 이것이다
+docs/deploy-production.md      # main→production 승격·배포·롤백, GitHub ruleset·Environment,
+                               #   production OIDC·IAM·ECR 설정 절차(#90)
+docs/github/main-ruleset.example.json # ruleset 적용용 예시 payload. 이 파일을 고쳐도
+                               #   GitHub 설정은 바뀌지 않는다(문서의 gh 명령으로 적용)
+docs/deploy-ec2.md             # EC2(개발) AWS 준비·배포·운영 절차
+docs/deploy-agentcore.md       # AgentCore Runtime 계약과 AWS 자원 준비
+docs/agentcore-cutover-manual.md # Runtime·엔드포인트를 처음 만들 때 사람이 하는 작업(#89)
 ```

@@ -1,11 +1,15 @@
 # AgentCore Runtime 배포 가이드
 
-> 기준일: 2026-07-24
-> 대상: Laimory AI 서버(FastAPI)를 Amazon Bedrock AgentCore Runtime 으로 수동 복구하는 절차
+> 기준일: 2026-08-25 (이슈 #90 배포 경계 분리 반영)
+> 대상: Laimory AI 서버(FastAPI)를 Amazon Bedrock AgentCore Runtime 으로 올리는 절차
 
-기본 자동 배포 경로는 EC2다. 이 문서는 AgentCore 장애가 해소됐을 때 Runtime 배포를
-수동으로 재개하거나 기존 Runtime 버전으로 롤백하는 절차를 설명한다. EC2 운영 경로는
+**AgentCore Runtime 이 production 운영 경로다**(이슈 #90). `main` push 가
+`deploy-production.yml` 을 돌려 자동 배포하며, 그 승격·승인·설정 절차는
+[Production 배포 가이드](deploy-production.md)에 있다. 개발 경로인 EC2 는
 [EC2 컨테이너 배포 가이드](deploy-ec2.md)를 따른다.
+
+이 문서는 그 아래 계층 — **컨테이너 계약과 AWS 자원 준비** — 를 다룬다. 어느 워크플로가
+언제 도는지가 궁금하면 Production 배포 가이드를 먼저 본다.
 
 > AgentCore 를 처음 올리는 중이라면 [AgentCore 전환 수동 작업 매뉴얼](agentcore-cutover-manual.md)
 > 을 먼저 본다. 이 문서의 절차를 어떤 순서로 밟고 무엇으로 끝났는지 확인하는지를
@@ -15,16 +19,21 @@
 ## 1. 배포 구조
 
 ```text
-Actions에서 Deploy AgentCore Runtime 수동 실행
-→ GitHub Actions (deploy-agentcore.yml)
+main push (dev → main PR merge) 또는 Actions 수동 실행
+→ GitHub Actions (deploy-production.yml)
+→ Environment production 승인 대기
 → OIDC 로 AWS 임시 자격증명 발급
-→ linux/arm64 이미지 빌드 → Amazon ECR push (태그: sha-<커밋12자>)
+→ linux/arm64 이미지 빌드 → Amazon ECR push (laimory-ai-prod, 불변 태그)
 → UpdateAgentRuntime  → 새 Runtime 버전 생성 (1, 2, 3 ...)
 → UpdateAgentRuntimeEndpoint → 엔드포인트를 새 버전으로 전환
 ```
 
 배포의 실체는 **엔드포인트가 어느 Runtime 버전을 가리키는가**다. 롤백은 이미지를 다시
 빌드하지 않고 엔드포인트를 이전 버전으로 되돌리는 것으로 끝난다.
+
+**ECR 에 이미지가 올라가는 것만으로는 아무 일도 일어나지 않는다.** AgentCore 는 ECR 을
+감시하지 않는다. 위 두 API 호출이 있어야 반영되며, 그래서 이동 태그(`latest`·`dev`)를
+`containerUri` 에 쓰지 않는다 — Runtime 버전과 이미지가 1:1 이어야 롤백이 성립한다.
 
 App Server 는 이 엔드포인트를 `bedrock-agentcore:InvokeAgentRuntime` 으로 호출하고,
 호출 payload 는 컨테이너의 `POST /invocations` 로 그대로 전달된다.
@@ -41,7 +50,7 @@ AgentCore Runtime 은 컨테이너에 아래를 고정으로 요구한다. 하�
 
 | 요구사항 | 이 저장소의 구현 |
 |---|---|
-| 이미지 아키텍처 `linux/arm64` | `deploy-agentcore.yml` 의 Buildx `platforms: linux/arm64` |
+| 이미지 아키텍처 `linux/arm64` | `deploy-production.yml` 의 Buildx `platforms: linux/arm64` |
 | HTTP 포트 `8080` | `EXPOSE 8080` + `uvicorn --host 0.0.0.0 --port 8080` |
 | `POST /invocations` | `app/api/agentcore.py` (`requestType` 으로 타임라인·User Memory 를 구분해 기존 핸들러에 위임) |
 | `GET /ping` → `{"status": "Healthy"\|"HealthyBusy"}` | `app/api/agentcore.py` |
@@ -67,7 +76,18 @@ AgentCore 가 컨테이너를 회수해 처리가 통째로 사라질 수 있다
 
 ### 3.1 ECR 리포지토리
 
+**production 은 `laimory-ai-prod` 를 쓴다**(이슈 #90). 개발용 `laimory-ai` 와 나뉜 이유와
+lifecycle policy 를 걸지 않는 이유는
+[Production 배포 가이드 §4.1](deploy-production.md)에 있다.
+
 ```bash
+# production
+aws ecr create-repository \
+  --repository-name laimory-ai-prod \
+  --image-scanning-configuration scanOnPush=true \
+  --region ap-northeast-2
+
+# 개발(EC2). 이미 있으면 그대로 둔다
 aws ecr create-repository \
   --repository-name laimory-ai \
   --image-scanning-configuration scanOnPush=true \
@@ -85,6 +105,11 @@ aws iam create-open-id-connect-provider \
 ```
 
 ### 3.3 배포용 IAM 역할 (GitHub Actions 가 맡는 역할)
+
+> **production 배포 역할은 이것이 아니다.** 이슈 #90 이후 production 은 별도 역할
+> (`laimory-ai-github-deploy-prod`)을 쓰고, 신뢰 조건이 브랜치가 아니라
+> `environment:production` 기준이다. 정책 원문과 차이는
+> [Production 배포 가이드 §4.2](deploy-production.md)에 있다. 아래는 개발용 역할이다.
 
 신뢰 정책 — `dev` 브랜치에서 도는 워크플로만 이 역할을 맡을 수 있게 좁힌다.
 
@@ -295,7 +320,7 @@ Runtime 버전은 `1`, `2`, `3` 같은 숫자 문자열이다.
 **2)** GitHub 에 먼저 3개만 등록한다 — `AWS_REGION`, `ECR_REPOSITORY`,
 `AWS_DEPLOY_ROLE_ARN`.
 
-**3)** Actions → **Deploy AgentCore Runtime** → `Run workflow` 로 수동 실행한다.
+**3)** Actions → **Deploy Production** → `Run workflow` 로 수동 실행한다.
 
 - `build` job 은 **성공**하고 이미지가 ECR 에 올라간다.
 - `deploy` job 은 `AGENTCORE_RUNTIME_ID` 가 비어 있어 첫 스텝에서 **의도적으로 멈춘다.**
@@ -389,7 +414,7 @@ Runtime 의 `environmentVariables` 로 주입한다.
 
 AgentCore 배포는 자동 실행하지 않는다.
 
-Actions → **Deploy AgentCore Runtime** → `Run workflow`에서 수동 실행한다. 현재
+Actions → **Deploy Production** → `Run workflow`에서 수동 실행한다. 현재
 기본 자동 배포는 `deploy-ec2.yml`이 담당한다.
 
 ### 진행 순서
@@ -404,7 +429,7 @@ Actions → **Deploy AgentCore Runtime** → `Run workflow`에서 수동 실행�
 
 ## 9. 롤백
 
-Actions → **Rollback AgentCore Runtime** → `Run workflow`.
+Actions → **Rollback Production** → `Run workflow`.
 
 **버전을 비워 두고 실행하면** 현재 서비스 버전과 사용 가능한 버전 목록만 요약에
 출력하고 끝난다. 무엇으로 되돌릴지 먼저 확인할 때 쓴다.

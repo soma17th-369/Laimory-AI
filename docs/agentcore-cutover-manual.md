@@ -23,10 +23,16 @@
 | Runtime·전용 엔드포인트 | **미생성** (2장) |
 | `AGENTCORE_RUNTIME_ID`·`AGENTCORE_ENDPOINT_NAME` | **미등록** (3장) |
 | App Server 의 `InvokeAgentRuntime` 호출 권한 | **미구성** (4장) |
-| `dev` 자동 배포 대상 전환 | 이번 범위 아님. 다음 PR |
+| `main` 기반 production 배포 워크플로·경계 | 완료 (#90) |
+| `main` 브랜치·ruleset·Environment `production` | **미적용** ([Production 배포 가이드 §3](deploy-production.md)) |
 
-`dev` push 는 지금도 EC2 로 자동 배포된다. 이 매뉴얼을 끝내도 그 동작은 바뀌지 않으며,
-AgentCore 배포는 Actions 에서 수동 실행한다.
+`dev` push 는 EC2(개발)로, `main` push 는 AgentCore Runtime(운영)으로 나간다(#90).
+**이 매뉴얼은 그중 AgentCore 쪽 AWS 자원을 만드는 부분이다.** GitHub 쪽 승격 경계
+(`main` 브랜치 생성, ruleset, Environment, production 변수·시크릿)는
+[Production 배포 가이드](deploy-production.md)에 있고, 둘 다 끝나야 자동 배포가 돈다.
+
+아래 3장의 저장소 변수는 **Environment `production` 수준**에 등록한다. 저장소 수준에
+만들면 등록 누락이 조용한 오배포가 된다(Production 배포 가이드 §3.4).
 
 ## 1. 사전 준비 확인
 
@@ -59,7 +65,7 @@ aws iam get-role --role-name laimory-ai-agentcore-runtime --query 'Role.Arn' --o
 `AGENTCORE_RUNTIME_ID` 는 Runtime 을 만들어야 생기고, Runtime 은 ECR 에 이미지가 있어야
 만들 수 있다. 그래서 **이미지 먼저**다.
 
-**2-1. 이미지를 올린다.** Actions → **Deploy AgentCore Runtime** → `Run workflow`.
+**2-1. 이미지를 올린다.** Actions → **Deploy Production** → `Run workflow`.
 
 - `build` job 은 성공하고 arm64 이미지가 ECR 에 올라간다.
 - `deploy` job 은 `AGENTCORE_RUNTIME_ID` 가 비어 있어 첫 스텝에서 **의도적으로 멈춘다.**
@@ -113,9 +119,10 @@ aws bedrock-agentcore-control create-agent-runtime-endpoint \
 > 쓸 수 없다. 롤백은 "엔드포인트를 이전 버전에 고정" 하는 방식이라 전용 엔드포인트가
 > 반드시 있어야 한다.
 
-## 3. GitHub 저장소 변수 등록
+## 3. GitHub 변수 등록 (Environment `production`)
 
-저장소 → **Settings** → **Secrets and variables** → **Actions**.
+저장소 → **Settings** → **Environments** → **production**. Environment 가 아직 없으면
+[Production 배포 가이드 §3.3](deploy-production.md) 을 먼저 한다.
 
 | 이름 | 종류 | 값의 출처 |
 |---|---|---|
@@ -123,11 +130,13 @@ aws bedrock-agentcore-control create-agent-runtime-endpoint \
 | `AGENTCORE_ENDPOINT_NAME` | Variable | 2-4 에서 직접 정한 `--name` (예: `prod`) |
 
 ```bash
-gh variable set AGENTCORE_RUNTIME_ID   --body "laimory_ai-a1B2c3D4e5"
-gh variable set AGENTCORE_ENDPOINT_NAME --body "prod"
+gh variable set AGENTCORE_RUNTIME_ID   --env production --body "laimory_ai-a1B2c3D4e5"
+gh variable set AGENTCORE_ENDPOINT_NAME --env production --body "prod"
 ```
 
-`AWS_REGION`·`ECR_REPOSITORY`·`AWS_DEPLOY_ROLE_ARN` 은 EC2 배포와 공용이라 이미 있을 것이다.
+`--env production` 을 빠뜨려 저장소 수준에 만들지 않는다. `PROD_ECR_REPOSITORY` 와
+`AWS_PROD_DEPLOY_ROLE_ARN` 도 같은 Environment 에 있어야 한다(Production 배포 가이드 §3.4).
+`AWS_REGION` 만 저장소 수준에서 공용으로 쓴다.
 
 ## 4. App Server 의 호출 권한과 네트워크
 
@@ -178,7 +187,7 @@ timeout 으로 죽는 모양이 된다.
 
 ## 5. 수동 배포와 검증
 
-**5-1. 배포한다.** Actions → **Deploy AgentCore Runtime** → `Run workflow`.
+**5-1. 배포한다.** Actions → **Deploy Production** → `Run workflow`.
 이번에는 `deploy` job 이 끝까지 간다. 요약에 새 Runtime 버전과 **직전 서비스 버전**
 (롤백 대상)이 표로 남는다.
 
@@ -222,7 +231,7 @@ aws bedrock-agentcore invoke-agent-runtime \
 
 장애가 났을 때 처음 해보면 늦다. 배포가 성공한 상태에서 한 번 돌려 본다.
 
-**6-1. 버전 목록만 확인한다.** Actions → **Rollback AgentCore Runtime** → `Run workflow` 를
+**6-1. 버전 목록만 확인한다.** Actions → **Rollback Production** → `Run workflow` 를
 **버전을 비워 두고** 실행하면 현재 서비스 버전과 사용 가능한 버전을 요약에 출력하고 끝난다.
 
 **6-2. 되돌린다.** 버전을 지정해 다시 실행한다. 이미지를 다시 빌드하지 않는다 — 각
@@ -237,8 +246,12 @@ Runtime 버전이 그때 배포된 ECR 이미지를 물고 있어서 엔드포�
 
 - AgentCore 로 두 작업을 모두 접수·처리할 수 있다.
 - 배포·롤백 이력이 Runtime 버전과 엔드포인트로 남는다.
-- **`dev` push 는 여전히 EC2 로 자동 배포된다.** 기본 배포 대상 전환과 EC2 fallback 범위
-  결정은 다음 작업이다.
+- `dev` push 는 EC2(개발)로 계속 나간다. 이 경로는 그대로 유지된다.
+
+**아직 자동 배포는 돌지 않는다.** GitHub 쪽 승격 경계가 남아 있다 —
+[Production 배포 가이드](deploy-production.md) 의 `main` 브랜치 생성(§3.1),
+ruleset(§3.2), Environment 승인자·배포 브랜치(§3.3), production ECR·IAM(§4).
+둘 다 끝나야 `dev → main` merge 가 production 배포로 이어진다.
 
 ## 8. 자주 막히는 곳
 
