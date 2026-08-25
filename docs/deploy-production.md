@@ -3,7 +3,8 @@
 > 기준일: 2026-08-25 (이슈 #90)
 > 대상: `main` 을 production 의 정본으로 삼아 AgentCore Runtime 에 배포하는 경로
 
-`dev → main` PR 이 merge 되면 GitHub Actions 가 arm64 이미지를 production 전용 ECR 에
+`dev → main` 일반 승격 PR 또는 `hotfix → main` 긴급 수정 PR이 merge 되면
+GitHub Actions 가 arm64 이미지를 production 전용 ECR 에
 올리고, AgentCore Runtime 새 버전을 만들어 엔드포인트를 전환한다. `dev` push 는 지금처럼
 EC2 로 나간다([EC2 배포 가이드](deploy-ec2.md)).
 
@@ -26,6 +27,10 @@ dev → main  (PR merge)
   → 엔드포인트 READY 대기      ← 같은 /ping 판정
   → 호출 스모크 (비치명, 요약에만 기록)
   → 실패 시 직전 서비스 버전으로 자동 복구
+
+main → hotfix  (운영 긴급 수정 시 분기)
+hotfix → main  (PR merge)
+  → dev 승격과 같은 production 배포 경로
 ```
 
 | 구분 | 개발 | 운영 |
@@ -47,7 +52,7 @@ dev → main  (PR merge)
 | 겹 | 수단 | 막는 것 |
 |---|---|---|
 | 1 | ruleset 의 `pull_request` 규칙 | `main` 직접 push. PR 을 강제한다 |
-| 2 | `pr-main-guard.yml` | `dev` 이외 브랜치(및 fork)에서 온 PR |
+| 2 | `pr-main-guard.yml` | 같은 저장소의 `dev`·`hotfix` 이외 브랜치(및 fork)에서 온 PR |
 | 3 | ruleset 의 필수 check 지정 | 2번이 실패한 PR 의 merge |
 
 **3번이 없으면 2번은 경고에 그친다.** 실패한 check 를 무시하고 merge 할 수 있다.
@@ -414,7 +419,8 @@ docker buildx build --builder laimory-arm64 --platform linux/arm64   --provenanc
 
 ## 6. 배포
 
-`dev → main` PR 을 merge 하면 시작된다. PR 을 열거나 고치는 시점에는 배포되지 않는다
+`dev → main` 일반 승격 PR 또는 `hotfix → main` 긴급 수정 PR을 merge 하면
+시작된다. PR 을 열거나 고치는 시점에는 배포되지 않는다
 (`push` 이벤트라 그렇다).
 
 1. `dev` 에서 검증을 마친다.
@@ -422,6 +428,10 @@ docker buildx build --builder laimory-arm64 --platform linux/arm64   --provenanc
 3. merge 하면 **Deploy Production** 이 승인 대기 상태로 뜬다.
 4. 승인자가 Actions 화면에서 승인하면 빌드·배포가 진행된다.
 5. 요약에서 커밋 SHA, 이미지 태그, digest, 새 Runtime 버전, **직전 서비스 버전**을 확인한다.
+
+운영 긴급 수정은 현재 `main`과 같은 지점의 공용 `hotfix` 브랜치에서 작업하고
+`hotfix → main` PR을 연다. 이 경로에서도 기존 required check 이름은 ruleset 호환을
+위해 그대로 유지하며, 실제 검사는 같은 저장소의 `dev` 또는 `hotfix`를 허용한다.
 
 path 필터를 두지 않았다. 문서만 바뀐 merge 도 배포가 돌아 `main` HEAD 와 운영에 떠 있는
 커밋이 어긋나지 않는다. 불필요한 배포는 승인 단계에서 거절하면 된다.
@@ -519,8 +529,9 @@ main** 이다. 둘 다 Settings → Environments → production 에 있다.
 | dev 배포가 갑자기 `AccessDenied` | 공용 역할의 trust policy 를 고치며 `ref:refs/heads/dev` 항목을 지웠다(§4.2) |
 | `AccessDenied` (`sts:AssumeRoleWithWebIdentity`) | 공용 역할의 trust policy 에 `environment:production` 항목을 더했는지 본다(§4.2). `ref:refs/heads/main` 이 아니다 |
 | `AccessDenied` (`iam:PassRole`) | §4.2 의 `PassRuntimeRole` 문이 빠졌다 |
+| `ValidationException` (`cannot modify requireServiceS3Endpoint`) | 신규 Runtime의 조회 전용 VPC 필드를 Update 요청에 다시 보낸 경우다. 최신 `deploy-production.yml`은 이 필드만 제거하고 나머지 network 설정을 보존한다 |
 | 아무 브랜치에서나 production 이 배포됨 | Environment 의 Deployment branches 가 `main` 으로 제한되지 않았다(§3.3) |
-| `dev` 아닌 브랜치에서 온 PR 이 merge 됨 | check 는 실패했는데 ruleset 의 필수 check 지정이 없다(§3.2) |
+| `dev`·`hotfix` 아닌 브랜치에서 온 PR 이 merge 됨 | check 는 실패했는데 ruleset 의 필수 check 지정이 없다(§3.2) |
 | 필수 check 가 영원히 대기 중 | ruleset 의 `context` 문자열과 job `name` 이 다르다 |
 | 롤백하려는 버전의 이미지가 없음 | `laimory-ai-prod` 에 lifecycle policy 가 걸렸거나 수동 삭제됐다(§4.1) |
 | Runtime 이 `UPDATE_FAILED` | `failureReason` 부터 본다. arm64, 8080, `/ping`, 실행 역할의 ECR pull 권한 순으로 확인한다 |
