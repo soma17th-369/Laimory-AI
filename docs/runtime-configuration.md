@@ -35,22 +35,16 @@ AgentCore가 이 값을 컨테이너 프로세스 환경으로 주입하므로 �
 
 ## 2. Secrets Manager
 
-production의 `laimory-ai/prod/app` Secret에는 현재 다음 값만 넣는다.
+production에서 필요한 Secret은 용도별로 분리한다.
 
-```json
-{
-  "LANGFUSE_SECRET_KEY": "<운영 프로젝트 secret key>"
-}
-```
+| Secret | 읽는 주체 | 들어가는 값 |
+|---|---|---|
+| `laimory-ai/prod/app` | AgentCore 애플리케이션 | `LANGFUSE_SECRET_KEY` |
+| 로그 전달용 별도 Secret | CloudWatch → Elasticsearch 전달 Lambda | `ES_API_KEY` |
 
-LLM provider를 바꿀 때만 선택한 provider의 key를 추가한다.
+현재 LLM provider는 Bedrock이므로 provider API key는 필요 없다. AgentCore Runtime 실행
+역할로 Bedrock을 호출한다. 나중에 provider를 바꿀 때만 앱 Secret에 `OPENAI_API_KEY` 또는
+`GEMINI_API_KEY`를 추가한다.
 
-- OpenAI 사용 시: `OPENAI_API_KEY`
-- Gemini 사용 시: `GEMINI_API_KEY`
-- Bedrock 사용 시: 추가 key 없음. AgentCore Runtime 실행 역할로 인증
-
-`APP_SERVER_API_URL`, `BEDROCK_MODEL`, 로그·timeout 설정처럼 비밀이 아닌 값은 Secret에
-넣지 않고 AgentCore 환경변수에 둔다.
-
-Elasticsearch의 `ES_API_KEY`는 애플리케이션용 `laimory-ai/prod/app`이 아니라 AgentCore
-로그 전달 Lambda가 읽는 별도 Secret에 둔다.
+`APP_SERVER_API_URL`, `BEDROCK_MODEL`, `LANGFUSE_PUBLIC_KEY`, `ES_URL`처럼 비밀이 아닌
+값은 Secrets Manager가 아니라 해당 실행 주체의 환경변수에 둔다.
