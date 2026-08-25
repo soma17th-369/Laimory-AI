@@ -168,11 +168,23 @@ jobs:
             --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
             --region "$AWS_REGION")
 
+          # GetAgentRuntime 응답에는 생성 시점에 따라 읽기 전용 호환 필드가 포함된다.
+          # 신규 Runtime 은 requireServiceS3Endpoint 를 Update 요청에 다시 넣는 것
+          # 자체를 거절하므로, VPC 설정은 보존하되 그 필드만 제거한다.
+          network=$(jq -c '
+            .networkConfiguration
+            | if .networkModeConfig then
+                .networkModeConfig |= del(.requireServiceS3Endpoint)
+              else
+                .
+              end
+          ' <<<"$current")
+
           args=(
             --agent-runtime-id "$AGENTCORE_RUNTIME_ID"
             --agent-runtime-artifact "$(jq -nc --arg uri "$IMAGE_URI" '{containerConfiguration:{containerUri:$uri}}')"
             --role-arn "$(jq -r '.roleArn' <<<"$current")"
-            --network-configuration "$(jq -c '.networkConfiguration' <<<"$current")"
+            --network-configuration "$network"
           )
           # `[ -n "$x" ] && args+=(...)` 로 줄이면 그 줄이 마지막 명령이 되는 순간
           # set -e 에 걸려 스텝이 죽는다. 순서가 바뀌어도 안전하도록 if 로 쓴다.

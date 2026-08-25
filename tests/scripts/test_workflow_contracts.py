@@ -179,6 +179,15 @@ def test_required_check_name_is_pinned(pr_main_guard) -> None:
     assert next(iter(jobs.values()))["name"] == REQUIRED_CHECK_NAME
 
 
+def test_pr_guard_allows_only_dev_or_hotfix_from_same_repository() -> None:
+    """main 일반 승격과 긴급 수정 경로만 허용한다."""
+
+    body = PR_MAIN_GUARD.read_text(encoding="utf-8")
+
+    assert '"${HEAD_REPO}" != "${BASE_REPO}"' in body
+    assert '[ "${HEAD_REF}" != "dev" ] && [ "${HEAD_REF}" != "hotfix" ]' in body
+
+
 def test_ruleset_example_matches_the_guard_job_name() -> None:
     """예시 payload 와 workflow 가 어긋나면 필수 check 가 영원히 대기한다."""
 
@@ -272,3 +281,12 @@ def test_config_check_precedes_the_build(deploy_production) -> None:
     names = [step.get("name", "") for step in deploy_production["jobs"]["deploy"]["steps"]]
 
     assert names.index("필수 설정 확인") < names.index("arm64 빌드 & ECR 푸시")
+
+
+def test_production_omits_immutable_service_s3_endpoint_on_runtime_update() -> None:
+    """신규 Runtime의 조회 전용 VPC 필드를 Update 요청에 되돌려 보내지 않는다."""
+
+    body = DEPLOY_PRODUCTION.read_text(encoding="utf-8")
+
+    assert "del(.requireServiceS3Endpoint)" in body
+    assert '--network-configuration "$network"' in body
