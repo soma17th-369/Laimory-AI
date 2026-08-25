@@ -1,0 +1,52 @@
+name: PR into main
+
+# main 은 production 의 정본이고, main 으로 들어오는 유일한 입구는 dev 다.
+#
+# GitHub Actions 의 `push: branches: [main]` 만으로는 직접 push 와 PR merge 를 구분할 수
+# 없다. 그래서 세 겹으로 막는다.
+#
+#   1. ruleset: main 직접 push 차단 + PR 필수
+#   2. 이 워크플로: PR 의 source branch 가 dev 인지 검사
+#   3. ruleset 의 필수 check 지정: 2번이 통과해야 merge 버튼이 열린다
+#
+# 2번만 있고 3번이 없으면 실패한 check 를 무시하고 merge 할 수 있다. 필수 check 로
+# 등록하는 이름은 아래 job 의 `name` 이다(docs/deploy-production.md).
+on:
+  pull_request:
+    branches: [main]
+    # `edited` 가 필요하다. PR 의 base branch 를 나중에 main 으로 바꾸면 그때 뜨는 것이
+    # `edited` 라, 빼면 base 를 갈아끼워 검사를 건너뛸 수 있다.
+    types: [opened, reopened, synchronize, edited]
+
+# AWS 자격증명도, 쓰기 권한도 필요 없다. fork 에서 온 PR 에서도 안전하게 돈다.
+permissions:
+  contents: read
+
+jobs:
+  # job 이름을 바꾸면 ruleset 의 필수 check 가 어긋나 보호가 조용히 풀린다.
+  # tests/scripts/test_workflow_contracts.py 가 이 이름을 고정한다.
+  source-branch:
+    name: dev 브랜치에서 온 PR 인지 확인
+    runs-on: ubuntu-latest
+    steps:
+      - name: source branch 검사
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # fork 의 dev 브랜치는 이 저장소의 dev 가 아니다. 이름만 같은 다른 이력이므로
+          # 검증되지 않은 코드가 production 으로 들어올 수 있다.
+          if [ "${HEAD_REPO}" != "${BASE_REPO}" ]; then
+            echo "::error::main 대상 PR 은 이 저장소의 dev 에서만 올 수 있다(현재 source 저장소: ${HEAD_REPO})."
+            exit 1
+          fi
+
+          if [ "${HEAD_REF}" != "dev" ]; then
+            echo "::error::main 대상 PR 의 source branch 는 dev 여야 한다(현재: ${HEAD_REF}). 변경을 먼저 dev 에 merge 한 뒤 dev → main PR 을 연다."
+            exit 1
+          fi
+
+          echo "source branch 확인: ${HEAD_REPO}:${HEAD_REF} → main"

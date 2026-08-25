@@ -1,0 +1,36 @@
+{
+  "_comment": "GitHub ruleset 생성용 예시 payload (이슈 #90). 저장소의 이 파일을 고쳐도 GitHub 설정은 바뀌지 않는다. docs/deploy-production.md 의 절차대로 gh api 로 적용해야 효력이 생긴다. required_status_checks 의 context 는 .github/workflows/pr-main-guard.yml 의 job name 과 글자 그대로 같아야 한다.",
+  "name": "main production protection",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/heads/main"],
+      "exclude": []
+    }
+  },
+  "bypass_actors": [],
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 1,
+        "dismiss_stale_reviews_on_push": true,
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "required_status_checks": [
+          { "context": "dev 브랜치에서 온 PR 인지 확인" }
+        ]
+      }
+    }
+  ]
+}

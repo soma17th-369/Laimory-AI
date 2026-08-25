@@ -95,14 +95,19 @@ tests/
 Dockerfile                     # EC2/AgentCore 공용 배포 이미지 (non-root, 8080)
 .dockerignore                  # 빌드 컨텍스트 허용 목록
 .github/workflows/
-├── deploy-ec2.yml             # dev push → amd64 이미지 → EC2 자동 배포
-├── deploy-agentcore.yml       # arm64 이미지 → AgentCore 수동 복구
-└── rollback-agentcore.yml     # AgentCore 수동 롤백
+├── deploy-ec2.yml             # dev push → amd64 이미지 → EC2 자동 배포(개발)
+├── deploy-production.yml      # main push → 승인 → arm64 이미지 → AgentCore 배포(운영)
+├── rollback-production.yml    # 엔드포인트를 이전 Runtime 버전으로 되돌림(재빌드 없음)
+└── pr-main-guard.yml          # main 대상 PR 이 dev 에서 왔는지 검사(필수 check)
 scripts/deploy-ec2.sh          # SSM에서 실행하는 EC2 교체·자동 복구 스크립트
-docs/deploy-ec2.md             # EC2 운영 배포 절차
-docs/deploy-agentcore.md       # AgentCore 수동 복구 절차
+docs/deploy-production.md      # main→production 승격·배포·롤백과 GitHub·AWS 설정(#90)
+docs/deploy-ec2.md             # EC2(개발) 배포 절차
+docs/deploy-agentcore.md       # AgentCore 컨테이너 계약과 AWS 자원 준비
 docs/agentcore-cutover-manual.md # AgentCore 전환 수동 작업 매뉴얼(#89)
 ```
+
+배포는 브랜치로 갈립니다. `dev` push 는 EC2(개발, amd64), `main` push 는 AgentCore
+Runtime(운영, arm64)으로 나가며 ECR 저장소와 IAM 역할이 분리돼 있습니다(#90).
 
 처리 흐름은 `taskId 접수 → 202 즉시 응답 → DB 조회 → normalize → main agent → timeline_events/timeline_items 저장 → 완료 상태 콜백` 순서입니다.
 

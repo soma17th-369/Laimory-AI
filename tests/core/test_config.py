@@ -89,6 +89,22 @@ def test_prompt_version_is_read_from_environment(monkeypatch) -> None:
     assert _settings().prompt_version == "v1"
 
 
+def test_provider_models_and_server_bindings_are_read_from_environment(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-env-test")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-env-test")
+    monkeypatch.setenv("SERVER_HOST", "0.0.0.0")
+    monkeypatch.setenv("SERVER_PORT", "8080")
+
+    configured = _settings()
+
+    assert configured.openai_model == "gpt-env-test"
+    assert configured.gemini_model == "gemini-env-test"
+    assert configured.server_host == "0.0.0.0"
+    assert configured.server_port == 8080
+
+
 def test_supported_prompt_versions_are_accepted() -> None:
     assert _settings(prompt_version="v2").prompt_version == "v2"
     assert _settings(prompt_version=" V2 ").prompt_version == "v2"
