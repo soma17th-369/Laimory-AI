@@ -13,8 +13,12 @@
 | `APP_ENV` | `local` | `prod` |
 | `LOG_LEVEL` | `INFO` | `INFO` |
 | `LOG_FORMAT` | `rich` | `json` |
+| `SERVER_HOST` | `127.0.0.1` | 넣지 않음. Docker 실행 명령이 `0.0.0.0` 사용 |
+| `SERVER_PORT` | `8000` | 넣지 않음. Docker 실행 명령이 `8080` 사용 |
 | `LLM_PROVIDER` | `bedrock` | `bedrock` |
 | `PROMPT_VERSION` | `v1` | `v1` |
+| `OPENAI_MODEL` | OpenAI 사용 시 모델 ID | 현재 넣지 않음. OpenAI 사용 시 모델 ID |
+| `GEMINI_MODEL` | Gemini 사용 시 모델 ID | 현재 넣지 않음. Gemini 사용 시 모델 ID |
 | `BEDROCK_AWS_PROFILE` | 로컬 AWS profile 이름 | 넣지 않음 |
 | `BEDROCK_REGION` | `ap-northeast-2` | `ap-northeast-2` |
 | `BEDROCK_MODEL` | `global.amazon.nova-2-lite-v1:0` | `global.amazon.nova-2-lite-v1:0` |
@@ -27,6 +31,9 @@
 
 AgentCore가 이 값을 컨테이너 프로세스 환경으로 주입하므로 애플리케이션은 `.env`와 동일하게
 `pydantic-settings`로 읽는다. AgentCore 환경변수를 boto3로 다시 조회하지 않는다.
+
+`SERVER_HOST`와 `SERVER_PORT`는 `python -m app.server`로 실행할 때만 사용한다. Docker와
+AgentCore는 `uvicorn --host 0.0.0.0 --port 8080`으로 실행하므로 두 환경변수를 사용하지 않는다.
 
 `AGENT_VERSION`은 넣지 않는다. AgentCore에서는 이미지에 설치된 패키지 버전을 사용한다.
 
