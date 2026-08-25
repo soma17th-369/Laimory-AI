@@ -35,7 +35,7 @@ dev → main  (PR merge)
 | 대상 | EC2 단일 컨테이너 | AgentCore Runtime |
 | 아키텍처 | `linux/amd64` | `linux/arm64` |
 | ECR 저장소 | `laimory-ai` | `laimory-ai-prod` |
-| 자격증명 | 저장소 secret | Environment `production` secret |
+| 배포 역할 | `AWS_DEPLOY_ROLE_ARN` (공용) | 같은 역할, `environment:production` 으로 assume |
 | 승인 | 없음 | 필요 (required reviewers) |
 | 롤백 | 배포 스크립트 자동 복구 | `rollback-production.yml` |
 
@@ -119,42 +119,42 @@ gh api -X PUT repos/soma17th-369/Laimory-AI/environments/production
 | `AWS_REGION` | Variable | `ap-northeast-2` | 공용 |
 | `ECR_REPOSITORY` | Variable | `laimory-ai` | dev 전용 |
 | `EC2_INSTANCE_ID` | Variable | 개발 EC2 의 `i-...` | dev 전용 |
-| `AWS_DEPLOY_ROLE_ARN` | Secret | 개발 배포 역할 ARN | dev 전용 |
+| `AWS_DEPLOY_ROLE_ARN` | Secret | 배포 역할 ARN | **dev·production 공용**(§4.2) |
 
-**Environment `production` 수준에 새로 등록한다.**
+**Environment `production` 수준에 새로 등록한다.** 세 개뿐이고 전부 Variable 이다.
 
 | 이름 | 종류 | 값 | 출처 |
 |---|---|---|---|
 | `PROD_ECR_REPOSITORY` | Variable | `laimory-ai-prod` | §4.1 에서 만든 이름 |
 | `AGENTCORE_RUNTIME_ID` | Variable | `laimory_ai-XXXXXXXXXX` | `create-agent-runtime` 응답의 `agentRuntimeId` |
 | `AGENTCORE_ENDPOINT_NAME` | Variable | `prod` | `create-agent-runtime-endpoint` 의 `--name` |
-| `AWS_PROD_DEPLOY_ROLE_ARN` | Secret | production 배포 역할 ARN | §4.2 |
 
 ```bash
 # 지금 바로 정할 수 있는 것
 gh variable set PROD_ECR_REPOSITORY --env production --body "laimory-ai-prod"
-gh secret set AWS_PROD_DEPLOY_ROLE_ARN --env production \
-  --body "arn:aws:iam::392900063927:role/laimory-ai-github-deploy-prod"
 
 # AgentCore Runtime·엔드포인트를 만든 뒤에야 값이 생기는 것 (§5)
 gh variable set AGENTCORE_RUNTIME_ID --env production --body "laimory_ai-XXXXXXXXXX"
 gh variable set AGENTCORE_ENDPOINT_NAME --env production --body "prod"
 ```
 
-#### 이름을 가른 이유
+배포 역할 secret 은 새로 만들지 않는다. 저장소 수준 `AWS_DEPLOY_ROLE_ARN` 을 dev 와 함께
+쓰며, 그 역할의 신뢰 정책과 권한만 넓히면 된다(§4.2).
+
+#### ECR 저장소 이름만 가른 이유
 
 Environment 값은 **같은 이름의 저장소 값을 덮어쓴다.** 문제는 등록을 빠뜨렸을 때다.
 덮어쓸 값이 없으면 오류가 아니라 **저장소 값이 조용히 쓰인다.**
 
-- `ECR_REPOSITORY` 를 그대로 썼다면 → 운영 이미지가 `laimory-ai`(개발)로 올라가고,
-  다음 dev 배포의 ECR 정리에 지워진다.
-- `AWS_DEPLOY_ROLE_ARN` 을 그대로 썼다면 → 개발 역할로 운영을 배포한다.
+`ECR_REPOSITORY` 를 그대로 썼다면 운영 이미지가 `laimory-ai`(개발)로 올라가고, 다음 dev
+배포의 ECR 정리에 지워진다. 값이 비어 있지 않아 워크플로의 「필수 설정 확인」도 통과한다.
+그래서 `PROD_ECR_REPOSITORY` 로 갈라 등록 누락이 곧 실패가 되게 했다.
 
-둘 다 값이 비어 있지 않아 워크플로의 「필수 설정 확인」도 통과한다. 그래서 저장소 수준에
-짝이 있는 이름만 `PROD_`/`_PROD_` 로 가르고, 등록 누락이 곧 실패가 되게 했다.
+`AWS_DEPLOY_ROLE_ARN` 은 dev 와 **공용이라 가르지 않는다.** 값이 하나뿐이라 덮어쓸 일도,
+빠뜨릴 일도 없다. 대신 역할이 권한 경계가 아니게 되므로 경계는 다른 데서 만든다(§4.2).
 
-`AGENTCORE_RUNTIME_ID` 와 `AGENTCORE_ENDPOINT_NAME` 은 짝이 없어 접두어를 붙이지 않았다.
-**저장소 수준에 같은 이름을 만들지 않는다.** 만드는 순간 같은 함정이 생긴다.
+`AGENTCORE_RUNTIME_ID` 와 `AGENTCORE_ENDPOINT_NAME` 은 저장소 수준에 짝이 없어 접두어를
+붙이지 않았다. **저장소 수준에 같은 이름을 만들지 않는다.** 만드는 순간 같은 함정이 생긴다.
 
 ## 4. AWS 설정
 
@@ -185,12 +185,18 @@ aws ecr get-lifecycle-policy --repository-name laimory-ai-prod --region ap-north
 용량이 문제가 되면 자동 삭제 대신, 어떤 Runtime 버전도 참조하지 않는 태그를
 `list-agent-runtime-versions` 로 확인한 뒤 수동으로 지운다.
 
-### 4.2 production 배포 역할
+### 4.2 배포 역할 — 개발과 공용
 
-개발 역할(`laimory-ai-github-deploy`)과 **별도로** 만든다. 예시 이름은
-`laimory-ai-github-deploy-prod` 다.
+**새 역할을 만들지 않는다.** 기존 `laimory-ai-github-deploy` 하나를 dev·production 이
+함께 쓰고, GitHub 에는 저장소 수준 secret `AWS_DEPLOY_ROLE_ARN` 하나만 둔다.
 
-신뢰 정책 — `sub` 를 **environment 기준**으로 좁힌다.
+대신 그 역할의 신뢰 정책과 권한을 넓혀야 한다. 지금은 `dev` 브랜치 조건만 있어
+production job 이 역할을 맡지 못한다.
+
+#### 신뢰 정책에 `environment:production` 을 더한다
+
+`sub` 값이 둘이므로 `StringLike` 배열로 쓴다. `dev` push 는
+`ref:refs/heads/dev`, production job 은 `environment:production` 으로 온다.
 
 ```json
 {
@@ -204,8 +210,13 @@ aws ecr get-lifecycle-policy --repository-name laimory-ai-prod --region ap-north
       "Action": "sts:AssumeRoleWithWebIdentity",
       "Condition": {
         "StringEquals": {
-          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": "repo:soma17th-369/Laimory-AI:environment:production"
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        },
+        "StringLike": {
+          "token.actions.githubusercontent.com:sub": [
+            "repo:soma17th-369/Laimory-AI:ref:refs/heads/dev",
+            "repo:soma17th-369/Laimory-AI:environment:production"
+          ]
         }
       }
     }
@@ -213,13 +224,27 @@ aws ecr get-lifecycle-policy --repository-name laimory-ai-prod --region ap-north
 }
 ```
 
-> **이 조건에는 브랜치가 들어 있지 않다.** GitHub 이 발급하는 토큰의 `sub` 는 job 이
-> `environment: production` 을 선언했다는 사실만 말하고, 어느 브랜치에서 돌았는지는 담지
-> 않는다. 즉 **§3.3 의 "Deployment branches = main" 설정이 브랜치 방어의 전부다.** 그것을
-> 빼면 아무 브랜치에서나 이 역할을 가져갈 수 있다. 승인 게이트도 같은 자리에 있어,
-> 승인 전에는 토큰이 발급되지 않는다.
+> **역할이 권한 경계가 아니다.** 하나를 공유하기로 했으므로, dev 경로에서 발급된 토큰도
+> AgentCore 를 부를 권한을 갖는다. 경계는 다른 데서 만들어진다.
+>
+> | 무엇이 | 무엇을 막나 |
+> |---|---|
+> | ECR 저장소 분리 | dev 배포의 ECR 정리가 운영 이미지를 지우는 것 |
+> | Environment 승인 게이트 | 승인 없는 production 배포 |
+> | Deployment branches = `main` | `main` 이외 브랜치의 production 배포 |
+> | 워크플로별 실행 브랜치 가드 | `deploy-ec2.yml` 을 `main` 에서, 롤백을 `main` 밖에서 돌리는 것 |
+>
+> `environment:production` 이라는 `sub` 값 자체에는 브랜치가 없다. **§3.3 의
+> "Deployment branches = main" 설정이 브랜치 방어의 전부다.** 그것을 빼면 아무 브랜치에서나
+> `environment: production` 을 선언한 job 이 이 역할을 가져갈 수 있다.
+>
+> 권한을 더 좁히고 싶으면 역할을 dev·production 으로 나누고 production 값을 Environment
+> secret 으로 옮기면 된다. 그때는 이름을 `AWS_PROD_DEPLOY_ROLE_ARN` 처럼 갈라야 한다 —
+> 이름이 같으면 등록을 빠뜨렸을 때 오류 대신 dev 역할이 조용히 쓰인다.
 
-권한 정책 — 개발 역할과 자원이 갈린다. ECR 은 `laimory-ai-prod` 하나로 좁힌다.
+#### 권한 정책은 두 경로의 합집합이다
+
+기존 EC2·ECR 권한에 아래를 더한다. ECR 은 저장소 두 개를 모두 넣는다.
 
 ```json
 {
@@ -232,7 +257,7 @@ aws ecr get-lifecycle-policy --repository-name laimory-ai-prod --region ap-north
       "Resource": "*"
     },
     {
-      "Sid": "EcrPushProd",
+      "Sid": "EcrPush",
       "Effect": "Allow",
       "Action": [
         "ecr:BatchCheckLayerAvailability",
@@ -241,9 +266,14 @@ aws ecr get-lifecycle-policy --repository-name laimory-ai-prod --region ap-north
         "ecr:CompleteLayerUpload",
         "ecr:PutImage",
         "ecr:BatchGetImage",
-        "ecr:GetDownloadUrlForLayer"
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:DescribeRepositories",
+        "ecr:DescribeImages"
       ],
-      "Resource": "arn:aws:ecr:ap-northeast-2:392900063927:repository/laimory-ai-prod"
+      "Resource": [
+        "arn:aws:ecr:ap-northeast-2:392900063927:repository/laimory-ai",
+        "arn:aws:ecr:ap-northeast-2:392900063927:repository/laimory-ai-prod"
+      ]
     },
     {
       "Sid": "AgentCoreDeploy",
@@ -273,19 +303,21 @@ aws ecr get-lifecycle-policy --repository-name laimory-ai-prod --region ap-north
 }
 ```
 
+EC2 배포용 `ssm:SendCommand`·`ssm:GetCommandInvocation`·`ecr:BatchDeleteImage` 문은 기존
+정책에 있는 그대로 둔다([EC2 배포 가이드 §4](deploy-ec2.md)).
+
 `iam:PassRole` 이 없으면 `UpdateAgentRuntime` 이 `AccessDenied` 로 떨어진다. Runtime 실행
 역할 ARN 을 인자로 받기 때문이다. `InvokeAgentRuntime` 은 배포 후 호출 스모크에만 쓴다.
-
 `AgentCoreDeploy` 의 `Resource` 는 Runtime 을 만든 뒤 실제 ARN 으로 좁히는 것을 권장한다.
 
 **이 역할은 배포용이다.** 컨테이너가 Bedrock 을 부르거나 시크릿을 읽을 때 쓰는 것은
 Runtime 실행 역할(`laimory-ai-agentcore-runtime`)이며 별개다.
 
-### 4.3 개발 역할은 그대로 둔다
+### 4.3 ECR 정리 권한은 개발 저장소에만 둔다
 
-`laimory-ai-github-deploy` 의 신뢰 조건은 `ref:refs/heads/dev` 그대로 두고
-`laimory-ai-prod` 에 대한 권한을 주지 않는다. 두 역할이 서로의 자원에 닿지 못하는 것이
-분리의 실체다.
+`ecr:BatchDeleteImage` 의 `Resource` 를 `laimory-ai` 하나로 유지한다. 역할을 공유해도
+`laimory-ai-prod` 에는 삭제 권한이 없어야, 정리 스크립트가 실수로 운영 저장소를 가리켜도
+IAM 이 막는다.
 
 ## 5. AgentCore Runtime 과 엔드포인트
 
@@ -388,7 +420,6 @@ gh api repos/soma17th-369/Laimory-AI/rulesets
 # Environment 와 변수·시크릿이 있는가 (값은 나오지 않는다)
 gh api repos/soma17th-369/Laimory-AI/environments/production
 gh variable list --env production
-gh secret list --env production
 
 # production ECR 저장소가 있고 lifecycle policy 가 없는가
 aws ecr describe-repositories --repository-names laimory-ai-prod --region ap-northeast-2
@@ -405,7 +436,8 @@ main** 이다. 둘 다 Settings → Environments → production 에 있다.
 | merge 했는데 배포가 안 뜸 | Environment 승인 대기 중이다. Actions 화면의 `Review deployments` 를 본다 |
 | `Environment 'production' 의 변수/시크릿이 비어 있다` | §3.4 를 안 했거나 저장소 수준에 넣었다. `--env production` 을 확인한다 |
 | 운영 이미지가 `laimory-ai` 로 올라감 | `PROD_ECR_REPOSITORY` 미등록이다. 저장소 값이 조용히 쓰였다 |
-| `AccessDenied` (`sts:AssumeRoleWithWebIdentity`) | trust policy 의 `sub` 가 `environment:production` 형태인지 본다. `ref:refs/heads/main` 이 아니다 |
+| dev 배포가 갑자기 `AccessDenied` | 공용 역할의 trust policy 를 고치며 `ref:refs/heads/dev` 항목을 지웠다(§4.2) |
+| `AccessDenied` (`sts:AssumeRoleWithWebIdentity`) | 공용 역할의 trust policy 에 `environment:production` 항목을 더했는지 본다(§4.2). `ref:refs/heads/main` 이 아니다 |
 | `AccessDenied` (`iam:PassRole`) | §4.2 의 `PassRuntimeRole` 문이 빠졌다 |
 | 아무 브랜치에서나 production 이 배포됨 | Environment 의 Deployment branches 가 `main` 으로 제한되지 않았다(§3.3) |
 | `dev` 아닌 브랜치에서 온 PR 이 merge 됨 | check 는 실패했는데 ruleset 의 필수 check 지정이 없다(§3.2) |

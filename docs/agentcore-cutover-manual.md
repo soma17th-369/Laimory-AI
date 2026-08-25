@@ -134,9 +134,9 @@ gh variable set AGENTCORE_RUNTIME_ID   --env production --body "laimory_ai-a1B2c
 gh variable set AGENTCORE_ENDPOINT_NAME --env production --body "prod"
 ```
 
-`--env production` 을 빠뜨려 저장소 수준에 만들지 않는다. `PROD_ECR_REPOSITORY` 와
-`AWS_PROD_DEPLOY_ROLE_ARN` 도 같은 Environment 에 있어야 한다(Production 배포 가이드 §3.4).
-`AWS_REGION` 만 저장소 수준에서 공용으로 쓴다.
+`--env production` 을 빠뜨려 저장소 수준에 만들지 않는다. `PROD_ECR_REPOSITORY` 도 같은
+Environment 에 있어야 한다(Production 배포 가이드 §3.4). `AWS_REGION` 과 배포 역할
+`AWS_DEPLOY_ROLE_ARN` 은 저장소 수준에서 dev 와 공용으로 쓴다.
 
 ## 4. App Server 의 호출 권한과 네트워크
 

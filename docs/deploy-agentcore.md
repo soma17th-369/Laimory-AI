@@ -106,10 +106,10 @@ aws iam create-open-id-connect-provider \
 
 ### 3.3 배포용 IAM 역할 (GitHub Actions 가 맡는 역할)
 
-> **production 배포 역할은 이것이 아니다.** 이슈 #90 이후 production 은 별도 역할
-> (`laimory-ai-github-deploy-prod`)을 쓰고, 신뢰 조건이 브랜치가 아니라
-> `environment:production` 기준이다. 정책 원문과 차이는
-> [Production 배포 가이드 §4.2](deploy-production.md)에 있다. 아래는 개발용 역할이다.
+> **이 역할은 production 과 공용이다**(이슈 #90). 아래 신뢰 정책은 `dev` 조건만 담고
+> 있어 production job 이 역할을 맡지 못한다. `environment:production` 항목을 더하고
+> 권한을 넓히는 방법은 [Production 배포 가이드 §4.2](deploy-production.md)에 있다.
+> 반대로 그쪽을 고칠 때 아래 `dev` 항목을 지우면 EC2 배포가 `AccessDenied` 로 멈춘다.
 
 신뢰 정책 — `dev` 브랜치에서 도는 워크플로만 이 역할을 맡을 수 있게 좁힌다.
 

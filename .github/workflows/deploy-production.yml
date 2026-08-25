@@ -4,7 +4,7 @@ name: Deploy Production
 # 이 워크플로가 돈다. PR 을 열거나 고치는 시점에는 돌지 않는다(push 이벤트라 그렇다).
 #
 # 배포 대상은 AgentCore Runtime 이고, dev 는 deploy-ec2.yml 로 EC2 에 나간다. 두 경로는
-# ECR 저장소부터 IAM 역할까지 갈라져 있어 서로의 자원을 건드리지 않는다.
+# 브랜치·워크플로·ECR 저장소·Environment 가 갈라져 있다. IAM 배포 역할은 공용이다.
 #
 # path 필터를 두지 않는다. main HEAD 와 운영에 떠 있는 커밋이 어긋나지 않게 하는 쪽이,
 # 문서만 바뀐 merge 에서 빌드 한 번을 아끼는 것보다 중요하다.
@@ -51,7 +51,7 @@ jobs:
 
       - name: 필수 설정 확인
         env:
-          ROLE_ARN: ${{ secrets.AWS_PROD_DEPLOY_ROLE_ARN }}
+          ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
         run: |
           set -euo pipefail
           missing=()
@@ -59,16 +59,20 @@ jobs:
           [ -n "${ECR_REPOSITORY}" ] || missing+=(PROD_ECR_REPOSITORY)
           [ -n "${AGENTCORE_RUNTIME_ID}" ] || missing+=(AGENTCORE_RUNTIME_ID)
           [ -n "${AGENTCORE_ENDPOINT_NAME}" ] || missing+=(AGENTCORE_ENDPOINT_NAME)
-          [ -n "${ROLE_ARN}" ] || missing+=(AWS_PROD_DEPLOY_ROLE_ARN)
+          [ -n "${ROLE_ARN}" ] || missing+=(AWS_DEPLOY_ROLE_ARN)
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error::Environment 'production' 의 변수/시크릿이 비어 있다: ${missing[*]}. docs/deploy-production.md 참고."
             exit 1
           fi
 
+      # 배포 역할은 dev(EC2)와 **공용**이다. 저장소 수준 secret 하나를 쓴다.
+      # 그래서 이 역할의 trust policy 에는 `ref:refs/heads/dev` 와
+      # `environment:production` 이 둘 다 들어 있고 권한도 두 경로의 합집합이다.
+      # 자원 경계는 역할이 아니라 ECR 저장소와 Environment 승인 게이트가 만든다.
       - name: AWS 인증 (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_PROD_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: ECR 로그인

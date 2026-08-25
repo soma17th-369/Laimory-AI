@@ -9,7 +9,8 @@
 
 production은 `main` push가 AgentCore Runtime에 배포한다
 ([Production 배포 가이드](deploy-production.md)). 두 경로는 브랜치, 워크플로, ECR 저장소,
-IAM 역할, 변수·시크릿이 전부 갈라져 있다. 이 문서가 다루는 것은 개발 경로뿐이다.
+Environment 가 갈라져 있다. IAM 배포 역할은 공용이다(§3). 이 문서가 다루는 것은 개발
+경로뿐이다.
 
 이 워크플로는 `dev` 이외 브랜치에서는 수동 실행도 막는다. `workflow_dispatch`가 아무
 브랜치에서나 돌면 운영 코드가 개발 EC2로, 개발 자격증명으로 나갈 수 있기 때문이다.
@@ -81,12 +82,15 @@ sha-<커밋12자리>-amd64-run-<GitHub run id>-<attempt>
 | `AWS_DEPLOY_ROLE_ARN` | Secret | 개발 배포 Role ARN (**개발 전용**) |
 
 **production 값을 저장소 수준에 만들지 않는다.** `PROD_ECR_REPOSITORY`,
-`AWS_PROD_DEPLOY_ROLE_ARN`, `AGENTCORE_RUNTIME_ID`, `AGENTCORE_ENDPOINT_NAME`은 전부
-Environment `production`에만 둔다([Production 배포 가이드 §3.4](deploy-production.md)).
-저장소 수준에 같은 이름이 생기면, Environment 등록을 빠뜨렸을 때 오류 대신 저장소 값이
-조용히 쓰인다.
+`AGENTCORE_RUNTIME_ID`, `AGENTCORE_ENDPOINT_NAME`은 전부 Environment `production`에만
+둔다([Production 배포 가이드 §3.4](deploy-production.md)). 저장소 수준에 같은 이름이
+생기면, Environment 등록을 빠뜨렸을 때 오류 대신 저장소 값이 조용히 쓰인다.
 
-이 워크플로는 Environment를 선언하지 않으므로 production 변수·시크릿에 닿지 못한다.
+이 워크플로는 Environment를 선언하지 않으므로 production 변수에 닿지 못한다.
+
+`AWS_DEPLOY_ROLE_ARN`은 **production과 공용이다.** 그 역할의 신뢰 정책에
+`ref:refs/heads/dev`와 `environment:production`이 함께 들어 있으므로, 정책을 고칠 때
+`dev` 항목을 지우면 이 배포가 `AccessDenied`로 멈춘다.
 
 ## 4. GitHub 배포 Role
 

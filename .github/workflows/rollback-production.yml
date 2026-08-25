@@ -36,7 +36,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      # production OIDC 역할의 신뢰 조건은 environment 기준이라 브랜치를 가리지 않는다.
+      # 배포 역할이 dev 와 공용이라 신뢰 조건에 `ref:refs/heads/dev` 도 들어 있다.
+      # 즉 브랜치만으로는 걸러지지 않는다.
       # Environment 의 배포 브랜치 정책이 1차 방어이고, 이 스텝이 2차 방어다.
       # 되돌릴 대상은 이미 배포된 Runtime 버전이라 어느 브랜치에서 실행하든 결과가 같지만,
       # 운영 조작의 출처를 main 하나로 묶어 두는 편이 이력을 읽기 쉽다.
@@ -63,7 +64,7 @@ jobs:
       - name: AWS 인증 (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_PROD_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: AWS CLI AgentCore 지원 확인

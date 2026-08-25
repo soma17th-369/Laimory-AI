@@ -76,7 +76,9 @@ uv run uvicorn app.server:app --reload
 | `main` push | `deploy-production.yml` | AgentCore Runtime | `linux/arm64` | `laimory-ai-prod` |
 
 `main` 에는 `dev` 에서 온 PR 로만 들어갑니다. merge 되면 production 배포가 승인 대기로
-뜨고, 승인해야 AWS 자격증명이 발급됩니다.
+뜨고, 승인해야 AWS 자격증명이 발급됩니다. IAM 배포 역할은 두 경로가 함께 쓰므로
+(`AWS_DEPLOY_ROLE_ARN`) **역할이 권한 경계가 아닙니다.** 경계는 ECR 저장소 분리, 승인
+게이트, Environment 배포 브랜치 정책, 워크플로별 실행 브랜치 가드가 만듭니다.
 
 - production 승격·배포·롤백과 GitHub·AWS 설정은 [docs/deploy-production.md](docs/deploy-production.md)를 따릅니다(#90).
 - EC2(개발) 절차와 AWS 사전 준비는 [docs/deploy-ec2.md](docs/deploy-ec2.md)를 따릅니다.

@@ -126,26 +126,30 @@ def test_ec2_workflow_has_no_environment(deploy_ec2) -> None:
         assert "environment" not in job
 
 
-def test_production_uses_its_own_names(deploy_production) -> None:
-    """저장소 수준 이름을 쓰면 등록 누락이 조용한 오배포가 된다."""
+def test_production_uses_its_own_ecr_repository(deploy_production) -> None:
+    """ECR 저장소 이름을 공유하면 등록 누락이 조용한 오배포가 된다.
+
+    이름이 같으면 Environment 등록을 빠뜨렸을 때 오류 대신 저장소 값(laimory-ai)이
+    쓰이고, 운영 이미지가 개발 저장소로 올라가 다음 dev 배포의 ECR 정리에 지워진다.
+
+    배포 역할(AWS_DEPLOY_ROLE_ARN)은 dev 와 **공용**이라 여기서 가르지 않는다.
+    자원 경계는 역할이 아니라 ECR 저장소와 Environment 승인 게이트가 만든다.
+    """
 
     body = DEPLOY_PRODUCTION.read_text(encoding="utf-8")
 
     assert "vars.PROD_ECR_REPOSITORY" in body
-    assert "secrets.AWS_PROD_DEPLOY_ROLE_ARN" in body
-    # 저장소 수준 이름은 개발 전용이다.
     assert "vars.ECR_REPOSITORY" not in body
-    assert "secrets.AWS_DEPLOY_ROLE_ARN" not in body
+    assert "secrets.AWS_DEPLOY_ROLE_ARN" in body
 
 
 def test_ec2_never_references_production_names() -> None:
-    """반대 방향도 막는다."""
+    """반대 방향도 막는다. 배포 역할은 공용이라 목록에 없다."""
 
     body = DEPLOY_EC2.read_text(encoding="utf-8")
 
     for name in (
         "PROD_ECR_REPOSITORY",
-        "AWS_PROD_DEPLOY_ROLE_ARN",
         "AGENTCORE_RUNTIME_ID",
         "AGENTCORE_ENDPOINT_NAME",
     ):
