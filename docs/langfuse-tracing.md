@@ -224,12 +224,15 @@ Langfuse 를 끄면 그 정보는 컨테이너 로컬 로그(DEBUG)에만 남는
 
 ## 설정
 
-일본 리전 프로젝트의 Settings → API Keys에서 project key pair를 발급한다.
-키는 로컬 `.env` 또는 배포 secret에만 넣고 문서, 채팅, 이슈, Git에 기록하지 않는다.
+일본 리전 프로젝트의 Settings → API Keys에서 project key pair를 발급한다. 로컬에서는
+두 key를 `.env`에 넣고, AgentCore에서는 public key는 환경변수에, secret key는
+Secrets Manager에 넣는다. 자세한 구분은 [런타임 설정값 구분](runtime-configuration.md)을
+따른다. 실제 값은 문서, 채팅, 이슈, Git에 기록하지 않는다.
 
 ```dotenv
 LANGFUSE_ENABLED=true
 LANGFUSE_PUBLIC_KEY=pk-lf-...
+# 로컬 .env에서만 사용한다. AgentCore에서는 Secrets Manager에 넣는다.
 LANGFUSE_SECRET_KEY=sk-lf-...
 LANGFUSE_BASE_URL=https://jp.cloud.langfuse.com
 LANGFUSE_SAMPLE_RATE=1.0

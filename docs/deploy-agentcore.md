@@ -371,8 +371,8 @@ repo:soma17th-369/Laimory-AI:ref:refs/heads/dev
 자격증명을 사용한다.
 
 `ReadSecretBundle`의 `Resource`도 Secrets Manager에서 만든 실제 번들의 ARN 접두사로
-바꾼다. `*` 전체를 허용하지 않는다. 번들 생성과 값 구성은
-[시크릿 번들 운영 매뉴얼](secret-bundle.md)을 따른다.
+바꾼다. `*` 전체를 허용하지 않는다. 환경변수와 Secret에 넣을 값의 구분은
+[런타임 설정값 구분](runtime-configuration.md)을 따른다.
 
 AWS가 권장하는 최신 권한 항목과 콘솔 사용자 권한은
 [AgentCore Runtime IAM 권한 공식 문서](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html)에서 확인한다.
@@ -565,7 +565,7 @@ Langfuse와 Elasticsearch는 같은 관측 기능이지만 전송 주체와 네�
 
 | 대상 | 전송 주체 | 경로 | Runtime에 필요한 설정 |
 |---|---|---|---|
-| Langfuse | 애플리케이션의 Langfuse SDK | Runtime → NAT Gateway → Langfuse Cloud `443` | `LANGFUSE_*` 환경 변수 |
+| Langfuse | 애플리케이션의 Langfuse SDK | Runtime → NAT Gateway → Langfuse Cloud `443` | 일반 설정은 `LANGFUSE_*` 환경 변수, secret key는 Secrets Manager |
 | Elasticsearch | 별도 로그 전달 Lambda | Runtime stdout → CloudWatch Logs → Lambda → Elasticsearch | `LOG_FORMAT=json`만 필요 |
 
 ##### Langfuse Cloud용 NAT Gateway
@@ -731,42 +731,13 @@ AgentCore 콘솔 화면 명칭은 서비스 업데이트에 따라 **Host agent*
    `PIPELINE_TIMEOUT_SEC`와 `USER_MEMORY_TIMEOUT_SEC`가 관리하며, 처리 중에는 `/ping`이
    `HealthyBusy`를 반환한다.
 
-7. Runtime 환경 변수에는 아래 부트스트랩 값만 직접 입력한다.
+7. [런타임 설정값 구분](runtime-configuration.md)의 1장에 있는 production 값을 Runtime
+   환경 변수에 직접 입력한다. AgentCore가 값을 프로세스 환경으로 주입하므로 로컬 `.env`와
+   같은 키 이름을 사용한다. boto3로 AgentCore 환경변수를 다시 조회하지 않는다.
 
-   | 변수 | 필수 | 값 |
-   |---|:---:|---|
-   | `APP_ENV` | O | `prod` |
-   | `SECRETS_BUNDLE_NAME` | O | `laimory-ai/prod/app` 또는 실제 번들 이름/ARN |
-
-   나머지 비밀과 환경별 값은 [시크릿 번들 운영 매뉴얼](secret-bundle.md)에 따라 하나의
-   Secrets Manager JSON 번들에 넣는다. 운영에 필요한 권장 구성은 다음과 같다.
-
-   | 번들 키 | 필수 | 권장값 또는 설명 |
-   |---|:---:|---|
-   | `LOG_LEVEL` | O | `INFO` |
-   | `LOG_FORMAT` | O | `json` |
-   | `LLM_PROVIDER` | O | `bedrock` |
-   | `PROMPT_VERSION` | | `v1` 또는 현재 검증된 버전 |
-   | `BEDROCK_MODEL` | O | 사용할 모델 ID 또는 추론 프로필 ID |
-   | `BEDROCK_REGION` | | 기본 `ap-northeast-2` |
-   | `APP_SERVER_API_URL` | O | `/s/api/v1` 또는 `/s/v1`까지 포함한 내부 절대 URL |
-   | `APP_SERVER_TIMEOUT_SEC` | | 기본 `3` |
-   | `APP_SERVER_MAX_ATTEMPTS` | | 기본 `3` |
-   | `APP_SERVER_RETRY_BACKOFF_SEC` | | 기본 `0.5` |
-   | `PIPELINE_TIMEOUT_SEC` | | 기본 `120` |
-   | `REPAIR_MAX_ITERATIONS` | | 기본 `3` |
-   | `USER_MEMORY_TIMEOUT_SEC` | | 기본 `120` |
-   | `LANGFUSE_ENABLED` | O | `true` |
-   | `LANGFUSE_PUBLIC_KEY` | O | Langfuse 운영 프로젝트의 public key |
-   | `LANGFUSE_SECRET_KEY` | O | Langfuse 운영 프로젝트의 secret key |
-   | `LANGFUSE_BASE_URL` | O | `https://jp.cloud.langfuse.com` |
-   | `LANGFUSE_SAMPLE_RATE` | | 기본 `1.0` |
-   | `LANGFUSE_MAX_PAYLOAD_BYTES` | | 기본 `65536` |
-   | `LANGFUSE_CONTENT_CAPTURE` | O | 운영은 `NONE` |
-
-   설정 우선순위는 `시크릿 번들 > Runtime 환경 변수 > 코드 기본값`이다. 번들은 기동할 때
-   한 번만 읽으므로 값을 바꾼 뒤에는 새 Runtime 버전을 만들어야 한다.
-   `SECRETS_BUNDLE_NAME` 자체와 `AGENT_VERSION`은 번들에 넣지 않는다.
+   Secrets Manager의 `laimory-ai/prod/app`에는 2장에 적힌 실제 비밀값만 넣는다. 현재
+   Bedrock 구성에서는 `LANGFUSE_SECRET_KEY` 하나이며, Runtime 환경 변수의
+   `SECRETS_BUNDLE_NAME=laimory-ai/prod/app`이 이 Secret을 가리킨다.
 
    `BEDROCK_AWS_PROFILE`은 만들지 않는다. `CALLBACK_URL`이라는 예전 변수가 남아 있다면
    제거하고 `APP_SERVER_API_URL`을 사용한다. `ES_URL`, `ES_API_KEY`, `ES_EVENT_INDEX`,
@@ -1066,8 +1037,8 @@ docker run --rm -p 8080:8080 --env-file .env laimory-ai:local
 ## 13. 보안과 운영 주의사항
 
 - **환경 변수에 넣은 값은 `GetAgentRuntime`을 호출할 수 있는 사람에게 평문으로 보인다.**
-  비밀과 환경별 값은 `SECRETS_BUNDLE_NAME`이 가리키는 Secrets Manager 번들에 두고 Runtime
-  환경 변수에는 `APP_ENV`, `SECRETS_BUNDLE_NAME` 같은 부트스트랩 값만 남긴다.
+  비밀이 아닌 실행 설정은 Runtime 환경 변수에 두고, `LANGFUSE_SECRET_KEY` 같은 실제
+  비밀값만 `SECRETS_BUNDLE_NAME`이 가리키는 Secrets Manager Secret에 둔다.
 
 - Elasticsearch API key는 Runtime에 넣지 않는다. 전달 Lambda만 Secrets Manager에서 읽고,
   운영 이벤트 수집에 필요한 data stream 권한만 갖는다.
