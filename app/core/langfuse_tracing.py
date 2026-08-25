@@ -32,6 +32,7 @@ from langfuse.types import (
 
 from app.core.config import settings
 from app.core.logging import SERVICE_NAME, get_logger
+from app.core.secrets import resolve_secret
 from app.core.redaction import (
     ContentCapture,
     capture_external_content,
@@ -243,8 +244,10 @@ def get_langfuse_client() -> Langfuse | None:
     if not settings.langfuse_enabled:
         return None
 
-    secret_key = settings.langfuse_secret_key.get_secret_value()
-    if not settings.langfuse_public_key or not secret_key:
+    # 키는 환경변수/`.env` 가 먼저이고 없으면 시크릿 번들에서 온다(#30).
+    public_key = resolve_secret("langfuse_public_key")
+    secret_key = resolve_secret("langfuse_secret_key")
+    if not public_key or not secret_key:
         logger.warning(
             "Langfuse tracing 비활성화: LANGFUSE_PUBLIC_KEY/SECRET_KEY가 필요합니다."
         )
@@ -258,7 +261,7 @@ def get_langfuse_client() -> Langfuse | None:
 
     try:
         return Langfuse(
-            public_key=settings.langfuse_public_key,
+            public_key=public_key,
             secret_key=secret_key,
             base_url=settings.langfuse_base_url,
             environment=settings.app_env,

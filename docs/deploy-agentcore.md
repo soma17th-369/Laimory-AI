@@ -11,6 +11,10 @@ AWS 자원 생성과 Runtime 관리는 웹 콘솔을 기준으로 한다. 다만
 Docker 이미지를 직접 빌드하지 않으므로, `linux/arm64` 이미지 빌드와 ECR 업로드에는
 GitHub Actions의 **Deploy AgentCore Runtime** 워크플로를 사용한다.
 
+> AgentCore 를 처음 올리는 중이라면 [AgentCore 전환 수동 작업 매뉴얼](agentcore-cutover-manual.md)
+> 을 먼저 본다. 이 문서의 절차를 어떤 순서로 밟고 무엇으로 끝났는지 확인하는지를
+> 체크리스트로 정리해 두었다. 이 문서는 각 콘솔 입력값과 네트워크 구성을 자세히 설명한다.
+
 ## 1. 전체 순서
 
 최초 배포는 다음 순서로 진행한다.
@@ -47,6 +51,7 @@ GitHub Actions의 **Deploy AgentCore Runtime** 워크플로를 사용한다.
 | VPC | `<App Server에 접근 가능한 VPC>` |
 | private subnet | `<서로 다른 지원 AZ의 subnet 두 개 이상>` |
 | Runtime security group | `<sg-...>` |
+| Secrets Manager 번들 | `laimory-ai/prod/app` 또는 실제 이름/ARN |
 | Langfuse | `https://jp.cloud.langfuse.com`의 운영 프로젝트와 key pair |
 | Elasticsearch | `<ES 주소>`와 `logs-laimory.ai-prod` 수집 전용 API key |
 | 로그 전달 | `AgentCore CloudWatch Logs → Lambda → Elasticsearch` |
@@ -57,6 +62,11 @@ GitHub Actions의 **Deploy AgentCore Runtime** 워크플로를 사용한다.
 콘솔 작업을 시작하기 전에 우측 상단 리전이 항상 **Asia Pacific (Seoul) / ap-northeast-2**인지
 확인한다. IAM은 전역 서비스지만 ECR, VPC, AgentCore, CloudWatch는 리전 선택이 중요하다.
 
+진입점이 하나뿐이라 요청 종류는 payload 최상위의 `requestType`(`TIMELINE` /
+`USER_MEMORY_UPDATE`)이 말한다. 형식은 [AI 서버 API 명세](ai-server-api.md#31-agentcore-호출-계약)
+에 있다. `POST /v1/timeline` 과 `POST /v1/user-memory` 도 계속 열려 있어 App Server 는 HTTP
+직접 호출과 AgentCore 두 경로를 모두 쓸 수 있다.
+
 ## 2. 컨테이너 계약
 
 AgentCore Runtime은 컨테이너에 아래 계약을 요구한다. 하나라도 어긋나면 Runtime이
@@ -66,8 +76,8 @@ AgentCore Runtime은 컨테이너에 아래 계약을 요구한다. 하나라도
 |---|---|
 | 이미지 아키텍처 `linux/arm64` | `deploy-agentcore.yml`의 Buildx `platforms: linux/arm64` |
 | HTTP 포트 `8080` | `EXPOSE 8080` + `uvicorn --host 0.0.0.0 --port 8080` |
-| `POST /invocations` | `app/api/agentcore.py`에서 타임라인 처리기로 위임 |
-| `GET /ping` → `Healthy` 또는 `HealthyBusy` | `app/api/agentcore.py` |
+| `POST /invocations` | `app/api/agentcore.py` (`requestType` 으로 타임라인·User Memory 를 구분해 기존 핸들러에 위임) |
+| `GET /ping` → `{"status": "Healthy"\|"HealthyBusy"}` | `app/api/agentcore.py` |
 | 이미지 위치 | 같은 계정·같은 리전의 Amazon ECR |
 
 AI 서버는 요청을 `202`로 접수하고 실제 처리는 백그라운드에서 이어간다. 처리 중에는
@@ -303,6 +313,12 @@ repo:soma17th-369/Laimory-AI:ref:refs/heads/dev
         "bedrock:InvokeModelWithResponseStream"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "ReadSecretBundle",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:laimory-ai/prod/app-*"
     }
   ]
 }
@@ -312,6 +328,10 @@ repo:soma17th-369/Laimory-AI:ref:refs/heads/dev
 `BEDROCK_MODEL`과 추론 프로필이 확정되면 해당 ARN으로 좁힌다. Runtime에 AWS Access Key를
 환경 변수로 넣지 않는다. `BEDROCK_AWS_PROFILE`을 비워 두면 boto3가 이 실행 역할의 임시
 자격증명을 사용한다.
+
+`ReadSecretBundle`의 `Resource`도 Secrets Manager에서 만든 실제 번들의 ARN 접두사로
+바꾼다. `*` 전체를 허용하지 않는다. 번들 생성과 값 구성은
+[시크릿 번들 운영 매뉴얼](secret-bundle.md)을 따른다.
 
 AWS가 권장하는 최신 권한 항목과 콘솔 사용자 권한은
 [AgentCore Runtime IAM 권한 공식 문서](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html)에서 확인한다.
@@ -488,6 +508,7 @@ AWS 서비스 트래픽을 NAT 대신 AWS 네트워크 안으로 보내려면 VP
 | Gateway | `com.amazonaws.ap-northeast-2.s3` | Runtime subnet의 route table 연결 |
 | Interface | `com.amazonaws.ap-northeast-2.logs` | Runtime private subnet, private DNS 활성화 |
 | Interface | `com.amazonaws.ap-northeast-2.bedrock-runtime` | Runtime private subnet, private DNS 활성화 |
+| Interface | `com.amazonaws.ap-northeast-2.secretsmanager` | Runtime private subnet, private DNS 활성화 |
 
 이 Interface endpoint들의 security group은 Runtime security group에서 들어오는 TCP
 `443`을 허용한다. ECR 이미지 layer는 S3에 저장되므로 ECR endpoint만 만들고 S3 Gateway
@@ -655,6 +676,8 @@ AWS Access Key와 Secret Access Key는 등록하지 않는다.
    Image URI를 복사한다.
 
 `dev` 태그가 아니라 반드시 `sha-...` 태그가 포함된 URI를 Runtime에 사용한다.
+`sha-...-amd64-run-...` 태그는 EC2 배포용 이미지이므로 선택하지 않는다. AgentCore에는
+**Deploy AgentCore Runtime** 워크플로가 만든 `linux/arm64` 이미지가 필요하다.
 
 ## 6. AgentCore 콘솔에서 최초 Runtime 만들기
 
@@ -688,18 +711,25 @@ AgentCore 콘솔 화면 명칭은 서비스 업데이트에 따라 **Host agent*
    `PIPELINE_TIMEOUT_SEC`와 `USER_MEMORY_TIMEOUT_SEC`가 관리하며, 처리 중에는 `/ping`이
    `HealthyBusy`를 반환한다.
 
-7. 다음 환경 변수를 입력한다.
+7. Runtime 환경 변수에는 아래 부트스트랩 값만 직접 입력한다.
 
-   | 변수 | 필수 | 권장값 또는 설명 |
+   | 변수 | 필수 | 값 |
    |---|:---:|---|
    | `APP_ENV` | O | `prod` |
+   | `SECRETS_BUNDLE_NAME` | O | `laimory-ai/prod/app` 또는 실제 번들 이름/ARN |
+
+   나머지 비밀과 환경별 값은 [시크릿 번들 운영 매뉴얼](secret-bundle.md)에 따라 하나의
+   Secrets Manager JSON 번들에 넣는다. 운영에 필요한 권장 구성은 다음과 같다.
+
+   | 번들 키 | 필수 | 권장값 또는 설명 |
+   |---|:---:|---|
    | `LOG_LEVEL` | O | `INFO` |
    | `LOG_FORMAT` | O | `json` |
    | `LLM_PROVIDER` | O | `bedrock` |
    | `PROMPT_VERSION` | | `v1` 또는 현재 검증된 버전 |
    | `BEDROCK_MODEL` | O | 사용할 모델 ID 또는 추론 프로필 ID |
-   | `BEDROCK_REGION` | | `ap-northeast-2` |
-   | `APP_SERVER_API_URL` | O | `/s/api/v1` 또는 `/s/v1`까지 포함한 절대 URL |
+   | `BEDROCK_REGION` | | 기본 `ap-northeast-2` |
+   | `APP_SERVER_API_URL` | O | `/s/api/v1` 또는 `/s/v1`까지 포함한 내부 절대 URL |
    | `APP_SERVER_TIMEOUT_SEC` | | 기본 `3` |
    | `APP_SERVER_MAX_ATTEMPTS` | | 기본 `3` |
    | `APP_SERVER_RETRY_BACKOFF_SEC` | | 기본 `0.5` |
@@ -713,6 +743,10 @@ AgentCore 콘솔 화면 명칭은 서비스 업데이트에 따라 **Host agent*
    | `LANGFUSE_SAMPLE_RATE` | | 기본 `1.0` |
    | `LANGFUSE_MAX_PAYLOAD_BYTES` | | 기본 `65536` |
    | `LANGFUSE_CONTENT_CAPTURE` | O | 운영은 `NONE` |
+
+   설정 우선순위는 `시크릿 번들 > Runtime 환경 변수 > 코드 기본값`이다. 번들은 기동할 때
+   한 번만 읽으므로 값을 바꾼 뒤에는 새 Runtime 버전을 만들어야 한다.
+   `SECRETS_BUNDLE_NAME` 자체와 `AGENT_VERSION`은 번들에 넣지 않는다.
 
    `BEDROCK_AWS_PROFILE`은 만들지 않는다. `CALLBACK_URL`이라는 예전 변수가 남아 있다면
    제거하고 `APP_SERVER_API_URL`을 사용한다. `ES_URL`, `ES_API_KEY`, `ES_EVENT_INDEX`,
@@ -787,15 +821,24 @@ Endpoint의 **Test endpoint**를 누르면 Playground/Sandbox에서 payload를 �
 
 ```json
 {
-  "taskId": "<App Server가 만든 실제 task ID>",
-  "taskToken": "<App Server가 발급한 실제 task token>",
-  "dailyRecordId": 123,
-  "window": {
-    "startAt": "2026-08-25T00:00:00+09:00",
-    "endAt": "2026-08-26T00:00:00+09:00"
+  "requestType": "TIMELINE",
+  "payload": {
+    "taskId": "<App Server가 만든 실제 task ID>",
+    "taskToken": "<App Server가 발급한 실제 task token>",
+    "dailyRecordId": 123,
+    "window": {
+      "startAt": "2026-08-25T00:00:00+09:00",
+      "endAt": "2026-08-26T00:00:00+09:00"
+    }
   }
 }
 ```
+
+`requestType`은 `TIMELINE` 또는 `USER_MEMORY_UPDATE`이고, `payload`에는 각각 대응하는
+`POST /v1/timeline` 또는 `POST /v1/user-memory` 요청 본문을 그대로 넣는다. `requestType`이
+아예 없는 타임라인 본문도 두 번째 정식 형식으로 계속 지원하지만, 신규 연동과 콘솔 검증은
+위 envelope 형식을 사용한다. 전체 계약은
+[AI 서버 API 명세](ai-server-api.md#31-agentcore-호출-계약)를 따른다.
 
 가짜 task나 token으로 운영 Runtime을 호출하면 접수 후 백그라운드 처리가 실패하므로,
 실제 App Server가 만든 테스트 작업이 있을 때만 호출한다. `taskToken`은 문서, 스크린샷,
@@ -986,6 +1029,7 @@ docker run --rm -p 8080:8080 --env-file .env laimory-ai:local
 | service-linked role 생성 실패 | 콘솔 작업자에 `iam:CreateServiceLinkedRole` 권한이 있는지 확인한다 |
 | subnet 선택 또는 Runtime 생성 실패 | subnet의 AZ ID가 `apne2-az1`, `apne2-az2`, `apne2-az3` 중 하나인지 확인한다 |
 | Runtime `CREATE_FAILED` / `UPDATE_FAILED` | Runtime 버전 세부 화면의 failure reason을 본다. arm64 이미지, 포트 8080, `/ping`, 실행 역할 ECR pull 권한 순으로 확인한다 |
+| `Architecture incompatible` / `Supported platforms: [arm64]` | `-amd64-run-...` 태그가 붙은 EC2용 이미지를 선택했다. **Deploy AgentCore Runtime** 워크플로가 만든 `sha-<커밋12자>` arm64 이미지 URI로 새 Runtime 버전을 만든다 |
 | ECR image pull timeout | ECR DKR/API interface endpoint, S3 gateway endpoint, endpoint security group과 route table을 확인한다 |
 | Bedrock 호출 timeout | NAT 경로나 `bedrock-runtime` interface endpoint와 private DNS를 확인한다 |
 | App Server에서 AgentCore 호출 timeout | `bedrock-agentcore` data plane VPC endpoint의 private DNS, App Server outbound `443`, endpoint security group inbound `443`을 확인한다 |
@@ -1001,9 +1045,9 @@ docker run --rm -p 8080:8080 --env-file .env laimory-ai:local
 
 ## 13. 보안과 운영 주의사항
 
-- Runtime 환경 변수는 `GetAgentRuntime` 권한이 있는 주체에게 보일 수 있다. Langfuse secret이나
-  외부 provider key를 넣는다면 해당 권한을 최소 인원으로 제한한다. Secrets Manager로 옮기려면
-  애플리케이션이 기동 시 secret을 읽도록 별도 구현이 필요하다.
+- **환경 변수에 넣은 값은 `GetAgentRuntime`을 호출할 수 있는 사람에게 평문으로 보인다.**
+  비밀과 환경별 값은 `SECRETS_BUNDLE_NAME`이 가리키는 Secrets Manager 번들에 두고 Runtime
+  환경 변수에는 `APP_ENV`, `SECRETS_BUNDLE_NAME` 같은 부트스트랩 값만 남긴다.
 
 - Elasticsearch API key는 Runtime에 넣지 않는다. 전달 Lambda만 Secrets Manager에서 읽고,
   운영 이벤트 수집에 필요한 data stream 권한만 갖는다.

@@ -12,7 +12,9 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import SecretStr, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+
+from app.core.secret_bundle import SecretBundleSettingsSource
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +51,36 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """시크릿 번들을 환경변수·`.env` 보다 **위**에 둔다(이슈 #30).
+
+        값의 정본을 하나로 만들기 위해서다. 번들에 있는 키는 번들이 이기므로 배포 환경의
+        env 파일에 옛 값이 남아 있어도 결과가 달라지지 않는다 — "옮긴 키를 반드시 지워야
+        한다"는 순서 제약이 사라진다.
+
+        번들에 없는 키는 그대로 환경변수 → `.env` → 이 파일의 기본값으로 내려간다. 그래서
+        환경별로 달라지는 값만 번들에 넣고, 고정값은 여기 기본값으로 둔다.
+
+        `SECRETS_BUNDLE_NAME` 자체는 번들에서 올 수 없다. 어느 번들을 읽을지 정하는
+        부트스트랩 값이라 환경변수나 `.env` 로만 온다.
+        """
+
+        return (
+            init_settings,
+            SecretBundleSettingsSource(settings_cls, dotenv_settings),
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+        )
 
     # 실행 환경 (local / dev / prod 등)
     app_env: str
@@ -88,6 +120,17 @@ class Settings(BaseSettings):
     # 권한이라 없어도 호출에는 지장이 없다.
     bedrock_region: str = "ap-northeast-2"
     bedrock_model: str = ""
+
+    # 외부 시크릿 번들(#30). AWS Secrets Manager 시크릿 하나의 이름 또는 ARN 이며, 값은
+    # `{"OPENAI_API_KEY": "...", "APP_SERVER_API_URL": "..."}` 형태의 JSON 객체다.
+    #
+    # **번들 값이 환경변수·`.env` 를 이긴다**(settings_customise_sources). 비밀뿐 아니라
+    # 환경마다 달라지는 설정도 담을 수 있고, 어떤 키가 드는지는 코드가 알지 않는다.
+    # 번들에 없는 키는 환경변수 → `.env` → 이 파일의 기본값 순으로 내려간다.
+    #
+    # **비어 있으면 AWS 를 호출하지 않는다.** 이 값만은 번들에서 올 수 없다(부트스트랩).
+    # 시크릿 **값** 은 어디에도 커밋하지 않는다.
+    secrets_bundle_name: str = ""
 
     # --- 사진 이미지 다운로드 (이슈 #52) ---
     # App Server 가 PHOTO payload 에 실어 주는 `photoUrl` 에서 실제 이미지를 내려받아

@@ -115,6 +115,7 @@ AI 서버가 밖으로 내보내는 실패는 **정수 하나로 식별**합니�
 | 1405 | `APP_SERVER_TASK_NOT_FOUND` | App Server에 task가 없거나 만료됐습니다(404). | | |
 | 1406 | `APP_SERVER_CONFLICT` | App Server가 호출 순서 충돌로 거절했습니다(409). | | |
 | 1407 | `PHOTO_IMAGE_FETCH_FAILED` | 사진 이미지 다운로드에 실패했습니다(HTTP 오류·timeout·형식/크기 거부·URL 정책 위반). | | ✓ |
+| 1408 | `SECRET_RESOLUTION_FAILED` | 외부 시크릿 저장소에서 값을 읽지 못했습니다(#30). | | ✓ |
 
 1407은 사진 한 장 단위의 흡수 코드입니다. 해당 사진만 메타데이터 기반 설명으로
 대체하고 타임라인 생성은 계속하므로, 이 코드만으로 task가 실패하지는 않습니다.
@@ -122,6 +123,11 @@ AI 서버가 밖으로 내보내는 실패는 **정수 하나로 식별**합니�
 `scheme_not_https`, `userinfo_present`, `allowlist_empty`(설정 누락),
 `url_invalid`, `http_status`, `transport_error`(timeout·연결 실패), `unsupported_media_type`,
 `too_large`, `empty_body`. `photoUrl` 값 자체는 어떤 로그에도 남지 않습니다.
+
+1408은 시크릿 번들(`SECRETS_BUNDLE_NAME`) 조회 실패입니다. 기동을 막지 않고 빈 값으로
+진행하며, 그 키가 실제로 필요한 시점에 provider 생성이 실패합니다. 실패를 캐시하지
+않으므로 일시적인 오류는 다음 호출에서 회복됩니다. 로그에는 번들 **이름** 과 예외
+종류만 남고 키 이름·값은 남지 않습니다.
 
 ### 1900~1999 미분류
 

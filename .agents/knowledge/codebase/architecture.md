@@ -22,7 +22,7 @@ FastAPI 접수 계층부터 App Server 연동과 Agent 실행까지의 컴포넌
 
 호출 방향은 `API → task runner → App Server/normalizer → main Agent → validator/result mapper → App Server`다. `schemas`는 모든 계층이 참조하지만 외부 I/O나 orchestration을 수행하지 않는다. `core`는 특정 도메인보다 설정·오류·LLM·관측 같은 횡단 관심사를 제공한다.
 
-`POST /v1/timeline`은 요청을 검증하고 FastAPI `BackgroundTasks`에 `process_timeline_task`를 등록한 뒤 202를 반환한다. `/invocations`는 같은 요청 모델과 핸들러를 재사용하는 AgentCore adapter다. 실제 비즈니스 파이프라인을 route에 중복 구현하지 않는다.
+`POST /v1/timeline`은 요청을 검증하고 FastAPI `BackgroundTasks`에 `process_timeline_task`를 등록한 뒤 202를 반환한다. `/invocations`는 AgentCore adapter이며 `requestType`으로 Timeline과 User Memory를 갈라 각각의 `/v1` 핸들러를 그대로 재사용한다. 실제 비즈니스 파이프라인을 route에 중복 구현하지 않는다.
 
 `timeline_runner`는 task 전체의 transaction-like 순서를 소유하지만 DB transaction은 아니다. App Server 입력 조회, 정규화, main Agent timeout, 저장 전 검증, 결과 제출, callback을 순서대로 연결하고 최종 상태·오류 코드를 한곳에서 확정한다.
 
@@ -42,7 +42,7 @@ LLM SDK 호출은 동기 provider wrapper이며 event loop를 막지 않도록 w
 
 ## Invariants
 
-- API adapter끼리 비즈니스 로직을 복제하지 않는다. `/invocations`는 `/v1/timeline`과 같은 처리에 위임한다.
+- API adapter끼리 비즈니스 로직을 복제하지 않는다. `/invocations`는 `requestType`에 따라 `/v1/timeline` 또는 `/v1/user-memory`와 같은 처리에 위임한다.
 - `timeline_runner`·`user_memory_runner`보다 아래 계층이 SUCCESS/FAILED task 상태를 소유하지 않는다.
 - `app_server_client`만 서버간 header·retry·status 해석을 소유한다.
 - User Memory 갱신은 Timeline graph에 편입하지 않는다. 두 task는 trace 이름·operational event·timeout 예산이 각각이다.

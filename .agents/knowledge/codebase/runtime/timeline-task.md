@@ -25,7 +25,7 @@ Timeline 생성 요청이 202로 접수된 뒤 입력 조회, Agent 실행, 결�
 
 `POST /v1/timeline`은 `taskId`, 최초 `taskToken`, `dailyRecordId`, timezone-aware `window.startAt/endAt`을 받는다. 요청 검증이 끝나면 `process_timeline_task`를 FastAPI `BackgroundTasks`에 등록하고 `202 {taskId, status: PROCESSING}`을 반환한다. AI 서버는 이후 상태 조회 API나 task record를 만들지 않는다.
 
-`POST /invocations`는 AgentCore 고정 경로이며 같은 요청 모델과 handler를 호출한다. 처리 로직은 별도로 두지 않는다.
+`POST /invocations`는 AgentCore 고정 경로이며 `requestType`이 `TIMELINE`인 envelope와 `requestType` 키가 없는 직접 payload 둘 다 같은 handler를 호출한다. 처리 로직은 별도로 두지 않는다. 같은 경로가 `USER_MEMORY_UPDATE`도 받지만 그건 Timeline task 수명주기와 별개다.
 
 ### 백그라운드 순서
 

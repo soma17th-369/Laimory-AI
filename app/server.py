@@ -11,6 +11,7 @@ from app.api.v1.router import router as v1_router
 from app.core.config import settings
 from app.core.logging import align_uvicorn_loggers
 from app.core.operational_logging import OperationalEvent, emit_event
+from app.core.secrets import prefetch_secrets
 
 
 # uvicorn 은 앱을 import 하기 전에 자기 로거에 직접 핸들러를 붙인다. 그래서 여기 —
@@ -25,6 +26,9 @@ async def lifespan(app: FastAPI):
     # `uvicorn.run()` 처럼 앱을 먼저 import 하고 나서 로깅을 설정하는 경로도 있다.
     # 그때는 위 호출이 덮여 버리므로 여기서 한 번 더 맞춘다(멱등).
     align_uvicorn_loggers()
+    # 시크릿 번들을 여기서 한 번 읽는다(#30). LLM 호출은 `asyncio.to_thread` 위 동기
+    # 컨텍스트라 그 안에서 외부 조회를 하지 않는다. 조회 실패는 기동을 막지 않는다.
+    prefetch_secrets()
     started = perf_counter()
     # 배포·재시작·비정상 종료의 기준선이다. 컨테이너가 언제 올라오고 언제 내려갔는지
     # 를 알아야 "요청이 끊긴 구간" 을 설명할 수 있다.
