@@ -35,16 +35,17 @@ AgentCore가 이 값을 컨테이너 프로세스 환경으로 주입하므로 �
 
 ## 2. Secrets Manager
 
-production에서 필요한 Secret은 용도별로 분리한다.
+Secrets Manager에 저장하는 비밀 변수 전체 목록은 다음과 같다.
 
-| Secret | 읽는 주체 | 들어가는 값 |
-|---|---|---|
-| `laimory-ai/prod/app` | AgentCore 애플리케이션 | `LANGFUSE_SECRET_KEY` |
-| 로그 전달용 별도 Secret | CloudWatch → Elasticsearch 전달 Lambda | `ES_API_KEY` |
+| 변수 | 저장할 Secret | 현재 production 필수 | 사용 조건·용도 |
+|---|---|:---:|---|
+| `LANGFUSE_SECRET_KEY` | `laimory-ai/prod/app` | O | Langfuse 운영 프로젝트 인증 |
+| `OPENAI_API_KEY` | `laimory-ai/prod/app` | X | `LLM_PROVIDER=openai`일 때만 필요 |
+| `GEMINI_API_KEY` | `laimory-ai/prod/app` | X | `LLM_PROVIDER=gemini`일 때만 필요 |
+| `ES_API_KEY` | 로그 전달 Lambda용 별도 Secret | O | CloudWatch 로그를 Elasticsearch로 전송할 때 사용 |
 
-현재 LLM provider는 Bedrock이므로 provider API key는 필요 없다. AgentCore Runtime 실행
-역할로 Bedrock을 호출한다. 나중에 provider를 바꿀 때만 앱 Secret에 `OPENAI_API_KEY` 또는
-`GEMINI_API_KEY`를 추가한다.
+현재 LLM provider는 Bedrock이므로 `OPENAI_API_KEY`와 `GEMINI_API_KEY`는 넣지 않는다.
+Bedrock은 AgentCore Runtime 실행 역할로 인증한다.
 
 `APP_SERVER_API_URL`, `BEDROCK_MODEL`, `LANGFUSE_PUBLIC_KEY`, `ES_URL`처럼 비밀이 아닌
 값은 Secrets Manager가 아니라 해당 실행 주체의 환경변수에 둔다.
