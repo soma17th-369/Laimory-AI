@@ -73,6 +73,7 @@ from app.core.execution_context import (
     ExecutionStage,
     execution_context,
     execution_scope,
+    structured_failures,
 )
 from app.core.logging import get_logger, log_fields, stage_span
 from app.core.operational_logging import (
@@ -90,6 +91,7 @@ from app.schemas import (
 )
 from app.schemas.source_snapshot import TimelineWindow
 from app.services.app_server_client import AppServerClient, AppServerError, TaskToken
+from app.core.structured import StructuredOutputError
 from app.services.normalizer import normalize
 from app.services.source_contract import source_raw_ids
 from app.services.timeline_result import build_result_request
@@ -486,6 +488,8 @@ async def _process_observed(
         # 아래 저장 블록으로 그대로 진행한다. 저장 경로를 한 벌로 두어야
         # 자체검증 실패(1301)·저장 실패(1303)와 #40 순서 계약이 두 벌로 갈라지지 않는다.
 
+        _reject_empty_structured_failure(request, draft)
+
         # 확정 결과를 App Server 결과 저장 API 로 보낸다. 저장/검증 실패는 아래
         # except 로 잡혀 FAILED 로 처리된다.
         active_stage = ExecutionStage.STORAGE
@@ -609,6 +613,38 @@ async def _process_observed(
         failure_stage=active_stage if status is not TaskStatus.SUCCESS else None,
         callback_sent=callback_sent,
         timed_out=timed_out,
+    )
+
+
+def _reject_empty_structured_failure(
+    request: TimelineDraftRequest,
+    draft: TimelineDraft,
+) -> None:
+    """구조화 출력 실패로 비어 버린 결과를 저장하지 않는다 (#98).
+
+    입력이 있었는데 event 가 하나도 없고, 그 이유가 Agent 의 구조화 출력 실패라면
+    이것은 "그날 기록할 일이 없었다" 가 아니라 **AI 가 만들지 못한 것**이다. 그대로
+    보내면 App Server 응답에 따라 `1303`(결과 저장 실패)으로 끝나고, 최초 원인인
+    `1202` 가 사라진다 — 이슈 #98 이 관측한 그 경로다.
+
+    세 조건이 **모두** 참일 때만 막는다. 입력이 0건이라 비는 것은 정상이고, event 가
+    있으면 일부 Agent 가 실패했어도 저장할 가치가 있다.
+    """
+
+    if draft.events:
+        return
+    if not sum(request.source_item_counts().values()):
+        # 수집 원본이 없어서 빈 것이다. 평소대로 저장한다.
+        return
+    failed_agents = structured_failures()
+    if not failed_agents:
+        # 입력은 있었지만 Agent 들이 event 로 볼 근거를 찾지 못한 것이다. 판단의
+        # 결과이지 실패가 아니므로 저장한다.
+        return
+
+    raise StructuredOutputError(
+        "구조화 출력 실패로 event 를 만들지 못해 빈 결과를 저장하지 않습니다: "
+        f"agents={','.join(sorted(set(failed_agents)))}"
     )
 
 
