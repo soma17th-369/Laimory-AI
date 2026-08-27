@@ -39,6 +39,45 @@ class StructuredOutputError(AppError):
         super().__init__(message)
 
 
+class ProviderStructuredOutputError(StructuredOutputError):
+    """provider 가 구조화 응답 자체를 돌려주지 않았다 (#98).
+
+    스키마 검증 실패와 **다른 실패**다. 검증 실패는 "모델이 답을 냈는데 계약을 어겼다"
+    이고, 이쪽은 "모델이 답을 내지 못했다" 이다. Bedrock 의 ``malformed_tool_use``
+    처럼 HTTP 200 에 빈 content 로 오는 경우가 여기 속한다.
+
+    구분하는 이유는 **재시도 방법이 다르기 때문**이다. 검증 실패는 무엇이 틀렸는지
+    붙여 다시 묻는 것이 옳지만, 응답이 아예 없었던 경우에 "직전 응답이 스키마 검증에
+    실패했습니다" 를 붙이면 **사실이 아닌 지적**이고 프롬프트만 길어진다. 그래서
+    :func:`run_structured` 는 이 예외에 원본 프롬프트를 그대로 다시 보낸다.
+
+    ``stop_reason``·``block_kinds``·``usage`` 는 진단용이다. **본문은 담지 않는다** —
+    이 값들은 로그와 관측에 그대로 실린다.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stop_reason: str | None = None,
+        block_kinds: list[str] | None = None,
+        usage: dict[str, int] | None = None,
+    ) -> None:
+        self.stop_reason = stop_reason
+        self.block_kinds = block_kinds or []
+        self.usage = usage or {}
+        super().__init__(message)
+
+    def trace_fields(self) -> dict[str, object]:
+        """로그·관측에 남길 필드. 응답 본문은 들어가지 않는다."""
+
+        return {
+            "stopReason": self.stop_reason,
+            "contentBlockKinds": self.block_kinds,
+            "tokenUsage": self.usage,
+        }
+
+
 def extract_json_object(text: str) -> str:
     """앞뒤 코드펜스·설명이 섞여 있어도 첫 ``{`` 부터 마지막 ``}`` 까지를 잘라낸다.
 
@@ -173,19 +212,35 @@ def run_structured(
 
     attempt_prompt = prompt
     last_error: str | None = None
+    provider_error: ProviderStructuredOutputError | None = None
     for _ in range(max_repairs + 1):
-        text = structured_fn(
-            attempt_prompt,
-            schema,
-            system=system,
-            temperature=temperature,
-            **kwargs,
-        )
+        try:
+            text = structured_fn(
+                attempt_prompt,
+                schema,
+                system=system,
+                temperature=temperature,
+                **kwargs,
+            )
+        except ProviderStructuredOutputError as exc:
+            # provider 가 응답을 내지 못했다(#98). 지적할 직전 응답이 없으므로
+            # **원본 프롬프트 그대로** 다시 묻는다. 교정 프롬프트를 붙이면 없던
+            # 잘못을 지적하는 셈이고, 길어진 프롬프트가 오히려 불리하다.
+            provider_error = exc
+            last_error = str(exc)
+            attempt_prompt = prompt
+            continue
+        provider_error = None
         try:
             return schema.model_validate_json(extract_json_object(text))
         except (ValidationError, StructuredOutputError, ValueError) as exc:
             last_error = str(exc)
             attempt_prompt = _repair_prompt(prompt, last_error)
+
+    if provider_error is not None:
+        # 마지막 시도가 provider 단 실패였다. 스키마 검증 실패로 뭉뚱그리지 않고
+        # 종료 사유(`stopReason`)를 가진 예외를 그대로 올린다.
+        raise provider_error
 
     raise StructuredOutputError(
         f"{schema.__name__} 스키마 검증에 {max_repairs + 1}회 모두 실패했습니다.",

@@ -22,6 +22,7 @@
 | `BEDROCK_AWS_PROFILE` | 로컬 AWS profile 이름 | 넣지 않음 |
 | `BEDROCK_REGION` | `ap-northeast-2` | `ap-northeast-2` |
 | `BEDROCK_MODEL` | `global.amazon.nova-2-lite-v1:0` | `global.amazon.nova-2-lite-v1:0` |
+| `BEDROCK_MAX_TOKENS` | 생략하면 `16384` | 생략하면 `16384` |
 | `APP_SERVER_API_URL` | 로컬 App Server URL | 같은 VPC의 App Server 내부 URL |
 | `LANGFUSE_ENABLED` | 필요에 따라 `true`/`false` | `true` |
 | `LANGFUSE_PUBLIC_KEY` | 로컬 프로젝트 public key | 운영 프로젝트 public key |
@@ -53,6 +54,23 @@ Secrets Manager에 저장하는 비밀 변수 전체 목록은 다음과 같다.
 
 현재 LLM provider는 Bedrock이므로 `OPENAI_API_KEY`와 `GEMINI_API_KEY`는 넣지 않는다.
 Bedrock은 AgentCore Runtime 실행 역할로 인증한다.
+
+## 모델 교체 (#98)
+
+Bedrock provider 는 모델별 분기를 갖지 않는다. `BEDROCK_MODEL` 하나로 바꾼다.
+
+| 모델 | `BEDROCK_MODEL` |
+|---|---|
+| Amazon Nova 2 Lite | `global.amazon.nova-2-lite-v1:0` |
+| OpenAI GPT-5.6 Luna | `global.openai.gpt-5.6-luna` |
+
+서울(`ap-northeast-2`)에는 두 모델 모두 **Global cross-Region inference 로만** 있다.
+`apac.` geo 프로필과 in-Region 호출은 없으므로 `global.` 접두를 뗀 id 를 쓰지 않는다.
+
+`BEDROCK_MAX_TOKENS` 를 비우지 않는다. Converse `inferenceConfig.maxTokens` 를 주지
+않으면 모델이 tool call 을 만들다 형식을 깨뜨려 `stopReason=malformed_tool_use` 와 빈
+content 를 담은 **HTTP 200** 이 돌아온다(#98). 기본값 `16384` 는 하루치 입력에서 관측된
+최대 출력(8,705 토큰)을 담을 수 있는 값이다.
 
 `APP_SERVER_API_URL`, `BEDROCK_MODEL`, `LANGFUSE_PUBLIC_KEY`, `ES_URL`처럼 비밀이 아닌
 값은 Secrets Manager가 아니라 해당 실행 주체의 환경변수에 둔다.

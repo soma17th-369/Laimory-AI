@@ -62,10 +62,38 @@ _CURRENT: ContextVar[ExecutionContext | None] = ContextVar(
 )
 
 
+#: 이 task 에서 구조화 출력이 실패해 결과를 만들지 못한 Agent 이름들 (#98).
+#:
+#: warning 문자열을 뒤져 판정하지 않으려고 둔다. `AgentWarning`·`TimelineWarning` 은
+#: **LLM 에게 스키마로 실려 나가는** 계약이라, 진단용 필드를 거기 더하면 프롬프트가
+#: 커지고 모델이 그 값을 채울 수 있게 된다.
+#:
+#: 리스트를 담는 이유는 `asyncio.to_thread` 가 contextvars 를 **복사**하기 때문이다.
+#: 값을 바꾸면 스레드 안에서만 바뀌지만, 같은 리스트 객체에 append 하면 밖에서도 보인다.
+_STRUCTURED_FAILURES: ContextVar[list[str] | None] = ContextVar(
+    "timeline_structured_failures",
+    default=None,
+)
+
+
 def current_execution_context() -> ExecutionContext | None:
     """현재 실행 컨텍스트를 반환한다(없으면 ``None``)."""
 
     return _CURRENT.get()
+
+
+def record_structured_failure(agent: str) -> None:
+    """구조화 출력 실패로 결과를 만들지 못한 Agent 를 기록한다 (#98)."""
+
+    failures = _STRUCTURED_FAILURES.get()
+    if failures is not None:
+        failures.append(agent)
+
+
+def structured_failures() -> tuple[str, ...]:
+    """이 task 에서 구조화 출력이 실패한 Agent 이름들."""
+
+    return tuple(_STRUCTURED_FAILURES.get() or ())
 
 
 @contextmanager
@@ -74,9 +102,11 @@ def execution_context(task_id: str) -> Iterator[ExecutionContext]:
 
     context = ExecutionContext(task_id=task_id)
     token = _CURRENT.set(context)
+    failures_token = _STRUCTURED_FAILURES.set([])
     try:
         yield context
     finally:
+        _STRUCTURED_FAILURES.reset(failures_token)
         _CURRENT.reset(token)
 
 
