@@ -32,7 +32,12 @@ from app.core.langfuse_tracing import (
 from app.core.execution_context import ExecutionStage, current_execution_context
 from app.core.logging import get_logger, log_fields
 from app.core.secrets import resolve_secret
-from app.core.structured import ModelT, run_structured, to_strict_schema
+from app.core.structured import (
+    ModelT,
+    ProviderStructuredOutputError,
+    run_structured,
+    to_strict_schema,
+)
 
 logger = get_logger(__name__)
 
@@ -732,8 +737,12 @@ class BedrockProvider(LLMProvider):
     OpenAI/Gemini 와 달리 provider 별 API key 가 아니라 AWS 자격증명 체인으로
     인증한다(`requires_api_key = False`). 자격증명은 boto3 기본 체인(~/.aws
     프로필·SSO, 환경변수, 배포 시 IAM 역할)에 맡기고, 만료·교체가 필요한 키를
-    앱 설정/.env 에 두지 않는다. 모델은 `bedrock_model`(Nova 모델 id 또는
-    크로스리전 추론 프로필 id)로 지정한다.
+    앱 설정/.env 에 두지 않는다. 모델은 `bedrock_model`(모델 id 또는 크로스리전 추론
+    프로필 id)로 지정한다. **이 클래스는 모델을 전제하지 않는다** — `BEDROCK_MODEL`
+    하나로 Nova 2 Lite(`global.amazon.nova-2-lite-v1:0`)와 GPT-5.6
+    Luna(`global.openai.gpt-5.6-luna`)를 오간다. 모델이 지원하지 않는 기능은 응답의
+    `stopReason` 이나 `ValidationException` 으로 드러나므로 코드에 모델별 분기를 두지
+    않는다.
 
     Converse API 는 모델과 무관한 통일된 요청·응답 구조를 제공하므로 텍스트·이미지
     입력과 토큰 사용량(`usage`)을 일관되게 다룰 수 있다. Nova 모델은 멀티모달이라
@@ -849,9 +858,10 @@ class BedrockProvider(LLMProvider):
         강제한 뒤, ``toolUse.input`` 을 JSON 텍스트로 돌려준다. ``schema`` 가 없으면
         네이티브 JSON 모드가 없으므로 프롬프트 지시에 맡기는 passthrough 다(soft).
 
-        주의: 강제 ``toolChoice`` 지원은 모델(Nova 등)·버전에 따라 다르므로 실제 모델로
-        검증이 필요하다. 모델이 도구 대신 텍스트를 내면 텍스트를 그대로 돌려주고, 이후
-        검증·재시도가 처리한다.
+        강제 ``toolChoice`` 지원과 tool call 생성 안정성은 모델마다 다르다. 모델이
+        도구 대신 텍스트를 내면 그 텍스트를 돌려주고(내용이 있으니 검증·재시도가
+        처리한다), **아무것도 내지 못하면** :class:`ProviderStructuredOutputError` 로
+        올린다(#98). 빈 문자열을 정상 값으로 흘려보내지 않는다.
         """
 
         if schema is None:
@@ -874,9 +884,34 @@ class BedrockProvider(LLMProvider):
                     prompt, schema, system=system, temperature=temperature, **kwargs
                 )
                 self._log_usage(*self._usage(response))
-                text = self._extract_tool_use(response)
+                text = self._extract_tool_use(response, schema.__name__)
                 self._update_generation(generation, response, text)
                 return text
+            except ProviderStructuredOutputError as exc:
+                # LLM 호출 자체는 성공(HTTP 200)했고 구조화 출력만 실패했다.
+                # `_report_llm_failure`(1203)로 보내면 호출 실패와 섞이므로 여기서
+                # 종료 사유만 남기고 그대로 올린다. 본문은 담지 않는다.
+                report_error(
+                    logger,
+                    ErrorCode.STRUCTURED_OUTPUT_INVALID,
+                    "Bedrock 구조화 응답 없음",
+                    exc=exc,
+                    stage=ExecutionStage.LLM,
+                    provider=self.name,
+                    model=self.model,
+                    duration_ms=(perf_counter() - started) * 1000,
+                    context=exc.trace_fields(),
+                )
+                update_observation(
+                    generation,
+                    output={
+                        "errorCode": int(ErrorCode.STRUCTURED_OUTPUT_INVALID),
+                        **exc.trace_fields(),
+                    },
+                    level="ERROR",
+                    status_message="Bedrock 이 구조화 응답을 돌려주지 않았습니다.",
+                )
+                raise
             except Exception as exc:
                 self._report_llm_failure(started, exc)
                 raise
@@ -905,10 +940,13 @@ class BedrockProvider(LLMProvider):
             ],
             "toolChoice": {"tool": {"name": tool_name}},
         }
+        # 구조화 호출은 창의성이 아니라 형식 준수가 목적이라 temperature 를 0 으로
+        # 잠근다. 호출자(Agent)마다 0.0/0.2 가 섞여 있어 여기서 고정하지 않으면
+        # 같은 계약을 서로 다른 온도로 만들게 된다.
         return self._converse(
             [{"text": prompt}],
             system=system,
-            temperature=temperature,
+            temperature=0.0,
             toolConfig=tool_config,
             **kwargs,
         )
@@ -929,7 +967,13 @@ class BedrockProvider(LLMProvider):
         system 은 있을 때만 넣는다(빈 리스트는 Bedrock 이 거부한다).
         """
 
-        inference_config = {"temperature": temperature}
+        # `maxTokens` 를 비워 두지 않는다(#98). 상한을 주지 않으면 Nova 가 tool call
+        # 을 만들다 형식을 깨뜨려 `malformed_tool_use` 로 끝난다. 호출자나
+        # `inferenceConfig` 가 값을 주면 그것이 이긴다.
+        inference_config = {
+            "temperature": temperature,
+            "maxTokens": settings.bedrock_max_tokens,
+        }
         inference_config.update(kwargs.pop("inferenceConfig", {}))
         for key in self._INFERENCE_CONFIG_KEYS:
             if key in kwargs:
@@ -952,18 +996,52 @@ class BedrockProvider(LLMProvider):
         blocks = response["output"]["message"]["content"]
         return "".join(block["text"] for block in blocks if "text" in block)
 
-    @staticmethod
-    def _extract_tool_use(response: dict) -> str:
+    def _extract_tool_use(self, response: dict, tool_name: str) -> str:
         """Converse 응답에서 ``toolUse.input`` 을 JSON 텍스트로 뽑는다.
 
-        모델이 도구 대신 텍스트로 답했으면 텍스트를 그대로 돌려준다(검증·재시도가 처리).
+        **``stopReason`` 을 먼저 본다**(#98). Bedrock 은 모델이 만든 tool call 을
+        파싱하지 못하면 ``stopReason=malformed_tool_use`` 와 **빈 content, 0 usage** 를
+        담은 **HTTP 200** 을 돌려준다. 예외가 아니므로 이 검사가 없으면 빈 문자열이
+        정상 값처럼 위로 흘러가고, 그 결과가 후보 0건 → 빈 timeline → 저장 실패(1303)
+        까지 이어져 **최초 원인이 사라진다**.
+
+        ``max_tokens``(잘림)·``content_filtered``·``end_turn``(강제했는데 도구를 부르지
+        않음)도 같은 자리에서 잡는다. 모델이 도구 대신 텍스트로 답했을 때만 그 텍스트를
+        돌려준다 — 그 경우는 내용이 있으므로 스키마 검증·교정 재시도가 처리할 수 있다.
         """
 
-        blocks = response["output"]["message"]["content"]
+        stop_reason = response.get("stopReason")
+        blocks = response.get("output", {}).get("message", {}).get("content") or []
+
         for block in blocks:
             if "toolUse" in block:
-                return json.dumps(block["toolUse"]["input"], ensure_ascii=False)
-        return "".join(block["text"] for block in blocks if "text" in block)
+                tool_use = block["toolUse"]
+                if tool_use.get("name") != tool_name:
+                    raise ProviderStructuredOutputError(
+                        "Bedrock 이 기대와 다른 도구를 호출했습니다.",
+                        stop_reason=stop_reason,
+                        block_kinds=self._block_kinds(blocks),
+                        usage=self._usage_detail(response),
+                    )
+                return json.dumps(tool_use.get("input"), ensure_ascii=False)
+
+        text = "".join(block["text"] for block in blocks if "text" in block)
+        if text.strip():
+            # 도구 대신 텍스트가 왔다. 내용이 있으니 위에서 파싱·교정할 수 있다.
+            return text
+
+        raise ProviderStructuredOutputError(
+            "Bedrock 이 구조화 응답을 돌려주지 않았습니다.",
+            stop_reason=stop_reason,
+            block_kinds=self._block_kinds(blocks),
+            usage=self._usage_detail(response),
+        )
+
+    @staticmethod
+    def _block_kinds(blocks: list[dict]) -> list[str]:
+        """content block 의 **종류만** 모은다. 본문은 담지 않는다."""
+
+        return sorted({key for block in blocks for key in block})
 
     @staticmethod
     def _usage(response: dict) -> tuple[int | None, int | None]:

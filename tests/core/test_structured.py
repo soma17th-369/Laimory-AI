@@ -10,6 +10,7 @@ from pydantic import Field, model_validator
 
 from app.core.llm import LLMProvider
 from app.core.structured import (
+    ProviderStructuredOutputError,
     StructuredOutputError,
     extract_json_object,
     run_structured,
@@ -207,3 +208,59 @@ def test_fake_llm_structured_retries_then_succeeds():
     result = llm.complete_structured("요청", _Sample, max_repairs=1)
     assert result.title == "점심"
     assert len(llm.calls) == 2
+
+
+# --- #98 provider 단 실패의 재시도 -------------------------------------------
+
+
+def test_provider_failure_retries_with_original_prompt():
+    """provider 가 응답을 못 냈으면 교정 프롬프트를 붙이지 않는다.
+
+    지적할 직전 응답이 없는데 "스키마 검증에 실패했습니다" 를 붙이면 사실이 아닌
+    지적이고 프롬프트만 길어진다(#98).
+    """
+
+    seen: list[str] = []
+
+    def structured_fn(prompt, schema, **kwargs):
+        seen.append(prompt)
+        if len(seen) == 1:
+            raise ProviderStructuredOutputError(
+                "빈 응답", stop_reason="malformed_tool_use"
+            )
+        return _VALID
+
+    result = run_structured(structured_fn, "원본 프롬프트", _Sample, max_repairs=1)
+
+    assert result.title == "점심"
+    assert seen == ["원본 프롬프트", "원본 프롬프트"]
+
+
+def test_schema_failure_still_uses_repair_prompt():
+    """스키마 검증 실패는 기존대로 오류를 붙여 다시 묻는다."""
+
+    seen: list[str] = []
+    responses = [_BAD_SCORE, _VALID]
+
+    def structured_fn(prompt, schema, **kwargs):
+        seen.append(prompt)
+        return responses[min(len(seen) - 1, len(responses) - 1)]
+
+    run_structured(structured_fn, "원본 프롬프트", _Sample, max_repairs=1)
+
+    assert seen[0] == "원본 프롬프트"
+    assert "스키마 검증에 실패" in seen[1]
+
+
+def test_provider_failure_exhausted_keeps_stop_reason():
+    """끝까지 응답이 없으면 종료 사유를 가진 예외가 그대로 올라온다."""
+
+    def structured_fn(prompt, schema, **kwargs):
+        raise ProviderStructuredOutputError(
+            "빈 응답", stop_reason="malformed_tool_use", block_kinds=[]
+        )
+
+    with pytest.raises(ProviderStructuredOutputError) as exc_info:
+        run_structured(structured_fn, "프롬프트", _Sample, max_repairs=1)
+
+    assert exc_info.value.trace_fields()["stopReason"] == "malformed_tool_use"

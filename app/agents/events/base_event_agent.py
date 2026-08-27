@@ -5,7 +5,10 @@ from abc import abstractmethod
 from app.agents.base import Agent
 from app.core.error_codes import ErrorCode, message_for
 from app.core.exceptions import code_of_or, report_error
-from app.core.execution_context import ExecutionStage
+from app.core.execution_context import (
+    ExecutionStage,
+    record_structured_failure,
+)
 from app.core.logging import get_logger, log_fields, stage_span
 from app.schemas import AgentEventResult, AgentWarning, TimelineDraftRequest
 from app.services.fragment_guard import verify_agent_coverage
@@ -47,6 +50,11 @@ class EventAgent(Agent):
                 result = self._generate(request)
             except Exception as exc:
                 failure_code = code_of_or(exc, ErrorCode.EVENT_AGENT_FAILED)
+                if failure_code is ErrorCode.STRUCTURED_OUTPUT_INVALID:
+                    # 이 Agent 는 "결과가 없다" 가 아니라 "결과를 만들지 못했다" 다(#98).
+                    # 둘을 구분해 두지 않으면 저장 직전에 빈 timeline 이 정상인지
+                    # 실패인지 알 수 없다.
+                    record_structured_failure(self._agent_name())
                 report_error(
                     logger,
                     failure_code,

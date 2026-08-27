@@ -120,6 +120,16 @@ class Settings(BaseSettings):
     # 권한이라 없어도 호출에는 지장이 없다.
     bedrock_region: str = "ap-northeast-2"
     bedrock_model: str = ""
+    # Converse `inferenceConfig.maxTokens` 기본값 (#98). **값을 주지 않으면 Nova 가
+    # tool call 을 만들다 형식을 깨뜨린다** — 같은 입력에서 상한을 명시하지 않으면
+    # `stopReason=malformed_tool_use` 로 content 가 통째로 비어 돌아온다(실측 0/6 대 6/6).
+    # 왜 상한 명시가 형식을 안정시키는지는 밝히지 못했고, 상관만 재현된다.
+    # 모델별로 값을 분기하지 않는다. `BEDROCK_MODEL` 을 바꿔도 이 값 하나로 제어한다.
+    #
+    # 16384 는 실측으로 고른 값이다. 상한을 4096·8192·16384 로 올려 봐도 malformed 는
+    # 돌아오지 않았고(각 4/4 성공), 하루치 입력(location 90건)에서 output 이 8,705 토큰
+    # 까지 나왔다. 8192 면 그 실행이 잘린다. 낮추려면 잘림(`max_tokens`)을 감수해야 한다.
+    bedrock_max_tokens: int = 16384
 
     # 외부 시크릿 번들(#30). AWS Secrets Manager 시크릿 하나의 이름 또는 ARN 이며, 값은
     # `{"OPENAI_API_KEY": "...", "APP_SERVER_API_URL": "..."}` 형태의 JSON 객체다.

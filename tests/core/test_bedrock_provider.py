@@ -10,12 +10,15 @@ import logging
 import pytest
 
 from app.core import llm as llm_module
+from app.core.error_codes import ErrorCode
 from app.core.llm import (
     BedrockProvider,
     ImageInput,
     available_providers,
     get_provider,
 )
+from app.core.structured import ProviderStructuredOutputError
+from app.schemas import AgentEventResult
 
 
 class FakeBedrockClient:
@@ -148,7 +151,11 @@ def test_complete_builds_converse_request_and_returns_text(monkeypatch):
     assert call["modelId"] == "amazon.nova-lite-v1:0"
     assert call["messages"] == [{"role": "user", "content": [{"text": "질문"}]}]
     assert call["system"] == [{"text": "지시"}]
-    assert call["inferenceConfig"] == {"temperature": 0.3}
+    # maxTokens 는 항상 실린다(#98). 상한이 없으면 Nova 가 tool call 형식을 깨뜨린다.
+    assert call["inferenceConfig"] == {
+        "temperature": 0.3,
+        "maxTokens": llm_module.settings.bedrock_max_tokens,
+    }
 
 
 def test_complete_without_system_omits_system(monkeypatch):
@@ -258,3 +265,104 @@ def test_image_format_mapping():
 def test_unsupported_provider_raises():
     with pytest.raises(ValueError):
         get_provider("does-not-exist")
+
+
+# --- #98 구조화 출력 방어 -------------------------------------------------------
+
+
+def _structured_response(*, stop_reason, content):
+    return {
+        "output": {"message": {"content": content}},
+        "stopReason": stop_reason,
+        "usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0},
+    }
+
+
+def test_default_max_tokens_comes_from_settings(monkeypatch):
+    monkeypatch.setattr(llm_module.settings, "bedrock_max_tokens", 12345)
+    provider, fake = _make_provider(monkeypatch)
+    provider.complete("질문")
+    assert fake.calls[0]["inferenceConfig"]["maxTokens"] == 12345
+
+
+def test_caller_max_tokens_wins_over_default(monkeypatch):
+    monkeypatch.setattr(llm_module.settings, "bedrock_max_tokens", 12345)
+    provider, fake = _make_provider(monkeypatch)
+    provider.complete("질문", maxTokens=77)
+    assert fake.calls[0]["inferenceConfig"]["maxTokens"] == 77
+
+
+def test_structured_call_pins_temperature_to_zero(monkeypatch):
+    """구조화 호출은 호출자 temperature 를 무시하고 0 으로 잠근다."""
+
+    response = _structured_response(
+        stop_reason="tool_use",
+        content=[{"toolUse": {"name": "AgentEventResult", "input": {"candidates": []}}}],
+    )
+    provider, fake = _make_provider(monkeypatch, response=response)
+    provider.complete_json("질문", AgentEventResult, temperature=0.9)
+    assert fake.calls[0]["inferenceConfig"]["temperature"] == 0.0
+
+
+def test_malformed_tool_use_raises_instead_of_empty_string(monkeypatch):
+    """빈 content 를 성공으로 위장하지 않는다 — 이슈 #98 의 핵심."""
+
+    response = _structured_response(stop_reason="malformed_tool_use", content=[])
+    provider, _ = _make_provider(monkeypatch, response=response)
+
+    with pytest.raises(ProviderStructuredOutputError) as exc_info:
+        provider.complete_json("질문", AgentEventResult)
+
+    fields = exc_info.value.trace_fields()
+    assert fields["stopReason"] == "malformed_tool_use"
+    assert fields["contentBlockKinds"] == []
+
+
+def test_end_turn_without_tool_use_raises(monkeypatch):
+    """도구 호출을 강제했는데 모델이 부르지 않은 경우도 실패다."""
+
+    response = _structured_response(stop_reason="end_turn", content=[])
+    provider, _ = _make_provider(monkeypatch, response=response)
+    with pytest.raises(ProviderStructuredOutputError):
+        provider.complete_json("질문", AgentEventResult)
+
+
+def test_unexpected_tool_name_raises(monkeypatch):
+    response = _structured_response(
+        stop_reason="tool_use",
+        content=[{"toolUse": {"name": "SomethingElse", "input": {}}}],
+    )
+    provider, _ = _make_provider(monkeypatch, response=response)
+    with pytest.raises(ProviderStructuredOutputError):
+        provider.complete_json("질문", AgentEventResult)
+
+
+def test_text_answer_is_returned_for_downstream_parsing(monkeypatch):
+    """모델이 도구 대신 텍스트로 답하면 내용이 있으므로 그대로 넘긴다."""
+
+    response = _structured_response(
+        stop_reason="end_turn",
+        content=[{"text": '{"candidates": []}'}],
+    )
+    provider, _ = _make_provider(monkeypatch, response=response)
+    assert provider.complete_json("질문", AgentEventResult) == '{"candidates": []}'
+
+
+def test_structured_failure_is_not_reported_as_llm_call_failure(monkeypatch, caplog):
+    """호출은 200 으로 성공했다. 1203(호출 실패)이 아니라 1202 로 남아야 한다."""
+
+    response = _structured_response(stop_reason="malformed_tool_use", content=[])
+    provider, _ = _make_provider(monkeypatch, response=response)
+
+    # report_error 의 기본 레벨은 WARNING 이다.
+    with caplog.at_level(logging.WARNING, logger="app.core.llm"):
+        with pytest.raises(ProviderStructuredOutputError):
+            provider.complete_json("질문", AgentEventResult)
+
+    codes = {
+        record.fields.get("errorCode")
+        for record in caplog.records
+        if hasattr(record, "fields")
+    }
+    assert int(ErrorCode.STRUCTURED_OUTPUT_INVALID) in codes
+    assert int(ErrorCode.LLM_CALL_FAILED) not in codes

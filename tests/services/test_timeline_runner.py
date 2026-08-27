@@ -8,7 +8,10 @@ import asyncio
 import logging
 
 from app.core.error_codes import ErrorCode, message_for
-from app.core.execution_context import ExecutionStage
+from app.core.execution_context import (
+    ExecutionStage,
+    record_structured_failure,
+)
 from app.core.operational_logging import OperationalEvent
 from app.core.structured import StructuredOutputError
 from app.schemas import (
@@ -575,3 +578,81 @@ def _raise(exc: Exception):
         raise exc
 
     return _fail
+
+
+# --- #98 구조화 실패로 비어 버린 결과는 저장하지 않는다 ------------------------
+
+
+def _event_draft() -> TimelineDraft:
+    draft = _draft()
+    draft.events = [
+        TimelineEventDraft(
+            client_event_id="event-001",
+            event_type=EventType.REST,
+            title="집에서 쉬었어요",
+            start_time="2026-06-20T10:00:00+09:00",
+            end_time="2026-06-20T10:30:00+09:00",
+            confidence=0.5,
+            inference_level=InferenceLevel.EVIDENCE_BASED,
+            source_refs=[
+                SourceRef(
+                    source_type=EventSourceType.STAY,
+                    raw_id=fixture_raw_id("source-101"),
+                )
+            ],
+        )
+    ]
+    return draft
+
+
+def _failing_agent(draft: TimelineDraft):
+    """구조화 출력 실패를 기록한 뒤 draft 를 돌려주는 가짜 main agent."""
+
+    async def agent(request, **_kwargs):
+        record_structured_failure("location")
+        return draft
+
+    return agent
+
+
+def test_empty_result_from_structured_failure_is_not_stored(monkeypatch):
+    """입력이 있었는데 구조화 실패로 event 가 0건이면 저장하지 않는다.
+
+    그대로 보내면 App Server 응답에 따라 1303 이 되고 최초 원인인 1202 가 사라진다.
+    """
+
+    monkeypatch.setattr(timeline_runner, "run_main_agent", _failing_agent(_draft()))
+    client = _client()
+
+    status = _run(client)
+
+    assert status is TaskStatus.FAILED
+    # 저장 호출 자체가 없어야 한다.
+    assert client.order == ["input", "callback"]
+    assert client.last_callback.error_code == int(ErrorCode.STRUCTURED_OUTPUT_INVALID)
+
+
+def test_empty_result_without_structured_failure_is_still_stored(monkeypatch):
+    """Agent 가 event 로 볼 근거를 못 찾은 것은 판단이지 실패가 아니다."""
+
+    _patch_agent(monkeypatch, _draft())
+    client = _client()
+
+    status = _run(client)
+
+    assert status is TaskStatus.SUCCESS
+    assert client.order == ["input", "result", "callback"]
+
+
+def test_structured_failure_with_surviving_events_is_stored(monkeypatch):
+    """일부 Agent 가 실패했어도 남은 event 가 있으면 하루 기록을 버리지 않는다."""
+
+    monkeypatch.setattr(
+        timeline_runner, "run_main_agent", _failing_agent(_event_draft())
+    )
+    client = _client()
+
+    status = _run(client)
+
+    assert status is TaskStatus.SUCCESS
+    assert client.order == ["input", "result", "callback"]
