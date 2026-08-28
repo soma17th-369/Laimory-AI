@@ -142,6 +142,14 @@ app/
 │   └── v1/
 │       ├── router.py          # v1 라우터 취합
 │       ├── timeline.py        # POST /v1/timeline (taskId+taskToken+dailyRecordId+window 접수 → 202). 상태 조회 없음(상태는 App Server 소유)
+│       ├── timeline_testing.py # POST /v1/timeline/test (#102). **테스트 전용 동기 경로.**
+│       │                      #   요청 body 는 TimelineInputPayload 를 상속해 입력 조회와 같은
+│       │                      #   선언을 쓰고 window 만 필수로 좁힌다. taskId 는 App Server 가
+│       │                      #   발행한 값을 받는다(비동기 실행과 로그를 이어 보는 상관키).
+│       │                      #   taskToken 만 계약에 없다 — 되부르지 않아 인증할 대상이 없다.
+│       │                      #   응답은 결과 저장 요청 구조 그대로이며
+│       │                      #   **어디에도 저장하지 않는다**. local/dev 에서만 열린다
+│       │                      #   (TIMELINE_TEST_ENABLED 가 우선). 닫히면 404/1003 + OpenAPI 비노출
 │       └── user_memory.py     # POST /v1/user-memory (#64). 확정된 하루 타임라인 접수 → 202.
 │                              #   dailyTimelines 는 최대 5건. 그 안의 event 수·본문 길이는
 │                              #   거절하지 않고 digest 에서 자른다
@@ -150,10 +158,18 @@ app/
 │   ├── error.py               # 공통 오류 응답 ErrorResponse(errorCode:int, error:str)
 │   ├── task.py                # TaskStatus + 완료 콜백 payload(errorCode:int|None, 성공/실패 필드 짝 강제)
 │   ├── source_snapshot.py     # 수집 원본(taskId/sourceItems) 파이프라인 내부 계약
-│   ├── timeline_input.py      # App Server 입력 조회 응답 계약 (#40, #65). window.startAt/endAt →
-│   │                          #   CollectedSnapshot 변환. userMemory 는 원본 dict 로 느슨하게 받고
-│   │                          #   parse_user_memory() 가 따로 검증한다 — 여기서 엄격히 선언하면
-│   │                          #   보조 context 하나가 응답 전체를 1102 로 죽인다
+│   ├── timeline_input.py      # 입력 계약 두 겹 (#40, #65, #102).
+│   │                          #   TimelineInputPayload 가 **입력 한 벌(taskId 포함) 필드 선언의
+│   │                          #   유일한 자리**고, TimelineInputResponse 가 거기에 taskToken 만 더한
+│   │                          #   App Server 입력 조회 응답이다. 쪼갠 기준은 'AI 가 App Server 를
+│   │                          #   되부를 때 쓰는 값인가' 이며 — taskId 는 App Server 가 발행해 AI 가
+│   │                          #   받는 값이라 공통, taskToken 은 되부르는 호출의 인증이라 갈린다 —
+│   │                          #   동기 테스트 요청이 payload 를 상속해 같은 선언을 쓴다.
+│   │                          #   필드를 손으로 다시 적으면 두 입구가 말없이 갈린다.
+│   │                          #   window.startAt/endAt → CollectedSnapshot 변환.
+│   │                          #   userMemory 는 원본 dict 로 느슨하게 받고 parse_user_memory() 가
+│   │                          #   따로 검증한다 — 여기서 엄격히 선언하면 보조 context 하나가
+│   │                          #   응답 전체를 1102 로 죽인다
 │   ├── user_memory.py         # 사용자 압축 프로필 v1.0 (#65). 고정 자연어 10필드(각 200자) +
 │   │                          #   customAttributes(5개·150자). extra="forbid". prompt_payload() 가
 │   │                          #   projection 규칙(빈 필드·메타데이터 제외, 선언 순서)을 소유한다
@@ -195,7 +211,9 @@ app/
     │                          #   User Memory 결과 저장 4종을 소유.
     │                          #   TaskToken 홀더(응답 body 로 갱신, Task-Token 헤더로만 전송, 로그 금지),
     │                          #   재시도(timeout·5xx)와 중단(401/404/409) 정책의 유일한 자리
-    ├── source_contract.py     # 입력 조회 응답의 묶음 계약 검증 (taskId 일치/0건/rawId 중복) + SourceBatchError
+    ├── source_contract.py     # 입력 조회 응답의 묶음 계약 검증 (taskId 일치/0건/rawId 중복) + SourceBatchError.
+    │                          #   resolve_user_memory 도 여기 있다(#102) — userMemory 계약 위반
+    │                          #   흡수(1106)를 비동기·동기 두 경로가 같이 쓴다
     ├── timeline_result.py     # TimelineDraft → 결과 저장 요청 변환 (subtitle←description, question 그대로,
     │                          #   rawId 디듀프, 255자 절단, tz 정렬)
     ├── timeline_validator.py  # 저장 전 자체검증 (task source 소속/시간 등)
@@ -229,6 +247,10 @@ app/
     │                          #       **지우지 않는다**. address 만 지운다
     ├── place_text.py           # 장소 문자열 정규화·비교 (calendar_location/place_resolver/stay_merge 공용)
     ├── timeline_runner.py     # 백그라운드(무상태): 입력 조회→정규화→main agent→결과 저장→콜백. 최종 상태 반환
+    ├── timeline_testing.py    # 동기(무상태·무저장) (#102): 계약 검증→정규화→main agent→자체검증→
+    │                          #   결과 계약 변환. **App Server 를 부르지 않는다.** 제한 시간과
+    │                          #   초과 처리(#76), execution_context, track_inflight 는 runner 와
+    │                          #   같게 쓰고 저장·콜백·토큰 코드는 갖지 않는다
     ├── user_memory_limits.py  # 갱신 크기 정책 (#64). dailyTimelines 는 schema 에서 최대 5건,
     │                          #   그 안의 입력은 **거절하지 않고 자른다**(하루당 event 20개,
     │                          #   memo 있는 event 우선 보존). 출력은 **자르지 않고

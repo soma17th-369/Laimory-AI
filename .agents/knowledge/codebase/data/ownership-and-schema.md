@@ -33,7 +33,8 @@ Redis나 제품 cache도 없다. `lru_cache`로 유지되는 Settings, provider/
 | 단계 | 역할과 소유권 |
 |---|---|
 | Timeline trigger | task 상관값, 최초 token, dailyRecordId, 정본 window만 전달 |
-| `TimelineInputResponse` | App Server input 전송 계약 |
+| `TimelineInputPayload` | 입력 한 벌(`taskId` 포함) field 선언의 유일한 자리(#102). 입력 조회 응답과 동기 테스트 요청이 함께 상속한다 |
+| `TimelineInputResponse` | `TimelineInputPayload` + `taskToken`. App Server input 전송 계약 |
 | `CollectedSnapshot` | 평평한 `sourceItems`를 보관하는 pipeline 경계 계약 |
 | `TimelineDraftRequest` | normalizer가 source를 domain list로 분리한 Agent 입력 |
 | `AgentEventResult` | Event Agent의 candidate·fragment·warning 중간 계약 |

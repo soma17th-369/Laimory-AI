@@ -12,7 +12,7 @@ AI 서버가 직접 노출하는 inbound HTTP 경로, 요청·응답·오류·he
 
 ## Authoritative Sources
 
-- `app/server.py`, `app/api/v1/router.py`, `app/api/v1/timeline.py`, `app/api/v1/user_memory.py`, `app/api/agentcore.py`
+- `app/server.py`, `app/api/v1/router.py`, `app/api/v1/timeline.py`, `app/api/v1/timeline_testing.py`, `app/api/v1/user_memory.py`, `app/api/agentcore.py`
 - `app/api/error_handlers.py`, `app/api/request_logging.py`
 - `app/schemas/error.py`, `app/schemas/task.py`, `app/schemas/user_memory_update.py`
 - `tests/api/**`
@@ -23,6 +23,7 @@ AI 서버가 직접 노출하는 inbound HTTP 경로, 요청·응답·오류·he
 |---|---|---|
 | `POST /v1/timeline` | Timeline task 일반 접수 | 202, `taskId`와 `PROCESSING`; 처리는 background에서 계속됨 |
 | `POST /v1/user-memory` | User Memory 갱신 접수 (#64) | 202, `taskId`와 `PROCESSING`; 결과는 App Server 저장 호출 한 번으로 통보 |
+| `POST /v1/timeline/test` | 동기 Timeline 생성 (테스트 전용, #102) | 200, App Server 결과 저장 요청과 **같은 body**; 접수가 아니라 완료다 |
 | `POST /invocations` | AgentCore 고정 호출 경로 | `{requestType, payload}` envelope로 Timeline과 User Memory를 모두 접수하고 같은 handler에 위임. 202, `taskId`와 `PROCESSING` |
 | `GET /ping` | AgentCore·배포 health | 200, `Healthy` 또는 `HealthyBusy`; inflight만 확인 |
 | `GET /health` | 단순 process health | 200, `{"status":"ok"}` |
@@ -36,6 +37,14 @@ User Memory 접수 request는 `taskId`·`taskToken`과 optional `userMemory`, `d
 
 `/invocations`는 AgentCore가 컨테이너에 진입점을 하나만 요구하기 때문에 요청 종류를 body 최상위 `requestType`(`TIMELINE`, `USER_MEMORY_UPDATE`)으로 받는다(#89). `payload`는 해당 `/v1` 엔드포인트의 request body 그대로이며 필드를 선별하거나 이름을 바꾸지 않는다. `requestType`이 `payload` schema를 결정하는 discriminated union이라 payload 필드 모양으로 종류를 추측하지 않는다 — `taskId`·`taskToken`은 양쪽에 있고 나머지는 optional이라 모양으로 판별하면 생략된 필드 하나가 요청을 다른 pipeline으로 보낸다. `requestType` 키가 없는 body는 Timeline 직접 payload로 감싸며, 이는 **제거 예정이 아닌 두 번째 정식 형식**이다. 판별은 키 존재 여부만 보고 payload 내부는 읽지 않는다.
 
+`POST /v1/timeline/test`는 유일한 **동기** 경로다(#102). 만든 결과를 어디에도 저장하지 않고 응답으로만 내보낸다.
+
+request schema는 **입력 조회 응답과 필드 선언을 공유한다**. `app/schemas/timeline_input.py`가 두 겹으로 나뉘어, `TimelineInputPayload`가 입력 한 벌(`taskId`·`recordDate`·`recordTimeZone`·`window`·`userMemory`·`sourceItems`)을 선언하고 `TimelineInputResponse`가 거기에 `taskToken`만 더한다. 이 endpoint의 `TimelineTestRequest`는 앞의 것을 상속하고 `window`를 필수로 좁히는 한 줄만 더한다 — 필드를 손으로 다시 적으면 한쪽만 고쳐져 두 입구가 말없이 갈린다.
+
+쪼갠 기준은 "AI 서버가 App Server를 **되부를 때** 쓰는 값인가"다. `taskId`는 App Server가 발행해 AI 서버가 **받는** 값이라 두 입구에 공통이고, `taskToken`은 되부르는 호출의 인증이라 되부르지 않는 입구에는 쓸 곳이 없다 — 그래서 토큰만 계약에서 빠진다(보내면 무시한다). 동기 경로는 `taskId`로 무엇을 조회하거나 저장하지 않지만, 같은 taskId로 돌린 비동기 실행과 로그·Langfuse에서 이어 볼 수 있어야 하고 `execution_context`(#98 guard가 읽는다)와 `CollectedSnapshot`도 그 값을 요구한다.
+
+response body는 결과 저장 요청 계약 그대로다 — "저장될 값"을 보여 주는 것이 목적이라 필드를 더하거나 빼지 않는다. 제한 시간 초과로 마지막 확정본을 돌려줬다는 사실도 그래서 body가 아니라 `X-Timeline-Timed-Out` 응답 header로 나간다. 노출은 `settings.timeline_test_endpoint_enabled`(기본 `local`/`dev`, `TIMELINE_TEST_ENABLED`가 이김)가 정하며 두 겹이다 — 비활성이면 dependency가 던지는 404/1003이 요청마다 막고, `include_in_schema`가 OpenAPI에서도 감춘다. 403이 아니라 404인 것은 운영에 테스트 경로가 있다는 사실 자체를 알리지 않기 위해서다.
+
 모든 실패 response는 `ErrorResponse {errorCode: int, error: string}` 한 형태로 통일한다. request validation은 422/1001, route 404는 1003, method 405는 1004, 그 밖의 4xx는 1002, 미처리 5xx는 1901을 쓴다. `error`는 카탈로그의 외부 안전 메시지이며 validation input과 원본 exception은 response에 포함하지 않는다.
 
 RequestLoggingMiddleware는 response header가 시작되는 시점에 요청당 운영 이벤트 한 건을 남긴다. BackgroundTasks 전체 시간을 HTTP latency에 포함하지 않는다. 정상 `/ping`, `/health` 요청은 로그 소음을 피하려고 수집하지 않지만 실패는 수집한다. query string과 임의 path 원문을 그대로 적재하지 않는다.
@@ -43,7 +52,9 @@ RequestLoggingMiddleware는 response header가 시작되는 시점에 요청당 
 ## Invariants
 
 - `/invocations`는 처리 구현을 갖지 않고 `/v1` handler에 위임한다. 두 경로의 계약이 갈라지지 않는다.
-- `/v1` POST 접수 경로는 전부 `requestType`으로 도달할 수 있다. 접수 endpoint를 추가하면 `InvocationRequestType`도 함께 늘어난다(`tests/api/test_agentcore_endpoint.py`의 coverage guard가 강제한다). health·diagnostic 경로는 대상이 아니다.
+- `/v1` POST **접수** 경로는 전부 `requestType`으로 도달할 수 있다. 접수 endpoint를 추가하면 `InvocationRequestType`도 함께 늘어난다(`tests/api/test_agentcore_endpoint.py`의 coverage guard가 강제한다). health·diagnostic 경로와 `_NON_INTAKE_V1_ROUTES`에 선언한 비접수 경로는 대상이 아니다 — `/v1/timeline/test`는 202 접수가 아니라 동기 완료라 `/invocations`의 접수 응답 계약에 담기지 않고, production에서는 닫혀 있어 운영 진입점에 실릴 이유가 없다.
+- 테스트 전용 경로는 기본이 **닫힘**이다. 열려면 `local`/`dev`이거나 `TIMELINE_TEST_ENABLED`를 명시해야 한다. 모르는 `APP_ENV` 값에서는 저절로 닫힌다.
+- 같은 입력 데이터를 받는 두 입구는 field를 각자 선언하지 않는다. `TimelineInputPayload`를 상속해 한 선언을 공유하고, 그 입구에만 해당하는 것(필수 여부 좁히기, task 배관)만 각자 더한다.
 - `/v1/timeline`과 `/v1/user-memory`는 AgentCore 전환 뒤에도 계속 열어 둔다. App Server는 HTTP 직접 호출과 `InvokeAgentRuntime` 두 경로를 모두 쓴다.
 - 202는 완료가 아니라 접수다. 최종 상태는 Timeline이면 App Server callback, User Memory면 결과 저장 호출로 통보한다.
 - User Memory 접수는 `dailyTimelines` 5건 상한을 넘으면 422/1001을 내고, 그 안의 event 수와 본문 길이는 background에서 자른다.

@@ -37,11 +37,15 @@ app/
 │   │                          #   requestType(TIMELINE/USER_MEMORY_UPDATE)으로 기존 핸들러에 위임
 │   └── v1/
 │       ├── router.py          # v1 라우터 취합
-│       └── timeline.py        # POST /v1/timeline (taskId+taskToken 접수 → 202)
+│       ├── timeline.py        # POST /v1/timeline (taskId+taskToken 접수 → 202)
+│       └── timeline_testing.py # POST /v1/timeline/test (#102). 저장·콜백 없이 동기로
+│                              #   결과만 돌려주는 테스트 전용 경로. local/dev 에서만 열림
 │
 ├── schemas/                   # Pydantic 계약(contract)
 │   ├── source_snapshot.py     # 수집 원본(taskId/sourceItems) 파이프라인 내부 계약
-│   ├── timeline_input.py      # App Server 입력 조회 응답 계약
+│   ├── timeline_input.py      # 입력 한 벌 계약(TimelineInputPayload, taskId 포함) + App Server
+│   │                          #   입력 조회 응답(=payload + taskToken). 동기 테스트 요청이
+│   │                          #   payload 를 상속해 같은 선언을 쓴다(#102)
 │   ├── timeline_result.py     # App Server 결과 저장 요청 계약
 │   ├── location.py/calendar.py/health.py/notification.py/photo.py
 │   ├── event_candidate.py     # AI 이벤트 후보 모델
@@ -64,7 +68,7 @@ app/
 │
 └── services/
     ├── app_server_client.py   # App Server API 클라이언트 (입력 조회/결과 저장/콜백 + taskToken)
-    ├── source_contract.py     # 입력 조회 응답 묶음 계약 검증
+    ├── source_contract.py     # 입력 조회 응답 묶음 계약 검증 + userMemory 위반 흡수(1106)
     ├── timeline_result.py     # draft → 결과 저장 요청 변환
     ├── timeline_validator.py  # 결과 저장 전 source 소속·시간 검증
     ├── normalizer.py          # 수집 스냅샷 분리·정규화
@@ -84,7 +88,8 @@ app/
     ├── notification_guard.py  # 알림·최종 draft의 민감정보·근거 없는 관계명 검사
     ├── place_resolver.py      # 장소 확정
     ├── place_text.py          # 장소 문자열 정규화·비교
-    └── timeline_runner.py     # 백그라운드 파이프라인 (입력 조회→추론→결과 저장→콜백)
+    ├── timeline_runner.py     # 백그라운드 파이프라인 (입력 조회→추론→결과 저장→콜백)
+    └── timeline_testing.py    # 동기 파이프라인 (#102). App Server 호출 없이 결과만 만든다
 
 tests/
 ├── agents/                    # Event/Repair Agent 테스트 (live 입력 테스트는 opt-in)
