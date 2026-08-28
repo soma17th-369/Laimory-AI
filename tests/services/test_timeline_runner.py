@@ -8,6 +8,7 @@ import asyncio
 import logging
 
 from app.core.error_codes import ErrorCode, message_for
+from app.core.exceptions import report_error
 from app.core.execution_context import (
     ExecutionStage,
     record_structured_failure,
@@ -656,3 +657,46 @@ def test_structured_failure_with_surviving_events_is_stored(monkeypatch):
 
     assert status is TaskStatus.SUCCESS
     assert client.order == ["input", "result", "callback"]
+
+
+def test_absorbed_failure_shows_up_next_to_a_successful_task(monkeypatch, caplog):
+    """**이 이벤트가 존재하는 이유다** (이슈 #101).
+
+    Agent 하나가 죽어도 흡수되면 작업은 SUCCESS 로 끝나고 완료 이벤트에는
+    `errorCode` 조차 없다. 같은 `taskId` 로 저하 이벤트가 함께 나가야 "성공했지만
+    무엇을 잃었는지" 가 운영에서 보인다.
+    """
+
+    async def failing_question_stage(request, **_kwargs):
+        report_error(
+            logging.getLogger("app.agents.main.main_agent"),
+            ErrorCode.QUESTION_GENERATION_FAILED,
+            "Question Agent 실행 실패",
+            exc=RuntimeError("boom"),
+            stage=ExecutionStage.QUESTION_AGENT,
+        )
+        return _draft()
+
+    monkeypatch.setattr(timeline_runner, "run_main_agent", failing_question_stage)
+
+    with caplog.at_level(logging.DEBUG):
+        status = _run(_client())
+
+    assert status is TaskStatus.SUCCESS
+
+    completed = _task_events(caplog)[0]
+    assert completed["event.outcome"] == "success"
+    assert "errorCode" not in completed
+
+    degraded = [
+        payload
+        for record in caplog.records
+        if (payload := getattr(record, "operational_event", None)) is not None
+        and payload.get("event.action") == OperationalEvent.APP_DEGRADED.value
+    ]
+    assert len(degraded) == 1
+    assert degraded[0]["event.outcome"] == "failure"
+    assert degraded[0]["errorCode"] == int(ErrorCode.QUESTION_GENERATION_FAILED)
+    assert degraded[0]["component"] == ExecutionStage.QUESTION_AGENT.value
+    # 두 줄을 잇는 것은 taskId 다.
+    assert degraded[0]["taskId"] == completed["taskId"] == _TASK_ID
