@@ -22,6 +22,7 @@ from app.core.error_codes import ErrorCode
 from app.core.exceptions import report_error
 from app.core.logging import get_logger
 from app.core.execution_context import ExecutionStage
+from app.core.operational_logging import DegradedComponent, emit_degraded
 from app.schemas import (
     AgentEventResult,
     TimelineDraft,
@@ -107,9 +108,13 @@ def resolve_window_bounds(request: TimelineDraftRequest) -> WindowBounds | None:
         # window 원문은 요청이 준 값이라 남기지 않는다. 파싱에 실패했다는 사실만으로
         # 어디를 봐야 하는지는 정해진다(요청 body 는 App Server 쪽에 있다).
         logger.warning("window 파싱 실패로 범위 검증을 건너뜁니다.")
+        # 범위 검증이 통째로 빠진 채 결과가 나간다. 작업은 성공으로 끝나므로 이
+        # 이벤트가 없으면 운영에서 구분할 방법이 없다(#101).
+        emit_degraded(DegradedComponent.WINDOW)
         return None
     if end < start:
         logger.warning("window.end 가 start 보다 앞서 범위 검증을 건너뜁니다.")
+        emit_degraded(DegradedComponent.WINDOW)
         return None
     return WindowBounds(start=start, end=end)
 

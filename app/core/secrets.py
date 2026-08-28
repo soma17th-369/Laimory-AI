@@ -31,6 +31,7 @@ from app.core.config import settings
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import report_error
 from app.core.logging import get_logger, log_fields
+from app.core.operational_logging import DegradedComponent
 
 logger = get_logger(__name__)
 
@@ -67,6 +68,9 @@ def prefetch_secrets() -> None:
             "시크릿 번들을 읽지 못했습니다",
             exc=exc,
             context={"secretBundle": bundle_name},
+            # 기동 시점이라 실행 컨텍스트가 없다. 단계가 아니라 프로세스 수준 결함이라
+            # component 를 직접 준다 — 번들 없이 환경변수·기본값으로 떠 있는 상태다.
+            component=DegradedComponent.SECRET_BUNDLE,
         )
         return
 
