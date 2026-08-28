@@ -516,6 +516,10 @@ def execute_tool_calls(
                     # 인자 **값**은 남기지 않는다. LLM 이 만든 편집 인자에는 event
                     # title 같은 사용자 콘텐츠가 들어간다(그쪽 추적은 Langfuse 담당).
                     context={"tool": call.tool, "argumentNames": sorted(call.args)},
+                    # 도구 호출마다 부른다. 실패는 Agent 에게 되돌아가 다음 반복에서
+                    # 다시 시도되므로 한 작업에서 수십 건이 된다. Repair 가 통째로
+                    # 실패하면 그쪽이 운영 이벤트를 낸다.
+                    emit=False,
                 )
                 # message 는 Repair Agent에게 되돌려 주는 값이라 원문을 유지한다.
                 result = RepairToolResult(

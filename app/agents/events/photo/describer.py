@@ -81,6 +81,9 @@ def parse_descriptions(text: str, valid_raw_ids: set[str]) -> dict[str, str]:
             "사진 description 응답에서 JSON 객체를 찾지 못했습니다",
             stage=ExecutionStage.EVENT_AGENT,
             context={"parser": "photo_description"},
+            # 파싱 시도마다 부른다. 설명이 비면 metadata fallback 이 받아 주고,
+            # 사진 Agent 가 통째로 실패하면 그쪽이 운영 이벤트를 낸다.
+            emit=False,
         )
         return {}
     try:
@@ -93,6 +96,7 @@ def parse_descriptions(text: str, valid_raw_ids: set[str]) -> dict[str, str]:
             exc=exc,
             stage=ExecutionStage.EVENT_AGENT,
             context={"parser": "photo_description"},
+            emit=False,
         )
         return {}
 
