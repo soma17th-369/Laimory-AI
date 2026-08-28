@@ -3,6 +3,8 @@
 계약: ``{"errorCode": <int>, "error": <비어 있지 않은 문자열>}``
 """
 
+import logging
+
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -202,3 +204,23 @@ def test_openapi_documents_the_common_error_contract(client: TestClient) -> None
     assert error_schema["properties"]["errorCode"]["type"] == "integer"
     assert error_schema["properties"]["error"]["type"] == "string"
     assert sorted(error_schema["required"]) == ["error", "errorCode"]
+
+
+def test_http_failures_do_not_emit_a_second_degraded_event(client, caplog):
+    """HTTP 실패는 `http.request.completed` 하나로 끝난다 (이슈 #101).
+
+    그 이벤트가 이미 `errorCode`·`errorType`·`httpStatus`·`route` 를 싣는다. 저하
+    이벤트를 또 내면 같은 실패가 두 번 세어져 대시보드의 실패율이 틀어진다.
+    """
+
+    with caplog.at_level(logging.DEBUG):
+        assert client.get("/v1/없는경로").status_code == 404
+        assert client.post("/v1/timeline", json={}).status_code == 422
+
+    actions = [
+        payload["event.action"]
+        for record in caplog.records
+        if (payload := getattr(record, "operational_event", None)) is not None
+    ]
+    assert actions.count("http.request.completed") == 2
+    assert "app.degraded" not in actions

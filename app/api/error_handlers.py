@@ -129,6 +129,10 @@ async def handle_request_validation_error(
         "요청 검증 실패",
         context=_validation_diagnostics(exc),
         level=logging.INFO,
+        # HTTP 실패는 `http.request.completed` 가 이미 errorCode·errorType·
+        # httpStatus·route 를 싣고 나간다(바로 위 annotate_request_error).
+        # 저하 이벤트를 또 내면 같은 실패가 두 번 세어진다.
+        emit=False,
     )
     return _json_error(ErrorCode.REQUEST_VALIDATION_FAILED)
 
@@ -141,7 +145,16 @@ async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
     """
 
     annotate_request_error(request, exc.code, error_type=type(exc).__name__)
-    report_error(logger, exc.code, "요청 처리 실패", exc=exc)
+    report_error(
+        logger,
+        exc.code,
+        "요청 처리 실패",
+        exc=exc,
+        # HTTP 실패는 `http.request.completed` 가 이미 errorCode·errorType·
+        # httpStatus·route 를 싣고 나간다(바로 위 annotate_request_error).
+        # 저하 이벤트를 또 내면 같은 실패가 두 번 세어진다.
+        emit=False,
+    )
     return _json_error(exc.code)
 
 
@@ -164,6 +177,10 @@ async def handle_http_exception(
         exc=exc,
         context={"httpStatus": exc.status_code},
         level=_http_log_level(exc.status_code),
+        # HTTP 실패는 `http.request.completed` 가 이미 errorCode·errorType·
+        # httpStatus·route 를 싣고 나간다(바로 위 annotate_request_error).
+        # 저하 이벤트를 또 내면 같은 실패가 두 번 세어진다.
+        emit=False,
     )
     # 상태 코드는 원래 값을 유지한다. 401/403 등 카탈로그가 4xx 로 뭉뚱그린
     # 코드까지 400 으로 바꿔 버리면 클라이언트가 원인을 구분하지 못한다.
@@ -194,6 +211,10 @@ async def handle_unexpected_error(request: Request, exc: Exception) -> JSONRespo
         exc=exc,
         level=logging.ERROR,
         exc_info=True,
+        # HTTP 실패는 `http.request.completed` 가 이미 errorCode·errorType·
+        # httpStatus·route 를 싣고 나간다(바로 위 annotate_request_error).
+        # 저하 이벤트를 또 내면 같은 실패가 두 번 세어진다.
+        emit=False,
     )
     return _json_error(ErrorCode.INTERNAL_ERROR)
 
