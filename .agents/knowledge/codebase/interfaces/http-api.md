@@ -45,6 +45,8 @@ request schema는 **입력 조회 응답과 필드 선언을 공유한다**. `ap
 
 response body는 결과 저장 요청 계약 그대로다 — "저장될 값"을 보여 주는 것이 목적이라 필드를 더하거나 빼지 않는다. 제한 시간 초과로 마지막 확정본을 돌려줬다는 사실도 그래서 body가 아니라 `X-Timeline-Timed-Out` 응답 header로 나간다. 노출은 `settings.timeline_test_endpoint_enabled`(기본 `local`/`dev`, `TIMELINE_TEST_ENABLED`가 이김)가 정하며 두 겹이다 — 비활성이면 dependency가 던지는 404/1003이 요청마다 막고, `include_in_schema`가 OpenAPI에서도 감춘다. 403이 아니라 404인 것은 운영에 테스트 경로가 있다는 사실 자체를 알리지 않기 위해서다.
 
+**`APP_ENV` 기본값만으로 "dev 서버에서 열려 있다"고 결론짓지 않는다.** EC2(개발) 인스턴스의 `/opt/laimory-ai/runtime.env`는 `APP_ENV=prod`로 운영되므로 거기서는 `TIMELINE_TEST_ENABLED=true`를 명시해야 열린다(`docs/deploy-ec2.md`). 같은 이유로 #48에서 Langfuse 본문 캡처가 dev 취급을 받지 못했다 — `APP_ENV`로 갈리는 기본값을 새로 만들 때마다 이 인스턴스가 예외가 된다.
+
 모든 실패 response는 `ErrorResponse {errorCode: int, error: string}` 한 형태로 통일한다. request validation은 422/1001, route 404는 1003, method 405는 1004, 그 밖의 4xx는 1002, 미처리 5xx는 1901을 쓴다. `error`는 카탈로그의 외부 안전 메시지이며 validation input과 원본 exception은 response에 포함하지 않는다.
 
 RequestLoggingMiddleware는 response header가 시작되는 시점에 요청당 운영 이벤트 한 건을 남긴다. BackgroundTasks 전체 시간을 HTTP latency에 포함하지 않는다. 정상 `/ping`, `/health` 요청은 로그 소음을 피하려고 수집하지 않지만 실패는 수집한다. query string과 임의 path 원문을 그대로 적재하지 않는다.

@@ -28,7 +28,7 @@
 | `LANGFUSE_PUBLIC_KEY` | 로컬 프로젝트 public key | 운영 프로젝트 public key |
 | `LANGFUSE_BASE_URL` | `https://jp.cloud.langfuse.com` | `https://jp.cloud.langfuse.com` |
 | `LANGFUSE_CONTENT_CAPTURE` | 생략하면 `SANITIZED` | `NONE` |
-| `TIMELINE_TEST_ENABLED` | 생략하면 `true`(`APP_ENV=local`) | **넣지 않음.** `APP_ENV=prod`라 닫혀 있음 |
+| `TIMELINE_TEST_ENABLED` | 생략하면 `true`(`APP_ENV=local`) | **넣지 않음.** 넣으면 운영에 테스트 경로가 열림 |
 | `SECRETS_BUNDLE_NAME` | 기본적으로 넣지 않음 | `laimory-ai/prod/app` |
 
 AgentCore가 이 값을 컨테이너 프로세스 환경으로 주입하므로 애플리케이션은 `.env`와 동일하게
@@ -40,9 +40,14 @@ AgentCore는 `uvicorn --host 0.0.0.0 --port 8080`으로 실행하므로 두 환�
 `AGENT_VERSION`은 넣지 않는다. AgentCore에서는 이미지에 설치된 패키지 버전을 사용한다.
 
 `TIMELINE_TEST_ENABLED`는 동기 테스트 엔드포인트(`POST /v1/timeline/test`, #102)의 개폐를
-정한다. 생략하면 `APP_ENV`가 `local`/`dev`일 때만 열리므로 production에는 **넣지 않는다** —
-넣어서 `true`로 두면 운영 컨테이너에 테스트 경로가 열린다. 값을 지정하면 `APP_ENV`보다
-우선한다.
+정한다. 값을 지정하면 `APP_ENV`보다 우선하고, 생략하면 `APP_ENV`가 `local`/`dev`일 때만
+열린다. production에는 **넣지 않는다** — 넣어서 `true`로 두면 운영 컨테이너에 테스트
+경로가 열린다.
+
+**EC2(개발) 컨테이너에서는 이 값을 명시해야 한다.** 그 인스턴스의
+`/opt/laimory-ai/runtime.env`는 `APP_ENV=prod`로 운영되므로(같은 이유로 #48에서
+Langfuse 본문이 보이지 않았다) 생략하면 dev 서버에서도 닫힌다. 절차는
+[EC2 배포 가이드](deploy-ec2.md#동기-테스트-엔드포인트-102)를 따른다.
 
 로컬에서만 사용하는 API key와 `LANGFUSE_SECRET_KEY`는 gitignored `.env`에 둘 수 있다.
 실제 값을 커밋하지 않는다.
