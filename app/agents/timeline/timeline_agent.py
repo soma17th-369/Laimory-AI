@@ -102,6 +102,9 @@ def _report_skipped_item(kind: str, index: int, exc: Exception) -> None:
         "Timeline 응답 항목 검증 실패로 제외",
         exc=exc,
         context={"kind": kind, "index": index, "action": "skipped"},
+        # 항목마다 부른다. 응답 하나가 통째로 깨지면 수십 건이 되므로 운영 이벤트로는
+        # 내지 않는다. 결과가 비면 Timeline Agent 단계 실패가 그 사실을 말한다.
+        emit=False,
     )
 
 

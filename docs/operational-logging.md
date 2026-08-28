@@ -49,11 +49,13 @@ laimory-ai 컨테이너 stdout (한 줄 JSON)
 | `event.action` | 언제 | 필드 |
 |---|---|---|
 | `http.request.completed` | HTTP 요청 하나가 끝날 때(요청당 1건) | `method`, `route`, `httpStatus`, `durationMs`, `errorCode`, `errorType`, `taskId` |
-| `server.started` | lifespan 시작 | `appEnv`, `logFormat` |
-| `server.stopped` | lifespan 종료 | `appEnv`, `uptimeMs` |
-| `timeline.task.completed` | 202 로 접수한 백그라운드 작업이 끝날 때(작업당 1건) | `taskId`, `status`, `durationMs`, `callbackSent`, `errorCode`, `failureStage` |
+| `server.started` | lifespan 시작 | `appEnv`, `logFormat`, `instanceId` |
+| `server.stopped` | lifespan 종료 | `appEnv`, `uptimeMs`, `instanceId` |
+| `timeline.task.completed` | 202 로 접수한 백그라운드 작업이 끝날 때(작업당 1건) | `taskId`, `status`, `durationMs`, `callbackSent`, `errorCode`, `failureStage`, `timedOut` |
+| `usermemory.task.completed` | User Memory 갱신 작업이 끝날 때(작업당 1건) | `taskId`, `status`, `durationMs`, `resultSent`, `errorCode`, `hasExistingMemory`, `dailyTimelineCount`, `eventCount`, `memoCount`, `droppedDailyTimelineCount`, `droppedEventCount`, `repairAttempts`, `schemaVersion`, `filledFieldCount`, `customAttributeCount`, `serializedChars` |
 | `dependency.request.completed` | App Server 논리 호출 하나가 끝날 때 | `dependency`, `operation`, `httpStatus`, `attempts`, `durationMs`, `errorCode`, `taskId`, `tokenRefreshCount` |
 | `dependency.request.retry` | 그 호출의 재시도 한 번 | `dependency`, `operation`, `attempt`, `maxAttempts`, `reason`, `httpStatus`, `delayMs`, `taskId` |
+| `app.degraded` | 무언가를 잃었지만 처리는 계속됐을 때 | `component`, `agent`, `errorCode`, `errorType`, `taskId`, `durationMs`, `droppedCount`, `provider`, `model`, `providerVersion`, `stopReason`, `contentBlockKinds`, `tokenUsage` |
 
 공통 필드는 `timestamp`, `log.level`, `logger`(`app.operational`), `message`,
 `service`, `environment`, `version`, 그리고 표식 3종(`event.dataset`,
@@ -61,6 +63,40 @@ laimory-ai 컨테이너 stdout (한 줄 JSON)
 
 **`message` 로 집계하지 않는다.** 사람이 읽는 한 줄일 뿐이고, 계약은
 `event.action` 이다. 문구는 언제든 다듬을 수 있어야 한다.
+
+`instanceId` 는 프로세스당 하나이며 emitter 가 자동으로 채운다(호출부가 넘기지 않는다).
+AgentCore 는 유휴 컨테이너를 회수하고 필요할 때 새로 띄우므로 한 log group 에 여러 인스턴스의
+줄이 섞인다. 이 값이 cold start 를 세고 기동·종료를 짝짓는 유일한 수단이다.
+
+> **`server.stopped` 가 없을 수 있다.** lifespan 의 `finally` 에서 나가므로 AgentCore 가
+> 컨테이너를 강제로 회수하면 기록되지 않는다. `uptimeMs` 를 가동시간의 정본으로 쓰지 않는다.
+> EC2 는 컨테이너가 오래 살아 지금도 짝이 맞는다.
+
+### 저하 이벤트 `app.degraded` (이슈 #101)
+
+**작업이 성공으로 끝나도 나가는 유일한 이벤트다.** 흡수 경계들이 예외를 삼키고 fallback 으로
+진행하므로, 이것 없이는 Event Agent 하나가 통째로 죽어도 `timeline.task.completed` 가
+`status=SUCCESS`·`errorCode` 없음으로만 남는다. 같은 `taskId` 로 두 줄을 묶어 봐야
+"성공했지만 무엇을 잃었는지" 가 보인다.
+
+`component` 가 저하 지점을 가리키는 단일 축이다. 값은 두 곳에서만 온다 —
+`ExecutionStage` 값(`EVENT_AGENT`, `TIMELINE_AGENT`, `REPAIR_AGENT`, `QUESTION_AGENT`,
+`USER_MEMORY_AGENT`, `LLM`, `REQUEST` …)이거나 `DegradedComponent` 상수
+(`secret-bundle`, `langfuse`, `window`)다. 호출부 자유 문자열이 들어올 경로는 없다.
+
+레벨은 **WARNING** 이고 `event.outcome` 은 `failure` 다. ERROR 로 올리지 않는 이유는 처리가
+실제로 끝났기 때문이다 — 올리면 진짜 실패와 섞인다.
+
+> **기존 저장된 검색 주의.** `event.outcome: failure` 만으로 실패 작업을 세고 있었다면
+> 이제 성공한 작업의 저하 이벤트가 섞인다. `event.action` 조건을 함께 걸어야 한다.
+
+발행은 대부분 `report_error()` 가 대신한다. **항목 단위 루프**(수집 항목마다·사진마다·
+도구 호출마다)는 한 작업에서 수십 건이 되므로 `report_error(..., emit=False)` 로 빼고, 잃은
+양을 `droppedCount` 집계 1건으로 대신 낸다. 새 `report_error` 호출을 그런 루프에 넣을 때는
+`emit=False` 를 함께 붙인다.
+
+LLM 실패는 예외적으로 호출 단위여도 발행한다. `provider`·`model`·`stopReason` 이 없으면
+상위 흡수 경계에서 `EVENT_AGENT_FAILED`(1204)로 덮여 원인을 알 수 없기 때문이다.
 
 ### 외부 연동 이벤트의 message (이슈 #78)
 
@@ -89,8 +125,8 @@ laimory-ai 컨테이너 stdout (한 줄 JSON)
 
 | 상황 | 레벨 |
 |---|---|
-| 2xx/3xx 응답, 서버 시작·종료, 외부 연동 성공, 작업 성공 | INFO |
-| 4xx 응답, 외부 연동 재시도 | WARNING |
+| 2xx/3xx 응답, 컨테이너 기동·종료, 외부 연동 성공, 작업 성공 | INFO |
+| 4xx 응답, 외부 연동 재시도, **기능 저하**(`app.degraded`) | WARNING |
 | 5xx 응답, 외부 연동 최종 실패, 작업 실패 | ERROR |
 
 `GET /ping`·`GET /health` 는 **정상 응답이면 적재하지 않는다**. 배포 스크립트와

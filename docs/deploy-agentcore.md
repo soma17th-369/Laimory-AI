@@ -602,9 +602,18 @@ AgentCore Runtime에는 EC2의 `laimory-filebeat` sidecar가 없다. 또한 이 
 Elasticsearch를 직접 호출하지 않도록 설계되어 있으므로 Runtime 환경 변수에 `ES_URL`,
 `ES_API_KEY`, `OBS_*`를 추가하거나 Runtime security group에 ES 포트를 열지 않는다.
 
-현재 저장소에는 AgentCore용 로그 전달 Lambda가 없다. 따라서 아래 전달 자원을 만들기
-전에는 CloudWatch Logs까지만 기록되고 Elasticsearch에는 들어가지 않는다. 이 파이프라인이
-준비되고 실제 이벤트 한 건이 도착하기 전에는 AgentCore 운영 준비가 끝난 것으로 보지 않는다.
+전달 함수 `laimory-agentcore-logs-to-es`는 **이미 운영 중이며 이 저장소에는 없다.**
+소스는 AWS 콘솔에 있고 앱 PR 리뷰를 받지 않으므로, 아래는 구축 절차이자 **현재 동작 계약**이다.
+고칠 때 이 절과 어긋나면 이 문서를 함께 갱신한다.
+
+> **수집 경계는 레벨이 아니라 표식이다.** 구독 필터도 Lambda도 `event.dataset` 만 보고
+> `log.level` 은 보지 않는다. WARNING 운영 이벤트(`dependency.request.retry`,
+> `app.degraded`)와 ERROR 운영 이벤트는 지금도 그대로 전달된다. 앱이 새 운영 이벤트를
+> 추가해도 **구독 필터와 Lambda를 바꿀 필요가 없다.**
+>
+> 반대로 `report_error()` 와 `logger.warning()` 이 남기는 **진단 줄**은 표식이 없어
+> 계속 전달되지 않는다. 그 줄은 CloudWatch Logs Insights에서 본다. 앱이 표식 없는 줄에
+> 예외 원문(`errorMessage`)과 traceback을 담기 때문에 의도한 경계다.
 
 1. Lambda 콘솔에서 같은 리전의 전달 함수 `laimory-agentcore-logs-to-es`를 만든다. 함수는
    CloudWatch Logs의 base64+gzip payload를 풀고 각 `logEvents[].message`를 JSON으로

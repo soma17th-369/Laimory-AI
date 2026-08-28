@@ -30,7 +30,13 @@
 
 `LOG_FORMAT=rich`는 local console, `json`은 운영용 한 줄 JSON이다. JSON formatter는 multiline traceback을 한 record의 구조화 필드로 넣고 secret/PII를 마스킹한다. Uvicorn logger는 앱 formatter에 맞추고 기본 access log는 요청 middleware가 대체한다.
 
-Elasticsearch 수집 대상은 `emit_event`만 붙일 수 있는 `event.dataset=laimory.api` 표식으로 제한한다. 현재 event action은 HTTP request 완료, server 시작·종료, Timeline task 완료, User Memory task 완료(`usermemory.task.completed`), App Server logical request 완료·retry다. 이벤트별 field allowlist가 있으며 allowlist 밖 값은 값 자체를 기록하지 않고 field name만 local DEBUG로 알린다.
+Elasticsearch 수집 대상은 `emit_event`만 붙일 수 있는 `event.dataset=laimory.api` 표식으로 제한한다. 현재 event action은 HTTP request 완료, container 시작·종료, Timeline task 완료, User Memory task 완료(`usermemory.task.completed`), App Server logical request 완료·retry, 기능 저하(`app.degraded`)다. 이벤트별 field allowlist가 있으며 allowlist 밖 값은 값 자체를 기록하지 않고 field name만 local DEBUG로 알린다.
+
+`app.degraded`(#101)는 **task가 success로 끝나도 나가는 유일한 event다.** 흡수 경계가 exception을 삼키고 fallback으로 진행하므로 완료 event만으로는 Event Agent 하나가 통째로 죽은 것과 정상 처리를 구분할 수 없다. 같은 `taskId`로 두 줄을 묶어야 "성공했지만 무엇을 잃었는지"가 보인다. 저하 지점은 `component` 한 축이 답하고 값은 `ExecutionStage` 또는 `DegradedComponent`(`secret-bundle`·`langfuse`·`window`) 상수뿐이다. level은 WARNING, `event.outcome`은 `failure`다 — **`event.outcome: failure`만으로 실패 task를 세면 이제 성공 task의 저하가 섞이므로 `event.action` 조건을 함께 건다.**
+
+발행은 `report_error`가 기본으로 한다. 항목 단위 loop(수집 항목마다·사진마다·도구 호출마다·응답 항목마다)는 한 task에서 수십 건이 되므로 `emit=False`로 빼고 잃은 양을 `droppedCount` 집계 1건으로 대신 낸다. LLM 실패(`llm.py`)는 호출 단위여도 발행한다 — `provider`·`model`·`stopReason`이 없으면 상위 흡수 경계에서 `EVENT_AGENT_FAILED`(1204)로 덮여 원인이 사라진다.
+
+`server.started`/`server.stopped`의 `instanceId`는 process당 하나이고 emitter가 자동으로 채운다. AgentCore는 유휴 container를 회수하므로 한 log group에 여러 instance의 줄이 섞이고, 이 값이 cold start를 세고 시작·종료를 짝짓는 유일한 수단이다. **`server.stopped`는 강제 회수 시 lifespan `finally`가 돌지 않아 남지 않을 수 있다** — `uptimeMs`를 가동시간의 정본으로 쓰지 않는다.
 
 HTTP request는 response start 시점에 요청당 한 건, Timeline·User Memory background task는 task당 한 건, App Server logical call은 retry 횟수와 무관하게 완료 한 건을 남긴다. 개별 retry는 별도 retry event다. 같은 `taskId`와 `errorCode`로 경계를 연결한다.
 
@@ -38,7 +44,7 @@ HTTP request는 response start 시점에 요청당 한 건, Timeline·User Memor
 
 `usermemory.task.completed`에서 먼저 볼 field는 `resultSent`다. callback이 없는 계약이라 결과 저장 호출 한 번이 통보의 전부이고, `false`면 App Server는 아무 연락도 받지 못한 상태다. `droppedDailyTimelineCount`/`droppedEventCount`는 입력을 얼마나 잘랐는지를 남긴다 — 조용히 자르면 결과만 보고 "다 보고 이 정도"인지 "못 본 게 있어서 이 정도"인지 구분할 수 없다.
 
-`ErrorCode`는 영역별 정수 대역, 외부 안전 메시지, 필요한 HTTP status의 단일 카탈로그다. 예약된 과거 번호는 재사용하지 않는다. `report_error`는 최종/흡수 경계의 local 진단이며 외부 response·callback·운영 event는 같은 code를 참조한다. 원본 exception message와 traceback은 외부 안전 메시지로 변환된다.
+`ErrorCode`는 영역별 정수 대역, 외부 안전 메시지, 필요한 HTTP status의 단일 카탈로그다. 예약된 과거 번호는 재사용하지 않는다. `report_error`가 남기는 **진단 줄**은 표식이 없어 수집되지 않으며 예외 원문(`errorMessage`)과 traceback이 거기 남는다. 같은 호출이 표식 달린 `app.degraded`를 한 건 더 내지만 그 줄에는 allowlist를 통과한 field만 실린다 — `context`의 임의 key도, 예외 원문도, traceback도 들어가지 않는다(`tests/core/test_exceptions.py`가 고정한다). 외부 response·callback·운영 event는 같은 code를 참조한다.
 
 Langfuse는 설정이 활성이고 public/secret key가 모두 있을 때 지연 생성한다. release는 `AGENT_VERSION`, environment는 `APP_ENV`를 쓴다.
 
@@ -60,7 +66,7 @@ Langfuse client 생성·span 시작/종료·flush 실패와 운영 event 조립�
 
 ## Invariants
 
-- 일반 로그를 추가해도 자동으로 Elasticsearch 수집 범위가 넓어지지 않아야 한다.
+- `get_logger()`로 남기는 일반 로그를 추가해도 자동으로 Elasticsearch 수집 범위가 넓어지지 않아야 한다. 단 `report_error` 호출은 예외다 — 저하 event를 함께 내므로 **건수**는 는다. 새 필드가 새는 것이 아니라(allowlist가 막는다) event 수가 느는 것이며, 항목 단위 loop에서는 `emit=False`로 막는다.
 - 운영 이벤트에는 사용자 title, 장소, 주소, filename, prompt/response, URL, token, exception 원문을 넣지 않는다.
 - event action 이름과 field 의미는 dashboard/search 계약이므로 임의 변경하지 않는다.
 - 호출부가 넘긴 문자열은 어떤 경로로도 운영 event의 `message`가 되지 않는다. 문구는 emitter가 소유한 고정 label 조합뿐이고, 모르는 값은 문구에서 뺀다.

@@ -53,6 +53,7 @@ from app.core.exceptions import report_error
 from app.core.execution_context import ExecutionStage
 from app.core.llm import ImageInput
 from app.core.logging import get_logger
+from app.core.operational_logging import emit_degraded
 from app.schemas import PhotoItem
 
 logger = get_logger(__name__)
@@ -281,6 +282,9 @@ class PhotoUrlImageSource(PhotoImageSource):
             stage=ExecutionStage.EVENT_AGENT,
             agent="photo",
             duration_ms=duration_ms,
+            # 사진마다 부른다. 몇 장을 잃었는지는 `load_images` 가 배치 끝에
+            # `droppedCount` 로 한 번만 낸다.
+            emit=False,
         )
 
 
@@ -400,6 +404,7 @@ def load_images(
                     },
                     stage=ExecutionStage.EVENT_AGENT,
                     agent="photo",
+                    emit=False,
                 )
                 outcome.failed += 1
                 continue
@@ -432,6 +437,16 @@ def load_images(
             outcome.failed,
             outcome.skipped,
             outcome.total_bytes,
+        )
+        # 장마다 내지 않고 배치 하나에 한 건이다(#101). 사진 설명은 이미지 없이도
+        # metadata 로 이어지므로 작업은 성공으로 끝난다 — 그래서 이 이벤트가 없으면
+        # 사진 근거가 통째로 빠진 하루도 운영에서 정상으로 보인다.
+        emit_degraded(
+            ExecutionStage.EVENT_AGENT,
+            agent="photo",
+            error_code=int(ErrorCode.PHOTO_IMAGE_FETCH_FAILED),
+            dropped_count=outcome.failed + outcome.skipped,
+            duration_ms=outcome.duration_ms,
         )
     return outcome
 

@@ -35,6 +35,16 @@ traceback 은 어떤 이벤트에도 넣지 않는다. 예외 상세가 필요�
 호출부가 넘긴 문자열이 문구로 흘러가는 경로를 하나도 만들지 않는 것이 이 설계의
 전부다 — 그 경로가 생기면 사용자 콘텐츠와 고카디널리티 값이 곧 따라 들어온다.
 
+## 저하 이벤트 (이슈 #101)
+
+`app.degraded` 는 **작업이 성공으로 끝나도** 나간다. 흡수 경계들이 예외를 삼키고
+fallback 으로 진행하기 때문에, 그것 없이는 Event Agent 하나가 통째로 죽어도
+`timeline.task.completed` 가 `status=SUCCESS` 로만 남는다.
+
+:func:`emit_degraded` 가 그 통로다. 대부분은 :func:`~app.core.exceptions.report_error`
+가 대신 불러 주므로 호출부가 따로 신경 쓰지 않는다. 항목 단위 루프처럼 한 작업에서
+수십 건이 나오는 자리만 ``report_error(..., emit=False)`` 로 빼고 집계 1건으로 대신 낸다.
+
 ## 실패 격리
 
 로깅이 요청 처리를 깨뜨리면 안 된다. :func:`emit_event` 는 어떤 이유로도 예외를
@@ -44,15 +54,24 @@ traceback 은 어떤 이벤트에도 넣지 않는다. 예외 상세가 필요�
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any
+from uuid import uuid4
 
-from app.core.execution_context import current_execution_context
+from app.core.execution_context import ExecutionStage, current_execution_context
 from app.core.logging import OPERATIONAL_ATTR, get_logger
 
 #: 수집 대상 표식. Filebeat 는 이 값이 정확히 일치하는 이벤트만 통과시킨다.
 #: 값을 바꾸면 수집기 설정(`docs/observability/filebeat.example.yml`)도 같이 바꿔야 한다.
 EVENT_DATASET = "laimory.api"
+
+#: 이 프로세스를 가리키는 값. 기동 때 한 번 만들어지고 죽을 때까지 같다.
+#:
+#: AgentCore 는 유휴 컨테이너를 회수하고 필요할 때 새로 띄우므로, 한 log group 에 여러
+#: 인스턴스의 줄이 섞여 들어온다. 이 값이 없으면 어느 컨테이너의 기록인지 가를 수 없고
+#: cold start 를 셀 수도 없다. EC2 는 컨테이너가 오래 살아 사실상 배포마다 하나다.
+INSTANCE_ID = str(uuid4())
 
 #: ECS 이름을 그대로 쓴다. 대시보드가 사람이 읽는 한국어 `message` 대신 이 세 필드로
 #: 이벤트를 고른다 — 문구는 언제든 다듬을 수 있지만 계약은 흔들리면 안 된다.
@@ -82,6 +101,14 @@ class OperationalEvent(StrEnum):
     DEPENDENCY_REQUEST_COMPLETED = "dependency.request.completed"
     #: 그 호출의 재시도 한 번.
     DEPENDENCY_REQUEST_RETRY = "dependency.request.retry"
+    #: 무언가를 잃었지만 처리는 계속된 지점(이슈 #101).
+    #:
+    #: **작업이 성공으로 끝나도 나간다.** 흡수 경계들이 예외를 삼키고 fallback 으로
+    #: 진행하므로 `timeline.task.completed` 는 `status=SUCCESS`, `errorCode` 없음으로
+    #: 나가고, Event Agent 하나가 통째로 죽어도 운영에서는 성공한 작업으로만 보인다.
+    #: 그 간극을 메우는 것이 이 이벤트다 — 이 둘을 같은 `taskId` 로 묶어 봐야
+    #: "성공했지만 무엇을 잃었는지" 가 보인다.
+    APP_DEGRADED = "app.degraded"
 
 
 class EventOutcome(StrEnum):
@@ -89,6 +116,22 @@ class EventOutcome(StrEnum):
 
     SUCCESS = "success"
     FAILURE = "failure"
+
+
+class DegradedComponent(StrEnum):
+    """``app.degraded`` 의 ``component`` 중 실행 단계로 표현되지 않는 것.
+
+    저하 지점은 보통 :class:`~app.core.execution_context.ExecutionStage` 값으로 답한다.
+    여기 있는 것은 **task 바깥**이라 단계가 없는 프로세스 수준 결함이다.
+    """
+
+    #: 시크릿 번들을 읽지 못해 환경변수·기본값으로 기동했다(#30).
+    SECRET_BUNDLE = "secret-bundle"
+    #: Langfuse 키가 없어 trace 를 남기지 않는다. 오류가 아니라 구성 상태다.
+    LANGFUSE = "langfuse"
+    #: 요청 window 를 파싱하지 못해 범위 검증을 통째로 건너뛰었다.
+    #: 단계로 치면 `REQUEST` 지만 정규화 실패와 섞이면 구분할 수 없어 따로 둔다.
+    WINDOW = "window"
 
 
 #: 이벤트별 허용 필드. 여기 없는 이름은 나가지 않는다.
@@ -104,8 +147,8 @@ _ALLOWED_FIELDS: dict[OperationalEvent, frozenset[str]] = {
             "taskId",
         }
     ),
-    OperationalEvent.SERVER_STARTED: frozenset({"appEnv", "logFormat"}),
-    OperationalEvent.SERVER_STOPPED: frozenset({"appEnv", "uptimeMs"}),
+    OperationalEvent.SERVER_STARTED: frozenset({"appEnv", "logFormat", "instanceId"}),
+    OperationalEvent.SERVER_STOPPED: frozenset({"appEnv", "uptimeMs", "instanceId"}),
     OperationalEvent.TIMELINE_TASK_COMPLETED: frozenset(
         {
             "taskId",
@@ -168,7 +211,36 @@ _ALLOWED_FIELDS: dict[OperationalEvent, frozenset[str]] = {
             "taskId",
         }
     ),
+    OperationalEvent.APP_DEGRADED: frozenset(
+        {
+            # 어디가 저하됐는지. ExecutionStage 값이거나 DegradedComponent 값이다.
+            "component",
+            "agent",
+            "errorCode",
+            # 예외 **클래스명**이다(`ThrottlingException` 등). 원문이 아니라 종류라
+            # 사용자 데이터가 아니고, `http.request.completed` 도 같은 필드를 쓴다.
+            # LLM 실패가 상위에서 1204 로 덮이는 경로가 있어(#101) 이 값이 없으면
+            # 무엇이 터졌는지 ES 에서 알 수 없다.
+            "errorType",
+            "taskId",
+            "durationMs",
+            # 항목 단위 실패를 이벤트마다 내지 않고 집계 1건으로 낼 때의 개수.
+            "droppedCount",
+            # LLM 실패 진단(#101). `component=LLM` 일 때만 채워진다.
+            "provider",
+            "model",
+            "providerVersion",
+            # 구조화 출력 실패 진단(#98). 응답 본문이 아니라 종료 사유·블록 종류·토큰 수다.
+            "stopReason",
+            "contentBlockKinds",
+            "tokenUsage",
+        }
+    ),
 }
+
+#: `app.degraded` 가 호출부 `context` 에서 받아 실을 구조화 출력 진단 필드.
+#: :meth:`~app.core.structured.ProviderStructuredOutputError.trace_fields` 가 만든다.
+_LLM_TRACE_FIELDS = ("stopReason", "contentBlockKinds", "tokenUsage")
 
 #: 사람이 읽는 기본 문구. 호출부가 문자열을 만들지 못하게 여기서 소유한다 —
 #: 포맷 인자를 받는 순간 사용자 콘텐츠가 message 로 들어올 자리가 생긴다.
@@ -176,12 +248,15 @@ _ALLOWED_FIELDS: dict[OperationalEvent, frozenset[str]] = {
 #: :func:`_message_for` 가 더 구체적인 문구로 바꾼다(이슈 #78).
 _MESSAGES: dict[OperationalEvent, str] = {
     OperationalEvent.HTTP_REQUEST_COMPLETED: "HTTP 요청 완료",
-    OperationalEvent.SERVER_STARTED: "서버 기동 완료",
-    OperationalEvent.SERVER_STOPPED: "서버 종료",
+    # "서버" 가 아니라 "컨테이너" 다. AgentCore 에서는 배포 시점이 아니라 cold start
+    # 마다 찍히므로, 오래 사는 서버를 가리키는 문구는 실제와 어긋난다.
+    OperationalEvent.SERVER_STARTED: "컨테이너 기동 완료",
+    OperationalEvent.SERVER_STOPPED: "컨테이너 종료",
     OperationalEvent.TIMELINE_TASK_COMPLETED: "Timeline 작업 완료",
     OperationalEvent.USER_MEMORY_TASK_COMPLETED: "User Memory 갱신 작업 완료",
     OperationalEvent.DEPENDENCY_REQUEST_COMPLETED: "외부 연동 호출 완료",
     OperationalEvent.DEPENDENCY_REQUEST_RETRY: "외부 연동 호출 재시도",
+    OperationalEvent.APP_DEGRADED: "기능 저하",
 }
 
 #: 외부 연동 이벤트 문구에 쓰는 라벨. `dependency`/`operation` 값은 **여기 등록된
@@ -274,6 +349,62 @@ def emit_event(
         _diagnostic.debug("운영 이벤트 기록 실패: %s", event.value, exc_info=True)
 
 
+def emit_degraded(
+    component: ExecutionStage | DegradedComponent | str | None = None,
+    *,
+    error_code: int | None = None,
+    error_type: str | None = None,
+    agent: str | None = None,
+    dropped_count: int | None = None,
+    duration_ms: float | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    provider_version: str | None = None,
+    trace_fields: Mapping[str, Any] | None = None,
+    level: int = logging.WARNING,
+) -> None:
+    """무언가를 잃었지만 계속 진행한 지점을 운영 이벤트로 남긴다(이슈 #101).
+
+    ``component`` 와 ``agent`` 를 생략하면 현재 실행 컨텍스트에서 가져온다. 흡수 경계는
+    대개 자기가 어느 단계인지 인자로 말하지 않기 때문이다.
+
+    ``trace_fields`` 는 구조화 출력 진단(:data:`_LLM_TRACE_FIELDS`)만 골라 싣는다.
+    호출부가 넘긴 dict 를 통째로 펴지 않는다 — 그 자리가 곧 사용자 콘텐츠가 들어오는
+    통로가 된다. 어차피 allowlist 가 한 번 더 거르지만, 고르는 일을 여기서 끝낸다.
+
+    :func:`emit_event` 와 같이 어떤 경우에도 예외를 올리지 않는다.
+    """
+
+    context = current_execution_context()
+    if component is None and context is not None:
+        component = context.stage
+    if agent is None and context is not None:
+        agent = context.agent
+
+    fields: dict[str, Any] = {
+        "component": component,
+        "agent": agent,
+        "errorCode": error_code,
+        "errorType": error_type,
+        "droppedCount": dropped_count,
+        "durationMs": duration_ms,
+        "provider": provider,
+        "model": model,
+        "providerVersion": provider_version,
+    }
+    if trace_fields:
+        for key in _LLM_TRACE_FIELDS:
+            if key in trace_fields:
+                fields[key] = trace_fields[key]
+
+    emit_event(
+        OperationalEvent.APP_DEGRADED,
+        outcome=EventOutcome.FAILURE,
+        level=level,
+        **fields,
+    )
+
+
 def _message_for(
     event: OperationalEvent,
     outcome: EventOutcome,
@@ -348,5 +479,9 @@ def _build_payload(
         context = current_execution_context()
         if context is not None:
             payload["taskId"] = context.task_id
+
+    # 프로세스의 성질이라 호출부가 넘길 값이 아니다. `taskId` 와 같은 이유로 여기서 채운다.
+    if "instanceId" in allowed:
+        payload["instanceId"] = INSTANCE_ID
 
     return payload

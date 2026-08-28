@@ -167,6 +167,8 @@ def parse_questions(text: str) -> list[EventQuestion]:
                 "질문 항목 검증 실패로 제외",
                 exc=exc,
                 context={"index": index, "action": "skipped"},
+                # 질문 항목마다 부른다. 빠진 질문은 재요청 뒤 warning 이 답한다.
+                emit=False,
             )
     return questions
 

@@ -8,6 +8,7 @@ from app.core.error_codes import ErrorCode
 from app.core.exceptions import report_error
 from app.core.logging import get_logger
 from app.core.execution_context import ExecutionStage
+from app.core.operational_logging import emit_degraded
 from app.schemas import (
     CalendarItem,
     CollectedSnapshot,
@@ -126,12 +127,14 @@ def normalize(snapshot: CollectedSnapshot) -> TimelineDraftRequest:
     groups = split_source_items(snapshot)
 
     domains: dict[str, list] = {field: [] for field, _ in _PARSERS.values()}
+    dropped = 0
     for item_type, items in groups.items():
         field, parser = _PARSERS[item_type]
         for item in items:
             try:
                 domains[field].append(parser(item))
             except Exception as exc:  # noqa: BLE001 - 개별 항목 실패는 건너뛴다.
+                dropped += 1
                 report_error(
                     logger,
                     ErrorCode.SOURCE_ITEM_NORMALIZE_FAILED,
@@ -139,7 +142,18 @@ def normalize(snapshot: CollectedSnapshot) -> TimelineDraftRequest:
                     exc=exc,
                     context={"itemType": item_type.value, "rawId": item.raw_id},
                     stage=ExecutionStage.REQUEST,
+                    # 항목마다 부른다. 어느 rawId 가 왜 깨졌는지는 이 진단 줄이 답하고,
+                    # 운영 이벤트는 아래에서 몇 건을 잃었는지 한 번만 낸다.
+                    emit=False,
                 )
+
+    if dropped:
+        # 입력을 조용히 잃으면 결과만 보고 "그날 일이 없었다" 와 구분할 수 없다.
+        emit_degraded(
+            ExecutionStage.REQUEST,
+            error_code=int(ErrorCode.SOURCE_ITEM_NORMALIZE_FAILED),
+            dropped_count=dropped,
+        )
 
     window = None
     if snapshot.timeline_window is not None:

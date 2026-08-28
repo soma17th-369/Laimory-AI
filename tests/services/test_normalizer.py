@@ -6,6 +6,7 @@ start/end GeoPlace, 개별 항목 파싱 실패 흡수를 다룬다.
 """
 
 import json
+import logging
 from pathlib import Path
 from uuid import UUID
 
@@ -159,3 +160,53 @@ def test_photo_without_place_fields_is_valid():
 
     assert photo.places == []
     assert photo.address is None
+
+
+# --- 저하 이벤트 (이슈 #101) -------------------------------------------------
+
+
+def _degraded(caplog) -> list[dict]:
+    return [
+        payload
+        for record in caplog.records
+        if (payload := getattr(record, "operational_event", None)) is not None
+        and payload["event.action"] == "app.degraded"
+    ]
+
+
+def test_dropped_items_are_reported_once_with_the_count(caplog):
+    """항목마다가 아니라 작업당 한 건이다.
+
+    수집 항목이 200개면 개별 발행은 이벤트 200건이 된다. 대신 몇 건을 잃었는지를
+    `droppedCount` 로 남긴다 — 이게 없으면 결과만 보고 "그날 일이 없었다" 와
+    "입력을 못 읽었다" 를 구분할 수 없다.
+    """
+
+    broken = [
+        source_item(
+            i,
+            ItemType.HEALTH,
+            {"metric": "NOT_A_METRIC", "value": 1},
+            raw_id=f"bad-{i}",
+        )
+        for i in range(3)
+    ]
+    snapshot = make_snapshot(source_items=broken)
+
+    with caplog.at_level(logging.DEBUG):
+        normalize(snapshot)
+
+    events = _degraded(caplog)
+    assert len(events) == 1
+    assert events[0]["droppedCount"] == 3
+    assert events[0]["component"] == "REQUEST"
+    assert events[0]["errorCode"] == 1103
+    # rawId 는 진단 줄에만 남는다. 수집 대상 줄로는 나가지 않는다.
+    assert "rawId" not in events[0]
+
+
+def test_clean_input_reports_nothing(caplog):
+    with caplog.at_level(logging.DEBUG):
+        normalize(make_snapshot(source_items=default_source_items()))
+
+    assert _degraded(caplog) == []
