@@ -29,8 +29,10 @@ from app.core.operational_logging import (
     DATASET_FIELD,
     EVENT_DATASET,
     OUTCOME_FIELD,
+    DegradedComponent,
     EventOutcome,
     OperationalEvent,
+    emit_degraded,
     emit_event,
     http_level,
     http_outcome,
@@ -389,3 +391,78 @@ def test_odd_label_values_fall_back_without_losing_the_event(capture) -> None:
     assert len(events) == 1
     assert events[0]["message"] == "외부 연동 호출 완료"
     assert events[0][ACTION_FIELD] == OperationalEvent.DEPENDENCY_REQUEST_COMPLETED.value
+
+
+# --- 저하 이벤트 (이슈 #101) -------------------------------------------------
+#
+# `app.degraded` 는 **작업이 성공으로 끝나도** 나가는 유일한 이벤트다. 흡수 경계가
+# 예외를 삼키고 fallback 으로 진행하므로 완료 이벤트만으로는 무엇을 잃었는지 알 수
+# 없다. 여기서 지키는 것은 셋이다.
+#
+# 1. 표식·레벨·outcome 이 계약대로 나간다.
+# 2. component/agent 를 안 주면 실행 컨텍스트에서 온다.
+# 3. LLM 진단은 정해진 이름만 실리고 그 밖의 값은 통째로 버려진다.
+
+
+def test_degraded_event_carries_the_marker_at_warning_level(capture) -> None:
+    emit_degraded(
+        DegradedComponent.LANGFUSE,
+        error_code=1408,
+        error_type="ClientError",
+    )
+
+    events = _events(capture)
+    assert len(events) == 1
+    event = events[0]
+    assert event[DATASET_FIELD] == EVENT_DATASET
+    assert event[ACTION_FIELD] == OperationalEvent.APP_DEGRADED.value
+    assert event[OUTCOME_FIELD] == EventOutcome.FAILURE.value
+    # 저하는 실패지만 작업을 죽이지 않는다. ERROR 로 올리면 실제 실패와 섞인다.
+    assert event["log.level"] == "WARNING"
+    assert event["component"] == "langfuse"
+    assert event["errorCode"] == 1408
+    assert event["errorType"] == "ClientError"
+
+
+def test_degraded_event_takes_component_and_agent_from_the_context(capture) -> None:
+    """흡수 경계는 자기가 어느 단계인지 인자로 말하지 않는다."""
+
+    with execution_context("task-9"):
+        with execution_scope(ExecutionStage.EVENT_AGENT, agent="photo"):
+            emit_degraded()
+
+    event = _events(capture)[0]
+    assert event["component"] == ExecutionStage.EVENT_AGENT.value
+    assert event["agent"] == "photo"
+    assert event["taskId"] == "task-9"
+
+
+def test_degraded_event_keeps_only_the_declared_llm_trace_fields(capture) -> None:
+    """`trace_fields` 를 통째로 펴지 않는다. 그 자리가 곧 콘텐츠 통로가 된다."""
+
+    emit_degraded(
+        ExecutionStage.LLM,
+        error_code=1202,
+        provider="bedrock",
+        model="global.amazon.nova-2-lite-v1:0",
+        provider_version="1.40.0",
+        trace_fields={
+            "stopReason": "max_tokens",
+            "contentBlockKinds": ["text"],
+            "tokenUsage": {"inputTokens": 12},
+            # 아래는 계약에 없다. 응답 본문이 이 경로로 들어오면 안 된다.
+            "responseText": "사용자의 하루 일기 본문…",
+            "prompt": "system prompt…",
+        },
+    )
+
+    event = _events(capture)[0]
+    assert event["provider"] == "bedrock"
+    assert event["model"] == "global.amazon.nova-2-lite-v1:0"
+    assert event["providerVersion"] == "1.40.0"
+    assert event["stopReason"] == "max_tokens"
+    assert event["contentBlockKinds"] == ["text"]
+    assert event["tokenUsage"] == {"inputTokens": 12}
+    serialized = json.dumps(event, ensure_ascii=False)
+    for leaked in ("responseText", "사용자의 하루 일기 본문", "prompt", "system prompt"):
+        assert leaked not in serialized
