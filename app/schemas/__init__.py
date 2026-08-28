@@ -44,7 +44,11 @@ from app.schemas.timeline import (
     TimelineWarning,
     TimelineWarningSeverity,
 )
-from app.schemas.timeline_input import TimelineInputResponse, TimelineInputWindow
+from app.schemas.timeline_input import (
+    TimelineInputPayload,
+    TimelineInputResponse,
+    TimelineInputWindow,
+)
 from app.schemas.timeline_request import TimelineDraftRequest, TimeWindow
 from app.schemas.timeline_result import TimelineResultEvent, TimelineResultRequest
 from app.schemas.user_memory import UserMemory
@@ -94,6 +98,7 @@ __all__ = [
     "TimelineDraftEvent",
     "TimelineDraftRequest",
     "TimelineEventDraft",
+    "TimelineInputPayload",
     "TimelineInputResponse",
     "TimelineInputWindow",
     "TimelineQuestion",

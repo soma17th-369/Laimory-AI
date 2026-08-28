@@ -13,7 +13,7 @@ Timeline 생성 요청이 202로 접수된 뒤 입력 조회, Agent 실행, 결�
 ## Authoritative Sources
 
 - `app/api/v1/timeline.py`, `app/api/agentcore.py`
-- `app/services/timeline_runner.py`, `app/services/app_server_client.py`
+- `app/services/timeline_runner.py`, `app/services/timeline_testing.py`, `app/services/app_server_client.py`
 - `app/core/inflight.py`, `app/core/execution_context.py`
 - `app/schemas/task.py`, `app/core/error_codes.py`
 - `tests/api/test_timeline_endpoint.py`, `tests/api/test_agentcore_endpoint.py`
@@ -49,9 +49,19 @@ timeout·연결 계열 `httpx.HTTPError`와 5xx는 설정된 횟수까지 지수
 
 callback 전송 실패는 저장된 결과나 최종 SUCCESS 상태를 되돌리지 않는다. 결과 저장 전에 발생한 실패만 FAILED가 될 수 있다.
 
+### 동기 테스트 경로는 task가 아니다 (#102)
+
+`POST /v1/timeline/test`는 같은 pipeline(`ensure_source_contract` → window 덮어쓰기 → `normalize` → `run_main_agent` → `reject_empty_structured_failure` → 저장 전 자체검증 → 결과 계약 변환)을 부르지만 **task가 아니다**. 접수도 background도 없고, App Server를 한 번도 호출하지 않으며(입력 조회·결과 저장·callback·token 갱신 전부), 따라서 순서 계약도 terminal 상태도 없다. 실행부는 `app/services/timeline_testing.py`이고 저장·callback·token·관측 구조는 `timeline_runner`에만 남는다.
+
+공유하는 것은 세 가지다. `PIPELINE_TIMEOUT_SEC`과 그 초과 처리(#76의 마지막 확정본 규칙, 확정본 없으면 `1201`), `execution_context`(#98 구조화 실패 guard가 이 context를 읽으므로 열지 않으면 guard가 항상 통과한다), `track_inflight`.
+
+`userMemory` 계약 위반 흡수(1106)는 `source_contract.resolve_user_memory` 한 곳에 있고 입력 조회와 이 경로가 같이 쓴다.
+
+request는 `taskId`를 받는다(App Server가 발급한 값). 이 경로가 그것으로 조회하거나 저장하지는 않지만, 같은 taskId로 돌린 비동기 실행과 로그·Langfuse에서 이어 보기 위한 상관키다. `taskToken`만 계약에서 빠진다 — 되부르는 호출이 없어 인증할 대상이 없다.
+
 ### inflight와 health
 
-`GET /ping`은 inflight가 0이면 `Healthy`, 하나 이상이면 `HealthyBusy`다. EC2 배포 스크립트는 기존 컨테이너가 `Healthy`가 될 때까지 최대 20분 기다린 뒤 교체한다. 이 counter는 task 상태 저장소가 아니며 taskId도 보관하지 않는다.
+`GET /ping`은 inflight가 0이면 `Healthy`, 하나 이상이면 `HealthyBusy`다. EC2 배포 스크립트는 기존 컨테이너가 `Healthy`가 될 때까지 최대 20분 기다린 뒤 교체한다. 이 counter는 task 상태 저장소가 아니며 taskId도 보관하지 않는다. background task뿐 아니라 동기 테스트 요청(#102)도 여기 잡힌다 — 최대 `PIPELINE_TIMEOUT_SEC`을 쓰는 요청이라 세지 않으면 처리 도중 컨테이너가 회수된다.
 
 ## Invariants
 
@@ -63,6 +73,8 @@ callback 전송 실패는 저장된 결과나 최종 SUCCESS 상태를 되돌리
 - main Agent timeout만 `PIPELINE_TIMEOUT_SEC` 대상이다. App Server 호출은 각 호출의 timeout/retry 설정을 별도로 쓴다.
 - timeout은 그 자체로 실패가 아니다. 저장할 확정 draft가 없을 때만 `1201` 실패다. 확정본을 저장한 경우는 SUCCESS이며 `timedOut`/`partialSave`로 구분한다 — `errorCode`는 비어 있다.
 - `asyncio.wait_for`는 `asyncio.to_thread` 위의 LLM 호출을 끊지 못한다. 취소된 뒤에도 그 스레드는 계속 돌며 draft를 고치므로, 발행 값은 참조가 아니라 deep copy여야 한다.
+- 동기 테스트 경로는 App Server를 호출하지 않는다. 결과 저장·callback·token 갱신 코드를 그쪽에 넣지 않는다.
+- 두 경로가 공유하는 pipeline 함수는 한 벌이다. 테스트용 정규화·guard·변환을 따로 만들지 않는다.
 
 ## Known Gaps
 
@@ -77,7 +89,7 @@ callback 전송 실패는 저장된 결과나 최종 SUCCESS 상태를 되돌리
 
 ## Validation
 
-- `uv run pytest tests/api/test_timeline_endpoint.py tests/api/test_agentcore_endpoint.py -q`
+- `uv run pytest tests/api/test_timeline_endpoint.py tests/api/test_timeline_test_endpoint.py tests/api/test_agentcore_endpoint.py -q`
 - `uv run pytest tests/services/test_timeline_runner.py tests/services/test_app_server_client.py -q`
 - `rg -n "add_task|wait_for|submit_result|send_callback|abort_callback|track_inflight" app`
 

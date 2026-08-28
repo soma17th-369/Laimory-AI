@@ -23,6 +23,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # 중간 산출물을 봐야 디버깅이 되고, 그 밖에서는 기본적으로 내보내지 않는다.
 _BODY_VISIBLE_APP_ENVS = {"local", "dev"}
 
+# 동기 Timeline 테스트 엔드포인트를 열어도 되는 실행 환경(이슈 #102). 위 상수와 값이
+# 같지만 **다른 정책**이라 따로 둔다 — Langfuse 본문 노출 범위를 넓힌다고 해서 운영
+# 경로에 테스트용 엔드포인트가 함께 열려서는 안 된다.
+_TEST_ENDPOINT_APP_ENVS = {"local", "dev"}
+
 
 def _default_agent_version() -> str:
     try:
@@ -195,6 +200,26 @@ class Settings(BaseSettings):
     # Repair Agent 의 분석-개선 반복 상한. 한 번의 반복이 LLM 호출 1회다.
     # 0 이면 LLM 개선 없이 결정론 확정(draft_repair)만 수행한다.
     repair_max_iterations: int = 3
+
+    # 동기 Timeline 테스트 엔드포인트(`POST /v1/timeline/test`)를 열지 여부(#102).
+    # 지정하지 않으면 `app_env` 로 판단한다 — 아래 `timeline_test_endpoint_enabled` 참고.
+    timeline_test_enabled: bool | None = None
+
+    @property
+    def timeline_test_endpoint_enabled(self) -> bool:
+        """`POST /v1/timeline/test` 를 열어도 되는지(이슈 #102).
+
+        `TIMELINE_TEST_ENABLED` 를 지정하면 그 값이 항상 이긴다. 지정하지 않으면
+        `local`/`dev` 에서만 열린다. 기본값이 "닫힘" 쪽이라 새 환경(`prod`, 오타난
+        `APP_ENV`, 값이 비어 온 경우)에서는 저절로 닫힌다 — 열려면 명시해야 한다.
+
+        이 값은 라우팅과 OpenAPI 노출을 동시에 결정한다. 닫혀 있으면 경로가 없는 것과
+        같은 404(코드 1003)가 나가고 `/openapi.json` 에도 실리지 않는다.
+        """
+
+        if self.timeline_test_enabled is not None:
+            return self.timeline_test_enabled
+        return self.app_env.strip().lower() in _TEST_ENDPOINT_APP_ENVS
 
     # User Memory 갱신(#64) 전체 실행 timeout(초). 초과해도 FAILED 결과는 보낸다.
     #

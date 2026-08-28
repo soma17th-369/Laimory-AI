@@ -82,6 +82,7 @@ Content-Type: application/json
 |---|---|---|
 | `POST` | `/v1/timeline` | 타임라인 생성 작업 접수 |
 | `POST` | `/v1/user-memory` | User Memory 갱신 작업 접수 |
+| `POST` | `/v1/timeline/test` | **테스트 전용.** 입력 JSON으로 타임라인을 동기 생성 (local/dev에서만 열림) |
 | `GET` | `/health` | AI 서버 상태 확인 |
 | `POST` | `/invocations` | AgentCore Runtime 호출 진입점. 타임라인 생성과 User Memory 갱신을 모두 접수 |
 | `GET` | `/ping` | AgentCore Runtime 헬스체크 |
@@ -337,6 +338,117 @@ AI → App Server   POST /user-memory/updates/{taskId}/result       (성공·실
 
 전체 처리에 `USER_MEMORY_TIMEOUT_SEC`(기본 120초) 예산을 둡니다. 초과해도 `FAILED`
 결과는 보냅니다.
+
+## 4-3. 동기 타임라인 테스트 요청 (이슈 #102)
+
+### `POST /v1/timeline/test`
+
+수집 원본 JSON을 그대로 받아 **요청 안에서** 타임라인 생성을 끝내고 결과를 돌려줍니다.
+만든 결과를 **어디에도 저장하지 않고** 응답으로만 내보냅니다 — App Server 입력 조회,
+결과 저장, 완료 콜백, `taskToken` 갱신을 전부 하지 않습니다.
+
+> **테스트 전용입니다.** 운영 호출 경로(`POST /v1/timeline`, `POST /invocations`)를
+> 대체하지 않으며, 그 두 경로의 동작은 이 기능으로 달라지지 않습니다.
+
+### 노출 제한
+
+`APP_ENV`가 `local` 또는 `dev`일 때만 열립니다. `TIMELINE_TEST_ENABLED`로 명시적으로
+덮어쓸 수 있으며, 지정하면 그 값이 항상 이깁니다. 닫혀 있으면 **없는 경로와 똑같이**
+`404`/`1003`으로 답하고 `/openapi.json`에도 나오지 않습니다.
+
+### Request Body
+
+[입력 조회 응답](#51-입력-조회)에서 **`taskToken`만 뺀 것**입니다.
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|:---:|---|
+| `taskId` | `string` | **O** | App Server가 발행한 값을 그대로 받습니다. 빈 문자열은 `1001`입니다. |
+| `recordDate` | `string` | O | 조회 응답과 같습니다. |
+| `recordTimeZone` | `string` | X | 생략하면 `Asia/Seoul`입니다. |
+| `window.startAt` / `window.endAt` | `string` | **O** | 조회 응답에서는 선택이지만 여기서는 필수입니다. 시간 창을 줄 다른 통로가 없습니다. |
+| `userMemory` | `object` | X | 조회 응답과 같습니다. 계약 위반은 같게 흡수합니다(`1106`, 값 없이 진행). |
+| `sourceItems[]` | `array` | X | 조회 응답과 같습니다. 다만 **0건이면 `1102`** 입니다. |
+
+위 필드는 조회 응답과 **같은 스키마 선언**을 씁니다. 코드에서 `TimelineInputPayload`가
+입력 한 벌을 선언하고 `TimelineInputResponse`가 거기에 `taskToken`만 더하는 구조라, 두
+입구의 계약이 갈릴 수 없습니다.
+
+`taskToken`은 **없습니다.** 토큰은 AI 서버가 App Server를 되부를 때 쓰는 인증인데 이
+경로는 조회도 저장도 콜백도 하지 않습니다. 보내더라도 무시하며 거절하지는 않습니다.
+
+`taskId`는 받습니다. 이 경로가 그것으로 무엇을 조회하거나 저장하지는 않지만, 같은
+`taskId`로 돌린 비동기 실행과 로그·Langfuse에서 이어 볼 수 있어야 합니다.
+
+### Request Example
+
+```json
+{
+  "taskId": "0198f2a1-7c3d-7000-8b2e-1f4a9c05d6e7",
+  "recordDate": "2026-06-20T22:00:00",
+  "recordTimeZone": "Asia/Seoul",
+  "window": {
+    "startAt": "2026-06-20T00:00:00",
+    "endAt": "2026-06-21T00:00:00"
+  },
+  "sourceItems": [
+    {
+      "rawId": "6b5f2d3e-9c1a-4f88-9a2b-2f0d5c7e1a34",
+      "itemType": "STAY",
+      "startAt": "2026-06-20T12:00:00",
+      "endAt": "2026-06-20T13:00:00",
+      "payload": { "latitude": 37.5, "longitude": 127.0, "places": ["회사"] }
+    }
+  ]
+}
+```
+
+### Success Response
+
+#### `200 OK`
+
+[결과 저장 요청](#52-결과-저장) 본문과 **같은 구조**입니다. 실제로 저장됐을 값을 그대로
+봅니다.
+
+```json
+{
+  "events": [
+    {
+      "eventType": "MEAL",
+      "title": "점심",
+      "subtitle": "근처 식당에서 식사했어요.",
+      "place": "회사",
+      "address": null,
+      "startAt": "2026-06-20T12:00:00+09:00",
+      "endAt": "2026-06-20T13:00:00+09:00",
+      "sourceRawIds": ["6b5f2d3e-9c1a-4f88-9a2b-2f0d5c7e1a34"],
+      "question": "점심 자리에서 어떤 이야기가 기억에 남았나요?"
+    }
+  ]
+}
+```
+
+| 헤더 | 조건 | 의미 |
+|---|---|---|
+| `X-Timeline-Timed-Out: true` | 제한 시간 초과 | 개선을 마치지 못한 채 마지막 확정본을 돌려줬습니다. 실패가 아니며, 비동기 경로가 저장하는 값과 같습니다(이슈 #76). |
+
+### Error Response
+
+[4. 타임라인 생성 요청](#error-response)의 공통 오류 형식과 코드를 그대로 씁니다.
+이 경로 전용 코드는 없습니다.
+
+| 상태 | `errorCode` | 발생 조건 |
+|---|---|---|
+| `422` | `1001` | 필수 필드 누락. `taskId`·`recordDate`·`window`가 없거나 `taskId`가 빈 문자열인 경우입니다. |
+| `404` | `1003` | 이 환경에서 엔드포인트가 닫혀 있습니다. |
+| `500` | `1102` | `sourceItems`가 0건이거나 `rawId`가 중복입니다. |
+| `500` | `1201` | 제한 시간 안에 확정된 결과가 하나도 없습니다. |
+| `500` | `1202` | 구조화 출력 실패로 event를 만들지 못했습니다. |
+| `500` | `1301` | 결과가 입력에 없는 `rawId`를 참조합니다. |
+
+### 처리 시간과 비용
+
+`PIPELINE_TIMEOUT_SEC`(기본 120초)을 그대로 적용합니다. **실제 LLM을 호출하므로** 응답이
+그만큼 걸릴 수 있고 토큰 사용 비용이 발생합니다.
 
 ## 5. AI 서버가 호출하는 App Server API
 
