@@ -206,12 +206,22 @@ def test_invocations_does_not_guess_type_from_payload_shape(app_server):
     assert response.json()["errorCode"] == ErrorCode.REQUEST_VALIDATION_FAILED
 
 
+#: `requestType` 으로 도달하지 않아도 되는 `/v1` POST 경로와 그 이유.
+#:
+#: `/v1/timeline/test` 는 **접수 경로가 아니다**(이슈 #102). 202 로 받아 백그라운드로
+#: 넘기는 대신 요청 안에서 결과를 돌려주므로 `/invocations` 의 접수 응답 계약
+#: (`{taskId, status}`)에 담기지 않고, local/dev 에서만 열리는 경로라 AgentCore 로
+#: 운영되는 production 에서는 애초에 닫혀 있다. requestType 을 붙이면 운영 진입점에
+#: 테스트 경로가 생긴다.
+_NON_INTAKE_V1_ROUTES = {"/v1/timeline/test"}
+
+
 def test_every_v1_intake_route_is_reachable_by_request_type():
     """`/v1` 접수 경로는 전부 `requestType` 으로 도달할 수 있어야 한다.
 
     AgentCore 는 `/invocations` 하나만 노출하므로, requestType 없이 추가된 접수
     엔드포인트는 AgentCore 배포에서 그냥 닿지 않는 경로가 된다. 헬스·진단
-    (`/ping`·`/health`·`/debug/env`)은 대상이 아니다.
+    (`/ping`·`/health`·`/debug/env`)과 `_NON_INTAKE_V1_ROUTES` 는 대상이 아니다.
     """
 
     intake_routes = {
@@ -220,6 +230,7 @@ def test_every_v1_intake_route_is_reachable_by_request_type():
         if isinstance(route, APIRoute)
         and "POST" in route.methods
         and route.path.startswith("/v1")
+        and route.path not in _NON_INTAKE_V1_ROUTES
     }
 
     assert intake_routes == set(_ROUTE_TO_REQUEST_TYPE)
