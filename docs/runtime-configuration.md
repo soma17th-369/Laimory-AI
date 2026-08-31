@@ -23,6 +23,8 @@
 | `BEDROCK_REGION` | `ap-northeast-2` | `ap-northeast-2` |
 | `BEDROCK_MODEL` | `global.amazon.nova-2-lite-v1:0` | `global.amazon.nova-2-lite-v1:0` |
 | `BEDROCK_MAX_TOKENS` | 생략하면 `16384` | 생략하면 `16384` |
+| `LLM_MODEL_FAST` | 생략 가능. 넣으면 FAST 티어 모델 ID | 생략 가능. 넣으면 FAST 티어 모델 ID |
+| `LLM_MODEL_QUALITY` | 생략 가능. 넣으면 QUALITY 티어 모델 ID | 생략 가능. 넣으면 QUALITY 티어 모델 ID |
 | `APP_SERVER_API_URL` | 로컬 App Server URL | 같은 VPC의 App Server 내부 URL |
 | `LANGFUSE_ENABLED` | 필요에 따라 `true`/`false` | `true` |
 | `LANGFUSE_PUBLIC_KEY` | 로컬 프로젝트 public key | 운영 프로젝트 public key |
@@ -85,3 +87,35 @@ content 를 담은 **HTTP 200** 이 돌아온다(#98). 기본값 `16384` 는 하
 
 `APP_SERVER_API_URL`, `BEDROCK_MODEL`, `LANGFUSE_PUBLIC_KEY`, `ES_URL`처럼 비밀이 아닌
 값은 Secrets Manager가 아니라 해당 실행 주체의 환경변수에 둔다.
+
+## 단계별 모델 티어 (#106)
+
+provider 는 `LLM_PROVIDER` 하나로 전역이고 **모델만** 두 티어로 갈린다. 어느 단계가 어느
+티어인지는 `app/core/llm_stages.py` 의 매핑표가 소유한다.
+
+| 티어 | 환경변수 | 단계 |
+|---|---|---|
+| FAST | `LLM_MODEL_FAST` | location, calendar, photo, photo_describe, sleep_activity, notification |
+| QUALITY | `LLM_MODEL_QUALITY` | timeline, repair, question, user_memory |
+
+**두 변수 모두 선택이다.** 비워 두면 그 티어는 전역 `{PROVIDER}_MODEL`(현재
+`BEDROCK_MODEL`)을 쓴다. 둘 다 넣지 않으면 동작이 지금과 같으므로 기존 `.env`·EC2
+`runtime.env`·AgentCore 환경변수를 바꾸지 않아도 된다.
+
+티어 이름은 **모델 자체의 성질**만 가리킨다. 단계 배치는 운영하며 바꾸는 값이라 이름에
+용도를 담으면 배치를 바꾸는 순간 이름이 거짓이 된다.
+
+주의할 점 세 가지다.
+
+- **`LLM_MODEL_FAST` 에는 vision 을 지원하는 모델을 넣는다.** `photo_describe` 가 이미지
+  입력을 쓰는 유일한 단계라, 지원하지 않는 모델을 넣으면 사진 설명이 통째로 실패한다.
+  Photo Event Agent 가 실패를 warning 으로 흡수하므로 타임라인은 나오지만 사진 근거가 빈다.
+- **모델을 바꾼 직후 첫 실행은 prompt cache 가 콜드라 latency 가 튄다.** 이것을 모델 성능
+  차이로 읽지 않는다. (Bedrock 은 Converse 에 `cachePoint` 를 넣어야 캐시가 걸리는데 현재
+  코드에는 없으므로, 지금은 provider 자동 캐싱이 없는 상태다.)
+- 잘못된 모델 ID 를 넣으면 그 티어의 단계만 `LLM_CALL_FAILED(1203)` 로 실패한다. 설정만
+  비우면 즉시 전역 모델로 돌아간다.
+
+실제 호출에 쓰인 모델은 Langfuse generation 의 `model` 에 호출마다 남는다. 단계는
+generation 이름(`infer-location-events`, `generate-timeline-draft` 등)이 가른다. Main Agent
+운영 로그에는 전역 기본값 `model` 과, 전역과 다를 때만 `modelFast`/`modelQuality` 가 붙는다.

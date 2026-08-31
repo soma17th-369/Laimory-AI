@@ -112,7 +112,18 @@ app/
 │   ├── logging.py             # 운영 로그 설정 (rich | stdout JSON→CloudWatch, LOG_FORMAT)
 │   ├── error_codes.py         # 오류 코드 카탈로그 (#42). 정수 코드·외부 안전 메시지·HTTP 상태의 유일한 정본. 값 중복은 import 시점에 차단
 │   ├── exceptions.py          # AppError 예외 계층(자기 ErrorCode 보유) + report_error: 로그와 관측을 같은 코드로 남기는 유일한 통로
-│   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형) + LLM 관측/토큰 emit
+│   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형) + LLM 관측/토큰 emit.
+│   │                          #   `get_provider` 캐시 키가 `(provider, model)` 이라 인스턴스는 모델당 하나다
+│   ├── llm_stages.py          # 단계별 모델 티어 (#106). `LLMStage`(호출 지점 10개)·`LLMTier`
+│   │                          #   (`FAST`/`QUALITY`)·단계→티어 매핑표의 정본. 해석 순서는
+│   │                          #   **티어 설정 > 전역 `{PROVIDER}_MODEL`** 이고, 티어를 비우면
+│   │                          #   provider 싱글턴을 그대로 재사용해 동작이 예전과 같다.
+│   │                          #   **provider 는 전역 하나다** — 단계별 provider 선택은 없다.
+│   │                          #   티어 이름은 모델의 성질만 가리킨다. 단계 배치는 운영하며 바꾸는
+│   │                          #   값이라 이름에 용도를 담으면 배치를 바꾸는 순간 이름이 거짓이 된다.
+│   │                          #   `FAST` 에 `photo_describe` 가 있어 **그 티어 모델은 vision 필수**.
+│   │                          #   관측에는 싣지 않는다 — Langfuse generation 이 이미 실제 `model` 을
+│   │                          #   남기고 단계는 generation 이름이 가른다
 │   ├── inflight.py            # 진행 중 백그라운드 처리 카운터 (GET /ping 의 Healthy/HealthyBusy 판단용, 프로세스 로컬)
 │   ├── secret_bundle.py       # 시크릿 번들 로딩 + pydantic-settings 소스 (#30). config 보다 먼저
 │   │                          #   필요해 app.core 를 import 하지 않는다(순환 방지). 조회 실패는
