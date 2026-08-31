@@ -136,6 +136,32 @@ class Settings(BaseSettings):
     # 까지 나왔다. 8192 면 그 실행이 잘린다. 낮추려면 잘림(`max_tokens`)을 감수해야 한다.
     bedrock_max_tokens: int = 16384
 
+    # --- 단계별 모델 티어 (#106) ---
+    # provider 는 `llm_provider` 하나로 전역이고 **모델만** 두 티어로 가른다. 어느 단계가
+    # 어느 티어인지는 `app/core/llm_stages.py` 의 매핑표가 소유한다.
+    #
+    # 티어 이름은 **모델 자체의 성질**만 가리킨다. 단계 배치는 운영하며 바꾸는 값이라
+    # 이름에 용도를 담으면 배치를 바꾸는 순간 이름이 거짓이 된다.
+    #
+    # **비워 두면 그 티어는 전역 `{PROVIDER}_MODEL` 을 쓴다.** 둘 다 비우면 지금까지와
+    # 동작이 같으므로 기존 `.env`·EC2·AgentCore 설정을 건드리지 않아도 된다.
+    #
+    # `FAST` 에는 사진 설명(`photo_describe`)이 들어 있다. **이미지 입력을 쓰는 유일한
+    # 단계라 이 티어의 모델은 vision 을 지원해야 한다.**
+    llm_model_fast: str = ""
+    llm_model_quality: str = ""
+
+    @field_validator("llm_model_fast", "llm_model_quality", mode="before")
+    @classmethod
+    def normalize_tier_model(cls, value: object) -> str:
+        """공백만 있는 값을 빈 값으로 만든다.
+
+        `LLM_MODEL_FAST=` 처럼 비운 것과 `LLM_MODEL_FAST=" "` 처럼 실수로 공백이 들어간
+        것을 같게 다뤄, 둘 다 전역 모델 fallback 으로 내려가게 한다.
+        """
+
+        return str(value or "").strip()
+
     # 외부 시크릿 번들(#30). AWS Secrets Manager 시크릿 하나의 이름 또는 ARN 이며, 값은
     # `{"OPENAI_API_KEY": "...", "APP_SERVER_API_URL": "..."}` 형태의 JSON 객체다.
     #
