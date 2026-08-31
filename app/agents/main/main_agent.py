@@ -49,6 +49,7 @@ from app.core.langfuse_tracing import (
     update_observation,
 )
 from app.core.execution_context import ExecutionStage
+from app.core.llm_stages import global_model, overridden_tier_models
 from app.core.logging import get_logger, log_fields, stage_span
 from app.schemas import (
     AgentEventResult,
@@ -425,11 +426,20 @@ async def run_main_agent(
     repair = repair_agent if repair_agent is not None else RepairAgent()
     question = question_agent if question_agent is not None else QuestionAgent()
 
-    # 이 타임라인을 "어떤 provider/model 로 만들었는지" 를 로그에 남긴다. 모든 하위
-    # 에이전트는 설정된 provider(`settings.llm_provider`)와 그 provider 의 모델을 쓰므로
-    # 실행에 사용될 모델은 설정에서 결정론적으로 정해진다.
+    # 이 타임라인을 "어떤 provider/model 로 만들었는지" 를 로그에 남긴다. provider 는
+    # `settings.llm_provider` 하나로 전역이지만 **모델은 단계마다 다를 수 있다**(#106).
+    # `model` 은 티어 설정이 없는 단계가 쓰는 전역 기본값이고, 티어에 따로 지정된 모델은
+    # `modelFast`/`modelQuality` 로 덧붙는다. 전역과 같으면 넣지 않는다 — 티어 설정이
+    # 없는 배포에서는 이 줄이 예전과 그대로여야 한다.
+    #
+    # 호출 하나하나가 실제로 쓴 모델은 Langfuse generation 의 `model` 이 이미 남긴다.
+    # 여기 필드는 "이 task 가 어떤 모델들을 걸치고 있었나" 를 한 줄로 보기 위한 것이다.
     provider = settings.llm_provider
-    model = getattr(settings, f"{provider}_model", "")
+    model = global_model()
+    tier_fields = {
+        f"model{tier.value.capitalize()}": tier_model
+        for tier, tier_model in overridden_tier_models().items()
+    }
 
     with (
         stage_span(
@@ -439,6 +449,7 @@ async def run_main_agent(
             agentCount=len(agents),
             provider=provider,
             model=model,
+            **tier_fields,
         ) as outcome,
         token_usage_scope() as token_usage,
         trace_observation(
@@ -449,6 +460,7 @@ async def run_main_agent(
                 "agentCount": len(agents),
                 "provider": provider,
                 "model": model,
+                **tier_fields,
             },
         ) as langfuse_observation,
     ):
