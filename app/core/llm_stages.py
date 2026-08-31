@@ -15,8 +15,13 @@ LLM 을 부르는 지점마다 필요한 추론 수준과 입력 크기가 다�
   모델 해석에만 쓴다.
 - ``_STAGE_TIERS`` — 단계→티어 배치. 모든 단계가 여기 있어야 한다(테스트가 강제한다).
 
-모델 해석 순서는 **티어 설정 → 전역 `{PROVIDER}_MODEL`** 이다. 티어 설정이 비어 있으면
-지금까지와 똑같이 전역 모델을 쓰므로, 환경변수를 하나도 넣지 않으면 동작이 달라지지 않는다.
+모델 해석 순서는 **`{PROVIDER}_MODEL_{TIER}` → `{PROVIDER}_MODEL`** 이다. 티어는
+**provider 별로 갈린다** — provider 마다 쓸 수 있는 모델이 다르기 때문이다(`gpt-5.4-mini`
+는 OpenAI API 에만 있고 Bedrock 에는 없다). 공용 티어 하나로 두면 provider 를 바꾸는
+순간 그 provider 에 없는 모델 id 를 부르게 된다.
+
+티어 설정이 비어 있으면 그 provider 의 `{PROVIDER}_MODEL` 을 쓰므로, 티어를 하나도
+넣지 않으면 동작이 예전과 달라지지 않는다.
 
 관측에는 이 값을 싣지 않는다. Langfuse generation 은 이미 `model` 로 **실제 호출한
 모델**을 남기고(`app/core/llm.py`) 단계는 generation 이름이 가르므로 더할 것이 없다.
@@ -30,7 +35,7 @@ from app.core.config import settings
 
 
 class LLMTier(StrEnum):
-    """모델 티어. 값 문자열이 곧 설정 이름의 접미사다(`LLM_MODEL_{VALUE}`)."""
+    """모델 티어. 값 문자열이 곧 설정 이름의 접미사다(`{PROVIDER}_MODEL_{VALUE}`)."""
 
     #: 빠르고 싼 쪽.
     FAST = "fast"
@@ -77,10 +82,20 @@ _STAGE_TIERS: dict[LLMStage, LLMTier] = {
 }
 
 
-def tier_setting_name(tier: LLMTier) -> str:
-    """티어 모델을 담는 `Settings` 필드 이름 (`LLM_MODEL_FAST` → `llm_model_fast`)."""
+def current_provider() -> str:
+    """지금 선택된 provider 이름."""
 
-    return f"llm_model_{tier.value}"
+    return str(settings.llm_provider or "").strip().lower()
+
+
+def tier_setting_name(provider: str, tier: LLMTier) -> str:
+    """티어 모델을 담는 `Settings` 필드 이름.
+
+    기존 `{provider}_model` 규칙을 그대로 늘린 `{provider}_model_{tier}` 다
+    (`OPENAI_MODEL_FAST` → `openai_model_fast`).
+    """
+
+    return f"{provider}_model_{tier.value}"
 
 
 def tier_of(stage: LLMStage) -> LLMTier:
@@ -89,26 +104,30 @@ def tier_of(stage: LLMStage) -> LLMTier:
     return _STAGE_TIERS[stage]
 
 
-def global_model() -> str:
-    """전역 `{PROVIDER}_MODEL`. 티어 설정이 없을 때 쓰는 값이다."""
+def default_model() -> str:
+    """현재 provider 의 `{PROVIDER}_MODEL`. 티어 설정이 없을 때 쓰는 기본값이다."""
 
-    return str(getattr(settings, f"{settings.llm_provider}_model", "") or "").strip()
+    return str(getattr(settings, f"{current_provider()}_model", "") or "").strip()
 
 
 def model_for_tier(tier: LLMTier) -> str | None:
-    """티어에 지정된 모델. 지정이 없으면 ``None``.
+    """현재 provider 에서 그 티어에 지정된 모델. 지정이 없으면 ``None``.
 
-    ``None`` 은 "전역 모델을 쓰라"는 뜻이다. 여기서 전역 모델로 바꿔 돌려주지 않는 이유는
+    티어는 provider 별로 갈린다. provider 마다 쓸 수 있는 모델이 다르기 때문이다 —
+    공용 티어 하나로 두면 provider 를 바꾸는 순간 그 provider 에 없는 모델 id 를 부른다.
+    티어 필드를 두지 않은 provider(gemini)는 언제나 ``None`` 이라 기본값을 쓴다.
+
+    ``None`` 은 "기본 모델을 쓰라"는 뜻이다. 여기서 기본 모델로 바꿔 돌려주지 않는 이유는
     호출부가 그 차이를 알아야 하기 때문이다 — `LLMClient()` 는 model 을 주지 않아야
     provider 싱글턴을 재사용한다.
     """
 
-    value = getattr(settings, tier_setting_name(tier), "")
+    value = getattr(settings, tier_setting_name(current_provider(), tier), "")
     return str(value).strip() or None
 
 
 def model_for_stage(stage: LLMStage | None) -> str | None:
-    """단계에 적용할 모델. 지정이 없거나 단계가 없으면 ``None``(전역 모델)."""
+    """단계에 적용할 모델. 지정이 없거나 단계가 없으면 ``None``(기본 모델)."""
 
     if stage is None:
         return None
@@ -116,21 +135,21 @@ def model_for_stage(stage: LLMStage | None) -> str | None:
 
 
 def resolved_tier_models() -> dict[LLMTier, str]:
-    """티어별로 **실제 적용될** 모델. 티어 설정이 없으면 전역 모델이 들어간다."""
+    """티어별로 **실제 적용될** 모델. 티어 설정이 없으면 기본 모델이 들어간다."""
 
-    fallback = global_model()
+    fallback = default_model()
     return {tier: (model_for_tier(tier) or fallback) for tier in LLMTier}
 
 
 def overridden_tier_models() -> dict[LLMTier, str]:
-    """전역 모델과 **다른** 티어만 돌려준다.
+    """기본 모델과 **다른** 티어만 돌려준다.
 
-    운영 로그에 "이 실행이 전역 말고 어떤 모델을 걸치고 있나" 를 남기는 데 쓴다.
+    운영 로그에 "이 실행이 기본 말고 어떤 모델을 걸치고 있나" 를 남기는 데 쓴다.
     티어 설정이 없으면 빈 dict 라 로그 줄이 예전과 그대로다 — 아무것도 설정하지 않은
     배포에서 새 필드가 늘지 않아야 기존 대시보드·필터가 그대로 동작한다.
     """
 
-    fallback = global_model()
+    fallback = default_model()
     return {
         tier: model
         for tier, model in resolved_tier_models().items()
@@ -141,7 +160,8 @@ def overridden_tier_models() -> dict[LLMTier, str]:
 __all__ = [
     "LLMStage",
     "LLMTier",
-    "global_model",
+    "current_provider",
+    "default_model",
     "model_for_stage",
     "model_for_tier",
     "overridden_tier_models",

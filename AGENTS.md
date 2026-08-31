@@ -116,9 +116,13 @@ app/
 │   │                          #   `get_provider` 캐시 키가 `(provider, model)` 이라 인스턴스는 모델당 하나다
 │   ├── llm_stages.py          # 단계별 모델 티어 (#106). `LLMStage`(호출 지점 10개)·`LLMTier`
 │   │                          #   (`FAST`/`QUALITY`)·단계→티어 매핑표의 정본. 해석 순서는
-│   │                          #   **티어 설정 > 전역 `{PROVIDER}_MODEL`** 이고, 티어를 비우면
+│   │                          #   **`{PROVIDER}_MODEL_{TIER}` > `{PROVIDER}_MODEL`** 이고, 티어를 비우면
 │   │                          #   provider 싱글턴을 그대로 재사용해 동작이 예전과 같다.
 │   │                          #   **provider 는 전역 하나다** — 단계별 provider 선택은 없다.
+│   │                          #   다만 **티어 설정은 provider 별로 갈린다**(bedrock·openai).
+│   │                          #   provider 마다 쓸 수 있는 모델이 달라, 공용 티어 하나로 두면
+│   │                          #   provider 를 바꾸는 순간 없는 모델 id 를 부른다. gemini 는
+│   │                          #   티어 필드가 없어 언제나 `GEMINI_MODEL` 하나를 쓴다.
 │   │                          #   티어 이름은 모델의 성질만 가리킨다. 단계 배치는 운영하며 바꾸는
 │   │                          #   값이라 이름에 용도를 담으면 배치를 바꾸는 순간 이름이 거짓이 된다.
 │   │                          #   `FAST` 에 `photo_describe` 가 있어 **그 티어 모델은 vision 필수**.
