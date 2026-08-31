@@ -27,6 +27,7 @@ from app.agents.parsing import (
 )
 from app.agents.prompt_loader import load_prompt
 from app.core.config import settings
+from app.core.llm_stages import LLMStage
 from app.schemas import AgentEventResult, TimelineDraftRequest
 from app.services.location_guard import verify_location_result
 from app.services.location_metrics import build_location_metrics
@@ -55,7 +56,7 @@ class LocationEventAgent(EventAgent):
     @property
     def llm(self) -> SupportsComplete:
         if self._llm is None:
-            self._llm = default_llm()
+            self._llm = default_llm(LLMStage.LOCATION)
         return self._llm
 
     def _generate(self, request: TimelineDraftRequest) -> AgentEventResult:

@@ -27,6 +27,7 @@ from app.core.error_codes import ErrorCode, message_for
 from app.core.exceptions import code_of_or, report_error
 from app.core.logging import get_logger
 from app.core.structured import StructuredOutputError
+from app.core.llm_stages import LLMStage
 from app.schemas import (
     AgentEventResult,
     TimelineDraft,
@@ -190,7 +191,7 @@ class TimelineAgent(Agent):
     @property
     def llm(self) -> SupportsComplete:
         if self._llm is None:
-            self._llm = default_llm()
+            self._llm = default_llm(LLMStage.TIMELINE)
         return self._llm
 
     def generate(

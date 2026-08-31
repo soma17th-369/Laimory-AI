@@ -41,6 +41,7 @@ from app.agents.parsing import SupportsComplete, default_llm, user_memory_to_tex
 from app.agents.prompt_loader import load_prompt
 from app.core.execution_context import ExecutionStage, execution_scope
 from app.core.logging import get_logger, log_fields
+from app.core.llm_stages import LLMStage
 from app.schemas.user_memory import UserMemory
 from app.services.user_memory_limits import DailyTimelineDigest
 
@@ -111,7 +112,7 @@ class UserMemoryAgent:
     @property
     def llm(self) -> SupportsComplete:
         if self._llm is None:
-            self._llm = default_llm()
+            self._llm = default_llm(LLMStage.USER_MEMORY)
         return self._llm
 
     def generate(

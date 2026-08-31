@@ -55,6 +55,7 @@ from app.core.error_codes import ErrorCode
 from app.core.exceptions import report_error
 from app.core.logging import get_logger, log_fields
 from app.core.structured import StructuredOutputError
+from app.core.llm_stages import LLMStage
 from app.schemas import (
     CamelModel,
     TimelineDraft,
@@ -184,7 +185,7 @@ class QuestionAgent(Agent):
     @property
     def llm(self) -> SupportsComplete:
         if self._llm is None:
-            self._llm = default_llm()
+            self._llm = default_llm(LLMStage.QUESTION)
         return self._llm
 
     def generate(
