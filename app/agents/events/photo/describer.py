@@ -36,6 +36,7 @@ from app.core.langfuse_tracing import trace_observation, update_observation
 from app.core.llm import ImageInput
 from app.core.logging import get_logger
 from app.core.execution_context import ExecutionStage
+from app.core.llm_stages import LLMStage
 from app.schemas import PhotoItem, StayItem
 from app.services.validator import parse_datetime
 
@@ -150,7 +151,7 @@ class LLMPhotoDescriber(PhotoDescriber):
     @property
     def llm(self) -> SupportsComplete:
         if self._llm is None:
-            self._llm = default_llm()
+            self._llm = default_llm(LLMStage.PHOTO_DESCRIBE)
         return self._llm
 
     def describe(self, photos: list[PhotoItem]) -> dict[str, str]:
@@ -297,7 +298,7 @@ class VisionPhotoDescriber(PhotoDescriber):
     @property
     def llm(self) -> SupportsVision:
         if self._llm is None:
-            self._llm = default_llm()
+            self._llm = default_llm(LLMStage.PHOTO_DESCRIBE)
         return self._llm
 
     @property

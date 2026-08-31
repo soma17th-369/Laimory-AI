@@ -23,6 +23,10 @@
 | `BEDROCK_REGION` | `ap-northeast-2` | `ap-northeast-2` |
 | `BEDROCK_MODEL` | `global.amazon.nova-2-lite-v1:0` | `global.amazon.nova-2-lite-v1:0` |
 | `BEDROCK_MAX_TOKENS` | 생략하면 `16384` | 생략하면 `16384` |
+| `BEDROCK_MODEL_FAST` | 생략 가능. 넣으면 Bedrock FAST 티어 모델 ID | 같음 |
+| `BEDROCK_MODEL_QUALITY` | 생략 가능. 넣으면 Bedrock QUALITY 티어 모델 ID | 같음 |
+| `OPENAI_MODEL_FAST` | 생략 가능. `LLM_PROVIDER=openai`일 때만 쓰임 | 같음 |
+| `OPENAI_MODEL_QUALITY` | 생략 가능. `LLM_PROVIDER=openai`일 때만 쓰임 | 같음 |
 | `APP_SERVER_API_URL` | 로컬 App Server URL | 같은 VPC의 App Server 내부 URL |
 | `LANGFUSE_ENABLED` | 필요에 따라 `true`/`false` | `true` |
 | `LANGFUSE_PUBLIC_KEY` | 로컬 프로젝트 public key | 운영 프로젝트 public key |
@@ -85,3 +89,52 @@ content 를 담은 **HTTP 200** 이 돌아온다(#98). 기본값 `16384` 는 하
 
 `APP_SERVER_API_URL`, `BEDROCK_MODEL`, `LANGFUSE_PUBLIC_KEY`, `ES_URL`처럼 비밀이 아닌
 값은 Secrets Manager가 아니라 해당 실행 주체의 환경변수에 둔다.
+
+## 단계별 모델 티어 (#106)
+
+provider 는 `LLM_PROVIDER` 하나로 전역이고 **모델만** 두 티어로 갈린다. 어느 단계가 어느
+티어인지는 `app/core/llm_stages.py` 의 매핑표가 소유한다.
+
+| 티어 | 단계 |
+|---|---|
+| FAST | location, calendar, photo, photo_describe, sleep_activity, notification |
+| QUALITY | timeline, repair, question, user_memory |
+
+**티어 설정은 provider 별로 따로 둔다.** 필드 이름은 기존 `{PROVIDER}_MODEL` 규칙을 그대로
+늘린 `{PROVIDER}_MODEL_{TIER}` 다.
+
+| `LLM_PROVIDER` | FAST | QUALITY | 기본값(티어를 비웠을 때) |
+|---|---|---|---|
+| `bedrock` | `BEDROCK_MODEL_FAST` | `BEDROCK_MODEL_QUALITY` | `BEDROCK_MODEL` |
+| `openai` | `OPENAI_MODEL_FAST` | `OPENAI_MODEL_QUALITY` | `OPENAI_MODEL` |
+| `gemini` | 없음 | 없음 | `GEMINI_MODEL` |
+
+provider 별로 나눈 이유는 **provider 마다 쓸 수 있는 모델이 다르기 때문**이다. 예를 들어
+`gpt-5.4-mini` 는 OpenAI API 에만 있고 Bedrock(`ap-northeast-2`)에는 없다. 공용 티어 하나로
+두면 provider 를 바꾸는 순간 그 provider 에 없는 모델 ID 를 부르게 된다.
+
+**모든 티어 변수는 선택이다.** 비워 두면 그 티어는 그 provider 의 `{PROVIDER}_MODEL` 을
+쓴다. 두 티어를 다 비우면 동작이 예전과 같으므로 기존 `.env`·EC2 `runtime.env`·AgentCore
+환경변수를 바꾸지 않아도 된다. 한쪽만 넣으면 나머지 티어만 기본값을 쓴다.
+
+gemini 에는 티어 필드가 없다. 지금 쓰지 않는 provider 라서이며, 필요해지면
+`app/core/config.py` 에 `gemini_model_fast`/`gemini_model_quality` 두 줄을 더하면 된다.
+**없는 동안 `GEMINI_MODEL_FAST` 같은 값을 넣어도 조용히 무시된다**(`extra="ignore"`).
+
+티어 이름은 **모델 자체의 성질**만 가리킨다. 단계 배치는 운영하며 바꾸는 값이라 이름에
+용도를 담으면 배치를 바꾸는 순간 이름이 거짓이 된다.
+
+주의할 점 세 가지다.
+
+- **FAST 티어에는 vision 을 지원하는 모델을 넣는다.** `photo_describe` 가 이미지 입력을
+  쓰는 유일한 단계라, 지원하지 않는 모델을 넣으면 사진 설명이 통째로 실패한다. Photo Event
+  Agent 가 실패를 warning 으로 흡수하므로 타임라인은 나오지만 사진 근거가 빈다.
+- **모델을 바꾼 직후 첫 실행은 prompt cache 가 콜드라 latency 가 튄다.** 이것을 모델 성능
+  차이로 읽지 않는다. OpenAI API 는 1,024토큰 넘는 prefix 를 자동 캐싱하지만, Bedrock 은
+  Converse 에 `cachePoint` 를 넣어야 캐시가 걸리는데 현재 코드에는 없다.
+- 잘못된 모델 ID 를 넣으면 그 티어의 단계만 `LLM_CALL_FAILED(1203)` 로 실패한다. 설정만
+  비우면 즉시 기본 모델로 돌아간다.
+
+실제 호출에 쓰인 모델은 Langfuse generation 의 `model` 에 호출마다 남는다. 단계는
+generation 이름(`infer-location-events`, `generate-timeline-draft` 등)이 가른다. Main Agent
+운영 로그에는 기본값 `model` 과, 기본값과 다를 때만 `modelFast`/`modelQuality` 가 붙는다.

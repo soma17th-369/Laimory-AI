@@ -1099,11 +1099,18 @@ def available_providers() -> list[str]:
 
 
 @lru_cache
-def get_provider(name: str | None = None) -> LLMProvider:
+def get_provider(name: str | None = None, model: str | None = None) -> LLMProvider:
     """provider 인스턴스(싱글턴)를 반환한다.
+
+    캐시 키가 `(name, model)` 인 이유는 단계별 모델 티어(#106) 때문이다. 모델은
+    인스턴스에 박히므로(`LLMProvider.__init__`) 모델이 다르면 인스턴스가 달라야 하는데,
+    캐시하지 않으면 Agent 를 만들 때마다 provider SDK 클라이언트가 새로 생긴다.
+    티어가 둘이므로 프로세스에 남는 인스턴스도 최대 둘이고, 같은 모델을 쓰는 단계끼리는
+    그대로 공유한다.
 
     Args:
         name: provider 이름. 생략하면 `settings.llm_provider` 를 사용한다.
+        model: 모델 id. 생략하면 provider 의 `{name}_model` 을 사용한다.
     """
 
     provider_name = (name or settings.llm_provider).lower()
@@ -1113,7 +1120,7 @@ def get_provider(name: str | None = None) -> LLMProvider:
             f"지원하지 않는 LLM provider: '{provider_name}'. "
             f"사용 가능: {available_providers()}"
         )
-    return provider_cls()
+    return provider_cls(model=model)
 
 
 class LLMClient:
@@ -1123,19 +1130,9 @@ class LLMClient:
     """
 
     def __init__(self, provider: str | None = None, model: str | None = None) -> None:
-        if model is None:
-            # 기본 모델 사용 시 provider 싱글턴을 재사용한다.
-            self.provider = get_provider(provider)
-        else:
-            # 모델을 명시하면 해당 모델로 새 provider 인스턴스를 만든다.
-            provider_name = (provider or settings.llm_provider).lower()
-            provider_cls = _PROVIDERS.get(provider_name)
-            if provider_cls is None:
-                raise ValueError(
-                    f"지원하지 않는 LLM provider: '{provider_name}'. "
-                    f"사용 가능: {available_providers()}"
-                )
-            self.provider = provider_cls(model=model)
+        # 모델을 명시하면 그 모델용 인스턴스를, 아니면 provider 기본 모델 인스턴스를
+        # 받는다. 어느 쪽이든 `(provider, model)` 별 싱글턴이다(#106).
+        self.provider = get_provider(provider, model)
 
     def complete(
         self,

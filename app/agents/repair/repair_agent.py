@@ -48,6 +48,7 @@ from app.core.langfuse_tracing import trace_observation, update_observation
 from app.core.execution_context import ExecutionStage, execution_scope
 from app.core.logging import get_logger, log_fields
 from app.core.structured import StructuredOutputError
+from app.core.llm_stages import LLMStage
 from app.schemas import (
     AgentEventResult,
     RepairPlan,
@@ -172,7 +173,7 @@ class RepairAgent(Agent):
     @property
     def llm(self) -> SupportsComplete:
         if self._llm is None:
-            self._llm = default_llm()
+            self._llm = default_llm(LLMStage.REPAIR)
         return self._llm
 
     def generate(

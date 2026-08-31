@@ -136,6 +136,50 @@ class Settings(BaseSettings):
     # 까지 나왔다. 8192 면 그 실행이 잘린다. 낮추려면 잘림(`max_tokens`)을 감수해야 한다.
     bedrock_max_tokens: int = 16384
 
+    # --- provider 별 단계 모델 티어 (#106) ---
+    # provider 는 `llm_provider` 하나로 전역이고 **모델만** 두 티어로 가른다. 어느 단계가
+    # 어느 티어인지는 `app/core/llm_stages.py` 의 매핑표가 소유한다.
+    #
+    # 필드 이름은 기존 `{provider}_model` 규칙을 그대로 늘린 `{provider}_model_{tier}` 다.
+    # **provider 마다 쓸 수 있는 모델이 다르기 때문에** 티어를 provider 별로 둔다 — 예를
+    # 들어 `gpt-5.4-mini` 는 OpenAI API 에만 있고 Bedrock 에는 없다. 공용 티어 하나로 두면
+    # provider 를 바꾸는 순간 그 provider 에 없는 모델 id 를 부르게 된다.
+    #
+    # 티어 이름은 **모델 자체의 성질**만 가리킨다. 단계 배치는 운영하며 바꾸는 값이라
+    # 이름에 용도를 담으면 배치를 바꾸는 순간 이름이 거짓이 된다.
+    #
+    # **둘 다 비우면 그 provider 의 `{PROVIDER}_MODEL` 이 기본값이다.** 그래서 티어를
+    # 하나도 넣지 않은 배포는 동작이 예전과 같고, 한쪽만 넣으면 나머지 티어만 기본값을 쓴다.
+    #
+    # `FAST` 에는 사진 설명(`photo_describe`)이 들어 있다. **이미지 입력을 쓰는 유일한
+    # 단계라 이 티어의 모델은 vision 을 지원해야 한다.**
+    #
+    # gemini 에는 티어 필드를 두지 않았다. 지금 쓰지 않는 provider 라서이며, 필요해지면
+    # 여기 `gemini_model_fast`/`gemini_model_quality` 두 줄을 더하면 된다. 없는 동안
+    # gemini 는 언제나 `GEMINI_MODEL` 하나를 쓴다.
+    bedrock_model_fast: str = ""
+    bedrock_model_quality: str = ""
+
+    openai_model_fast: str = ""
+    openai_model_quality: str = ""
+
+    @field_validator(
+        "bedrock_model_fast",
+        "bedrock_model_quality",
+        "openai_model_fast",
+        "openai_model_quality",
+        mode="before",
+    )
+    @classmethod
+    def normalize_tier_model(cls, value: object) -> str:
+        """공백만 있는 값을 빈 값으로 만든다.
+
+        `OPENAI_MODEL_FAST=` 처럼 비운 것과 `OPENAI_MODEL_FAST=" "` 처럼 실수로 공백이
+        들어간 것을 같게 다뤄, 둘 다 `{PROVIDER}_MODEL` 기본값으로 내려가게 한다.
+        """
+
+        return str(value or "").strip()
+
     # 외부 시크릿 번들(#30). AWS Secrets Manager 시크릿 하나의 이름 또는 ARN 이며, 값은
     # `{"OPENAI_API_KEY": "...", "APP_SERVER_API_URL": "..."}` 형태의 JSON 객체다.
     #
