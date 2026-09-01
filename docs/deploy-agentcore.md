@@ -649,6 +649,34 @@ Elasticsearch를 직접 호출하지 않도록 설계되어 있으므로 Runtime
    템플릿에서 빠지므로, 함수의 목록을 템플릿과 대조하지 않으면 dev 와 prod 가 서로
    다른 것을 적재한다. 함수를 고칠 때마다 이 대조를 한다.
 
+   **판정 방식은 두 수집기가 다르다.** Filebeat `drop_fields`는 정확한 경로 문자열이지만,
+   Lambda `_sanitize`는 key 이름을 `casefold()`로 **깊이 무관** 비교하고(`_SENSITIVE_KEYS`)
+   경로 tuple을 따로 본다(`_SENSITIVE_PATHS`). 그래서 Lambda 쪽은 **앱 필드 이름이
+   denylist와 겹치기만 해도 조용히 사라진다** — 이름 충돌로 이벤트가 사라진 #109와 같은
+   종류의 실패다. 목록을 손댈 때는 앱이 내보내는 이름 전체와 교차 대조한다.
+
+   ```python
+   # 저장소 루트에서: PYTHONPATH=. python
+   from app.core.logging import _RESERVED_FIELDS
+   from app.core.operational_logging import _ALLOWED_FIELDS
+
+   names = set(_RESERVED_FIELDS) | {"instanceId"}
+   for allowed in _ALLOWED_FIELDS.values():
+       names |= set(allowed)
+   print(sorted(n for n in names if n.casefold() in LAMBDA_SENSITIVE_KEYS))
+   ```
+
+   2026-09-01 기준 결과: 앱이 내보내는 이름 59개 중 겹치는 것은 **`errorMessage` 하나**다.
+   `_SENSITIVE_KEYS`의 나머지 12개(`tasktoken`·`authorization`·`apikey`·`password`·
+   `secret`·`accesstoken`·`refreshtoken`·`url`·`query`·`body`·`prompt`·`response`)는 앱이
+   그 이름을 내보내지 않으므로 **빼도 얻는 정보가 없고 방어선만 잃는다.** `_SENSITIVE_PATHS`의
+   `("error","message")`·`("error","stack_trace")`도 그대로 둔다 — 그 이름은 포매터가
+   `exc_info=True`일 때만 채우는데 `emit_event`는 `exc_info`를 붙이지 않아 운영 이벤트 줄에
+   애초에 없다. 표식이 잘못 붙은 줄에 대한 방어선으로만 남는다.
+
+   즉 **"Lambda가 최대한 많이 보내게 한다"는 `"errormessage"` 한 줄을 빼는 것으로 끝난다.**
+   무엇을 보낼지는 emitter의 allowlist가 정하고, Lambda가 할 일은 그것을 깎지 않는 것뿐이다.
+
 4. Elasticsearch API key는 Lambda 환경 변수에 평문으로 넣지 않고 Secrets Manager에
    저장한다. Lambda 실행 역할에는 해당 secret을 읽는 권한과 실패 로그를 CloudWatch에
    쓰는 권한만 부여한다. API key의 Elasticsearch 권한은 `logs-laimory.ai-*`에 대한
