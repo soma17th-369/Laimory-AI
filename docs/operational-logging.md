@@ -55,7 +55,7 @@ laimory-ai 컨테이너 stdout (한 줄 JSON)
 | `usermemory.task.completed` | User Memory 갱신 작업이 끝날 때(작업당 1건) | `taskId`, `status`, `durationMs`, `resultSent`, `errorCode`, `hasExistingMemory`, `dailyTimelineCount`, `eventCount`, `memoCount`, `droppedDailyTimelineCount`, `droppedEventCount`, `repairAttempts`, `schemaVersion`, `filledFieldCount`, `customAttributeCount`, `serializedChars` |
 | `dependency.request.completed` | App Server 논리 호출 하나가 끝날 때 | `dependency`, `operation`, `httpStatus`, `attempts`, `durationMs`, `errorCode`, `taskId`, `tokenRefreshCount` |
 | `dependency.request.retry` | 그 호출의 재시도 한 번 | `dependency`, `operation`, `attempt`, `maxAttempts`, `reason`, `httpStatus`, `delayMs`, `taskId` |
-| `app.degraded` | 무언가를 잃었지만 처리는 계속됐을 때 | `component`, `agent`, `errorCode`, `errorType`, `taskId`, `durationMs`, `droppedCount`, `provider`, `model`, `providerVersion`, `stopReason`, `contentBlockKinds`, `tokenUsage` |
+| `app.degraded` | 무언가를 잃었지만 처리는 계속됐을 때 | `component`, `agentName`, `errorCode`, `errorType`, `taskId`, `durationMs`, `droppedCount`, `provider`, `model`, `providerVersion`, `stopReason`, `contentBlockKinds`, `tokenUsage` |
 
 공통 필드는 `timestamp`, `log.level`, `logger`(`app.operational`), `message`,
 `service`, `environment`, `version`, 그리고 표식 3종(`event.dataset`,
@@ -89,6 +89,15 @@ AgentCore 는 유휴 컨테이너를 회수하고 필요할 때 새로 띄우므
 
 > **기존 저장된 검색 주의.** `event.outcome: failure` 만으로 실패 작업을 세고 있었다면
 > 이제 성공한 작업의 저하 이벤트가 섞인다. `event.action` 조건을 함께 걸어야 한다.
+
+저하된 Agent 이름은 `agent` 가 아니라 **`agentName`** 으로 나간다(이슈 #109). ECS 와
+Filebeat 는 `agent.*` 를 **수집기 자신**을 가리키는 객체로 쓰기 때문이다. 앱이 같은 이름으로
+문자열을 실으면 `decode_json_fields` 가 그 객체를 덮어써 data stream 의 object mapping 과
+충돌하고, Elasticsearch 가 그 문서만 거절한다 — 로그에는 찍히는데 Kibana 에는 없는 실패다.
+`agentName` 은 우리 Agent 이름이고 `agent.*` 는 수집기 정보다.
+
+> **기존 저장된 검색 주의.** `agent: "photo"` 로 Agent 를 걸러 보던 검색은 새 문서를 잡지
+> 못한다. `agentName` 으로 바꾼다. 이전에 적재된 문서는 그대로 둔다(삭제하지 않는다).
 
 발행은 대부분 `report_error()` 가 대신한다. **항목 단위 루프**(수집 항목마다·사진마다·
 도구 호출마다)는 한 작업에서 수십 건이 되므로 `report_error(..., emit=False)` 로 빼고, 잃은
@@ -181,7 +190,7 @@ Timeline/Repair Agent 스레드까지 따라간다.
 |---|---|
 | `taskId` | 한 Timeline 처리의 상관키. **장애 추적의 시작점** |
 | `stage` | `REQUEST`/`MAIN_AGENT`/`EVENT_AGENT`/`TIMELINE_AGENT`/`REPAIR_AGENT`/`LLM`/`STORAGE`/`CALLBACK`/`FINAL` |
-| `agent` | Event/Repair Agent 이름 |
+| `agent` | Event/Repair Agent 이름. 수집되는 이벤트에서는 `agentName` 이다(#109) |
 | `iteration` | Repair 반복 회차 |
 
 운영 이벤트에는 이 값들이 자동으로 붙지 **않는다**. 이벤트가 허용한 필드만 나가고,
@@ -298,6 +307,15 @@ Kibana Lens에서 `errorCode`로 terms 집계를 걸면 어떤 실패가 늘고 
 ```text
 event.outcome : "failure" and environment : "prod"
 ```
+
+### 성공한 작업에서 무엇이 빠졌는지
+
+```text
+event.action : "app.degraded" and agentName : "photo"
+```
+
+같은 `taskId` 로 `timeline.task.completed` 와 묶어 본다. Agent 이름은 `agentName` 이다 —
+`agent.*` 는 Filebeat 수집기 자신의 정보라 우리 Agent 를 가리키지 않는다(#109).
 
 ### 외부 연동 재시도가 늘고 있는지
 

@@ -40,6 +40,13 @@ processors:
   # expand_keys 가 핵심이다. 앱은 `event.dataset` 처럼 점이 든 키를 그대로 쓰는데,
   # 이 옵션이 없으면 Beats 는 그걸 최상위의 리터럴 키 하나로 들고 있어서 아래
   # 조건식(event.dataset)이 영영 매칭되지 않는다. 그러면 모든 이벤트가 버려진다.
+  #
+  # `overwrite_keys: true` 라 앱의 값이 Beats 가 이미 붙인 값을 이긴다. 그래서 **앱은
+  # 수집기가 객체로 채우는 이름을 최상위 스칼라로 쓰면 안 된다**(이슈 #109). `agent` 가
+  # 그 예다 — Beats 는 자기 정보를 `agent.*` 객체로 붙이는데 앱이 같은 이름에 문자열을
+  # 실으면 객체가 문자열로 덮이고, data stream 의 mapping 과 충돌해 Elasticsearch 가 그
+  # 문서만 거절한다. 앱은 Agent 이름을 `agentName` 으로 내보내며, 이 규칙은
+  # tests/scripts/test_filebeat_config.py 가 앱 필드 목록과 대조해 고정한다.
   - decode_json_fields:
       fields: ["message"]
       target: ""

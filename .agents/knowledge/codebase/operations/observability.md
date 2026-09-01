@@ -34,6 +34,8 @@ Elasticsearch 수집 대상은 `emit_event`만 붙일 수 있는 `event.dataset=
 
 `app.degraded`(#101)는 **task가 success로 끝나도 나가는 유일한 event다.** 흡수 경계가 exception을 삼키고 fallback으로 진행하므로 완료 event만으로는 Event Agent 하나가 통째로 죽은 것과 정상 처리를 구분할 수 없다. 같은 `taskId`로 두 줄을 묶어야 "성공했지만 무엇을 잃었는지"가 보인다. 저하 지점은 `component` 한 축이 답하고 값은 `ExecutionStage` 또는 `DegradedComponent`(`secret-bundle`·`langfuse`·`window`) 상수뿐이다. level은 WARNING, `event.outcome`은 `failure`다 — **`event.outcome: failure`만으로 실패 task를 세면 이제 성공 task의 저하가 섞이므로 `event.action` 조건을 함께 건다.**
 
+event 필드는 값만이 아니라 **이름**도 수집 경로의 계약이다(#109). Filebeat 는 자기 수집기 정보를 `agent.*` 객체로 붙이고 `decode_json_fields`는 `target: ""`·`overwrite_keys: true`라 앱 값이 그것을 덮는다. 앱이 수집기가 객체로 채우는 이름(`agent`·`host`·`container`·`log`·`ecs`·`input`·`error`)을 최상위 scalar로 쓰면 같은 이름이 문서마다 객체와 문자열로 갈려 Elasticsearch가 그 문서를 거절한다 — stdout에는 찍히고 ES에는 없는 실패다. 그래서 Agent 이름은 `agentName`으로 나가고 `agent.*`는 수집기 몫으로 남긴다. 점이 든 이름(`event.dataset`·`log.level`·`error.type`)은 펴지면 양쪽 다 객체라 대상이 아니다. 이 규칙은 `tests/scripts/test_filebeat_config.py`가 앱의 고정 field와 event allowlist를 설정과 대조해 고정한다. 진단 줄의 `agent`는 표식이 없어 수집되지 않으므로 그대로 둔다.
+
 발행은 `report_error`가 기본으로 한다. 항목 단위 loop(수집 항목마다·사진마다·도구 호출마다·응답 항목마다)는 한 task에서 수십 건이 되므로 `emit=False`로 빼고 잃은 양을 `droppedCount` 집계 1건으로 대신 낸다. LLM 실패(`llm.py`)는 호출 단위여도 발행한다 — `provider`·`model`·`stopReason`이 없으면 상위 흡수 경계에서 `EVENT_AGENT_FAILED`(1204)로 덮여 원인이 사라진다.
 
 `server.started`/`server.stopped`의 `instanceId`는 process당 하나이고 emitter가 자동으로 채운다. AgentCore는 유휴 container를 회수하므로 한 log group에 여러 instance의 줄이 섞이고, 이 값이 cold start를 세고 시작·종료를 짝짓는 유일한 수단이다. **`server.stopped`는 강제 회수 시 lifespan `finally`가 돌지 않아 남지 않을 수 있다** — `uptimeMs`를 가동시간의 정본으로 쓰지 않는다.
