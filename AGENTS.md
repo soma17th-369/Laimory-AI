@@ -114,12 +114,15 @@ app/
 │   ├── exceptions.py          # AppError 예외 계층(자기 ErrorCode 보유) + report_error: 로그와 관측을 같은 코드로 남기는 유일한 통로
 │   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형) + LLM 관측/토큰 emit.
 │   │                          #   `get_provider` 캐시 키가 `(provider, model)` 이라 인스턴스는 모델당 하나다.
-│   │                          #   OpenAI 는 모델별 요청 정책을 갖는다(#108). `_MODEL_REASONING_EFFORT`
-│   │                          #   표가 `reasoning_effort` 와 `temperature` 여부를 **함께** 정한다 —
-│   │                          #   GPT-5 계열 reasoning 모델은 추론이 켜진 상태에서 `temperature` 를
-│   │                          #   거부하고 기본값 1 로 고정하기 때문이다. 그래서 두 값을 따로 적지
-│   │                          #   않고 effort 하나에서 파생시킨다. **환경변수가 아니라 코드가 소유한다** —
-│   │                          #   모델이 추론을 얼마나 하는지는 배포 환경이 아니라 모델의 성질이다.
+│   │                          #   OpenAI 는 모델별 요청 정책을 갖는다(#108). `_MODEL_PARAMS` 표가
+│   │                          #   모델 id prefix 로 `_OpenAIModelParams` 를 고르고, 그 dataclass 가
+│   │                          #   **매개변수마다 필드를 따로** 갖는다(`reasoning_effort`,
+│   │                          #   `accepts_temperature`). 두 값은 역할이 다르다 — 추론량과 샘플링
+│   │                          #   분산이라 한쪽에서 다른 쪽을 파생시키지 않는다. GPT-5 계열 reasoning
+│   │                          #   모델이 추론 중 `temperature` 를 거부해 지금은 두 값이 함께 움직이지만,
+│   │                          #   그건 모델의 현행 계약이지 두 축이 하나라는 뜻이 아니다(어긋남은 표
+│   │                          #   일관성 테스트가 잡는다). **환경변수가 아니라 코드가 소유한다** —
+│   │                          #   모델이 어떤 매개변수를 받는지는 배포 환경이 아니라 모델의 성질이다.
 │   │                          #   표에 없는 모델은 effort 를 싣지 않고 temperature 를 그대로 보낸다
 │   ├── llm_stages.py          # 단계별 모델 티어 (#106). `LLMStage`(호출 지점 10개)·`LLMTier`
 │   │                          #   (`FAST`/`QUALITY`)·단계→티어 매핑표의 정본. 해석 순서는
