@@ -367,6 +367,26 @@ class LLMProvider(ABC):
         )
 
 
+@dataclass(frozen=True)
+class _OpenAIModelParams:
+    """OpenAI 모델 하나가 받는 요청 매개변수 (#108).
+
+    매개변수마다 필드를 따로 둔다. `temperature` 와 `reasoning_effort` 는 역할이 다르다 —
+    앞은 샘플링 분산이고 뒤는 추론량이다. 지금 쓰는 두 모델에서 두 값이 함께 움직인다고
+    한쪽에서 다른 쪽을 파생시키면, 서로 다른 축이 한 축으로 뭉개져 두 성질이 갈리는
+    모델이 들어오는 순간 표가 거짓말을 한다. 매개변수가 늘어도 필드만 늘면 된다.
+    """
+
+    #: 요청에 실을 `reasoning_effort`. ``None`` 이면 키 자체를 넣지 않는다(모델 기본값).
+    reasoning_effort: str | None = None
+
+    #: 호출자가 준 `temperature` 를 실을지. ``False`` 면 요청에서 빼고 모델 기본값에
+    #: 맡긴다. GPT-5 계열 reasoning 모델은 추론이 켜진 상태에서 기본값 1 외의 값을
+    #: 거부한다(실측 400: `Unsupported value: 'temperature' does not support 0.2 with
+    #: this model. Only the default (1) value is supported.`).
+    accepts_temperature: bool = True
+
+
 @register_provider
 class OpenAIProvider(LLMProvider):
     """OpenAI Chat Completions provider."""
@@ -375,75 +395,70 @@ class OpenAIProvider(LLMProvider):
     supports_vision = True
     sdk_package = "openai"
 
-    #: 모델별 `reasoning_effort` (#108). **설정이 아니라 코드가 소유한다** — 모델이
-    #: 추론을 얼마나 하는지는 배포 환경이 아니라 모델 자체의 성질이라, 환경변수로 빼면
+    #: 모델별 요청 매개변수 (#108). **설정이 아니라 코드가 소유한다** — 모델이 어떤
+    #: 매개변수를 받는지는 배포 환경이 아니라 모델 자체의 성질이라, 환경변수로 빼면
     #: 환경마다 다르게 틀릴 수 있다.
     #:
-    #: 이 표가 `temperature` 여부까지 함께 결정한다. GPT-5 계열 reasoning 모델은
-    #: **추론이 켜진 상태에서 `temperature` 를 받지 않고 기본값 1 로 고정**되기 때문이다
-    #: (실측: `Unsupported value: 'temperature' does not support 0.2 with this model.
-    #: Only the default (1) value is supported.`). 그래서 `_supports_temperature` 를 따로
-    #: 두지 않고 여기서 파생시킨다 — 두 값을 따로 적으면 서로 어긋날 수 있다.
-    #:
-    #: prefix 로 재고 먼저 걸리는 항목이 이긴다. 정확히 일치시키지 않는 이유는 날짜
-    #: 스냅샷 id(`gpt-5.6-luna-2026-xx-xx`) 때문이다 — 놓치면 운영에서 같은 400 이 난다.
-    #:
-    #: 표에 없는 모델에는 `reasoning_effort` 를 싣지 않고 `temperature` 는 그대로
-    #: 보낸다. 즉 **여기 없는 모델의 동작은 예전과 같다.**
-    _MODEL_REASONING_EFFORT: tuple[tuple[str, str], ...] = (
-        # 추론을 켠다. 그 대가로 temperature 를 못 싣는다.
-        ("gpt-5.6-luna", "low"),
-        # 모델 기본값과 같은 값을 굳이 명시한다. OpenAI 가 기본값을 바꾸면 우리가
-        # 고른 적 없는 추론이 켜지면서 temperature 가 조용히 거부되기 때문이다.
-        ("gpt-5.4-mini", "none"),
+    #: 모델 id prefix 로 재고 먼저 걸리는 항목이 이긴다. 정확히 일치시키지 않는 이유는
+    #: 날짜 스냅샷 id(`gpt-5.6-luna-2026-xx-xx`) 때문이다 — 놓치면 운영에서 같은 400 이
+    #: 다시 난다.
+    _MODEL_PARAMS: tuple[tuple[str, _OpenAIModelParams], ...] = (
+        (
+            "gpt-5.6-luna",
+            _OpenAIModelParams(
+                # 추론 모델이고 기본값이 medium 이다. 우리가 고르지 않으면 FAST 티어가
+                # 필요 이상으로 추론한다.
+                reasoning_effort="low",
+                # 그 추론이 켜져 있는 동안 0.2 를 거부한다.
+                accepts_temperature=False,
+            ),
+        ),
+        (
+            "gpt-5.4-mini",
+            _OpenAIModelParams(
+                # 모델 기본값과 같은 값을 굳이 명시한다. OpenAI 가 기본값을 바꾸면
+                # 우리가 고른 적 없는 추론이 켜진다.
+                reasoning_effort="none",
+                # 추론이 꺼져 있어 호출부의 0.0~0.4 가 그대로 통한다.
+                accepts_temperature=True,
+            ),
+        ),
     )
 
-    #: `reasoning_effort` 가 이 값이면 추론이 꺼진 것으로 보고 `temperature` 를 싣는다.
-    _EFFORT_WITHOUT_REASONING = "none"
+    #: 표에 없는 모델이 쓰는 값. `reasoning_effort` 를 싣지 않고 `temperature` 는 그대로
+    #: 보낸다 — 추론을 지원하지 않는 모델에 설정을 밀어넣으면 새 오류를 만든다. 즉
+    #: **표에 없는 모델의 동작은 예전과 같다.**
+    _DEFAULT_MODEL_PARAMS = _OpenAIModelParams()
 
     def _build_client(self):
         from openai import OpenAI
 
         return OpenAI(api_key=self.api_key)
 
-    def _reasoning_effort(self) -> str | None:
-        """이 모델에 실을 `reasoning_effort`. 표에 없으면 ``None``(싣지 않음)."""
+    def _model_params(self) -> _OpenAIModelParams:
+        """이 모델에 적용할 요청 매개변수. 표에 없으면 기본값."""
 
         model = (self.model or "").strip().lower()
-        for prefix, effort in self._MODEL_REASONING_EFFORT:
+        for prefix, params in self._MODEL_PARAMS:
             if model.startswith(prefix):
-                return effort
-        return None
-
-    def _applied_temperature(self, temperature: float) -> float | None:
-        """요청에 실제로 실을 `temperature`. 모델이 안 받으면 ``None``.
-
-        추론이 켜진 호출에서는 OpenAI 가 기본값 외의 값을 거부하므로 아예 싣지 않고
-        모델 기본값을 쓴다. 호출자 시그니처는 그대로라 Agent 쪽 코드는 바뀌지 않는다.
-        """
-
-        effort = self._reasoning_effort()
-        if effort is None or effort == self._EFFORT_WITHOUT_REASONING:
-            return temperature
-        return None
+                return params
+        return self._DEFAULT_MODEL_PARAMS
 
     def _chat_params(
         self, messages: list[dict], temperature: float, kwargs: dict
     ) -> dict:
         """Chat Completions 요청 인자를 조립한다.
 
-        `temperature`/`reasoning_effort` 를 실을지 말지가 모델마다 갈리므로 두 호출
-        경로(텍스트·이미지)가 이 한 곳을 지나게 한다. 호출자가 같은 키를 kwargs 로
-        직접 주면 그쪽이 이긴다.
+        어떤 매개변수를 싣는지가 모델마다 갈리므로 두 호출 경로(텍스트·이미지)가 이
+        한 곳을 지나게 한다. 호출자가 같은 키를 kwargs 로 직접 주면 그쪽이 이긴다.
         """
 
+        model_params = self._model_params()
         params: dict = {"model": self.model, "messages": messages, **kwargs}
-        temperature_value = self._applied_temperature(temperature)
-        if temperature_value is not None:
-            params.setdefault("temperature", temperature_value)
-        effort = self._reasoning_effort()
-        if effort is not None:
-            params.setdefault("reasoning_effort", effort)
+        if model_params.accepts_temperature:
+            params.setdefault("temperature", temperature)
+        if model_params.reasoning_effort is not None:
+            params.setdefault("reasoning_effort", model_params.reasoning_effort)
         return params
 
     @staticmethod
