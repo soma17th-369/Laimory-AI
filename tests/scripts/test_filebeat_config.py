@@ -118,3 +118,71 @@ def test_output_target_and_timestamp_handling_are_unchanged(config, processors) 
     assert config["output.elasticsearch"]["index"] == "logs-laimory.ai-${LAIMORY_ENV}"
     timestamp = processors[_index_of(processors, "timestamp")]["timestamp"]
     assert timestamp["field"] == "timestamp"
+# --- 이름 충돌 (이슈 #109) ---------------------------------------------------
+#
+# 표식과 순서가 맞아도 **필드 이름 하나**로 이벤트가 통째로 사라질 수 있다. Filebeat 는
+# 자기 수집기 정보를 `agent.*` 객체로 붙이는데, 앱이 같은 이름으로 문자열을 실으면
+# `decode_json_fields`(`target: ""`, `overwrite_keys: true`)가 그 객체를 덮는다. 그러면
+# 한 문서 안에서 `agent` 가 문자열이 되어 data stream 의 object mapping 과 충돌하고
+# Elasticsearch 가 그 문서만 거절한다 — dev EC2 에서 `app.degraded` 만 적재되지 않았다.
+#
+# 앱은 점 없는 최상위 이름을 쓰고 수집기는 객체를 만든다는 것이 이 경로의 사실이므로,
+# 여기서는 그 둘이 겹치지 않는지만 본다. 점이 든 이름(`event.dataset`, `log.level`,
+# `error.type`)은 검사 대상이 아니다 — 펴지면 양쪽 다 객체라 충돌하지 않는다.
+
+#: 수집기가 **객체**로 채우는 최상위 이름 중 설정에서 유도할 수 없는 것.
+#: `add_host_metadata` 가 `host.*` 를, container 입력이 `container.*` 와
+#: `log.file.path`/`log.offset` 을 붙인다.
+_PIPELINE_OBJECT_FIELDS = frozenset({"host", "container", "log"})
+
+
+def _object_namespaces(processors: list[dict]) -> set[str]:
+    """이 파이프라인에서 객체가 되는 최상위 이름들.
+
+    `drop_fields` 의 점 있는 항목이 곧 근거다 — `agent.id` 를 지운다는 것은 이 경로에서
+    `agent` 가 객체라는 뜻이다. 설정이 바뀌면 이 목록도 따라 바뀐다.
+    """
+
+    derived = {
+        field.split(".")[0]
+        for processor in processors
+        if "drop_fields" in processor
+        for field in processor["drop_fields"]["fields"]
+        if "." in field
+    }
+    return derived | set(_PIPELINE_OBJECT_FIELDS)
+
+
+def _application_scalar_fields() -> set[str]:
+    """앱이 최상위에 **점 없이** 내보내는 이름 전체(고정 필드 + 모든 이벤트 allowlist)."""
+
+    from app.core.logging import _RESERVED_FIELDS
+    from app.core.operational_logging import _ALLOWED_FIELDS
+
+    names = set(_RESERVED_FIELDS)
+    for allowed in _ALLOWED_FIELDS.values():
+        names |= set(allowed)
+    return {name for name in names if "." not in name}
+
+
+def test_application_field_names_never_collide_with_collector_objects(
+    processors,
+) -> None:
+    """겹치면 그 이벤트는 로그에 찍히고도 Elasticsearch 에 남지 않는다."""
+
+    collisions = _application_scalar_fields() & _object_namespaces(processors)
+
+    assert not collisions, (
+        "수집기가 객체로 쓰는 이름을 앱이 최상위 문자열로 내보내고 있습니다: "
+        f"{sorted(collisions)}"
+    )
+
+
+def test_the_agent_name_field_keeps_the_beats_agent_object_intact() -> None:
+    """#109 의 회귀. Agent 이름은 `agentName` 으로 나가고 `agent` 는 수집기 몫이다."""
+
+    from app.core.operational_logging import _ALLOWED_FIELDS, OperationalEvent
+
+    degraded = _ALLOWED_FIELDS[OperationalEvent.APP_DEGRADED]
+    assert "agentName" in degraded
+    assert "agent" not in degraded
