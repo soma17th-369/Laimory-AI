@@ -5,6 +5,11 @@
 # filebeat.env 에서 환경변수로 주입한다(${ES_HOSTS}, ${ES_API_KEY}, ${LAIMORY_ENV}).
 # 준비 절차는 docs/deploy-ec2.md, 필드 계약은 docs/operational-logging.md 참고.
 #
+# **이 파일을 고쳐도 EC2 는 바뀌지 않는다.** 배포가 건드리지 않는 파일이라 사람이 복사해
+# 넣고 Filebeat 를 재시작해야 적용된다. 그래서 실제 파일은 이 템플릿보다 오래된 판일 수
+# 있고, 그것을 알려 주는 장치가 없다. 수집 동작을 판단할 때는 EC2 의 실제 파일을 먼저
+# 본다 — 여기 있는 `drop_fields` 항목이 거기에도 있다고 가정하지 않는다.
+#
 # 수집 대상은 `laimory-ai` 애플리케이션 컨테이너의 stdout 하나뿐이며, 그중에서도
 # 앱이 **운영 이벤트로 표식을 단 줄**만 보낸다(이슈 #53). 표식은 event.dataset 이고
 # 값은 `laimory.api` 다. 표식이 없는 줄(일반 앱 로그, Agent/LLM 진단, httpx·botocore
@@ -40,6 +45,13 @@ processors:
   # expand_keys 가 핵심이다. 앱은 `event.dataset` 처럼 점이 든 키를 그대로 쓰는데,
   # 이 옵션이 없으면 Beats 는 그걸 최상위의 리터럴 키 하나로 들고 있어서 아래
   # 조건식(event.dataset)이 영영 매칭되지 않는다. 그러면 모든 이벤트가 버려진다.
+  #
+  # `overwrite_keys: true` 라 앱의 값이 Beats 가 이미 붙인 값을 이긴다. 그래서 **앱은
+  # 수집기가 객체로 채우는 이름을 최상위 스칼라로 쓰면 안 된다**(이슈 #109). `agent` 가
+  # 그 예다 — Beats 는 자기 정보를 `agent.*` 객체로 붙이는데 앱이 같은 이름에 문자열을
+  # 실으면 객체가 문자열로 덮이고, data stream 의 mapping 과 충돌해 Elasticsearch 가 그
+  # 문서만 거절한다. 앱은 Agent 이름을 `agentName` 으로 내보내며, 이 규칙은
+  # tests/scripts/test_filebeat_config.py 가 앱 필드 목록과 대조해 고정한다.
   - decode_json_fields:
       fields: ["message"]
       target: ""
@@ -71,10 +83,18 @@ processors:
   # 방어선. 앱이 이미 마스킹하지만, 수집기에서도 한 번 더 지운다. 마스킹이 한 겹
   # 뚫려도 Elasticsearch 까지 가지는 않게 한다.
   #
-  # error.message/error.stack_trace 는 운영 이벤트에 아예 실리지 않지만(이슈 #53),
-  # 표식이 잘못 붙은 줄이 하나라도 통과하면 예외 원문과 traceback 이 그 자리로 들어온다.
-  # url/query/body 계열도 같은 이유로 지운다. event.dataset/action/outcome 은 남긴다 —
-  # 그걸 지우면 이벤트 종류를 구분할 수단이 사라진다.
+  # error.message/error.stack_trace 는 **일반 로그**의 예외 필드다(app/core/logging.py).
+  # 운영 이벤트에는 실리지 않으므로, 표식이 잘못 붙은 줄이 통과했을 때만 그 자리에
+  # 값이 있다. url/query/body 계열도 같은 이유로 지운다.
+  #
+  # 운영 이벤트가 싣는 errorMessage/errorStackTrace 는 **여기서 지우지 않는다**(#109
+  # 범위 확장). 이름이 갈린 것이 그래서다 — 점 표기(`error.*`)는 표식 없는 줄에서
+  # 새어 든 값이라 버리고, camelCase 는 emitter 의 allowlist 를 통과해 마스킹·길이
+  # 상한까지 거친 값이라 남긴다. 둘을 같은 이름으로 두면 하나를 지울 때 다른 하나가
+  # 같이 사라진다.
+  #
+  # event.dataset/action/outcome 은 남긴다 — 그걸 지우면 이벤트 종류를 구분할 수단이
+  # 사라진다.
   - drop_fields:
       fields:
         - taskToken
@@ -86,7 +106,6 @@ processors:
         - refreshToken
         - error.message
         - error.stack_trace
-        - errorMessage
         - url
         - query
         - body

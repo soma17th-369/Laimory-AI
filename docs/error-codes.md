@@ -204,6 +204,10 @@ errorCode: 1301 and environment: "prod"
 `errorMessage`(마스킹한 원본), 최종 실패의 traceback까지 있습니다. 이 줄은 수집
 표식이 없어 Elasticsearch로 가지 않으므로 `docker logs laimory-ai`로 봅니다.
 
+같은 호출이 내는 `app.degraded` 이벤트에도 `errorMessage`·`errorStackTrace`가
+실립니다(#109 범위 확장). 길이 상한에서 잘릴 수 있고(`…(잘림)`), 진단 줄에는
+전문이 남습니다. prod는 컨테이너가 회수되므로 사실상 이벤트 쪽이 유일한 창입니다.
+
 ```json
 {"log.level":"WARNING","logger":"app.services.timeline_runner",
  "message":"타임라인 처리 실패","taskId":"task-1","stage":"STORAGE",
@@ -211,8 +215,9 @@ errorCode: 1301 and environment: "prod"
  "violationCodes":["SOURCE_RAW_ID_NOT_IN_TASK"],"violationCount":1}
 ```
 
-즉 **무엇이 얼마나 실패하는지는 Elasticsearch, 왜 실패했는지의 원문은 컨테이너
-로그, AI 실행 과정은 Langfuse**입니다. 세 곳을 잇는 상관키는 `taskId` 하나입니다.
+즉 **무엇이 얼마나 실패하는지와 왜 실패했는지는 Elasticsearch, 잘리지 않은 전문은
+컨테이너 로그, AI 실행 과정은 Langfuse**입니다. 세 곳을 잇는 상관키는 `taskId`
+하나입니다.
 
 조회 예시와 필드 계약은 [docs/operational-logging.md](operational-logging.md)에
 정리돼 있습니다.

@@ -42,7 +42,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.request_logging import annotate_request_error
 from app.core.error_codes import ErrorCode, code_for_http_status, http_status_for
-from app.core.exceptions import AppError, report_error
+from app.core.exceptions import AppError, report_error, stack_trace_of
 from app.core.logging import get_logger
 from app.schemas.error import ErrorResponse
 
@@ -116,6 +116,8 @@ async def handle_request_validation_error(
     코드와 고정 메시지만 내보낸다.
 
     예외 객체는 로그로 넘기지 않는다 — ``str(exc)`` 에 잘못 보낸 값이 그대로 들어 있다.
+    실패 이벤트가 예외 원문을 싣게 된 뒤에도(#109 범위 확장) **이 경로만은 예외다.**
+    여기서 넘기면 응답에서 막아 둔 입력값이 Elasticsearch 로 되돌아 나간다.
     """
 
     annotate_request_error(
@@ -144,7 +146,13 @@ async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
     로그에만 남고, 응답에는 코드에 묶인 안전 메시지가 나간다.
     """
 
-    annotate_request_error(request, exc.code, error_type=type(exc).__name__)
+    # 분류된 실패라 코드가 원인을 말한다. traceback 은 싣지 않고 원문만 남긴다.
+    annotate_request_error(
+        request,
+        exc.code,
+        error_type=type(exc).__name__,
+        error_message=str(exc),
+    )
     report_error(
         logger,
         exc.code,
@@ -169,7 +177,13 @@ async def handle_http_exception(
     """
 
     code = code_for_http_status(exc.status_code)
-    annotate_request_error(request, code, error_type=type(exc).__name__)
+    # 404·405 마다 스택을 싣는 것은 크기만 늘린다. 상태 코드와 원문이면 충분하다.
+    annotate_request_error(
+        request,
+        code,
+        error_type=type(exc).__name__,
+        error_message=str(exc),
+    )
     report_error(
         logger,
         code,
@@ -190,19 +204,24 @@ async def handle_http_exception(
 async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
     """분류되지 않은 예외 — 마지막 방어선.
 
-    여기까지 온 예외는 우리가 예상하지 못한 것이다. traceback 은 **로컬 진단**으로만
-    남기고(표식이 없어 Elasticsearch 로 가지 않는다), 밖으로는 1901 과 고정 메시지만
-    내보낸다.
+    여기까지 온 예외는 우리가 예상하지 못한 것이다. 밖으로는 1901 과 고정 메시지만
+    내보내고, 원인은 요청 이벤트의 ``errorMessage``·``errorStackTrace`` 로 남긴다
+    (#109 범위 확장).
 
     이 처리기는 Starlette 의 ``ServerErrorMiddleware`` 에서 돌아 요청 로그 미들웨어보다
     바깥이다. 그래서 여기 주석은 요청 이벤트에 닿지 못하고, 미들웨어가 같은 코드로
     이벤트를 이미 닫는다. 주석은 처리기 순서가 바뀌었을 때를 위한 것이다.
     """
 
+    # 분류되지 않은 실패라 코드가 아무것도 말해 주지 못한다. traceback 까지 넘긴다.
+    # 다만 이 주석은 대개 도착하지 못하고(아래 docstring), 요청 로그 미들웨어가 같은
+    # 예외에서 같은 값을 채운다.
     annotate_request_error(
         request,
         ErrorCode.INTERNAL_ERROR,
         error_type=type(exc).__name__,
+        error_message=str(exc),
+        error_stack_trace=stack_trace_of(exc),
     )
     report_error(
         logger,

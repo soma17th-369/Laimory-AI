@@ -18,10 +18,24 @@
 이름을 넘기면 조용히 버리고, 버렸다는 사실만 일반 로그로 알린다. 값이 아니라
 이름만 남긴다 — 버려진 값이 진단 로그로 새면 막은 의미가 없다.
 
+필드 **이름**에도 제약이 하나 있다(이슈 #109). 최상위 이름은 수집기가 객체로 채우는
+이름(``agent``·``host``·``container``·``log``·``ecs``·``input``·``error``)과 겹치면 안 된다.
+겹치면 같은 이름이 한쪽에서는 객체, 한쪽에서는 문자열이 되어 Elasticsearch 가 그 문서를
+거절한다 — 이벤트가 조용히 통째로 사라지는 실패다. Agent 이름을 ``agentName`` 으로 내보내는
+이유가 그것이고, 이 규칙은 ``tests/scripts/test_filebeat_config.py`` 가 고정한다.
+
 허용 목록에 넣어도 되는 값은 **정수·열거형·불리언·소요시간·식별자**뿐이다.
-사용자 원문(제목·장소·주소·파일명), 프롬프트/응답, URL, 토큰, 예외 원문과
-traceback 은 어떤 이벤트에도 넣지 않는다. 예외 상세가 필요하면 ``errorCode`` 와
-``errorType`` 까지다.
+사용자 원문(제목·장소·주소·파일명), 프롬프트/응답, URL, 토큰은 어떤 이벤트에도
+넣지 않는다.
+
+**예외 원문과 traceback 은 예외다**(#109 범위 확장). 실패 이벤트 두 개
+(``app.degraded``·``http.request.completed``)는 ``errorMessage`` 와
+``errorStackTrace`` 를 싣는다. 원래 이 둘은 #53 이 명시적으로 막아 둔 값이고,
+사용자 콘텐츠가 섞일 수 있다는 것을 알고 연 것이다 — prod 는 AgentCore 가 컨테이너를
+회수해 ``docker logs`` 라는 선택지가 없어, 이것이 없으면 운영에서 원인을 볼 방법이
+아예 없기 때문이다. 보호 경계는 이제 인덱스 접근 권한과 보존 정책이 맡는다.
+**새 필드를 더할 때 이 둘을 선례로 삼지 않는다.** 값이 아니라 코드로 말할 수 있으면
+코드로 말한다.
 
 ## 사람이 읽는 ``message`` (이슈 #78)
 
@@ -61,6 +75,7 @@ from uuid import uuid4
 
 from app.core.execution_context import ExecutionStage, current_execution_context
 from app.core.logging import OPERATIONAL_ATTR, get_logger
+from app.core.redaction import redact_text
 
 #: 수집 대상 표식. Filebeat 는 이 값이 정확히 일치하는 이벤트만 통과시킨다.
 #: 값을 바꾸면 수집기 설정(`docs/observability/filebeat.example.yml`)도 같이 바꿔야 한다.
@@ -144,6 +159,11 @@ _ALLOWED_FIELDS: dict[OperationalEvent, frozenset[str]] = {
             "durationMs",
             "errorCode",
             "errorType",
+            # 예외 원문과 traceback (#109 범위 확장). 모듈 docstring 의 경계 설명을 함께
+            # 본다. traceback 은 **미처리 예외(500)에만** 실린다 — 분류된 실패는 코드가
+            # 원인을 말하고, 404 마다 스택을 싣는 것은 크기만 늘린다.
+            "errorMessage",
+            "errorStackTrace",
             "taskId",
         }
     ),
@@ -215,13 +235,21 @@ _ALLOWED_FIELDS: dict[OperationalEvent, frozenset[str]] = {
         {
             # 어디가 저하됐는지. ExecutionStage 값이거나 DegradedComponent 값이다.
             "component",
-            "agent",
+            # 우리 Event/Repair Agent 이름. **`agent` 가 아니다**(#109) — ECS 와 Filebeat 는
+            # `agent.*` 를 수집기 자신을 가리키는 객체로 쓴다. 같은 이름으로 문자열을 실으면
+            # `decode_json_fields` 가 그 객체를 덮어써서 Elasticsearch 가 문서를 통째로
+            # 거절한다(dev EC2 에서 이 이벤트만 적재되지 않았다).
+            "agentName",
             "errorCode",
             # 예외 **클래스명**이다(`ThrottlingException` 등). 원문이 아니라 종류라
             # 사용자 데이터가 아니고, `http.request.completed` 도 같은 필드를 쓴다.
             # LLM 실패가 상위에서 1204 로 덮이는 경로가 있어(#101) 이 값이 없으면
             # 무엇이 터졌는지 ES 에서 알 수 없다.
             "errorType",
+            # 예외 원문과 traceback (#109 범위 확장). 흡수된 실패는 코드가 상위에서
+            # 1204 로 덮이는 일이 잦아, 무엇이 터졌는지 말할 수 있는 것이 이 둘뿐이다.
+            "errorMessage",
+            "errorStackTrace",
             "taskId",
             "durationMs",
             # 항목 단위 실패를 이벤트마다 내지 않고 집계 1건으로 낼 때의 개수.
@@ -236,6 +264,24 @@ _ALLOWED_FIELDS: dict[OperationalEvent, frozenset[str]] = {
             "tokenUsage",
         }
     ),
+}
+
+#: 오류 상세 필드의 길이 상한 (#109 범위 확장).
+#:
+#: docker json-file 은 16KB 를 넘는 줄을 **쪼갠다.** 그러면 "로그 한 줄은 유효한 JSON
+#: 하나" 라는 계약이 깨져 이벤트가 통째로 사라지므로, 사람이 원인을 찾을 만큼만 남기고
+#: 자른다. 자르기를 호출부에 맡기지 않는 이유는 한 곳만 잊어도 그 줄이 사라지기 때문이다.
+ERROR_MESSAGE_MAX_CHARS = 1_000
+ERROR_STACK_TRACE_MAX_CHARS = 6_000
+
+#: 잘렸다는 사실 자체를 값에 남긴다. 없으면 "여기서 끝난 예외" 와 구분되지 않는다.
+TRUNCATION_MARK = "…(잘림)"
+
+#: 자를 필드와 (상한, 어느 쪽을 남길지). traceback 은 **뒤쪽**을 남긴다 — 마지막 프레임과
+#: 예외 줄이 원인에 가깝고, 앞쪽은 매번 같은 진입 경로라 정보가 적다.
+_TRUNCATED_FIELDS: dict[str, tuple[int, str]] = {
+    "errorMessage": (ERROR_MESSAGE_MAX_CHARS, "head"),
+    "errorStackTrace": (ERROR_STACK_TRACE_MAX_CHARS, "tail"),
 }
 
 #: `app.degraded` 가 호출부 `context` 에서 받아 실을 구조화 출력 진단 필드.
@@ -354,6 +400,8 @@ def emit_degraded(
     *,
     error_code: int | None = None,
     error_type: str | None = None,
+    error_message: str | None = None,
+    error_stack_trace: str | None = None,
     agent: str | None = None,
     dropped_count: int | None = None,
     duration_ms: float | None = None,
@@ -367,6 +415,9 @@ def emit_degraded(
 
     ``component`` 와 ``agent`` 를 생략하면 현재 실행 컨텍스트에서 가져온다. 흡수 경계는
     대개 자기가 어느 단계인지 인자로 말하지 않기 때문이다.
+
+    ``error_message``/``error_stack_trace`` 는 예외 원문과 traceback 이다(#109 범위
+    확장). :func:`_bounded_error_text` 가 마스킹한 뒤 길이 상한까지 자른다.
 
     ``trace_fields`` 는 구조화 출력 진단(:data:`_LLM_TRACE_FIELDS`)만 골라 싣는다.
     호출부가 넘긴 dict 를 통째로 펴지 않는다 — 그 자리가 곧 사용자 콘텐츠가 들어오는
@@ -383,9 +434,15 @@ def emit_degraded(
 
     fields: dict[str, Any] = {
         "component": component,
-        "agent": agent,
+        # 인자 이름은 우리 도메인 어휘(`agent`)로 두고 나가는 이름만 `agentName` 이다.
+        # 호출부가 아니라 수집 경로의 사정이라 그 경계를 여기서 끝낸다(#109).
+        "agentName": agent,
         "errorCode": error_code,
         "errorType": error_type,
+        # 마스킹·자르기는 `_build_payload` 가 한다. 여기서 하면 다른 호출부가 생길
+        # 때마다 같은 상한을 다시 적어야 하고, 한 곳만 잊어도 그 줄이 통째로 사라진다.
+        "errorMessage": error_message,
+        "errorStackTrace": error_stack_trace,
         "droppedCount": dropped_count,
         "durationMs": duration_ms,
         "provider": provider,
@@ -448,6 +505,35 @@ def _message_for(
     return f"{dependency} {operation} {_OUTCOME_SUFFIXES[outcome]}"
 
 
+def _bounded_error_text(key: str, value: Any) -> Any:
+    """상한이 정해진 필드를 **마스킹한 뒤** 자른다. 그 밖의 값은 그대로 둔다.
+
+    순서가 중요하다. 마스킹은 문자열을 줄이기만 하지 않는다 — ``a@b.co`` 가
+    ``[REDACTED]`` 가 되듯 늘어날 수도 있어서, 자르고 나서 마스킹하면 상한이 실제로
+    나가는 줄을 재지 못한다. 상한의 목적이 docker json-file 의 16KB 분할을 피하는
+    것이라 자르는 대상은 최종 값이어야 한다.
+
+    로그 포매터가 뒤에서 한 번 더 :func:`~app.core.redaction.redact_text` 를 건다.
+    멱등이라 결과는 같고, 여기서 거는 것은 마스킹 책임을 옮기려는 것이 아니라
+    **길이를 재기 위해서**다.
+
+    문자열이 아니면 손대지 않는다 — 이 함수의 일은 줄 길이를 지키는 것이지 타입을
+    바로잡는 것이 아니다.
+    """
+
+    rule = _TRUNCATED_FIELDS.get(key)
+    if rule is None or not isinstance(value, str):
+        return value
+
+    value = redact_text(value)
+    limit, keep = rule
+    if len(value) <= limit:
+        return value
+    if keep == "tail":
+        return TRUNCATION_MARK + value[-limit:]
+    return value[:limit] + TRUNCATION_MARK
+
+
 def _build_payload(
     event: OperationalEvent,
     outcome: EventOutcome,
@@ -473,7 +559,7 @@ def _build_payload(
     for key in sorted(allowed):
         value = fields.get(key)
         if value is not None:
-            payload[key] = value
+            payload[key] = _bounded_error_text(key, value)
 
     if "taskId" in allowed and "taskId" not in payload:
         context = current_execution_context()

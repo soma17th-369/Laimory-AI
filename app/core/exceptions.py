@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import traceback
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from app.core.error_codes import ErrorCode, message_for
@@ -101,6 +102,19 @@ def safe_message(exc: BaseException) -> str:
     return message_for(code_of(exc))
 
 
+def stack_trace_of(exc: BaseException | None) -> str | None:
+    """예외의 traceback 문자열. 아직 raise 되지 않았으면 ``None``.
+
+    직접 만든 예외를 ``report_error`` 로 넘기는 자리가 있어 ``__traceback__`` 이 없을 수
+    있다. 그때는 필드를 아예 넣지 않는다 — 빈 문자열을 넣으면 "스택이 없는 실패" 와
+    "스택을 못 남긴 실패" 가 같아 보인다.
+    """
+
+    if exc is None or exc.__traceback__ is None:
+        return None
+    return "".join(traceback.format_exception(exc))
+
+
 def report_error(
     logger: logging.Logger,
     code: ErrorCode,
@@ -128,8 +142,13 @@ def report_error(
 
     이 줄에는 수집 표식이 없어 Elasticsearch 로 가지 않는다(이슈 #53). 돌려주는 코드를
     호출부가 응답·콜백·운영 이벤트에 실어야 세 곳이 같은 값을 말한다.
+
     ``taskId``/``stage``/``agent`` 는 실행 컨텍스트가 자동으로 붙이므로 ``context`` 에
     다시 넣지 않아도 된다.
+
+    ``emit`` 이 참이면 같은 실패가 표식 달린 ``app.degraded`` 로 한 건 더 나가며, 그 줄에는
+    예외 원문과 traceback 도 함께 실린다(#109 범위 확장). ``context`` 는 여전히 그 줄에
+    닿지 않으니, 열린 것은 **예외가 스스로 말하는 값 두 개**뿐이라고 읽는다.
 
     Args:
         logger: 호출 지점 모듈의 로거.
@@ -167,8 +186,8 @@ def report_error(
     if exc is not None:
         fields["errorType"] = type(exc).__name__
         if not exc_info:
-            # 원본 메시지는 로그에만 남고 외부(API 응답·콜백)로는 나가지 않는다.
-            # traceback 을 남길 때는 포매터가 `error.message` 를 채우므로 생략한다.
+            # 원본 메시지는 외부(API 응답·콜백)로는 나가지 않는다. traceback 을 남길
+            # 때는 포매터가 `error.message` 를 채우므로 이 줄에서는 생략한다.
             fields["errorMessage"] = str(exc)
     fields.update(context or {})
 
@@ -179,12 +198,17 @@ def report_error(
     if emit:
         # 위 진단 줄에는 표식이 없어 Elasticsearch 로 가지 않는다. 같은 실패를 표식 달린
         # 이벤트로 한 건 더 낸다(#101). **여기 실리는 것은 emitter 의 allowlist 를 통과한
-        # 필드뿐이다** — `context` 의 임의 키도, `errorMessage`(예외 원문)도, traceback 도
-        # 그 줄에는 들어가지 않는다. 원문은 위 진단 줄에만 남는다.
+        # 필드뿐이다** — `context` 의 임의 키는 그 줄에 들어가지 않는다.
+        #
+        # 예외 원문과 traceback 은 이제 함께 나간다(#109 범위 확장). 흡수된 실패는
+        # 상위에서 1204 로 덮이는 일이 잦아, 그것이 없으면 운영에서 원인을 볼 수단이
+        # 없다. 마스킹과 길이 상한은 emitter 가 그 순서로 건다.
         emit_degraded(
             component or stage,
             error_code=int(code),
             error_type=type(exc).__name__ if exc is not None else None,
+            error_message=str(exc) if exc is not None else None,
+            error_stack_trace=stack_trace_of(exc),
             agent=agent,
             duration_ms=duration_ms,
             provider=provider,

@@ -612,8 +612,25 @@ Elasticsearch를 직접 호출하지 않도록 설계되어 있으므로 Runtime
 > 추가해도 **구독 필터와 Lambda를 바꿀 필요가 없다.**
 >
 > 반대로 `report_error()` 와 `logger.warning()` 이 남기는 **진단 줄**은 표식이 없어
-> 계속 전달되지 않는다. 그 줄은 CloudWatch Logs Insights에서 본다. 앱이 표식 없는 줄에
-> 예외 원문(`errorMessage`)과 traceback을 담기 때문에 의도한 경계다.
+> 계속 전달되지 않는다. 그 줄은 CloudWatch Logs Insights에서 본다.
+
+> **오류 상세는 이제 표식 달린 줄에도 실린다(#109 범위 확장).** 실패 이벤트
+> (`app.degraded`·`http.request.completed`)가 `errorMessage`·`errorStackTrace` 를 싣는다.
+> prod 는 AgentCore 가 컨테이너를 회수해 `docker logs` 라는 선택지가 없어, 이것이 없으면
+> Kibana 에서 실패를 보고도 원인을 볼 방법이 없기 때문이다.
+>
+> **전달 Lambda 의 `_SENSITIVE_KEYS` 에서 `"errormessage"` 를 빼야 한다.** 그대로 두면
+> dev(EC2)에는 값이 들어오고 prod 에는 안 들어오는, 가장 알아채기 어려운 형태로 갈린다.
+> `_SENSITIVE_PATHS` 의 `("error","message")`·`("error","stack_trace")` 는 **그대로 둔다** —
+> 그쪽은 표식 없는 일반 로그의 예외 필드이고, 두 목록이 분리돼 있어 한쪽만 열 수 있다.
+> 이름이 camelCase 와 점 표기로 갈린 이유가 그것이다.
+>
+> **`errorStackTrace` 는 지금도 `_SENSITIVE_KEYS` 에 없어 이미 통과한다.** 즉 Lambda 를
+> 고치지 않아도 prod 는 traceback 을 받고 메시지만 잃는다. 그 상태는 안전해 보이지만
+> 아니다 — `traceback.format_exception` 의 마지막 줄이 `RuntimeError: <메시지>` 라서
+> **원문이 스택 안에 그대로 실려 온다.** `"errormessage"` 를 빼는 것은 방어를 푸는 것이
+> 아니라 이미 열려 있는 것을 목록에 정직하게 맞추는 일이다. 반대로 정말 막고 싶다면
+> `"errorstacktrace"` 를 **더해야** 하며, 그때는 두 필드를 함께 막아야 뜻이 선다.
 
 1. Lambda 콘솔에서 같은 리전의 전달 함수 `laimory-agentcore-logs-to-es`를 만든다. 함수는
    CloudWatch Logs의 base64+gzip payload를 풀고 각 `logEvents[].message`를 JSON으로
@@ -627,6 +644,38 @@ Elasticsearch를 직접 호출하지 않도록 설계되어 있으므로 Runtime
    순서와 `drop_fields`를 그대로 기준으로 삼아 민감 필드 제거를 적용하고, 목적지를
    `logs-laimory.ai-prod` data stream으로 고정한다. 전체 필드 계약은
    [운영 로그 문서](operational-logging.md)를 따른다.
+
+   그 목록이 **정본**이다. 앱이 새로 여는 필드(`errorMessage`·`errorStackTrace`)는
+   템플릿에서 빠지므로, 함수의 목록을 템플릿과 대조하지 않으면 dev 와 prod 가 서로
+   다른 것을 적재한다. 함수를 고칠 때마다 이 대조를 한다.
+
+   **판정 방식은 두 수집기가 다르다.** Filebeat `drop_fields`는 정확한 경로 문자열이지만,
+   Lambda `_sanitize`는 key 이름을 `casefold()`로 **깊이 무관** 비교하고(`_SENSITIVE_KEYS`)
+   경로 tuple을 따로 본다(`_SENSITIVE_PATHS`). 그래서 Lambda 쪽은 **앱 필드 이름이
+   denylist와 겹치기만 해도 조용히 사라진다** — 이름 충돌로 이벤트가 사라진 #109와 같은
+   종류의 실패다. 목록을 손댈 때는 앱이 내보내는 이름 전체와 교차 대조한다.
+
+   ```python
+   # 저장소 루트에서: PYTHONPATH=. python
+   from app.core.logging import _RESERVED_FIELDS
+   from app.core.operational_logging import _ALLOWED_FIELDS
+
+   names = set(_RESERVED_FIELDS) | {"instanceId"}
+   for allowed in _ALLOWED_FIELDS.values():
+       names |= set(allowed)
+   print(sorted(n for n in names if n.casefold() in LAMBDA_SENSITIVE_KEYS))
+   ```
+
+   2026-09-01 기준 결과: 앱이 내보내는 이름 59개 중 겹치는 것은 **`errorMessage` 하나**다.
+   `_SENSITIVE_KEYS`의 나머지 12개(`tasktoken`·`authorization`·`apikey`·`password`·
+   `secret`·`accesstoken`·`refreshtoken`·`url`·`query`·`body`·`prompt`·`response`)는 앱이
+   그 이름을 내보내지 않으므로 **빼도 얻는 정보가 없고 방어선만 잃는다.** `_SENSITIVE_PATHS`의
+   `("error","message")`·`("error","stack_trace")`도 그대로 둔다 — 그 이름은 포매터가
+   `exc_info=True`일 때만 채우는데 `emit_event`는 `exc_info`를 붙이지 않아 운영 이벤트 줄에
+   애초에 없다. 표식이 잘못 붙은 줄에 대한 방어선으로만 남는다.
+
+   즉 **"Lambda가 최대한 많이 보내게 한다"는 `"errormessage"` 한 줄을 빼는 것으로 끝난다.**
+   무엇을 보낼지는 emitter의 allowlist가 정하고, Lambda가 할 일은 그것을 깎지 않는 것뿐이다.
 
 4. Elasticsearch API key는 Lambda 환경 변수에 평문으로 넣지 않고 Secrets Manager에
    저장한다. Lambda 실행 역할에는 해당 secret을 읽는 권한과 실패 로그를 CloudWatch에

@@ -275,8 +275,14 @@ LLM 토큰 사용량: provider=bedrock, model=..., inputTokens=123, outputTokens
 `drop_event`로 버린다. 그래서 로그 호출을 새로 추가해도 수집 범위는 넓어지지 않는다.
 
 **애플리케이션은 Elasticsearch를 직접 호출하지 않는다.** ES URL도 자격증명도 앱 설정에
-없으며, 그 경계는 정적 검색 테스트가 지킨다. 프롬프트·LLM 응답·draft 전문·사용자 원문·
-예외 원문·traceback은 운영 이벤트에 남지 않는다.
+없으며, 그 경계는 정적 검색 테스트가 지킨다. 프롬프트·LLM 응답·draft 전문·사용자 원문은
+운영 이벤트에 남지 않는다.
+
+예외 원문과 traceback은 **실패 이벤트 2종에 한해 예외다**(#109 범위 확장).
+`app.degraded`·`http.request.completed`가 `errorMessage`·`errorStackTrace`를 싣는다 —
+prod는 AgentCore가 컨테이너를 회수해 `docker logs`라는 선택지가 없어, 이것 없이는
+Kibana에서 실패를 보고도 원인을 볼 수 없다. 마스킹·길이 상한·검증 오류(422) 제외가
+따라붙으며, 새 필드를 열 때 이 둘을 선례로 삼지 않는다.
 
 `event.action`으로 이벤트 종류를, `taskId`로 한 실행을, `errorCode`로 실패를 필터·집계한다.
 `POST /v1/timeline`의 202 응답시간과 이후 백그라운드 전체 처리시간은 서로 다른 이벤트

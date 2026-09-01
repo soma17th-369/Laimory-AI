@@ -172,11 +172,25 @@ def test_unhandled_exception_is_one_error_event_with_internal_code(caplog) -> No
     assert event["httpStatus"] == 500
     assert event["log.level"] == "ERROR"
     assert event["errorCode"] == int(ErrorCode.INTERNAL_ERROR)
-    serialized = json.dumps(event, ensure_ascii=False)
-    # 예외 원문·traceback 은 로컬 진단에만 남는다.
-    assert "/srv/secret" not in serialized
-    assert "abc123" not in serialized
-    assert "Traceback" not in serialized
+    assert event["errorType"] == "RuntimeError"
+
+
+def test_unhandled_exception_carries_its_cause_to_elasticsearch(caplog) -> None:
+    """미분류 500 은 코드만으로 원인을 알 수 없다(#109 범위 확장).
+
+    처리기의 주석이 도착하지 못하는 경로라, 미들웨어가 잡은 예외에서 원문과 traceback 을
+    직접 채우지 않으면 운영에서 원인을 볼 수단이 아예 없다. **여기 실리는 값에는 사용자
+    콘텐츠가 섞일 수 있다** — 알고 연 경계이므로 그 사실을 테스트로도 드러내 둔다.
+    """
+
+    with caplog.at_level(logging.DEBUG):
+        with TestClient(_app(), raise_server_exceptions=False) as client:
+            client.get("/v1/unstable")
+
+    event = _events(caplog)[0]
+    assert "/srv/secret" in event["errorMessage"]
+    assert "Traceback" in event["errorStackTrace"]
+    assert "RuntimeError" in event["errorStackTrace"]
 
 
 def test_accepted_task_id_correlates_the_request_with_the_background_work(caplog) -> None:

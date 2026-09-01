@@ -48,14 +48,14 @@ laimory-ai 컨테이너 stdout (한 줄 JSON)
 
 | `event.action` | 언제 | 필드 |
 |---|---|---|
-| `http.request.completed` | HTTP 요청 하나가 끝날 때(요청당 1건) | `method`, `route`, `httpStatus`, `durationMs`, `errorCode`, `errorType`, `taskId` |
+| `http.request.completed` | HTTP 요청 하나가 끝날 때(요청당 1건) | `method`, `route`, `httpStatus`, `durationMs`, `errorCode`, `errorType`, `errorMessage`, `errorStackTrace`, `taskId` |
 | `server.started` | lifespan 시작 | `appEnv`, `logFormat`, `instanceId` |
 | `server.stopped` | lifespan 종료 | `appEnv`, `uptimeMs`, `instanceId` |
 | `timeline.task.completed` | 202 로 접수한 백그라운드 작업이 끝날 때(작업당 1건) | `taskId`, `status`, `durationMs`, `callbackSent`, `errorCode`, `failureStage`, `timedOut` |
 | `usermemory.task.completed` | User Memory 갱신 작업이 끝날 때(작업당 1건) | `taskId`, `status`, `durationMs`, `resultSent`, `errorCode`, `hasExistingMemory`, `dailyTimelineCount`, `eventCount`, `memoCount`, `droppedDailyTimelineCount`, `droppedEventCount`, `repairAttempts`, `schemaVersion`, `filledFieldCount`, `customAttributeCount`, `serializedChars` |
 | `dependency.request.completed` | App Server 논리 호출 하나가 끝날 때 | `dependency`, `operation`, `httpStatus`, `attempts`, `durationMs`, `errorCode`, `taskId`, `tokenRefreshCount` |
 | `dependency.request.retry` | 그 호출의 재시도 한 번 | `dependency`, `operation`, `attempt`, `maxAttempts`, `reason`, `httpStatus`, `delayMs`, `taskId` |
-| `app.degraded` | 무언가를 잃었지만 처리는 계속됐을 때 | `component`, `agent`, `errorCode`, `errorType`, `taskId`, `durationMs`, `droppedCount`, `provider`, `model`, `providerVersion`, `stopReason`, `contentBlockKinds`, `tokenUsage` |
+| `app.degraded` | 무언가를 잃었지만 처리는 계속됐을 때 | `component`, `agentName`, `errorCode`, `errorType`, `errorMessage`, `errorStackTrace`, `taskId`, `durationMs`, `droppedCount`, `provider`, `model`, `providerVersion`, `stopReason`, `contentBlockKinds`, `tokenUsage` |
 
 공통 필드는 `timestamp`, `log.level`, `logger`(`app.operational`), `message`,
 `service`, `environment`, `version`, 그리고 표식 3종(`event.dataset`,
@@ -89,6 +89,15 @@ AgentCore 는 유휴 컨테이너를 회수하고 필요할 때 새로 띄우므
 
 > **기존 저장된 검색 주의.** `event.outcome: failure` 만으로 실패 작업을 세고 있었다면
 > 이제 성공한 작업의 저하 이벤트가 섞인다. `event.action` 조건을 함께 걸어야 한다.
+
+저하된 Agent 이름은 `agent` 가 아니라 **`agentName`** 으로 나간다(이슈 #109). ECS 와
+Filebeat 는 `agent.*` 를 **수집기 자신**을 가리키는 객체로 쓰기 때문이다. 앱이 같은 이름으로
+문자열을 실으면 `decode_json_fields` 가 그 객체를 덮어써 data stream 의 object mapping 과
+충돌하고, Elasticsearch 가 그 문서만 거절한다 — 로그에는 찍히는데 Kibana 에는 없는 실패다.
+`agentName` 은 우리 Agent 이름이고 `agent.*` 는 수집기 정보다.
+
+> **기존 저장된 검색 주의.** `agent: "photo"` 로 Agent 를 걸러 보던 검색은 새 문서를 잡지
+> 못한다. `agentName` 으로 바꾼다. 이전에 적재된 문서는 그대로 둔다(삭제하지 않는다).
 
 발행은 대부분 `report_error()` 가 대신한다. **항목 단위 루프**(수집 항목마다·사진마다·
 도구 호출마다)는 한 작업에서 수십 건이 되므로 `report_error(..., emit=False)` 로 빼고, 잃은
@@ -181,7 +190,7 @@ Timeline/Repair Agent 스레드까지 따라간다.
 |---|---|
 | `taskId` | 한 Timeline 처리의 상관키. **장애 추적의 시작점** |
 | `stage` | `REQUEST`/`MAIN_AGENT`/`EVENT_AGENT`/`TIMELINE_AGENT`/`REPAIR_AGENT`/`LLM`/`STORAGE`/`CALLBACK`/`FINAL` |
-| `agent` | Event/Repair Agent 이름 |
+| `agent` | Event/Repair Agent 이름. 수집되는 이벤트에서는 `agentName` 이다(#109) |
 | `iteration` | Repair 반복 회차 |
 
 운영 이벤트에는 이 값들이 자동으로 붙지 **않는다**. 이벤트가 허용한 필드만 나가고,
@@ -190,19 +199,41 @@ Timeline/Repair Agent 스레드까지 따라간다.
 ### 실패에 붙는 필드
 
 `except` 블록은 [`report_error`](../app/core/exceptions.py)만 호출한다. 이 함수는
-실패에 코드를 부여하고 **로컬 진단**으로 남긴다 — 표식이 없어 Elasticsearch 로
-가지 않는다.
+실패에 코드를 부여하고, 표식 없는 **로컬 진단** 한 줄과 표식 달린 **저하 이벤트**를
+같은 코드로 남긴다.
 
 | 필드 | 의미 | 어디에 |
 |---|---|---|
 | `errorCode` | 정수 카탈로그 코드. API 응답·콜백과 **같은 값**([docs/error-codes.md](error-codes.md)) | 운영 이벤트 + 로컬 |
-| `errorType` | 예외 클래스명 | HTTP 요청 이벤트 + 로컬 |
-| `errorMessage` | 원본 예외 메시지(마스킹 후) | **로컬만** |
+| `errorType` | 예외 클래스명 | 실패 이벤트 2종 + 로컬 |
+| `errorMessage` | 원본 예외 메시지(마스킹 후, 1,000자에서 절단) | 실패 이벤트 2종 + 로컬 |
+| `errorStackTrace` | traceback 전문(마스킹 후, **뒤에서** 6,000자만) | 저하 이벤트 + 미처리 500 |
 | `error.type` / `error.message` / `error.stack_trace` | `exc_info=True`인 최종 실패의 traceback | **로컬만** |
 
-즉 Elasticsearch 에서 실패 원인은 `errorCode` + `failureStage` 로 좁히고, 원문
-스택이 필요하면 `docker logs laimory-ai` 를 본다. Filebeat 에도 `error.message` /
-`error.stack_trace` 를 지우는 방어선이 한 겹 더 있다.
+"실패 이벤트 2종" 은 `app.degraded` 와 `http.request.completed` 다(#109 범위 확장).
+`http.request.completed` 의 스택은 **미처리 예외(500)에만** 붙는다 — 분류된 실패는
+`errorCode` 가 이미 원인을 말하고, 404 마다 스택을 싣는 것은 크기만 늘린다. 검증
+오류(422)는 `errorMessage` 도 붙이지 않는다. 그 문구에 사용자가 보낸 입력값이 그대로
+들어 있기 때문이다.
+
+Elasticsearch 에서 실패 원인은 `errorCode` + `failureStage` 로 좁히고, **원문과 스택은
+같은 문서 안에서 바로 본다.** `docker logs` 가 필요한 것은 표식 없는 일반 로그를 볼
+때뿐이다.
+
+이름이 갈린 것은 의도다. camelCase(`errorMessage`)는 emitter 의 allowlist 를 통과해
+마스킹·길이 상한까지 거친 값이고, 점 표기(`error.message`)는 표식 없는 일반 로그의
+예외 필드다. Filebeat 는 뒤엣것만 지운다 — 같은 이름이었으면 방어선 한 줄이 둘을
+함께 지운다.
+
+절단 규칙에는 이유가 있다.
+
+- 메시지는 **앞**을 남긴다. 예외가 무엇을 말하는지는 첫 문장에 있다.
+- traceback 은 **뒤**를 남긴다. 마지막 프레임과 예외 줄이 원인에 가깝고, 앞쪽은 매번
+  같은 진입 경로라 정보가 적다. 잘린 값은 `…(잘림)` 으로 시작한다.
+- 상한이 있는 이유는 docker json-file 이 **16KB 를 넘는 줄을 쪼개기** 때문이다. 쪼개지면
+  "한 줄 = 유효한 JSON 하나" 계약이 깨져 이벤트가 통째로 사라진다.
+- 마스킹이 자르기보다 **먼저** 일어난다. `[REDACTED]` 가 길이를 바꾸므로 순서가 반대면
+  상한이 실제로 나가는 줄을 재지 못한다.
 
 ### 단계 경계
 
@@ -238,13 +269,34 @@ Elasticsearch 로 나가는 이벤트에는 **위 표의 필드만** 실린다. 
 - **캘린더 제목·장소·주소·이벤트 제목·window 원문·파일명** — 사용자 콘텐츠다.
 - **`rawId` 원문** — 수집 항목 식별자는 사용자 데이터다. 필요하면 건수만 남긴다.
 - **URL·쿼리·요청/응답 body** — presigned URL 은 쿼리 자체가 자격증명이다(#52).
-- **예외 원문과 traceback** — 코드(`errorCode`)와 클래스명까지다.
 - **`taskToken`** — 값은 어떤 자리로도 나가지 않는다. 갱신 횟수(`tokenRefreshCount`)만 남는다.
 - **API key, Authorization 헤더, AWS 자격증명** — 키 이름으로 걸러 `[REDACTED]`가 된다.
 - **이메일·전화번호** — 메시지와 구조화 필드 값 모두 패턴으로 마스킹한다.
 
-일반 로그(로컬 진단)에는 예외 원문·스택이 남을 수 있다. 그 줄은 표식이 없어
-Elasticsearch 로 가지 않으며, `docker logs` 접근 권한과 로테이션 정책이 그대로
+### 예외 원문과 traceback 은 예외다 (#109 범위 확장)
+
+원래 이 둘은 위 목록에 있었다. 지금은 실패 이벤트 2종에 **의도적으로 싣는다.**
+
+prod 는 AgentCore 가 유휴 컨테이너를 회수하므로 `docker logs` 라는 선택지가 아예 없다.
+표식 없는 진단 줄은 CloudWatch 에 남지만 Kibana 에서 실패를 보던 사람이 거기까지
+건너가야 하고, 컨테이너가 회수된 뒤에는 그마저 짝지을 단서가 적다. 원인을 볼 방법이
+없는 관측은 알림만 울리고 답을 못 준다.
+
+사용자 콘텐츠가 예외 문구에 섞일 수 있다는 것을 알고 연 것이다. 대신 세 겹을 둔다.
+
+1. 마스킹(`redact_text`) — 토큰·키·presigned 서명·이메일·전화번호.
+2. 길이 상한 — 메시지 1,000자, traceback 6,000자.
+3. 검증 오류(422) 제외 — 그 문구는 사용자 입력 그 자체다.
+
+그래도 남는 잔여 위험의 보호 경계는 **인덱스 접근 권한과 보존 정책**이다. 필드
+allowlist 가 아니다.
+
+> **새 필드를 더할 때 이 둘을 선례로 삼지 않는다.** 값이 아니라 코드로 말할 수 있으면
+> 코드로 말한다. 여기 열린 것은 "예외가 스스로 말하는 값" 두 개뿐이고, 호출부가 준
+> 임의 `context` 는 여전히 나가지 않는다.
+
+일반 로그(로컬 진단)에도 예외 원문·스택이 남는다. 그 줄은 표식이 없어 Elasticsearch
+로 가지 않으며, `docker logs`(dev)·CloudWatch(prod) 접근 권한과 보존 정책이 그대로
 보호 정책이 된다.
 
 allowlist 는 [`app/core/operational_logging.py`](../app/core/operational_logging.py)가,
@@ -298,6 +350,25 @@ Kibana Lens에서 `errorCode`로 terms 집계를 걸면 어떤 실패가 늘고 
 ```text
 event.outcome : "failure" and environment : "prod"
 ```
+
+### 무엇이 터졌는지 원문으로 (#109 범위 확장)
+
+```text
+event.action : "app.degraded" and errorMessage : *ThrottlingException*
+```
+
+`errorMessage`·`errorStackTrace` 는 실패 이벤트 문서 안에 있다. `errorCode` 가 상위
+흡수 경계에서 `1204` 로 덮여 원인을 못 가릴 때 이 둘이 답한다. 값이 `…(잘림)` 으로
+시작하거나 끝나면 상한에서 잘린 것이다 — traceback 은 뒤쪽이 남는다.
+
+### 성공한 작업에서 무엇이 빠졌는지
+
+```text
+event.action : "app.degraded" and agentName : "photo"
+```
+
+같은 `taskId` 로 `timeline.task.completed` 와 묶어 본다. Agent 이름은 `agentName` 이다 —
+`agent.*` 는 Filebeat 수집기 자신의 정보라 우리 Agent 를 가리키지 않는다(#109).
 
 ### 외부 연동 재시도가 늘고 있는지
 
