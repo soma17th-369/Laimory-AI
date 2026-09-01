@@ -251,3 +251,21 @@ def test_generation_keeps_temperature_when_it_is_applied(monkeypatch) -> None:
         "temperature": 0.2,
         "reasoningEffort": "none",
     }
+
+
+# --- 표 자체의 자기 일관성 --------------------------------------------------
+
+
+def test_reasoning_models_do_not_claim_temperature_support() -> None:
+    """추론을 켠 항목은 `temperature` 를 받는다고 적혀 있으면 안 된다.
+
+    두 매개변수를 따로 선언하니 표 안에서 어긋날 수 있고, 어긋나면 운영에서 400 이
+    난다. 여기서 잡는다. 다만 이건 GPT-5 계열의 **현행 계약**을 재는 것이지 두 값이
+    한 축이라는 뜻이 아니다 — 추론과 `temperature` 를 함께 받는 모델이 들어오면 그
+    항목만 예외로 두거나 이 테스트를 지운다.
+    """
+
+    for prefix, params in OpenAIProvider._MODEL_PARAMS:
+        if params.reasoning_effort in (None, "none"):
+            continue
+        assert not params.accepts_temperature, prefix
