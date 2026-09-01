@@ -612,8 +612,17 @@ Elasticsearch를 직접 호출하지 않도록 설계되어 있으므로 Runtime
 > 추가해도 **구독 필터와 Lambda를 바꿀 필요가 없다.**
 >
 > 반대로 `report_error()` 와 `logger.warning()` 이 남기는 **진단 줄**은 표식이 없어
-> 계속 전달되지 않는다. 그 줄은 CloudWatch Logs Insights에서 본다. 앱이 표식 없는 줄에
-> 예외 원문(`errorMessage`)과 traceback을 담기 때문에 의도한 경계다.
+> 계속 전달되지 않는다. 그 줄은 CloudWatch Logs Insights에서 본다.
+
+> **오류 상세는 이제 표식 달린 줄에도 실린다(#109 범위 확장).** 실패 이벤트
+> (`app.degraded`·`http.request.completed`)가 `errorMessage`·`errorStackTrace` 를 싣는다.
+> prod 는 AgentCore 가 컨테이너를 회수해 `docker logs` 라는 선택지가 없어, 이것이 없으면
+> Kibana 에서 실패를 보고도 원인을 볼 방법이 없기 때문이다.
+>
+> **전달 Lambda 의 필드 제거 목록에서 `errorMessage` 를 빼야 한다.** 예전 목록을 그대로
+> 두면 dev(EC2)에는 값이 들어오고 prod 에는 안 들어오는, 가장 알아채기 어려운 형태로
+> 갈린다. 점 표기 `error.message`·`error.stack_trace` 는 **그대로 지운다** — 그쪽은
+> 표식 없는 일반 로그의 예외 필드다. 이름이 갈린 이유가 그것이다.
 
 1. Lambda 콘솔에서 같은 리전의 전달 함수 `laimory-agentcore-logs-to-es`를 만든다. 함수는
    CloudWatch Logs의 base64+gzip payload를 풀고 각 `logEvents[].message`를 JSON으로
@@ -627,6 +636,10 @@ Elasticsearch를 직접 호출하지 않도록 설계되어 있으므로 Runtime
    순서와 `drop_fields`를 그대로 기준으로 삼아 민감 필드 제거를 적용하고, 목적지를
    `logs-laimory.ai-prod` data stream으로 고정한다. 전체 필드 계약은
    [운영 로그 문서](operational-logging.md)를 따른다.
+
+   그 목록이 **정본**이다. 앱이 새로 여는 필드(`errorMessage`·`errorStackTrace`)는
+   템플릿에서 빠지므로, 함수의 목록을 템플릿과 대조하지 않으면 dev 와 prod 가 서로
+   다른 것을 적재한다. 함수를 고칠 때마다 이 대조를 한다.
 
 4. Elasticsearch API key는 Lambda 환경 변수에 평문으로 넣지 않고 Secrets Manager에
    저장한다. Lambda 실행 역할에는 해당 secret을 읽는 권한과 실패 로그를 CloudWatch에

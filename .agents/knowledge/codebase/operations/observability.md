@@ -46,7 +46,11 @@ HTTP request는 response start 시점에 요청당 한 건, Timeline·User Memor
 
 `usermemory.task.completed`에서 먼저 볼 field는 `resultSent`다. callback이 없는 계약이라 결과 저장 호출 한 번이 통보의 전부이고, `false`면 App Server는 아무 연락도 받지 못한 상태다. `droppedDailyTimelineCount`/`droppedEventCount`는 입력을 얼마나 잘랐는지를 남긴다 — 조용히 자르면 결과만 보고 "다 보고 이 정도"인지 "못 본 게 있어서 이 정도"인지 구분할 수 없다.
 
-`ErrorCode`는 영역별 정수 대역, 외부 안전 메시지, 필요한 HTTP status의 단일 카탈로그다. 예약된 과거 번호는 재사용하지 않는다. `report_error`가 남기는 **진단 줄**은 표식이 없어 수집되지 않으며 예외 원문(`errorMessage`)과 traceback이 거기 남는다. 같은 호출이 표식 달린 `app.degraded`를 한 건 더 내지만 그 줄에는 allowlist를 통과한 field만 실린다 — `context`의 임의 key도, 예외 원문도, traceback도 들어가지 않는다(`tests/core/test_exceptions.py`가 고정한다). 외부 response·callback·운영 event는 같은 code를 참조한다.
+`ErrorCode`는 영역별 정수 대역, 외부 안전 메시지, 필요한 HTTP status의 단일 카탈로그다. 예약된 과거 번호는 재사용하지 않는다. `report_error`는 표식 없는 **진단 줄**과 표식 달린 `app.degraded`를 같은 code로 함께 낸다. 저하 event에는 allowlist를 통과한 field만 실리며 `context`의 임의 key는 들어가지 않는다(`tests/core/test_exceptions.py`가 고정한다). 외부 response·callback·운영 event는 같은 code를 참조한다.
+
+**예외 원문과 traceback은 #53 경계의 의도된 예외다(#109 범위 확장).** 실패 event 두 개(`app.degraded`·`http.request.completed`)가 `errorMessage`·`errorStackTrace`를 싣는다. prod는 AgentCore가 container를 회수해 `docker logs`라는 선택지가 없어, 이것이 없으면 Kibana에서 실패를 보고도 원인을 볼 수단이 없다. 잔여 위험의 보호 경계는 field allowlist가 아니라 **index 접근 권한과 보존 정책**이다. 완화는 세 겹이다 — `redact_text` 마스킹, 길이 상한(message 1,000자 앞쪽·traceback 6,000자 **뒤쪽**, `…(잘림)` 표시), 검증 오류(422) 제외(그 문구는 사용자 입력 자체다). **마스킹이 자르기보다 먼저다** — `[REDACTED]`가 길이를 바꾸므로 순서가 반대면 상한이 실제로 나가는 줄을 재지 못하고, 상한의 목적은 docker json-file의 16KB 줄 분할(= event 통째 유실)을 피하는 것이다. `http.request.completed`의 traceback은 미처리 500에만 붙는다. **이 둘을 새 field의 선례로 삼지 않는다.**
+
+이름이 camelCase(`errorMessage`)와 점 표기(`error.message`)로 갈린 것은 의도다. 앞은 emitter allowlist를 통과한 값이라 수집기가 남기고, 뒤는 표식 없는 일반 로그의 예외 field라 수집기가 지운다. 같은 이름이면 방어선 한 줄이 둘을 함께 지운다. 두 수집 경로(EC2 Filebeat `drop_fields`, prod 전달 Lambda의 denylist)가 **같은 목록을 써야** dev와 prod가 서로 다른 것을 적재하지 않는다. 정본은 `docs/observability/filebeat.example.yml`이고, Lambda는 저장소 밖이라 사람이 맞춘다.
 
 Langfuse는 설정이 활성이고 public/secret key가 모두 있을 때 지연 생성한다. release는 `AGENT_VERSION`, environment는 `APP_ENV`를 쓴다.
 
@@ -69,7 +73,8 @@ Langfuse client 생성·span 시작/종료·flush 실패와 운영 event 조립�
 ## Invariants
 
 - `get_logger()`로 남기는 일반 로그를 추가해도 자동으로 Elasticsearch 수집 범위가 넓어지지 않아야 한다. 단 `report_error` 호출은 예외다 — 저하 event를 함께 내므로 **건수**는 는다. 새 필드가 새는 것이 아니라(allowlist가 막는다) event 수가 느는 것이며, 항목 단위 loop에서는 `emit=False`로 막는다.
-- 운영 이벤트에는 사용자 title, 장소, 주소, filename, prompt/response, URL, token, exception 원문을 넣지 않는다.
+- 운영 이벤트에는 사용자 title, 장소, 주소, filename, prompt/response, URL, token을 넣지 않는다. exception 원문·traceback만 실패 event 2종에서 예외이며, 마스킹·길이 상한·422 제외를 함께 갖춘 경우에만 그렇다.
+- 두 수집 경로(EC2 Filebeat, prod 전달 Lambda)의 field 제거 목록은 같아야 한다. 한쪽만 고치면 dev와 prod가 다른 것을 적재하고, 그 차이는 실패가 나기 전까지 보이지 않는다.
 - event action 이름과 field 의미는 dashboard/search 계약이므로 임의 변경하지 않는다.
 - 호출부가 넘긴 문자열은 어떤 경로로도 운영 event의 `message`가 되지 않는다. 문구는 emitter가 소유한 고정 label 조합뿐이고, 모르는 값은 문구에서 뺀다.
 - 같은 실패는 API/callback/운영 event에서 같은 정수 code를 쓴다.
@@ -85,6 +90,7 @@ Langfuse client 생성·span 시작/종료·flush 실패와 운영 event 조립�
 - Langfuse는 optional이고 sampling이 1 미만이면 모든 task trace가 존재하지 않는다.
 - local 진단 stdout의 보존·접근 통제는 container host 운영 설정에 의존한다.
 - 새로운 operational event field와 downstream dashboard 호환성을 자동 검증하는 외부 contract test는 없다.
+- prod 전달 Lambda(`laimory-agentcore-logs-to-es`)는 저장소 밖 콘솔 소스라 `drop_fields` 정본과의 일치를 test가 잡지 못한다. EC2 Filebeat 쪽만 `tests/scripts/test_filebeat_config.py`가 고정한다.
 
 ## Update When
 
