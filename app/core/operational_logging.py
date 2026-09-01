@@ -18,6 +18,12 @@
 이름을 넘기면 조용히 버리고, 버렸다는 사실만 일반 로그로 알린다. 값이 아니라
 이름만 남긴다 — 버려진 값이 진단 로그로 새면 막은 의미가 없다.
 
+필드 **이름**에도 제약이 하나 있다(이슈 #109). 최상위 이름은 수집기가 객체로 채우는
+이름(``agent``·``host``·``container``·``log``·``ecs``·``input``·``error``)과 겹치면 안 된다.
+겹치면 같은 이름이 한쪽에서는 객체, 한쪽에서는 문자열이 되어 Elasticsearch 가 그 문서를
+거절한다 — 이벤트가 조용히 통째로 사라지는 실패다. Agent 이름을 ``agentName`` 으로 내보내는
+이유가 그것이고, 이 규칙은 ``tests/scripts/test_filebeat_config.py`` 가 고정한다.
+
 허용 목록에 넣어도 되는 값은 **정수·열거형·불리언·소요시간·식별자**뿐이다.
 사용자 원문(제목·장소·주소·파일명), 프롬프트/응답, URL, 토큰, 예외 원문과
 traceback 은 어떤 이벤트에도 넣지 않는다. 예외 상세가 필요하면 ``errorCode`` 와
@@ -215,7 +221,11 @@ _ALLOWED_FIELDS: dict[OperationalEvent, frozenset[str]] = {
         {
             # 어디가 저하됐는지. ExecutionStage 값이거나 DegradedComponent 값이다.
             "component",
-            "agent",
+            # 우리 Event/Repair Agent 이름. **`agent` 가 아니다**(#109) — ECS 와 Filebeat 는
+            # `agent.*` 를 수집기 자신을 가리키는 객체로 쓴다. 같은 이름으로 문자열을 실으면
+            # `decode_json_fields` 가 그 객체를 덮어써서 Elasticsearch 가 문서를 통째로
+            # 거절한다(dev EC2 에서 이 이벤트만 적재되지 않았다).
+            "agentName",
             "errorCode",
             # 예외 **클래스명**이다(`ThrottlingException` 등). 원문이 아니라 종류라
             # 사용자 데이터가 아니고, `http.request.completed` 도 같은 필드를 쓴다.
@@ -383,7 +393,9 @@ def emit_degraded(
 
     fields: dict[str, Any] = {
         "component": component,
-        "agent": agent,
+        # 인자 이름은 우리 도메인 어휘(`agent`)로 두고 나가는 이름만 `agentName` 이다.
+        # 호출부가 아니라 수집 경로의 사정이라 그 경계를 여기서 끝낸다(#109).
+        "agentName": agent,
         "errorCode": error_code,
         "errorType": error_type,
         "droppedCount": dropped_count,

@@ -433,7 +433,9 @@ def test_degraded_event_takes_component_and_agent_from_the_context(capture) -> N
 
     event = _events(capture)[0]
     assert event["component"] == ExecutionStage.EVENT_AGENT.value
-    assert event["agent"] == "photo"
+    # 나가는 이름은 `agent` 가 아니다(#109). 그 이름은 Filebeat 의 수집기 객체 몫이다.
+    assert event["agentName"] == "photo"
+    assert "agent" not in event
     assert event["taskId"] == "task-9"
 
 

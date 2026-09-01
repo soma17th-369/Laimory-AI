@@ -378,4 +378,5 @@ def test_degraded_event_uses_the_task_id_of_the_running_context(caplog):
 
     event = _operational(caplog)[0]
     assert event["taskId"] == "task-101"
-    assert event["agent"] == "calendar"
+    # 진단 줄은 `agent`, 수집되는 이벤트는 `agentName` 이다(#109).
+    assert event["agentName"] == "calendar"
