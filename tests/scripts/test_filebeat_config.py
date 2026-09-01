@@ -86,12 +86,30 @@ def test_sensitive_and_free_text_fields_are_dropped_as_a_second_line(
         "apiKey",
         "error.message",
         "error.stack_trace",
-        "errorMessage",
         "url",
         "query",
         "body",
     ):
         assert field in dropped, f"방어선에서 빠진 필드: {field}"
+
+
+def test_the_collected_error_detail_fields_survive_the_second_line(processors) -> None:
+    """운영 이벤트가 싣는 오류 상세는 수집기에서 지우지 않는다(#109 범위 확장).
+
+    이름이 점 표기(`error.message`)와 camelCase(`errorMessage`)로 갈린 이유가 이것이다.
+    앞은 표식 없는 줄에서 새어 든 값이라 버리고, 뒤는 emitter 의 allowlist 를 통과해
+    마스킹·길이 상한까지 거친 값이라 남긴다. 방어선을 넓히다 이 둘을 함께 지우면
+    prod 에서 원인을 볼 수단이 조용히 사라진다 — `docker logs` 라는 대안이 없다.
+    """
+
+    dropped = {
+        field
+        for processor in processors
+        if "drop_fields" in processor
+        for field in processor["drop_fields"]["fields"]
+    }
+
+    assert not dropped & {"errorMessage", "errorStackTrace"}
 
 
 def test_event_marker_fields_are_never_dropped(processors) -> None:

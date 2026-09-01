@@ -78,10 +78,18 @@ processors:
   # 방어선. 앱이 이미 마스킹하지만, 수집기에서도 한 번 더 지운다. 마스킹이 한 겹
   # 뚫려도 Elasticsearch 까지 가지는 않게 한다.
   #
-  # error.message/error.stack_trace 는 운영 이벤트에 아예 실리지 않지만(이슈 #53),
-  # 표식이 잘못 붙은 줄이 하나라도 통과하면 예외 원문과 traceback 이 그 자리로 들어온다.
-  # url/query/body 계열도 같은 이유로 지운다. event.dataset/action/outcome 은 남긴다 —
-  # 그걸 지우면 이벤트 종류를 구분할 수단이 사라진다.
+  # error.message/error.stack_trace 는 **일반 로그**의 예외 필드다(app/core/logging.py).
+  # 운영 이벤트에는 실리지 않으므로, 표식이 잘못 붙은 줄이 통과했을 때만 그 자리에
+  # 값이 있다. url/query/body 계열도 같은 이유로 지운다.
+  #
+  # 운영 이벤트가 싣는 errorMessage/errorStackTrace 는 **여기서 지우지 않는다**(#109
+  # 범위 확장). 이름이 갈린 것이 그래서다 — 점 표기(`error.*`)는 표식 없는 줄에서
+  # 새어 든 값이라 버리고, camelCase 는 emitter 의 allowlist 를 통과해 마스킹·길이
+  # 상한까지 거친 값이라 남긴다. 둘을 같은 이름으로 두면 하나를 지울 때 다른 하나가
+  # 같이 사라진다.
+  #
+  # event.dataset/action/outcome 은 남긴다 — 그걸 지우면 이벤트 종류를 구분할 수단이
+  # 사라진다.
   - drop_fields:
       fields:
         - taskToken
@@ -93,7 +101,6 @@ processors:
         - refreshToken
         - error.message
         - error.stack_trace
-        - errorMessage
         - url
         - query
         - body
