@@ -279,7 +279,8 @@ class LLMProvider(ABC):
         prompt: str,
         *,
         system: str | None,
-        temperature: float,
+        temperature: float | None,
+        reasoning_effort: str | None = None,
         image_count: int = 0,
         image_mime_types: list[str] | None = None,
         options: dict | None = None,
@@ -288,6 +289,10 @@ class LLMProvider(ABC):
 
         원시 이미지 bytes와 provider option 값은 보내지 않는다. 프롬프트/응답 본문은
         Langfuse 전용 NONE/SANITIZED 정책을 거쳐 trace에 들어간다.
+
+        ``model_parameters`` 에는 **실제 request 에 실린 값만** 담는다(#108). 호출자가
+        준 ``temperature`` 를 모델이 받지 않아 요청에서 뺐다면 여기서도 ``None`` 이
+        와야 한다 — 남겨 두면 적용되지 않은 값이 실효값처럼 보인다.
         """
 
         messages: list[dict[str, str]] = []
@@ -316,12 +321,18 @@ class LLMProvider(ABC):
         else:
             observation_name = "call-llm"
 
+        model_parameters: dict[str, object] = {}
+        if temperature is not None:
+            model_parameters["temperature"] = temperature
+        if reasoning_effort is not None:
+            model_parameters["reasoningEffort"] = reasoning_effort
+
         with trace_observation(
             observation_name,
             as_type="generation",
             input=messages,
             model=self.model,
-            model_parameters={"temperature": temperature},
+            model_parameters=model_parameters,
             metadata={
                 "provider": self.name,
                 "providerVersion": self._provider_version(),
@@ -356,6 +367,26 @@ class LLMProvider(ABC):
         )
 
 
+@dataclass(frozen=True)
+class _OpenAIModelParams:
+    """OpenAI 모델 하나가 받는 요청 매개변수 (#108).
+
+    매개변수마다 필드를 따로 둔다. `temperature` 와 `reasoning_effort` 는 역할이 다르다 —
+    앞은 샘플링 분산이고 뒤는 추론량이다. 지금 쓰는 두 모델에서 두 값이 함께 움직인다고
+    한쪽에서 다른 쪽을 파생시키면, 서로 다른 축이 한 축으로 뭉개져 두 성질이 갈리는
+    모델이 들어오는 순간 표가 거짓말을 한다. 매개변수가 늘어도 필드만 늘면 된다.
+    """
+
+    #: 요청에 실을 `reasoning_effort`. ``None`` 이면 키 자체를 넣지 않는다(모델 기본값).
+    reasoning_effort: str | None = None
+
+    #: 호출자가 준 `temperature` 를 실을지. ``False`` 면 요청에서 빼고 모델 기본값에
+    #: 맡긴다. GPT-5 계열 reasoning 모델은 추론이 켜진 상태에서 기본값 1 외의 값을
+    #: 거부한다(실측 400: `Unsupported value: 'temperature' does not support 0.2 with
+    #: this model. Only the default (1) value is supported.`).
+    accepts_temperature: bool = True
+
+
 @register_provider
 class OpenAIProvider(LLMProvider):
     """OpenAI Chat Completions provider."""
@@ -364,10 +395,71 @@ class OpenAIProvider(LLMProvider):
     supports_vision = True
     sdk_package = "openai"
 
+    #: 모델별 요청 매개변수 (#108). **설정이 아니라 코드가 소유한다** — 모델이 어떤
+    #: 매개변수를 받는지는 배포 환경이 아니라 모델 자체의 성질이라, 환경변수로 빼면
+    #: 환경마다 다르게 틀릴 수 있다.
+    #:
+    #: 모델 id prefix 로 재고 먼저 걸리는 항목이 이긴다. 정확히 일치시키지 않는 이유는
+    #: 날짜 스냅샷 id(`gpt-5.6-luna-2026-xx-xx`) 때문이다 — 놓치면 운영에서 같은 400 이
+    #: 다시 난다.
+    _MODEL_PARAMS: tuple[tuple[str, _OpenAIModelParams], ...] = (
+        (
+            "gpt-5.6-luna",
+            _OpenAIModelParams(
+                # 추론 모델이고 기본값이 medium 이다. 우리가 고르지 않으면 FAST 티어가
+                # 필요 이상으로 추론한다.
+                reasoning_effort="low",
+                # 그 추론이 켜져 있는 동안 0.2 를 거부한다.
+                accepts_temperature=False,
+            ),
+        ),
+        (
+            "gpt-5.4-mini",
+            _OpenAIModelParams(
+                # 모델 기본값과 같은 값을 굳이 명시한다. OpenAI 가 기본값을 바꾸면
+                # 우리가 고른 적 없는 추론이 켜진다.
+                reasoning_effort="none",
+                # 추론이 꺼져 있어 호출부의 0.0~0.4 가 그대로 통한다.
+                accepts_temperature=True,
+            ),
+        ),
+    )
+
+    #: 표에 없는 모델이 쓰는 값. `reasoning_effort` 를 싣지 않고 `temperature` 는 그대로
+    #: 보낸다 — 추론을 지원하지 않는 모델에 설정을 밀어넣으면 새 오류를 만든다. 즉
+    #: **표에 없는 모델의 동작은 예전과 같다.**
+    _DEFAULT_MODEL_PARAMS = _OpenAIModelParams()
+
     def _build_client(self):
         from openai import OpenAI
 
         return OpenAI(api_key=self.api_key)
+
+    def _model_params(self) -> _OpenAIModelParams:
+        """이 모델에 적용할 요청 매개변수. 표에 없으면 기본값."""
+
+        model = (self.model or "").strip().lower()
+        for prefix, params in self._MODEL_PARAMS:
+            if model.startswith(prefix):
+                return params
+        return self._DEFAULT_MODEL_PARAMS
+
+    def _chat_params(
+        self, messages: list[dict], temperature: float, kwargs: dict
+    ) -> dict:
+        """Chat Completions 요청 인자를 조립한다.
+
+        어떤 매개변수를 싣는지가 모델마다 갈리므로 두 호출 경로(텍스트·이미지)가 이
+        한 곳을 지나게 한다. 호출자가 같은 키를 kwargs 로 직접 주면 그쪽이 이긴다.
+        """
+
+        model_params = self._model_params()
+        params: dict = {"model": self.model, "messages": messages, **kwargs}
+        if model_params.accepts_temperature:
+            params.setdefault("temperature", temperature)
+        if model_params.reasoning_effort is not None:
+            params.setdefault("reasoning_effort", model_params.reasoning_effort)
+        return params
 
     @staticmethod
     def _usage(response) -> tuple[int | None, int | None]:
@@ -437,20 +529,18 @@ class OpenAIProvider(LLMProvider):
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
+        params = self._chat_params(messages, temperature, kwargs)
+
         with self._trace_generation(
             prompt,
             system=system,
-            temperature=temperature,
+            temperature=params.get("temperature"),
+            reasoning_effort=params.get("reasoning_effort"),
             options=kwargs,
         ) as generation:
             started = perf_counter()
             try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=temperature,
-                    **kwargs,
-                )
+                response = self.client.chat.completions.create(**params)
                 self._log_usage(*self._usage(response))
                 text = response.choices[0].message.content or ""
                 self._update_generation(generation, response, text)
@@ -482,22 +572,20 @@ class OpenAIProvider(LLMProvider):
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": content})
 
+        params = self._chat_params(messages, temperature, kwargs)
+
         with self._trace_generation(
             prompt,
             system=system,
-            temperature=temperature,
+            temperature=params.get("temperature"),
+            reasoning_effort=params.get("reasoning_effort"),
             image_count=len(images),
             image_mime_types=[image.mime_type for image in images],
             options=kwargs,
         ) as generation:
             started = perf_counter()
             try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=temperature,
-                    **kwargs,
-                )
+                response = self.client.chat.completions.create(**params)
                 self._log_usage(*self._usage(response))
                 text = response.choices[0].message.content or ""
                 self._update_generation(generation, response, text)

@@ -34,6 +34,10 @@ Bedrock은 Converse tool-use로 구조화 출력을 얻는다. 응답은 `stopRe
 
 Bedrock 구조화 호출은 `temperature`를 0으로 잠그고 `inferenceConfig.maxTokens`를 항상 싣는다(`BEDROCK_MAX_TOKENS`, 기본 16384). 상한을 비우면 tool call 형식이 깨진다. `BedrockProvider`는 모델별 분기를 갖지 않으며 `BEDROCK_MODEL` 하나로 모델을 바꾼다. Nova 2 Lite는 `toolSpec.strict`와 `outputConfig.textFormat`을 지원하지 않으므로 제약 디코딩을 쓸 수 없고, 위 검증과 retry가 그 자리를 대신한다.
 
+**`OpenAIProvider`는 Bedrock과 달리 모델별 요청 정책을 갖는다**(#108). `_MODEL_PARAMS` 표가 모델 id prefix로 `_OpenAIModelParams`를 고르고, 그 dataclass가 **매개변수마다 필드를 따로 둔다**(`reasoning_effort`, `accepts_temperature`). 두 값은 역할이 다르다 — 앞은 추론량이고 뒤는 샘플링 분산이라, 지금 쓰는 두 모델에서 함께 움직인다고 한쪽에서 다른 쪽을 파생시키면 서로 다른 축이 한 축으로 뭉개진다. 현재 `gpt-5.6-luna`는 `reasoning_effort="low"` + `accepts_temperature=False`, `gpt-5.4-mini`는 `"none"` + `True`다. 뒤 필드가 `False`인 이유는 GPT-5 계열 reasoning 모델이 추론이 켜진 상태에서 `temperature`를 받지 않고 기본값 1로 고정하기 때문이다(실측 400: `Only the default (1) value is supported`). 따로 선언하면 표 안에서 어긋날 수 있으므로 **테스트가 표의 자기 일관성을 검사한다**(추론이 켜진 항목은 `accepts_temperature=True`일 수 없다). 모델 기본값과 같은 `none`을 굳이 명시하는 이유는 OpenAI가 기본값을 바꾸면 고른 적 없는 추론이 켜지면서 `temperature`가 조용히 거부되기 때문이다. prefix로 재는 이유는 날짜 스냅샷 id(`gpt-5.6-luna-2026-xx-xx`)를 놓치지 않기 위해서다. **표에 없는 모델은 `_DEFAULT_MODEL_PARAMS`를 써서 `reasoning_effort`를 싣지 않고 `temperature`를 그대로 보낸다** — 추론을 지원하지 않는 모델에 설정을 밀어넣지 않기 위해서다. 호출자가 kwargs로 같은 키를 직접 주면 그쪽이 이긴다.
+
+이 표는 **설정이 아니라 코드가 소유한다.** 모델이 어떤 매개변수를 받는지는 배포 환경이 아니라 모델 자체의 성질이라, 환경변수로 빼면 환경마다 다르게 틀릴 수 있다. Agent 호출부의 `temperature` 인자는 바뀌지 않았고 provider 경계에서만 걸러진다. Langfuse generation의 `model_parameters`에는 **실제 request에 실린 값만** 담는다 — 요청에서 뺀 `temperature`가 남으면 적용되지 않은 값이 실효값처럼 보인다.
+
 LLM call은 provider/model/version, duration, 사용 가능한 token bucket을 Langfuse generation에 기록한다. Langfuse가 꺼져 있으면 token 정보는 DEBUG 진단에만 남는다. provider SDK가 제공하지 않은 token 종류를 추측해 채우지 않는다.
 
 `PROMPT_VERSION`은 현재 `v1` 또는 `v2`이고 모든 Agent가 같은 세트를 사용한다. loader는 module 옆 `prompts/{version}/{정확한 파일명}`만 UTF-8로 읽는다. version과 filename에 nested path를 허용하지 않으며, 파일이 없을 때 다른 version으로 fallback하지 않는다.
@@ -47,6 +51,9 @@ UserMemory Agent(#64)는 Timeline pipeline 밖이지만 `PROMPT_VERSION`이 전�
 ## Invariants
 
 - provider 추가 시 Settings naming, registry, credential 방식, model, text/vision/structured/usage 계약을 함께 구현한다.
+- OpenAI 모델별 요청 매개변수는 모델마다 필드를 따로 선언한다. 한 값에서 다른 값을 파생시키지 않고, 어긋남은 표 일관성 테스트가 잡는다.
+- 모델 요청 정책을 환경변수로 옮기지 않는다. 모델의 성질이지 환경의 선택이 아니다.
+- 관측 `model_parameters`에는 실제 request에 실린 값만 남긴다. 적용되지 않은 호출자 값을 싣지 않는다.
 - provider native schema가 있어도 Pydantic 값·교차 검증을 생략하지 않는다.
 - 모든 Agent는 하나의 `PROMPT_VERSION` 세트를 사용한다.
 - prompt 누락을 조용히 v1로 fallback하지 않는다.
