@@ -90,7 +90,9 @@ Langfuse client 생성·span 시작/종료·flush 실패와 운영 event 조립�
 - Langfuse는 optional이고 sampling이 1 미만이면 모든 task trace가 존재하지 않는다.
 - local 진단 stdout의 보존·접근 통제는 container host 운영 설정에 의존한다.
 - 새로운 operational event field와 downstream dashboard 호환성을 자동 검증하는 외부 contract test는 없다.
-- prod 전달 Lambda(`laimory-agentcore-logs-to-es`)는 저장소 밖 콘솔 소스라 `drop_fields` 정본과의 일치를 test가 잡지 못한다. EC2 Filebeat 쪽만 `tests/scripts/test_filebeat_config.py`가 고정한다.
+- prod 전달 Lambda(`laimory-agentcore-logs-to-es`)는 저장소 밖 콘솔 소스라 `drop_fields` 정본과의 일치를 test가 잡지 못한다. EC2 Filebeat 쪽도 `tests/scripts/test_filebeat_config.py`가 고정하는 것은 **저장소의 템플릿**이지 EC2 에 배포된 파일이 아니다.
+- EC2 `/opt/laimory-ai/filebeat.yml`은 배포가 건드리지 않아 템플릿과 조용히 어긋난다. 2026-09-01 확인 시점에 배포본은 `b4597cc`(2026-07-31) 판이라 #53이 더한 `error.message`·`error.stack_trace`·`url`·`query`·`body`·`prompt`·`response` 방어선이 없었다. 수집 동작을 판단할 때는 실제 파일을 먼저 본다.
+- 두 수집 경로의 필터는 **판정 방식이 다르다.** Filebeat `drop_fields`는 정확한 경로 문자열이고, Lambda `_sanitize`는 key 이름을 `casefold()`로 **깊이 무관** 비교한다(`_SENSITIVE_KEYS`) + 경로 tuple 별도(`_SENSITIVE_PATHS`). 목록을 맞출 때 이름 표기와 깊이 가정이 서로 다르다는 것을 감안한다.
 
 ## Update When
 

@@ -5,6 +5,11 @@
 # filebeat.env 에서 환경변수로 주입한다(${ES_HOSTS}, ${ES_API_KEY}, ${LAIMORY_ENV}).
 # 준비 절차는 docs/deploy-ec2.md, 필드 계약은 docs/operational-logging.md 참고.
 #
+# **이 파일을 고쳐도 EC2 는 바뀌지 않는다.** 배포가 건드리지 않는 파일이라 사람이 복사해
+# 넣고 Filebeat 를 재시작해야 적용된다. 그래서 실제 파일은 이 템플릿보다 오래된 판일 수
+# 있고, 그것을 알려 주는 장치가 없다. 수집 동작을 판단할 때는 EC2 의 실제 파일을 먼저
+# 본다 — 여기 있는 `drop_fields` 항목이 거기에도 있다고 가정하지 않는다.
+#
 # 수집 대상은 `laimory-ai` 애플리케이션 컨테이너의 stdout 하나뿐이며, 그중에서도
 # 앱이 **운영 이벤트로 표식을 단 줄**만 보낸다(이슈 #53). 표식은 event.dataset 이고
 # 값은 `laimory.api` 다. 표식이 없는 줄(일반 앱 로그, Agent/LLM 진단, httpx·botocore

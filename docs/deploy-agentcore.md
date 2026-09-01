@@ -619,10 +619,18 @@ Elasticsearch를 직접 호출하지 않도록 설계되어 있으므로 Runtime
 > prod 는 AgentCore 가 컨테이너를 회수해 `docker logs` 라는 선택지가 없어, 이것이 없으면
 > Kibana 에서 실패를 보고도 원인을 볼 방법이 없기 때문이다.
 >
-> **전달 Lambda 의 필드 제거 목록에서 `errorMessage` 를 빼야 한다.** 예전 목록을 그대로
-> 두면 dev(EC2)에는 값이 들어오고 prod 에는 안 들어오는, 가장 알아채기 어려운 형태로
-> 갈린다. 점 표기 `error.message`·`error.stack_trace` 는 **그대로 지운다** — 그쪽은
-> 표식 없는 일반 로그의 예외 필드다. 이름이 갈린 이유가 그것이다.
+> **전달 Lambda 의 `_SENSITIVE_KEYS` 에서 `"errormessage"` 를 빼야 한다.** 그대로 두면
+> dev(EC2)에는 값이 들어오고 prod 에는 안 들어오는, 가장 알아채기 어려운 형태로 갈린다.
+> `_SENSITIVE_PATHS` 의 `("error","message")`·`("error","stack_trace")` 는 **그대로 둔다** —
+> 그쪽은 표식 없는 일반 로그의 예외 필드이고, 두 목록이 분리돼 있어 한쪽만 열 수 있다.
+> 이름이 camelCase 와 점 표기로 갈린 이유가 그것이다.
+>
+> **`errorStackTrace` 는 지금도 `_SENSITIVE_KEYS` 에 없어 이미 통과한다.** 즉 Lambda 를
+> 고치지 않아도 prod 는 traceback 을 받고 메시지만 잃는다. 그 상태는 안전해 보이지만
+> 아니다 — `traceback.format_exception` 의 마지막 줄이 `RuntimeError: <메시지>` 라서
+> **원문이 스택 안에 그대로 실려 온다.** `"errormessage"` 를 빼는 것은 방어를 푸는 것이
+> 아니라 이미 열려 있는 것을 목록에 정직하게 맞추는 일이다. 반대로 정말 막고 싶다면
+> `"errorstacktrace"` 를 **더해야** 하며, 그때는 두 필드를 함께 막아야 뜻이 선다.
 
 1. Lambda 콘솔에서 같은 리전의 전달 함수 `laimory-agentcore-logs-to-es`를 만든다. 함수는
    CloudWatch Logs의 base64+gzip payload를 풀고 각 `logEvents[].message`를 JSON으로
