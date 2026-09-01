@@ -17,6 +17,11 @@ from app.core.exceptions import (
 )
 from app.core.execution_context import ExecutionStage, execution_context
 from app.core.logging import JsonLogFormatter
+from app.core.operational_logging import (
+    ERROR_MESSAGE_MAX_CHARS,
+    ERROR_STACK_TRACE_MAX_CHARS,
+    TRUNCATION_MARK,
+)
 from app.core.structured import StructuredOutputError
 from app.services.draft_edit import DraftEditError
 from app.services.source_contract import SourceBatchError
@@ -271,12 +276,12 @@ def test_report_error_also_emits_a_collected_degraded_event(caplog):
     assert events[0]["errorType"] == "RuntimeError"
 
 
-def test_degraded_event_never_carries_the_exception_text_or_free_fields(caplog):
+def test_degraded_event_carries_the_exception_but_not_free_context_fields(caplog):
     """**이 테스트가 이 변경의 안전성 전부다.**
 
-    `report_error` 는 예외 원문(`errorMessage`)과 호출부가 준 임의 `context` 를 진단
-    줄에 남긴다. 그것들이 표식 달린 줄로 새면 Elasticsearch 로 그대로 나간다.
-    emitter 의 allowlist 가 막는다는 것을 값으로 고정한다.
+    예외 원문과 traceback 은 이제 수집 대상 줄에도 실린다(#109 범위 확장). 그래도
+    **호출부가 준 임의 `context` 는 여전히 실리지 않는다** — 열린 것은 예외가 스스로
+    말하는 값 두 개뿐이고, allowlist 밖 이름이 그 틈에 딸려 나가지 않아야 한다.
     """
 
     with caplog.at_level(logging.DEBUG):
@@ -284,7 +289,7 @@ def test_degraded_event_never_carries_the_exception_text_or_free_fields(caplog):
             logger,
             ErrorCode.SOURCE_ITEM_NORMALIZE_FAILED,
             "수집 항목 정규화 실패",
-            exc=ValueError("장소는 강남역 스타벅스입니다"),
+            exc=_raised(ValueError("파싱 실패: expected ISO8601")),
             context={
                 "rawId": "raw-사용자-식별자",
                 "placeName": "강남역 스타벅스",
@@ -296,21 +301,99 @@ def test_degraded_event_never_carries_the_exception_text_or_free_fields(caplog):
 
     events = _operational(caplog)
     assert len(events) == 1
-    serialized = json.dumps(events[0], ensure_ascii=False)
+    event = events[0]
+
+    # 예외가 스스로 말하는 값은 실린다.
+    assert event["errorMessage"] == "파싱 실패: expected ISO8601"
+    assert "Traceback" in event["errorStackTrace"]
+
+    # 호출부가 준 임의 필드는 이름도 값도 실리지 않는다.
+    serialized = json.dumps(event, ensure_ascii=False)
     for leaked in (
         "강남역 스타벅스",
         "raw-사용자-식별자",
         "tok-secret",
-        "errorMessage",
         "placeName",
         "rawId",
-        "Traceback",
-        "error.stack_trace",
     ):
         assert leaked not in serialized, f"{leaked} 가 수집 대상 줄로 샜습니다."
 
     # 진단 줄에는 그대로 남아 있어야 한다. 원문을 잃으려는 변경이 아니다.
     assert _diagnostic(caplog).fields["errorType"] == "ValueError"
+
+
+def test_degraded_event_masks_and_truncates_the_exception_text(caplog):
+    """원문을 실어 보내되 마스킹과 길이 상한은 그대로 건다.
+
+    상한이 없으면 docker json-file 이 16KB 를 넘는 줄을 쪼개 이벤트가 통째로 사라진다.
+    길이가 **정확히** 상한인 것이 이 테스트의 요점이다 — 마스킹이 자르기보다 뒤에
+    일어나면 `[REDACTED]` 가 길이를 바꿔 상한이 실제 줄을 재지 못한다.
+    """
+
+    long_tail = "가" * (ERROR_MESSAGE_MAX_CHARS + 500)
+    with caplog.at_level(logging.DEBUG):
+        report_error(
+            logger,
+            ErrorCode.EVENT_AGENT_FAILED,
+            "Event Agent 실행 실패",
+            exc=_raised(RuntimeError(f"연락처 test@example.com 처리 실패 {long_tail}")),
+            stage=ExecutionStage.EVENT_AGENT,
+        )
+
+    event = _operational(caplog)[0]
+    assert "test@example.com" not in event["errorMessage"]
+    assert len(event["errorMessage"]) == ERROR_MESSAGE_MAX_CHARS + len(TRUNCATION_MARK)
+    assert event["errorMessage"].endswith(TRUNCATION_MARK)
+
+
+def test_degraded_event_keeps_the_end_of_a_long_stack_trace(caplog):
+    """traceback 은 뒤쪽을 남긴다 — 마지막 프레임과 예외 줄이 원인에 가깝다."""
+
+    with caplog.at_level(logging.DEBUG):
+        report_error(
+            logger,
+            ErrorCode.EVENT_AGENT_FAILED,
+            "Event Agent 실행 실패",
+            exc=_deep_raised(depth=60),
+            stage=ExecutionStage.EVENT_AGENT,
+        )
+
+    stack = _operational(caplog)[0]["errorStackTrace"]
+    assert len(stack) == ERROR_STACK_TRACE_MAX_CHARS + len(TRUNCATION_MARK)
+    assert stack.startswith(TRUNCATION_MARK)
+    assert stack.rstrip().endswith("RuntimeError: 바닥에서 터졌다")
+
+
+def _raised(exc: Exception) -> Exception:
+    """실제로 raise 해서 `__traceback__` 을 붙인다."""
+
+    try:
+        raise exc
+    except Exception as raised:
+        return raised
+
+
+def _deep_raised(depth: int) -> Exception:
+    """프레임이 깊은 예외. 상한을 넘길 만큼 긴 traceback 을 만든다.
+
+    한 함수의 자기 재귀가 아니라 두 함수를 번갈아 부른다. 같은 (파일, 줄, 이름) 이
+    연달아 나오면 Python 이 `[Previous line repeated N times]` 로 접어 버려, 깊이를
+    아무리 늘려도 traceback 문자열이 길어지지 않는다.
+    """
+
+    def down(remaining: int) -> None:
+        if remaining == 0:
+            raise RuntimeError("바닥에서 터졌다")
+        up(remaining - 1)
+
+    def up(remaining: int) -> None:
+        down(remaining - 1)
+
+    try:
+        down(depth)
+    except RuntimeError as raised:
+        return raised
+    raise AssertionError("예외가 나지 않았다")
 
 
 def test_emit_false_keeps_the_diagnostic_line_and_drops_the_event(caplog):
