@@ -99,6 +99,7 @@ def test_v1_runs_infer_then_review(
     assert "초안 텍스트" in llm.calls[1].prompt
 
 
+@pytest.mark.parametrize("version", ["v2", "v3"])
 @pytest.mark.parametrize(
     ("agent_name", "attr", "build_request"),
     [
@@ -106,20 +107,20 @@ def test_v1_runs_infer_then_review(
         ("sleep_activity", "SleepActivityEventAgent", _sleep_request),
     ],
 )
-def test_v2_runs_single_structured_call(
-    monkeypatch: pytest.MonkeyPatch, agent_name, attr, build_request
+def test_single_call_versions_run_one_structured_call(
+    monkeypatch: pytest.MonkeyPatch, agent_name, attr, build_request, version
 ) -> None:
-    modules = _reload_agents(monkeypatch, "v2")
+    modules = _reload_agents(monkeypatch, version)
     module = modules[agent_name]
-    assert module._REVIEW_PROMPT is None, "v2 는 review 프롬프트를 읽지 않습니다."
+    assert module._REVIEW_PROMPT is None, f"{version} 는 review 프롬프트를 읽지 않습니다."
 
     llm = FakeLLM([result_json()])
     getattr(module, attr)(llm=llm).generate(build_request())
 
-    assert len(llm.calls) == 1, "v2 는 단일 structured 호출이어야 합니다."
+    assert len(llm.calls) == 1, f"{version} 는 단일 structured 호출이어야 합니다."
 
 
-@pytest.mark.parametrize("version", ["v1", "v2"])
+@pytest.mark.parametrize("version", ["v1", "v2", "v3"])
 def test_photo_fallback_is_prompt_based_in_every_version(
     monkeypatch: pytest.MonkeyPatch, version: str
 ) -> None:
