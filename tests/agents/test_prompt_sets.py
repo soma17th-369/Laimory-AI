@@ -291,6 +291,30 @@ def test_v3_photo_does_not_ask_agent_to_fill_code_filled_places() -> None:
     assert "코드가 근거 입력에서 채우므로 출력하지 않습니다" in text
 
 
+def test_v3_location_keeps_only_origin_and_final_destination() -> None:
+    text = _event_prompt("location")
+
+    assert "출발지와 최종 도착지만" in text
+    assert "주요 도착지" not in text
+    assert "교통 거점 도착 후" not in text, "경유지를 설명하는 제목 예시가 남아 있습니다."
+
+
+def test_v3_location_judges_walk_by_round_trip_and_duration() -> None:
+    text = _event_prompt("location")
+
+    assert "30분 이상" in text
+    assert "`EXERCISE`" in text
+    assert "`WALK`" in text
+
+
+def test_v3_location_keeps_transport_out_of_sentences() -> None:
+    text = _event_prompt("location")
+
+    assert "이동수단은 `title`과 `description`에 쓰지 않습니다" in text
+    assert "노선" not in text, "열차·버스·노선 명칭을 쓰라는 지시가 남아 있습니다."
+    assert "transportConflict" not in text
+
+
 def test_v3_location_names_every_movement_metric_key() -> None:
     """프롬프트가 설명하는 derivedMetrics 키가 코드가 싣는 키와 맞아야 한다.
 
