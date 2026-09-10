@@ -95,22 +95,17 @@ class AiEventCandidate(CamelModel):
     **단수 필드를 두지 않는 것도 같은 이유다.** ``places`` 는 고를 후보(입력)이고, 고른
     결과는 draft 의 ``place``(출력)이다. 후보 단계에 대표값을 하나 더 두면 같은 값이
     두 키로 중복되고, 모델은 둘 중 무엇을 믿어야 하는지 알 수 없다.
+
+    근거 요약(``evidenceSummary``)과 의미 태그(``semanticTags``)도 두지 않는다(#114).
+    둘 다 ``description`` 과 같은 사실을 다른 모양으로 한 번 더 적는 자리였다. 사진에서
+    읽은 상호명이나 일정의 종일 여부처럼 Timeline 이 병합에 쓸 자세한 묘사는
+    ``description`` 하나에 담는다.
     """
 
     event_type: EventType = Field(alias="eventType")
     time_range: CandidateTimeRange = Field(alias="timeRange")
     title: str = Field(min_length=1, description="사용자가 읽을 후보 제목")
     description: str = Field(description="후보 판단 근거와 해석")
-    evidence_summary: str | None = Field(
-        default=None,
-        alias="evidenceSummary",
-        description="Timeline Agent가 병합 판단에 참고할 핵심 근거 요약",
-    )
-    semantic_tags: list[str] = Field(
-        default_factory=list,
-        alias="semanticTags",
-        description="사진 description 등에서 추출한 활동/장소/상황 태그",
-    )
     places: list[str] = Field(
         default_factory=list,
         description=(

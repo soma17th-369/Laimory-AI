@@ -8,9 +8,13 @@ review 단계는 v1 전용이다. v2 부터는 단일 `complete_structured` 호�
 이 계약이 깨지면 `PROMPT_VERSION=v1` 롤백이 더 이상 v1 동작을 되돌리지 못한다.
 """
 
+import json
+import re
 from pathlib import Path
 
 import pytest
+
+from app.schemas import AiEventCandidate
 
 APP_ROOT = Path(__file__).resolve().parents[2] / "app"
 
@@ -217,3 +221,70 @@ def test_review_prompt_keeps_draft_placeholder(agent_dir: str) -> None:
     review = APP_ROOT / agent_dir / "prompts" / "v1" / "review.md"
 
     assert "{{DRAFT}}" in review.read_text(encoding="utf-8")
+
+
+# --- v3 Event Agent 공통 출력 (#114) ---------------------------------------
+#
+# 다섯 Event Agent 는 같은 candidate 계약으로 Timeline 에 결과를 넘긴다. 출력 예시에
+# Agent 마다 다른 키가 섞이면 모델은 그 키를 계약으로 알고 채운다. 예시의 키를 스키마와
+# 묶어 두면 스키마에서 필드를 빼고 예시를 그대로 두는 일(또는 그 반대)이 여기서 걸린다.
+
+_EVENT_AGENTS = ("calendar", "location", "notification", "photo", "sleep_activity")
+
+#: 코드가 근거 입력에서 복사하는 candidate 필드(#72). Agent 는 쓰지 않는다.
+_CODE_FILLED_CANDIDATE_FIELDS = {"places", "address"}
+
+
+def _event_prompt(agent: str) -> str:
+    return _prompt(f"agents/events/{agent}", "v3")
+
+
+def _output_example(agent: str) -> dict:
+    block = re.search(r"```json\n(.*?)```", _event_prompt(agent), re.S)
+    assert block, f"{agent} v3 프롬프트에 JSON 출력 예시가 없습니다."
+    return json.loads(block.group(1))
+
+
+def _agent_written_candidate_fields() -> set[str]:
+    schema_fields = {
+        field.alias or name for name, field in AiEventCandidate.model_fields.items()
+    }
+    return schema_fields - _CODE_FILLED_CANDIDATE_FIELDS
+
+
+@pytest.mark.parametrize("agent", _EVENT_AGENTS)
+def test_v3_event_output_example_uses_exactly_the_agent_written_fields(agent: str) -> None:
+    """단수 `place`·`context`·`evidenceSummary`·`semanticTags` 는 계약에 없다."""
+
+    example = _output_example(agent)
+    keys = set().union(*(candidate.keys() for candidate in example["candidates"]))
+
+    assert keys == _agent_written_candidate_fields(), (
+        f"{agent} v3 출력 예시의 candidate 키가 공통 계약과 다릅니다: {sorted(keys)}"
+    )
+
+
+def test_candidate_contract_has_no_duplicate_summary_fields() -> None:
+    """근거 요약과 의미 태그는 description 과 같은 사실을 한 번 더 적는 자리였다(#114)."""
+
+    fields = _agent_written_candidate_fields()
+
+    assert "evidenceSummary" not in fields
+    assert "semanticTags" not in fields
+    assert "place" not in fields
+
+
+@pytest.mark.parametrize("agent", ["photo", "calendar"])
+def test_v3_puts_detail_in_description(agent: str) -> None:
+    text = _event_prompt(agent)
+
+    assert "evidenceSummary" not in text
+    assert "semanticTags" not in text
+    assert "의미 태그" not in text
+    assert "자세한 설명" in text, "description 이 자세한 묘사를 맡는다고 적어야 합니다."
+
+
+def test_v3_photo_does_not_ask_agent_to_fill_code_filled_places() -> None:
+    text = _event_prompt("photo")
+
+    assert "코드가 근거 입력에서 채우므로 출력하지 않습니다" in text

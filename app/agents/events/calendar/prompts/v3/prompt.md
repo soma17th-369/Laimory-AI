@@ -49,15 +49,15 @@ Calendar Event Agent는 Calendar raw만 사용합니다. 일정의 제목, 시�
 - 일정 제목과 시간은 `DIRECT` 근거입니다.
 - 실제 참석 여부는 위치, 사진, 알림 등 실행 근거가 결합될 때 확신 수준을 높입니다.
 - 제목이 회의, 수업, 업무, 약속, 행사, 식사, 운동을 가리키면 의미에 맞는 구체적인 `eventType`을 사용합니다.
-- `locationText`는 일정에 기록된 장소 의도입니다. 장소명과 주소가 함께 있으면 `evidenceSummary`에서 구분합니다.
+- `locationText`는 일정에 기록된 장소 의도입니다. 장소명과 주소가 함께 있으면 `description`에서 둘을 구분해 적습니다.
 - 종일 일정과 다일 일정은 대상 날짜의 배경 맥락 또는 당일 활동 후보로 표현합니다.
   `allDay` 일정은 시간 근거가 약하므로 confidence를 낮춥니다.
 - 하루의 대부분을 덮는 긴 일정(예: `09:00~23:00`)은 그 시간 내내 한 가지 활동을 했다는
   뜻이 아닙니다. 하루의 **배경 맥락**으로 보고 confidence를 낮게 둡니다. 그 안의 실제 활동
   구분은 Timeline Agent가 위치 근거로 나눕니다. **길다는 것은 candidate를 없앨 이유가
   아닙니다** — candidate는 그대로 만들고 활동 시간이 불확실하다는 점을 `uncertainty`에 남깁니다.
-- 다일 일정의 `timeRange`는 요청 window와 겹치는 구간으로 제한하고, 원래 전체 기간은 `evidenceSummary`에 필요한 경우만 보존합니다.
-- 긴 일정 안에서 실제로 수행한 세부 활동은 Timeline Agent가 위치, 사진, 알림과 연결해 구성할 수 있도록 의미 태그를 제공합니다.
+- 다일 일정의 `timeRange`는 요청 window와 겹치는 구간으로 제한하고, 원래 전체 기간은 필요한 경우에만 `description`에 적습니다.
+- 긴 일정 안의 세부 활동은 Timeline Agent가 위치, 사진, 알림과 연결해 구성합니다. 일정 제목과 설명에서 읽히는 활동·사람 또는 팀·주제를 `description`에 적어 그 연결의 단서를 남깁니다.
 - 일정과 실제 위치가 일치하면 Timeline Agent가 참석 가능성을 높일 수 있도록 장소 및 시간 정보를 명확히 제공합니다.
 - 일정과 실제 위치가 충돌할 가능성은 `uncertainty`에 구체적으로 표현합니다.
 
@@ -65,8 +65,7 @@ Calendar Event Agent는 Calendar raw만 사용합니다. 일정의 제목, 시�
 
 각 candidate는 다음 정보를 포함합니다.
 
-- `evidenceSummary`: 일정 제목, 대상 날짜의 시간 범위, `locationText`, 종일·다일 여부를 요약한 문장
-- `semanticTags`: 활동, 장소, 사람 또는 팀, 주제를 나타내는 짧은 태그
+- `description`: 일정 제목, 대상 날짜의 시간 범위, `locationText`, 종일·다일 여부와 일정에서 읽히는 활동·사람 또는 팀·주제를 담은 자세한 설명입니다. Timeline Agent가 병합을 판단하는 핵심 근거이므로 짧게 요약하지 않습니다.
 - `sourceRefs`: candidate의 근거로 사용한 캘린더 rawId
 - `uncertainty`: 참석 여부, timezone 적용, 다일 일정의 실제 활동 시간 등 근거의 한계
 
@@ -81,7 +80,7 @@ candidate의 `confidence`는 Calendar source 범위에서 일정의 의미가 �
 - `INFERRED`: Calendar 입력의 맥락으로 의미를 구체화함
 - `UNCERTAIN`: 일정 의미, timezone 또는 실제 수행 여부의 근거가 제한적이거나 충돌함
 
-일정이 직접 제공하는 사실과 실제 수행 여부처럼 확인되지 않은 부분은 `description`, `evidenceSummary`, `uncertainty`에 구분해 반영합니다.
+일정이 직접 제공하는 사실과 실제 수행 여부처럼 확인되지 않은 부분은 `description`과 `uncertainty`에 구분해 반영합니다.
 
 
 ## 출력 형식
@@ -98,9 +97,7 @@ JSON 객체 하나를 출력합니다.
         "endTime": "ISO-8601 timestamp"
       },
       "title": "일정의 활동 의미가 드러나는 제목",
-      "description": "사용자가 읽고 수정할 수 있는 일기 초안 문장",
-      "evidenceSummary": "일정 제목·시간·장소·종일 또는 다일 여부의 핵심",
-      "semanticTags": ["활동", "장소", "주제"],
+      "description": "일정 제목·시간·장소·종일 또는 다일 여부와 활동 의미를 담은 자세한 설명",
       "sourceRefs": [
         {
           "sourceType": "CALENDAR",

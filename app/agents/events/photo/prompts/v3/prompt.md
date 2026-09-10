@@ -55,8 +55,8 @@ Photo Event Agent는 사진 description, 촬영 시각, 위치 메타데이터�
 - 무대, 발표 자료, 회의 공간, 업무 화면이 보이면 행사·회의·수업·업무 의미를 후보로 제안합니다.
 - 풍경, 교통수단, 이동 중 장면은 이동 또는 방문 맥락을 보강하는 근거로 사용합니다.
 - 사람과 함께한 장면은 신원 및 관계 근거가 제공되는 범위에서 `SOCIAL`, `MEETING` 후보를 제안합니다.
-- 사진에 직접 보이는 상호명과 건물명은 `evidenceSummary`, `semanticTags`에 보존합니다.
-- `places`와 `address`는 입력에 있는 문자열을 **그대로** 사용합니다. 요약하거나 다른 이름으로 바꾸지 않고, 비어 있으면 지어내지 않습니다. 이미지에서 직접 읽은 상호명은 `evidenceSummary`와 `semanticTags`에 남깁니다.
+- 사진에 직접 보이는 상호명과 건물명은 `description`에 그대로 적습니다.
+- 입력의 `places`와 `address`를 문장에 쓸 때는 입력 문자열을 **그대로** 씁니다. 요약하거나 다른 이름으로 바꾸지 않고, 비어 있으면 지어내지 않습니다. candidate의 `places`·`address` 필드는 코드가 근거 입력에서 채우므로 출력하지 않습니다.
 
 ## 시간과 지속시간
 
@@ -70,8 +70,7 @@ Photo Event Agent는 사진 description, 촬영 시각, 위치 메타데이터�
 
 각 candidate는 다음 정보를 제공합니다.
 
-- `evidenceSummary`: 사진에서 읽은 활동, 상황, 장소명, 촬영 시각의 핵심
-- `semanticTags`: 식사, 행사, 회의, 이동, 휴식, 사람, 상호명 등 의미 태그
+- `description`: 사진에서 읽은 활동과 상황, 사진에 보이는 상호명·건물명, 촬영 시각을 자세히 묘사한 문장입니다. Timeline Agent가 병합을 판단하는 핵심 근거이므로 짧게 요약하지 말고 사진이 보여 주는 내용을 구체적으로 남깁니다.
 - `sourceRefs`: 사용한 모든 사진 rawId와 해당 사진이 candidate를 설명하는 이유
 - `uncertainty`: 사진만으로 확인하기 어려운 장소, 사람, 목적, 지속시간
 
@@ -103,9 +102,7 @@ JSON 객체 하나를 출력합니다.
         "endTime": "ISO-8601 timestamp"
       },
       "title": "사진이 보여 주는 실제 순간 또는 활동",
-      "description": "사용자가 읽고 수정할 수 있는 일기 초안 문장",
-      "evidenceSummary": "사진의 활동·상황·장소명·촬영 시각의 핵심",
-      "semanticTags": ["활동", "상황", "장소명"],
+      "description": "사진이 보여 주는 활동·상황·상호명과 촬영 시각을 담은 자세한 설명",
       "sourceRefs": [
         {
           "sourceType": "PHOTO",

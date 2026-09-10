@@ -171,9 +171,6 @@ def _result_texts(result: AgentEventResult) -> list[str]:
     for candidate in result.candidates:
         texts.extend([candidate.title, candidate.description])
         texts.extend(candidate.uncertainty)
-        if candidate.evidence_summary:
-            texts.append(candidate.evidence_summary)
-        texts.extend(candidate.semantic_tags)
     texts.extend(fragment.summary for fragment in result.fragments)
     return [text for text in texts if text]
 
