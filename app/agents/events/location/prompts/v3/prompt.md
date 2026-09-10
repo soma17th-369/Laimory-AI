@@ -23,12 +23,14 @@ Location candidate는 물리적인 이동·체류 흐름과 장소 역할을 설
 ## 입력 의미
 
 - `draft metadata`: 대상 날짜, timezone, `windowStart`, `windowEnd`입니다.
-- `locationItems`: STAY와 MOVEMENT 원본입니다.
+- `locationItems`: STAY와 MOVEMENT 원본입니다. MOVEMENT의 `transports`는 센서 라벨
+  원본이라 직접 해석하지 않습니다. 이동 방식은 `derivedMetrics.movements[].mode`를 씁니다.
 - `derivedMetrics`: 코드가 원본에서 계산한 파생 지표입니다. 추정값이 아니라 계산값이므로
-  이동 수단·여정·공백 판단의 근거로 그대로 사용합니다. 계산할 수 없었던 항목은 아예 빠져
+  이동 방식·여정·공백 판단의 근거로 그대로 사용합니다. 계산할 수 없었던 항목은 아예 빠져
   있습니다 — 없는 키를 추측으로 채우지 않습니다.
   - `movements[]`: 이동별 `rawId`, `durationMinutes`, `distanceMeters`,
-    `averageSpeedKmh`, `transports`, 그리고 라벨과 속도가 어긋날 때만 `transportConflict`
+    `averageSpeedKmh`, `mode`(`WALK` 도보 | `VEHICLE` 이동수단 이용), 그리고 센서 라벨과
+    평균 속도가 서로 다른 이동 방식을 가리킬 때만 `modeConflict`
   - `movementGaps[]`: 연속한 두 이동 사이의 `gapMinutes`, 앞 도착지와 뒤 출발지의
     `endpointDistanceMeters`, 그 사이를 설명하는 체류 기록이 있는지(`hasStayBetween`)
   - `shortStayRawIds`: 20분 이하로 머문 STAY. 이동 중 위치 분절일 수 있습니다.
@@ -64,9 +66,9 @@ Location candidate는 물리적인 이동·체류 흐름과 장소 역할을 설
   지역 변화 여부는 `derivedMetrics.regionChanged`와 `originPlace`·`finalPlace`를 사용합니다.
   여기에 교통 거점과 전후 체류 맥락을 더해 판단합니다.
 - 장거리 이동 candidate에는 출발지, 주요 도착지, 도착 후 이어진 지역 내 이동을 설명합니다.
-- 교통수단은 센서 라벨(`transports`)과 계산된 `averageSpeedKmh`가 함께 지지하는 수준으로
-  표현합니다. `transportConflict`가 있으면 그 라벨은 속도로 설명되지 않는다는 뜻이므로
-  이동수단을 단정하지 말고 근거 한계를 `uncertainty`에 남깁니다.
+- 이동 방식은 `derivedMetrics.movements[].mode`가 알려 주는 수준으로 표현합니다.
+  `modeConflict`가 있으면 센서 라벨과 속도가 서로 다른 이동 방식을 가리킨다는 뜻이므로
+  이동 방식을 단정하지 말고 근거 한계를 `uncertainty`에 남깁니다.
 - 구체적인 열차·버스·노선 정보가 확인되는 경우에만 해당 명칭을 사용하고, 그 외에는 `장거리 교통수단`, `차량`, `도보`처럼 근거 범위에 맞는 표현을 사용합니다.
 - 상위 여정의 `sourceRefs`에는 관련된 모든 STAY와 MOVEMENT rawId를 포함합니다.
 
@@ -133,7 +135,7 @@ candidate의 `confidence`는 Location source 범위에서 이동·체류·장소
 - `DIRECT`: 위치 raw가 시간, 좌표, 거리, 이동·체류를 직접 제공함
 - `EVIDENCE_BASED`: 여러 STAY·MOVEMENT와 전후 흐름이 같은 여정·방문·장소 역할을 지지함
 - `INFERRED`: Location 입력의 맥락으로 산책·귀가·생활 장소 의미를 구체화함
-- `UNCERTAIN`: 센서 분절, 관측 공백, 이동수단 또는 활동 의미의 근거가 제한적이거나 충돌함
+- `UNCERTAIN`: 센서 분절, 관측 공백, 이동 방식(`modeConflict`) 또는 활동 의미의 근거가 제한적이거나 충돌함
 
 위치 데이터가 직접 제공하는 사실과 해석한 여정·장소 의미의 차이는 `description`과 `uncertainty`에 구분해 반영합니다.
 

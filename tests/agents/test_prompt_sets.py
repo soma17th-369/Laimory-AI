@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from app.schemas import AiEventCandidate
+from app.services.location_metrics import MovementMetric, MovementMode
 
 APP_ROOT = Path(__file__).resolve().parents[2] / "app"
 
@@ -288,3 +289,25 @@ def test_v3_photo_does_not_ask_agent_to_fill_code_filled_places() -> None:
     text = _event_prompt("photo")
 
     assert "코드가 근거 입력에서 채우므로 출력하지 않습니다" in text
+
+
+def test_v3_location_names_every_movement_metric_key() -> None:
+    """프롬프트가 설명하는 derivedMetrics 키가 코드가 싣는 키와 맞아야 한다.
+
+    코드에서 키 이름을 바꾸고 프롬프트를 두면, 모델은 없는 키를 찾고 있는 키는 모른다.
+    """
+
+    metric = MovementMetric(
+        raw_id="raw",
+        start=None,
+        end=None,
+        duration_minutes=1.0,
+        distance_meters=1.0,
+        average_speed_kmh=1.0,
+        mode=MovementMode.WALK,
+        mode_conflict="어긋남",
+    )
+    text = _event_prompt("location")
+
+    for key in metric.as_prompt_dict():
+        assert f"`{key}`" in text, f"location v3 에 derivedMetrics 키 `{key}` 설명이 없습니다."

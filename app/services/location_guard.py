@@ -56,7 +56,7 @@ def verify_location_result(
     findings = [
         *_check_journey_coverage(result, metrics),
         *_check_coverage_uncertainty(result, metrics),
-        *_check_transport_realism(result, metrics),
+        *_check_movement_mode_conflict(result, metrics),
         *_check_raw_id_coverage(result, request),
         *_check_short_stay_scatter(result, metrics),
     ]
@@ -150,15 +150,19 @@ def _check_coverage_uncertainty(
     ]
 
 
-# --- 이동수단 현실성 ------------------------------------------------------------
+# --- 이동 방식 ------------------------------------------------------------------
 
 
-def _check_transport_realism(
+def _check_movement_mode_conflict(
     result: AgentEventResult, metrics: LocationMetrics
 ) -> list[LocationFinding]:
-    """속도로 설명되지 않는 이동수단 라벨을 그대로 근거로 삼았는가."""
+    """도보인지 이동수단 이용인지가 라벨과 속도에서 갈리는 이동을 그대로 근거로 삼았는가.
 
-    conflicted = {m.raw_id for m in metrics.movements if m.transport_conflict}
+    이 구분은 산책 판정에 쓰인다. 갈리는 이동을 근거 한계 없이 쓰면, 탈것으로 다녀온
+    왕복이 산책이 되거나 산책이 이동으로 남는다.
+    """
+
+    conflicted = {m.raw_id for m in metrics.movements if m.mode_conflict}
     if not conflicted:
         return []
 
@@ -174,11 +178,11 @@ def _check_transport_realism(
 
     return [
         LocationFinding(
-            code="TRANSPORT_UNREALISTIC",
+            code="MOVEMENT_MODE_CONFLICT",
             severity="WARNING",
             message=(
-                f"이동 {len(overlap)}건은 센서의 이동수단 라벨이 계산된 평균 속도로 "
-                "설명되지 않는데, 근거 한계 없이 후보에 쓰였습니다."
+                f"이동 {len(overlap)}건은 센서 라벨과 계산된 평균 속도가 도보·이동수단 이용 "
+                "중 서로 다른 쪽을 가리키는데, 근거 한계 없이 후보에 쓰였습니다."
             ),
         )
     ]
