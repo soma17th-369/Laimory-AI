@@ -47,6 +47,7 @@
 | `place` | 장소명. 파이프라인 전 구간이 이 한 이름을 쓴다 — 입력 `StayItem.place`/`GeoPlace.place`, draft event의 `place`, result event의 `place`. 예전 draft 필드명 `placeLabel`은 #72에서 통합됐고 back-compat alias로만 남는다. |
 | `places` | 한 지점을 가리킬 수 있는 장소명 **후보 목록**. 입력(`StayItem.places`)과 candidate에만 있다. 복수는 고를 후보(Timeline 입력), 단수 `place`는 고른 결과(Timeline 출력)라는 뜻이며, 그래서 candidate에는 단수 필드를 두지 않는다. |
 | `address` | 수집 원본에 실제로 있던 주소 문자열. 좌표에서 만들어 내지 않고, `인근`·`부근` 같은 근사 표현이 붙은 값은 주소로 쓰지 않는다. 근거로 뒷받침되지 않으면 확정 pass가 지운다. |
+| 이동 방식 (`mode`) | Location 파생 지표가 MOVEMENT마다 붙이는 두 갈래 구분(#114). `WALK`는 도보(걷기·달리기), `VEHICLE`은 이동수단 이용(자전거를 포함한 탈것 전부)이다. 어떤 탈것인지는 가르지 않는다. 산책 판정과 이동 정보 검증에만 쓰고 사용자 문장에는 싣지 않는다. 센서가 준 라벨 원본은 `transports`이며 둘을 같은 말로 쓰지 않는다. |
 | Warning | 복구 가능한 누락·충돌·품질 문제를 드러내는 내부 진단. task 실패와 동의어가 아니다. |
 | Confidence | event/candidate 확신도를 0~1로 표현한 값. 불확실성을 문장에 헤지하는 대신 metadata로 전달한다. |
 | Inference level | DIRECT, EVIDENCE_BASED, INFERRED, UNCERTAIN으로 판단 근거 수준을 표현한다. |
