@@ -291,6 +291,19 @@ def test_v3_photo_does_not_ask_agent_to_fill_code_filled_places() -> None:
     assert "코드가 근거 입력에서 채우므로 출력하지 않습니다" in text
 
 
+def test_v3_calendar_interprets_schedule_without_checking_attendance() -> None:
+    text = _event_prompt("calendar")
+
+    assert "참석 여부를 확인하려 하지 않습니다" in text
+    assert "참석 가능성" not in text, "위치로 참석을 확인하라는 지시가 남아 있습니다."
+    assert "실제 수행 여부" not in text
+    assert "위치가 충돌" not in text
+
+
+def test_v3_calendar_states_all_day_in_description() -> None:
+    assert "하루 종일인 일정임을 드러냅니다" in _event_prompt("calendar")
+
+
 def test_v3_location_keeps_only_origin_and_final_destination() -> None:
     text = _event_prompt("location")
 
