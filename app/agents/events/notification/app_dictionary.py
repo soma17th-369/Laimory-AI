@@ -1,8 +1,12 @@
 """알림 앱 정책 사전 (#116).
 
 원본은 Notion 「코드가 다루는 앱 목록」이다. 그 표에 있는 앱은 사용자가 알림을 누르지
-않아도 수집되고, 표에 없는 앱의 알림은 사용자가 직접 눌러 담은 것이다(대부분 메신저).
-그래서 정책이 붙는 알림은 결제·예약 계열이고, 정책이 없는 알림은 대화 쪽으로 간다.
+않아도 수집되는 결제·예약 계열이고, 표에 없는 앱의 알림은 사용자가 직접 눌러 담은 것이다
+(대부분 메신저). 정책이 없는 알림은 대화 묶음으로 간다.
+
+카카오톡만 표 밖에서 정책을 둔다. 사용자가 고르는 메신저지만 가게·서비스가 알림톡으로
+예약·결제·배송 안내를 보내므로, 내용에 따라 대화·결제·예약 어느 것이든 될 수 있다(#116).
+카카오톡 알림도 대화 묶음으로 가고, 묶음이 이 정책을 가리킨다.
 
 정책은 그 앱에서 **어떤 정보를 얻을 수 있는지**만 말한다. candidate 로 만들지,
 confidence 를 얼마로 둘지는 정하지 않는다 — 그건 알림 내용을 읽은 Agent 가 정한다.
@@ -27,8 +31,9 @@ _DICTIONARY_PATH = Path(__file__).with_name("app_dictionary.json")
 
 
 class NotificationInfo(StrEnum):
-    """자동 수집 앱이 주는 정보 종류. 대화는 정책이 아니라 사용자가 고른 알림에서 온다."""
+    """알림에서 얻는 정보 종류. 대화·결제·예약 셋으로 고정한다(#116)."""
 
+    CONVERSATION = "CONVERSATION"
     PAYMENT = "PAYMENT"
     RESERVATION = "RESERVATION"
 
@@ -122,6 +127,16 @@ def match_policy_ids(app_name: str | None) -> tuple[str, ...]:
         return ()
     by_name, _ = _policy_index()
     return by_name.get(normalize_app_name(app_name), ())
+
+
+def provides_conversation(policy_ids: tuple[str, ...]) -> bool:
+    """정책 중 하나라도 대화를 주는가. 그런 앱의 알림은 대화 묶음으로 간다."""
+
+    _, policies = _policy_index()
+    return any(
+        NotificationInfo.CONVERSATION in policies[policy_id].provides
+        for policy_id in policy_ids
+    )
 
 
 def policies_for_prompt(policy_ids: list[str]) -> list[dict[str, Any]]:

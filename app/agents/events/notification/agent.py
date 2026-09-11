@@ -15,6 +15,7 @@ from app.agents.events.notification.app_dictionary import (
     match_policy_ids,
     normalize_app_name,
     policies_for_prompt,
+    provides_conversation,
 )
 from app.agents.parsing import (
     SupportsComplete,
@@ -66,9 +67,10 @@ def build_notification_payload(items: list[NotificationItem]) -> dict:
     """프롬프트에 싣는 알림 입력.
 
     - ``policies``: 이번에 받은 알림에 걸린 정책만, 본문 한 번씩.
-    - ``notifications``: 정책이 걸린 알림. 각 알림은 ``policyIds`` 로 정책을 가리킨다.
-    - ``conversations``: 정책이 없는 알림(사용자가 직접 담은 알림)을 앱과 ``title``
-      단위로 묶은 것. 메시지 수가 많은 순서다.
+    - ``notifications``: 결제·예약 계열 앱의 알림. 각 알림은 ``policyIds`` 로 정책을 가리킨다.
+    - ``conversations``: 정책이 없거나 대화를 주는 앱(카카오톡)의 알림을 앱과 대화 상대
+      (``title``) 단위로 묶은 것. 메시지 수가 많은 순서다. 단체방 이름은 입력에 없어
+      방 단위로는 묶지 않는다.
 
     알림은 한 건도 버리지 않는다. 모든 rawId 가 두 목록 중 한 곳에 한 번씩 있다.
     """
@@ -79,13 +81,13 @@ def build_notification_payload(items: list[NotificationItem]) -> dict:
 
     for item in items:
         policy_ids = match_policy_ids(item.app_name)
-        if not policy_ids:
+        used_policy_ids.extend(pid for pid in policy_ids if pid not in used_policy_ids)
+        if not policy_ids or provides_conversation(policy_ids):
             conversation_items.append(item)
             continue
         entry = item.model_dump(by_alias=True, mode="json")
         entry["policyIds"] = list(policy_ids)
         notifications.append(entry)
-        used_policy_ids.extend(pid for pid in policy_ids if pid not in used_policy_ids)
 
     return {
         "policies": policies_for_prompt(used_policy_ids),
@@ -95,7 +97,7 @@ def build_notification_payload(items: list[NotificationItem]) -> dict:
 
 
 def _conversations(items: list[NotificationItem]) -> list[dict]:
-    """같은 앱·같은 ``title``(대화방 또는 발신자)의 알림을 하나로 묶는다."""
+    """같은 앱·같은 ``title``(대화 상대)의 알림을 하나로 묶는다."""
 
     groups: dict[tuple[str, str], list[NotificationItem]] = {}
     for item in items:
@@ -110,6 +112,7 @@ def _conversations(items: list[NotificationItem]) -> list[dict]:
             {
                 "appName": first.app_name,
                 "title": first.title.strip(),
+                "policyIds": list(match_policy_ids(first.app_name)),
                 "messageCount": len(members),
                 "firstPostedAt": first.posted_at,
                 "lastPostedAt": members[-1].posted_at,

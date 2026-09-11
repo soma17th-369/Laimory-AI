@@ -2,7 +2,8 @@
 
 정책 원본은 Notion 「코드가 다루는 앱 목록」이다. 표에 있는 앱은 사용자가 알림을 누르지
 않아도 수집되고(결제·예약 계열), 표에 없는 앱은 사용자가 직접 눌러 담은 알림이다(대부분
-메신저). 코드는 정책과 대화방 묶음 같은 사실만 넘기고 판단은 모델에게 맡긴다.
+메신저). 카카오톡만 표 밖에서 대화·결제·예약을 모두 주는 정책을 갖는다. 코드는 정책과
+대화 상대 묶음 같은 사실만 넘기고 판단은 모델에게 맡긴다.
 """
 
 import json
@@ -45,30 +46,48 @@ def _item(
 # --- 사전 ------------------------------------------------------------------
 
 
-def test_dictionary_mirrors_the_notion_app_list() -> None:
+_NOTION_POLICIES = [
+    "FINANCE_PAYMENT",
+    "SHOPPING_DELIVERY",
+    "RESERVATION_CULTURE",
+    "TRANSIT_TRAVEL",
+    "FOOD_CAFE",
+    "SMS",
+]
+
+
+def test_dictionary_mirrors_the_notion_app_list_plus_kakao_talk() -> None:
     dictionary = load_app_dictionary()
+    notion_apps = [app for app in dictionary.apps if app.policy_ids != ["KAKAO_TALK"]]
 
     assert [policy.policy_id for policy in dictionary.policies] == [
-        "FINANCE_PAYMENT",
-        "SHOPPING_DELIVERY",
-        "RESERVATION_CULTURE",
-        "TRANSIT_TRAVEL",
-        "FOOD_CAFE",
-        "SMS",
+        *_NOTION_POLICIES,
+        "KAKAO_TALK",
     ]
-    assert len(dictionary.apps) == 90
-    assert len({app.app_name for app in dictionary.apps}) == 90
-    assert len({app.application_id for app in dictionary.apps}) == 90
+    assert len(notion_apps) == 90
+    assert len({app.app_name for app in dictionary.apps}) == 91
+    assert len({app.application_id for app in dictionary.apps}) == 91
 
 
-def test_policies_only_provide_payment_or_reservation() -> None:
-    """대화는 정책이 아니라 사용자가 고른 알림(정책 없음)에서 온다."""
+def test_notion_policies_provide_only_payment_or_reservation() -> None:
+    """표의 앱은 결제·예약 계열이다. 대화는 사용자가 고른 알림에서 온다."""
 
-    provided = {
-        info for policy in load_app_dictionary().policies for info in policy.provides
-    }
+    policies = {p.policy_id: p for p in load_app_dictionary().policies}
+    provided = {info for pid in _NOTION_POLICIES for info in policies[pid].provides}
 
     assert provided == {NotificationInfo.PAYMENT, NotificationInfo.RESERVATION}
+
+
+def test_kakao_talk_provides_all_three_kinds() -> None:
+    """카카오톡은 대화뿐 아니라 알림톡으로 온 예약·결제 안내도 준다."""
+
+    policy = next(
+        p for p in load_app_dictionary().policies if p.policy_id == "KAKAO_TALK"
+    )
+
+    assert set(policy.provides) == set(NotificationInfo)
+    assert match_policy_ids("카카오톡") == ("KAKAO_TALK",)
+    assert match_policy_ids("com.kakao.talk") == ("KAKAO_TALK",)
 
 
 def test_naver_belongs_to_two_domains() -> None:
@@ -145,7 +164,7 @@ def test_match_follows_the_values_that_arrive_as_app_name(
     assert match_policy_ids(app_name) == expected
 
 
-@pytest.mark.parametrize("app_name", ["처음보는앱", "카카오톡", "", None])
+@pytest.mark.parametrize("app_name", ["처음보는앱", "Webex", "", None])
 def test_unlisted_app_has_no_policy(app_name: str | None) -> None:
     assert match_policy_ids(app_name) == ()
 
@@ -237,6 +256,25 @@ def test_same_title_in_different_apps_is_not_one_conversation() -> None:
     assert sorted(c["appName"] for c in conversations) == ["Webex", "카카오톡"]
 
 
+def test_kakao_talk_goes_to_conversations_with_its_policy() -> None:
+    """카카오톡은 정책이 있어도 대화 상대 단위로 묶이고, 묶음이 그 정책을 가리킨다."""
+
+    items = [
+        _item("kakao-1", "카카오톡", "캐치테이블", "[예약 확정] 오늘 19:00 2명"),
+        _item("kakao-2", "카카오톡", "김민수", "오늘 저녁 뭐 먹을래?"),
+        _item("webex-1", "Webex", "일반: 박천웅", "회의록 올렸어요"),
+    ]
+
+    payload = build_notification_payload(items)
+
+    assert payload["notifications"] == []
+    assert [p["policyId"] for p in payload["policies"]] == ["KAKAO_TALK"]
+    by_title = {c["title"]: c for c in payload["conversations"]}
+    assert by_title["캐치테이블"]["policyIds"] == ["KAKAO_TALK"]
+    assert by_title["김민수"]["policyIds"] == ["KAKAO_TALK"]
+    assert by_title["일반: 박천웅"]["policyIds"] == []
+
+
 def test_payload_keeps_every_raw_id_exactly_once() -> None:
     items = [
         _item("pay", "토스", "결제"),
@@ -256,7 +294,7 @@ def test_payload_keeps_every_raw_id_exactly_once() -> None:
 
 def test_agent_sends_the_payload_to_the_llm() -> None:
     llm = FakeLLM([json.dumps({"candidates": [], "fragments": []})])
-    request = make_request(notifications=[_item("kakao", "카카오톡", "김민수")])
+    request = make_request(notifications=[_item("webex", "Webex", "김민수")])
 
     NotificationEventAgent(llm=llm).generate(request)
 

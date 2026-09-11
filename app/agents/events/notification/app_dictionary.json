@@ -62,6 +62,18 @@
       "information": "문자로 오는 결제·주문·배송·예약·교통 안내에서 그 정보를 얻을 수 있다. 기관 안내나 사람이 보낸 문자도 같은 앱으로 들어온다.",
       "titleMeaning": "발신번호 또는 발신자 이름이다.",
       "textMeaning": "문자 본문이다. 결제·주문·배송·예약·교통 안내가 많지만 그렇지 않은 문자도 있다."
+    },
+    {
+      "policyId": "KAKAO_TALK",
+      "domain": "메신저",
+      "provides": [
+        "CONVERSATION",
+        "PAYMENT",
+        "RESERVATION"
+      ],
+      "information": "사람과 주고받은 대화와, 가게·서비스가 카카오톡으로 보내는 예약·결제·배송 안내(알림톡)를 모두 얻을 수 있다. 어느 쪽인지는 메시지 내용으로 가린다.",
+      "titleMeaning": "대화 상대다. 1:1 대화면 상대 이름, 단체 대화방이면 대개 메시지를 보낸 사람이고, 알림톡이면 안내를 보낸 가게·서비스 이름이다.",
+      "textMeaning": "받은 메시지 본문이다. 대화일 수도 있고 예약·결제·배송 안내일 수도 있다."
     }
   ],
   "apps": [
@@ -721,6 +733,16 @@
       "applicationId": "com.yes24.ticket",
       "policyIds": [
         "RESERVATION_CULTURE"
+      ]
+    },
+    {
+      "appName": "카카오톡",
+      "applicationId": "com.kakao.talk",
+      "aliases": [
+        "KakaoTalk"
+      ],
+      "policyIds": [
+        "KAKAO_TALK"
       ]
     }
   ]
