@@ -14,8 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from app.schemas import AiEventCandidate
+from app.agents.events.notification.agent import build_notification_payload
+from app.schemas import AiEventCandidate, NotificationItem
 from app.services.location_metrics import MovementMetric, MovementMode
+from tests.fixtures.requests import fixture_raw_id
 
 APP_ROOT = Path(__file__).resolve().parents[2] / "app"
 
@@ -348,3 +350,89 @@ def test_v3_location_names_every_movement_metric_key() -> None:
 
     for key in metric.as_prompt_dict():
         assert f"`{key}`" in text, f"location v3 에 derivedMetrics 키 `{key}` 설명이 없습니다."
+
+
+# --- v3 Notification 대화·결제·예약 (#116) ---------------------------------
+
+
+def test_v3_notification_fixes_information_to_three_kinds() -> None:
+    text = _event_prompt("notification")
+
+    assert "**대화·결제·예약**" in text
+    for kind in ("`CONVERSATION`", "`PAYMENT`", "`RESERVATION`"):
+        assert kind in text, f"notification v3 에 {kind} 설명이 없습니다."
+
+
+def test_v3_notification_drops_code_made_guidance() -> None:
+    """코드가 알림을 읽기 전에 내리던 판단은 입력에서 사라졌다. 설명이 남으면 모델이 찾는다."""
+
+    text = _event_prompt("notification")
+
+    for removed in (
+        "timelineUseGuidance",
+        "contextOnly",
+        "messengerAnalysis",
+        "messengerInterpretation",
+        "appDictionary",
+        "appPolicy",
+    ):
+        assert removed not in text, f"notification v3 에 없어진 입력 `{removed}` 설명이 남아 있습니다."
+
+
+def test_v3_notification_names_every_payload_key() -> None:
+    """프롬프트가 설명하는 입력 키가 코드가 싣는 키와 맞아야 한다.
+
+    코드에서 키 이름을 바꾸고 프롬프트를 두면, 모델은 없는 키를 찾고 있는 키는 모른다.
+    """
+
+    def item(label: str, app_name: str, title: str) -> NotificationItem:
+        return NotificationItem(
+            rawId=fixture_raw_id(label),
+            postedAt="2026-06-20T09:00:00+09:00",
+            appName=app_name,
+            title=title,
+            text="본문",
+        )
+
+    payload = build_notification_payload(
+        [item("pay", "토스", "결제"), item("chat", "카카오톡", "김민수")]
+    )
+    conversation = payload["conversations"][0]
+    keys = (
+        set(payload)
+        | set(payload["policies"][0])
+        | set(payload["notifications"][0])
+        | set(conversation)
+        | set(conversation["messages"][0])
+    )
+    text = _event_prompt("notification")
+
+    for key in sorted(keys):
+        assert f"`{key}`" in text, f"notification v3 에 입력 키 `{key}` 설명이 없습니다."
+
+
+def test_v3_notification_links_policy_ids_to_policies() -> None:
+    """정책 본문은 한 번만 싣고 알림은 id 로 가리킨다. 그 연결을 프롬프트가 말해야 한다."""
+
+    text = _event_prompt("notification")
+
+    assert "값은 `policies`의 `policyId`입니다" in text
+    assert "`policyIds`가 가리키는 `policies` 항목" in text
+
+
+def test_v3_notification_reads_payment_and_reservation_in_conversations() -> None:
+    """카카오톡은 내용에 따라 결제·예약도 된다. 대화 묶음을 대화로만 읽으면 알림톡을 놓친다."""
+
+    text = _event_prompt("notification")
+
+    assert "`conversations`의 메시지도 결제 근거가 됩니다" in text
+    assert "`conversations`의 메시지도 예약 근거가 됩니다" in text
+    assert "대화 상대 단위" in text, "묶음 단위가 방이 아니라 대화 상대라고 적어야 합니다."
+
+
+def test_v3_notification_limits_conversations_and_states_missing_input() -> None:
+    text = _event_prompt("notification")
+
+    assert "하루 최대 3개" in text
+    assert "대화 참여자 목록은 입력에 없습니다" in text
+    assert "메시지를 보낸 사람" in text, "단체방 title 이 보낸 사람일 수 있다고 알려야 합니다."

@@ -47,7 +47,8 @@ _MEMORY_PROMPTS = (
 #: User Memory 를 언급해서는 안 되는 프롬프트. 받지 않는 입력을 설명하면
 #: 모델이 없는 입력을 찾거나 지어낸다.
 _NON_MEMORY_PROMPTS = tuple(
-    f"agents/events/{agent}/prompts/v2/prompt.md"
+    f"agents/events/{agent}/prompts/{version}/prompt.md"
+    for version in ("v2", "v3")
     for agent in ("calendar", "location", "notification", "photo", "sleep_activity")
 )
 
