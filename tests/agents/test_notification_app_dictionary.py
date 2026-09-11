@@ -105,10 +105,22 @@ def test_dictionary_rejects_unknown_policy_reference() -> None:
 # --- 매칭 ------------------------------------------------------------------
 
 
-def test_match_uses_app_name_only() -> None:
-    """대화 본문의 `결제` 한 단어로 그 알림이 결제 앱이 되면 안 된다."""
+@pytest.mark.parametrize(
+    ("app_name", "text"),
+    [
+        ("자리톡", "카드 사용 내역을 확인하세요"),
+        ("YouTube", "멤버십 결제 혜택 영상"),
+        ("처음보는앱", "오늘 일정 확인"),
+    ],
+)
+def test_match_uses_app_name_only(app_name: str, text: str) -> None:
+    """본문의 단어로 앱을 추정하지 않는다.
 
-    item = _item("kakao-pay-word", "카카오톡", "김민수", "어제 결제 승인 났어?")
+    #116 이전에는 title·text 까지 뒤져서, 표에 없는 앱의 알림도 `카드`·`사용`·`결제`·`일정`
+    같은 단어 하나로 결제·일정 앱이 되고 "알림만으로 candidate 가능" 표시를 받았다.
+    """
+
+    item = _item(f"unlisted-{app_name}", app_name, "알림", text)
 
     payload = build_notification_payload([item])
 
