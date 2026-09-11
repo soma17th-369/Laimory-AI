@@ -411,6 +411,16 @@ def test_v3_notification_names_every_payload_key() -> None:
         assert f"`{key}`" in text, f"notification v3 에 입력 키 `{key}` 설명이 없습니다."
 
 
+def test_v3_notification_reads_payment_and_reservation_in_conversations() -> None:
+    """카카오톡은 내용에 따라 결제·예약도 된다. 대화 묶음을 대화로만 읽으면 알림톡을 놓친다."""
+
+    text = _event_prompt("notification")
+
+    assert "`conversations`의 메시지도 결제 근거가 됩니다" in text
+    assert "`conversations`의 메시지도 예약 근거가 됩니다" in text
+    assert "대화 상대 단위" in text, "묶음 단위가 방이 아니라 대화 상대라고 적어야 합니다."
+
+
 def test_v3_notification_limits_conversations_and_states_missing_input() -> None:
     text = _event_prompt("notification")
 
