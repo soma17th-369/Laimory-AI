@@ -114,10 +114,17 @@ def load_app_dictionary() -> NotificationAppDictionary:
 
 
 @lru_cache(maxsize=1)
-def _policy_index() -> tuple[dict[str, tuple[str, ...]], dict[str, NotificationPolicy]]:
-    dictionary = load_app_dictionary()
-    policies = {policy.policy_id: policy for policy in dictionary.policies}
-    return dictionary.policy_ids_by_name(), policies
+def _policy_ids_by_name() -> dict[str, tuple[str, ...]]:
+    """앱 이름(정규화) → 정책 id. 알림을 정책에 잇는 데 쓴다."""
+
+    return load_app_dictionary().policy_ids_by_name()
+
+
+@lru_cache(maxsize=1)
+def _policies_by_id() -> dict[str, NotificationPolicy]:
+    """정책 id → 정책. 사전 순서를 유지한다."""
+
+    return {policy.policy_id: policy for policy in load_app_dictionary().policies}
 
 
 def match_policy_ids(app_name: str | None) -> tuple[str, ...]:
@@ -125,14 +132,13 @@ def match_policy_ids(app_name: str | None) -> tuple[str, ...]:
 
     if not app_name:
         return ()
-    by_name, _ = _policy_index()
-    return by_name.get(normalize_app_name(app_name), ())
+    return _policy_ids_by_name().get(normalize_app_name(app_name), ())
 
 
 def provides_conversation(policy_ids: tuple[str, ...]) -> bool:
     """정책 중 하나라도 대화를 주는가. 그런 앱의 알림은 대화 묶음으로 간다."""
 
-    _, policies = _policy_index()
+    policies = _policies_by_id()
     return any(
         NotificationInfo.CONVERSATION in policies[policy_id].provides
         for policy_id in policy_ids
@@ -143,9 +149,8 @@ def policies_for_prompt(policy_ids: list[str]) -> list[dict[str, Any]]:
     """주어진 정책만 사전 순서대로 돌려준다. 수신된 알림에 걸린 정책만 싣기 위한 것이다."""
 
     wanted = set(policy_ids)
-    _, policies = _policy_index()
     return [
         policy.to_prompt_dict()
-        for policy_id, policy in policies.items()
+        for policy_id, policy in _policies_by_id().items()
         if policy_id in wanted
     ]
