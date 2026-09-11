@@ -41,11 +41,11 @@ Timeline Agent는 서로 다른 source의 candidate와 fragment를 결합해 최
 - `policies`: 이번에 받은 알림의 앱에 해당하는 정책입니다. 정책마다 한 번씩만 실립니다.
   - `policyId`, `domain`(앱이 속한 분야), `provides`(그 앱이 주는 정보 — `CONVERSATION`·`PAYMENT`·`RESERVATION` 중), `information`(얻을 수 있는 정보), `titleMeaning`·`textMeaning`(두 필드의 의미)
 - `notifications`: 결제·예약 계열 앱의 알림입니다. 사용자가 알림을 누르지 않아도 수집됩니다.
-  - `rawId`, `postedAt`(수신 시각), `appName`, `title`, `text`, `policyIds`(이 알림에 해당하는 정책)
+  - `rawId`, `postedAt`(수신 시각), `appName`, `title`, `text`, `policyIds`(이 알림에 해당하는 정책. 값은 `policies`의 `policyId`입니다)
 - `conversations`: 사용자가 직접 눌러 담은 메신저 등의 알림을 같은 앱·같은 대화 상대(`title`) 단위로 묶은 것입니다. 정책이 없는 앱의 알림과 카카오톡 알림이 여기로 옵니다. 메시지 수가 많은 순서로 옵니다.
-  - `appName`, `title`, `policyIds`(해당 정책, 없으면 빈 배열), `messageCount`, `firstPostedAt`·`lastPostedAt`, `maxGapMinutes`(메시지 사이 최대 간격, 한 건이면 `null`), `messages`(`rawId`·`postedAt`·`text`)
+  - `appName`, `title`, `policyIds`(해당 정책의 `policyId`, 없으면 빈 배열), `messageCount`, `firstPostedAt`·`lastPostedAt`, `maxGapMinutes`(메시지 사이 최대 간격, 한 건이면 `null`), `messages`(`rawId`·`postedAt`·`text`)
 
-정책은 그 앱에서 얻을 수 있는 정보를 알려 줄 뿐입니다. 알림 내용이 정책과 다른 것을 말하면 내용을 따릅니다. `conversations`의 묶음도 대화가 아닐 수 있습니다 — 가게·서비스의 예약·결제·배송 안내라면 결제·예약 정보로, 영상 추천이나 날씨 안내라면 하루 사건이 아닌 알림으로 봅니다.
+알림이나 묶음을 읽을 때는 `policyIds`가 가리키는 `policies` 항목의 `information`·`titleMeaning`·`textMeaning`을 함께 봅니다. 정책은 그 앱에서 얻을 수 있는 정보를 알려 줄 뿐입니다. 알림 내용이 정책과 다른 것을 말하면 내용을 따릅니다. `conversations`의 묶음도 대화가 아닐 수 있습니다 — 가게·서비스의 예약·결제·배송 안내라면 결제·예약 정보로, 영상 추천이나 날씨 안내라면 하루 사건이 아닌 알림으로 봅니다.
 
 ## Candidate와 Fragment
 

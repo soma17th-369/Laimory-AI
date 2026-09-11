@@ -411,6 +411,15 @@ def test_v3_notification_names_every_payload_key() -> None:
         assert f"`{key}`" in text, f"notification v3 에 입력 키 `{key}` 설명이 없습니다."
 
 
+def test_v3_notification_links_policy_ids_to_policies() -> None:
+    """정책 본문은 한 번만 싣고 알림은 id 로 가리킨다. 그 연결을 프롬프트가 말해야 한다."""
+
+    text = _event_prompt("notification")
+
+    assert "값은 `policies`의 `policyId`입니다" in text
+    assert "`policyIds`가 가리키는 `policies` 항목" in text
+
+
 def test_v3_notification_reads_payment_and_reservation_in_conversations() -> None:
     """카카오톡은 내용에 따라 결제·예약도 된다. 대화 묶음을 대화로만 읽으면 알림톡을 놓친다."""
 
