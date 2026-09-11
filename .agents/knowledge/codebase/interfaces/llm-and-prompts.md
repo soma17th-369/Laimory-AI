@@ -40,11 +40,13 @@ Bedrock 구조화 호출은 `temperature`를 0으로 잠그고 `inferenceConfig.
 
 LLM call은 provider/model/version, duration, 사용 가능한 token bucket을 Langfuse generation에 기록한다. Langfuse가 꺼져 있으면 token 정보는 DEBUG 진단에만 남는다. provider SDK가 제공하지 않은 token 종류를 추측해 채우지 않는다.
 
-`PROMPT_VERSION`은 현재 `v1` 또는 `v2`이고 모든 Agent가 같은 세트를 사용한다. loader는 module 옆 `prompts/{version}/{정확한 파일명}`만 UTF-8로 읽는다. version과 filename에 nested path를 허용하지 않으며, 파일이 없을 때 다른 version으로 fallback하지 않는다.
+`PROMPT_VERSION`은 현재 `v1`·`v2`·`v3` 중 하나이고 모든 Agent가 같은 세트를 사용한다. loader는 module 옆 `prompts/{version}/{정확한 파일명}`만 UTF-8로 읽는다. version과 filename에 nested path를 허용하지 않으며, 파일이 없을 때 다른 version으로 fallback하지 않는다. v3은 v2의 활성 파일을 복사해 시작한 세트다(#112·#114). v2 디렉터리의 동결본(`timeline_v2.0.0.md` 등)은 v2의 이력이라 v3으로 옮기지 않았다.
 
-prompt 세트에는 현재 Timeline, Repair, Question, UserMemory, Calendar, Notification, Location, SleepActivity, Photo Agent가 실제 로드하는 파일이 모두 있어야 한다. v1 Location/Sleep은 review prompt를 사용하지만 v2는 단일 structured 호출이라 review 파일이 없어야 한다. Photo는 version마다 infer, metadata fallback, vision prompt가 필요하다.
+prompt 세트에는 현재 Timeline, Repair, Question, UserMemory, Calendar, Notification, Location, SleepActivity, Photo Agent가 실제 로드하는 파일이 모두 있어야 한다. v1 Location/Sleep은 review prompt를 사용하지만 v2 이후는 단일 structured 호출이라 review 파일이 없어야 한다. Photo는 version마다 infer, metadata fallback, vision prompt가 필요하다.
 
-UserMemory Agent(#64)는 Timeline pipeline 밖이지만 `PROMPT_VERSION`이 전역이라 `prompts/v1/prompt.md`와 `prompts/v2/prompt.md`를 모두 갖는다. 두 파일은 **같은 내용**이며 테스트가 동일성을 강제한다 — 이 Agent에는 되돌릴 v1 동작이 없어서, 갈라지면 rollback이 다른 동작을 만든다.
+**Event Agent 출력 계약(`AiEventCandidate`)은 버전을 가리지 않고 하나다.** 필드를 빼면 옛 세트에도 곧바로 적용된다. #114에서 `evidenceSummary`·`semanticTags`를 뺐고 v1·v2 문구는 그대로 두었으므로, v1·v2 prompt는 여전히 두 필드를 내라고 하지만 모델이 내더라도 모르는 키로 버려지고 candidate는 살아남는다. Location의 `derivedMetrics`도 코드 하나가 모든 버전에 싣는다 — v2 prompt가 설명하는 `transports`·`transportConflict`는 더 이상 없고 `mode`·`modeConflict`가 그 자리를 대신한다.
+
+UserMemory Agent(#64)는 Timeline pipeline 밖이지만 `PROMPT_VERSION`이 전역이라 버전마다 `prompt.md`를 갖는다. 세 파일은 **같은 내용**이며 테스트가 동일성을 강제한다 — 이 Agent에는 되돌릴 v1 동작이 없어서, 갈라지면 rollback이 다른 동작을 만든다.
 
 활성 prompt의 큰 의미 변경 전에는 같은 디렉터리에 version suffix 동결본을 둘 수 있다. loader는 활성 코드가 요청하는 정확한 filename만 읽으므로 동결본은 실행에 영향을 주지 않는다.
 

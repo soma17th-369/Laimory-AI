@@ -138,7 +138,7 @@ def test_over_length_field_is_repaired_by_the_structured_path():
 # --- 프롬프트 파일 계약 -------------------------------------------------
 
 
-@pytest.mark.parametrize("version", ["v1", "v2"])
+@pytest.mark.parametrize("version", ["v1", "v2", "v3"])
 @pytest.mark.parametrize(
     ("marker", "why"),
     [
@@ -157,10 +157,11 @@ def test_prompt_states_the_source_of_each_sentence(version: str, marker: str, wh
     assert marker in text, f"user_memory {version} 프롬프트에 '{marker}' 가 없습니다. {why}"
 
 
-def test_prompt_sets_stay_identical():
-    """이 Agent 는 v1/v2 로 갈릴 이유가 없다. 갈리면 롤백이 다른 동작을 만든다."""
+@pytest.mark.parametrize("version", ["v2", "v3"])
+def test_prompt_sets_stay_identical(version: str):
+    """이 Agent 는 버전별로 갈릴 이유가 없다. 갈리면 롤백이 다른 동작을 만든다."""
 
     v1 = (_PROMPTS / "v1" / "prompt.md").read_text(encoding="utf-8")
-    v2 = (_PROMPTS / "v2" / "prompt.md").read_text(encoding="utf-8")
+    other = (_PROMPTS / version / "prompt.md").read_text(encoding="utf-8")
 
-    assert v1 == v2
+    assert v1 == other

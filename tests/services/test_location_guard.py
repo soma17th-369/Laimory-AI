@@ -124,8 +124,10 @@ def test_raw_id_kept_as_fragment_is_not_flagged():
     assert "남지 않았습니다" not in _messages(result)
 
 
-def test_unrealistic_transport_used_without_uncertainty_is_warned():
-    request = make_request(
+def _walk_labelled_car_ride():
+    """도보 라벨인데 한 시간에 60km 를 간 이동. 라벨과 속도가 서로 다른 쪽을 가리킨다."""
+
+    return make_request(
         movements=[
             movement_item(
                 "m1",
@@ -136,6 +138,9 @@ def test_unrealistic_transport_used_without_uncertainty_is_warned():
             )
         ]
     )
+
+
+def test_conflicting_movement_mode_used_without_uncertainty_is_warned():
     result = _result(
         candidates=[
             candidate(
@@ -146,9 +151,25 @@ def test_unrealistic_transport_used_without_uncertainty_is_warned():
         ]
     )
 
-    verify_location_result(result, request)
+    verify_location_result(result, _walk_labelled_car_ride())
 
-    assert "평균 속도로" in _messages(result)
+    assert "도보·이동수단 이용" in _messages(result)
+
+
+def test_conflicting_movement_mode_with_uncertainty_is_clean():
+    result = _result(
+        candidates=[
+            candidate(
+                "MOVEMENT",
+                [("MOVEMENT", fixture_raw_id("movement-m1"))],
+                uncertainty=("이동 방식 라벨과 속도가 맞지 않음",),
+            )
+        ]
+    )
+
+    verify_location_result(result, _walk_labelled_car_ride())
+
+    assert "도보·이동수단 이용" not in _messages(result)
 
 
 def test_empty_location_input_is_a_no_op():

@@ -102,7 +102,7 @@ class Settings(BaseSettings):
 
     # 모든 Agent가 함께 사용할 프롬프트 세트 버전. 버전별 파일은 각 Agent의
     # `prompts/{version}/` 아래에 두며, 일부 Agent만 다른 버전을 쓰지 않는다.
-    prompt_version: Literal["v1", "v2"] = "v1"
+    prompt_version: Literal["v1", "v2", "v3"] = "v1"
 
     # provider 별 자격 증명/모델.
     # 실제로 사용하는 provider 것만 채우면 되므로 기본값은 빈 값("")이며,

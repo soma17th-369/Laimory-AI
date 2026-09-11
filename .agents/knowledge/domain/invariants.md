@@ -32,6 +32,14 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - user memory는 해석·표현 계층(Timeline Agent, Question Agent)에만 주입한다. Event Agent와 Repair Agent는 받지 않는다. Event Agent 5종은 병렬로 돌고 Timeline이 결과를 병합하므로, 다섯이 같은 프로필을 읽으면 같은 근거 하나가 독립된 근거 다섯으로 세어진다.
 - 소비 Agent 2종은 공용 projection 하나를 쓴다. Agent별로 필드를 골라 쓰거나 다르게 직렬화하지 않는다. 갱신 Agent가 "기존 프로필"을 읽을 때도 같은 projection이다.
 
+### Event Agent 출력
+
+- candidate는 근거 요약(`evidenceSummary`)·의미 태그(`semanticTags`)를 따로 두지 않는다. Timeline이 병합에 쓸 자세한 묘사는 `description` 하나에 담는다(#114). 스키마가 버전을 가리지 않으므로 옛 prompt 세트가 두 키를 내도 버려질 뿐 candidate는 남는다.
+- candidate에는 단수 `place`가 없다. `places`·`address`는 Agent가 쓰지 않고 코드가 근거 입력에서 복사한다(#72).
+- 이동은 도보(`WALK`)와 이동수단 이용(`VEHICLE`) 둘로만 가른다. 센서 라벨이 먼저고, 라벨이 없거나 모르는 값이면 평균 속도로 정한다. 라벨과 속도가 서로 다른 쪽을 가리켜도 코드는 라벨을 고치지 않고 `modeConflict`로 알리며, 그 이동을 근거 한계 없이 쓴 candidate는 warning으로 드러낸다.
+- v3 세트에서 Location은 이동수단을 title·description에 쓰지 않는다. 긴 이동은 출발지와 최종 도착지만 남기고, 출발지와 최종 도착지가 같은 연결된 도보 이동이 30분 이상이면 산책(`EXERCISE`)으로 본다. 이 판정은 prompt가 지키며 코드가 왕복을 계산하지 않는다.
+- v3 세트에서 Calendar는 일정의 사실 여부·실제 참석 여부를 판단하지 않고 입력된 일정 내용을 해석한다. 종일 일정은 description에도 하루 종일인 일정임을 드러낸다.
+
 ### User Memory 갱신
 
 - 갱신은 append가 아니라 전체 rewrite다. 출력이 기존 값을 통째로 대체한다.

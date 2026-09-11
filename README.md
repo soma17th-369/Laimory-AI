@@ -225,7 +225,7 @@ LOG_FORMAT=rich              # 운영은 json (stdout JSON → CloudWatch Logs I
 `.env` 파일은 민감 정보를 포함할 수 있으므로 Git에 올리지 않습니다.
 
 `PROMPT_VERSION`은 Event/Timeline/Repair Agent가 사용할 프롬프트 세트를 한 번에
-선택합니다. 현재 `v1`, `v2`를 지원하며 기본값은 `v1`입니다. 각 Agent의 프롬프트는
+선택합니다. 현재 `v1`, `v2`, `v3`를 지원하며 기본값은 `v1`입니다. 각 Agent의 프롬프트는
 `prompts/{version}/` 아래에 있습니다.
 지원하지 않는 버전이나 파일이 빠진 버전은 `v1`로 자동 대체하지 않고 기동 단계에서
 오류로 처리합니다. 새 버전을 추가할 때는 모든 Agent의 프롬프트 세트를 준비한 뒤
