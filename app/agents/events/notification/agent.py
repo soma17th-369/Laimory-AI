@@ -68,7 +68,7 @@ def build_notification_payload(items: list[NotificationItem]) -> dict:
 
     - ``policies``: 이번에 받은 알림에 걸린 정책만, 본문 한 번씩.
     - ``notifications``: 결제·예약 계열 앱의 알림. 각 알림은 ``policyIds`` 로 정책을 가리킨다.
-    - ``conversations``: 정책이 없거나 대화를 주는 앱(카카오톡)의 알림을 앱과 대화 상대
+    - ``conversations``: 정책이 없거나 대화를 주는 앱(메신저)의 알림을 앱과 대화 상대
       (``title``) 단위로 묶은 것. 메시지 수가 많은 순서다. 단체방 이름은 입력에 없어
       방 단위로는 묶지 않는다.
 

@@ -64,16 +64,16 @@
       "textMeaning": "문자 본문이다. 결제·주문·배송·예약·교통 안내가 많지만 그렇지 않은 문자도 있다."
     },
     {
-      "policyId": "KAKAO_TALK",
+      "policyId": "MESSENGER",
       "domain": "메신저",
       "provides": [
         "CONVERSATION",
         "PAYMENT",
         "RESERVATION"
       ],
-      "information": "사람과 주고받은 대화와, 가게·서비스가 카카오톡으로 보내는 예약·결제·배송 안내(알림톡)를 모두 얻을 수 있다. 어느 쪽인지는 메시지 내용으로 가린다.",
-      "titleMeaning": "대화 상대다. 1:1 대화면 상대 이름, 단체 대화방이면 대개 메시지를 보낸 사람이고, 알림톡이면 안내를 보낸 가게·서비스 이름이다.",
-      "textMeaning": "받은 메시지 본문이다. 대화일 수도 있고 예약·결제·배송 안내일 수도 있다."
+      "information": "사람과 주고받은 대화가 대부분이다. 가게·서비스가 메신저로 보내는 예약·결제·배송 안내(카카오톡 알림톡 등)와 업무 메신저의 회의 안내도 같은 앱으로 온다. 어느 쪽인지는 메시지 내용으로 가린다.",
+      "titleMeaning": "대화 상대다. 1:1 대화면 상대 이름, 단체 대화방이면 대개 메시지를 보낸 사람이며, 앱에 따라 대화방·채널·스페이스 이름이 함께 온다. 안내 메시지면 보낸 가게·서비스 이름이다.",
+      "textMeaning": "받은 메시지 본문이다. 대화일 수도 있고 예약·결제·배송·회의 안내일 수도 있다."
     }
   ],
   "apps": [
@@ -742,7 +742,49 @@
         "KakaoTalk"
       ],
       "policyIds": [
-        "KAKAO_TALK"
+        "MESSENGER"
+      ]
+    },
+    {
+      "appName": "Instagram",
+      "applicationId": "com.instagram.android",
+      "aliases": [
+        "인스타그램"
+      ],
+      "policyIds": [
+        "MESSENGER"
+      ]
+    },
+    {
+      "appName": "Webex",
+      "applicationId": "com.cisco.wx2.android",
+      "aliases": [
+        "com.cisco.webex.meetings",
+        "Cisco Webex",
+        "웹엑스"
+      ],
+      "policyIds": [
+        "MESSENGER"
+      ]
+    },
+    {
+      "appName": "Slack",
+      "applicationId": "com.Slack",
+      "aliases": [
+        "슬랙"
+      ],
+      "policyIds": [
+        "MESSENGER"
+      ]
+    },
+    {
+      "appName": "Discord",
+      "applicationId": "com.discord",
+      "aliases": [
+        "디스코드"
+      ],
+      "policyIds": [
+        "MESSENGER"
       ]
     }
   ]
