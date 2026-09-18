@@ -441,5 +441,7 @@ def test_v3_notification_limits_conversations_and_states_missing_input() -> None
     text = _event_prompt("notification")
 
     assert "하루 최대 3개" in text
+    assert "위에서부터 이 순서로 봅니다" in text, "3개 제한은 고르는 절차 안에 있어야 지켜집니다."
+    assert "3개를 넘으면 중요도가 낮은 것부터 fragment로 내립니다" in text
     assert "대화 참여자 목록은 입력에 없습니다" in text
     assert "메시지를 보낸 사람" in text, "단체방 title 이 보낸 사람일 수 있다고 알려야 합니다."
