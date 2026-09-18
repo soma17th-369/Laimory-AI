@@ -178,7 +178,8 @@ def test_match_uses_app_name_only(app_name: str, text: str) -> None:
 
     assert payload["notifications"] == []
     assert payload["policies"] == []
-    assert payload["conversations"][0]["messages"][0]["rawId"] == item.raw_id
+    assert payload["conversations"] == []
+    assert payload["unclassified"][0]["rawId"] == item.raw_id
 
 
 @pytest.mark.parametrize(
@@ -295,7 +296,6 @@ def test_messenger_goes_to_conversations_with_its_policy() -> None:
     items = [
         _item("kakao-1", "카카오톡", "캐치테이블", "[예약 확정] 오늘 19:00 2명"),
         _item("slack-1", "Slack", "박천웅", "회의록 올렸어요"),
-        _item("other-1", "자리톡", "안내", "우산 챙기세요"),
     ]
 
     payload = build_notification_payload(items)
@@ -305,7 +305,27 @@ def test_messenger_goes_to_conversations_with_its_policy() -> None:
     by_title = {c["title"]: c for c in payload["conversations"]}
     assert by_title["캐치테이블"]["policyIds"] == ["MESSENGER"]
     assert by_title["박천웅"]["policyIds"] == ["WORK_MESSENGER"]
-    assert by_title["안내"]["policyIds"] == []
+
+
+def test_unlisted_apps_are_listed_flat_not_grouped_as_conversations() -> None:
+    """사전에 없는 앱을 대화로 묶으면 코드가 "대화다" 라고 먼저 정하는 셈이다."""
+
+    items = [
+        _item("etc-2", "자리톡", "안내", "우산 챙기세요", "2026-06-20T18:00:00+09:00"),
+        _item("etc-1", "자리톡", "안내", "오늘 비 예보", "2026-06-20T07:00:00+09:00"),
+        _item("yt-1", "YouTube", "채널", "새 영상", "2026-06-20T12:00:00+09:00"),
+    ]
+
+    payload = build_notification_payload(items)
+
+    assert payload["conversations"] == []
+    assert payload["policies"] == []
+    assert [(n["appName"], n["text"]) for n in payload["unclassified"]] == [
+        ("자리톡", "오늘 비 예보"),
+        ("YouTube", "새 영상"),
+        ("자리톡", "우산 챙기세요"),
+    ]
+    assert "policyIds" not in payload["unclassified"][0]
 
 
 def test_payload_keeps_every_raw_id_exactly_once() -> None:
@@ -318,9 +338,11 @@ def test_payload_keeps_every_raw_id_exactly_once() -> None:
     ]
 
     payload = build_notification_payload(items)
-    raw_ids = [n["rawId"] for n in payload["notifications"]] + [
-        m["rawId"] for c in payload["conversations"] for m in c["messages"]
-    ]
+    raw_ids = (
+        [n["rawId"] for n in payload["notifications"]]
+        + [m["rawId"] for c in payload["conversations"] for m in c["messages"]]
+        + [n["rawId"] for n in payload["unclassified"]]
+    )
 
     assert sorted(raw_ids) == sorted(item.raw_id for item in items)
 
@@ -332,5 +354,5 @@ def test_agent_sends_the_payload_to_the_llm() -> None:
     NotificationEventAgent(llm=llm).generate(request)
 
     prompt = llm.calls[0].prompt
-    assert '"conversations"' in prompt
+    assert '"unclassified"' in prompt
     assert '"policies": []' in prompt

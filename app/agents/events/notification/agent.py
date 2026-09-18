@@ -68,31 +68,38 @@ def build_notification_payload(items: list[NotificationItem]) -> dict:
 
     - ``policies``: 이번에 받은 알림에 걸린 정책만, 본문 한 번씩.
     - ``notifications``: 결제·예약 계열 앱의 알림. 각 알림은 ``policyIds`` 로 정책을 가리킨다.
-    - ``conversations``: 정책이 없거나 대화를 주는 앱(메신저)의 알림을 앱과 대화 상대
-      (``title``) 단위로 묶은 것. 메시지 수가 많은 순서다. 단체방 이름은 입력에 없어
-      방 단위로는 묶지 않는다.
+    - ``conversations``: 대화를 주는 앱(메신저)의 알림을 앱과 대화 상대(``title``) 단위로
+      묶은 것. 메시지 수가 많은 순서다. 단체방 이름은 입력에 없어 방 단위로는 묶지 않는다.
+    - ``unclassified``: 사전에 없는 앱의 알림. 그 앱이 무엇을 주는지 모르므로 묶지도 정책을
+      달지도 않고 시각순으로 그대로 싣는다. 대화로 묶으면 코드가 "대화다" 라고 먼저 정하는
+      셈이라 그러지 않는다 — 무엇인지는 모델이 내용을 읽고 정한다.
 
-    알림은 한 건도 버리지 않는다. 모든 rawId 가 두 목록 중 한 곳에 한 번씩 있다.
+    알림은 한 건도 버리지 않는다. 모든 rawId 가 세 목록 중 한 곳에 한 번씩 있다.
     """
 
     notifications: list[dict] = []
     conversation_items: list[NotificationItem] = []
+    unclassified: list[NotificationItem] = []
     used_policy_ids: list[str] = []
 
     for item in items:
         policy_ids = match_policy_ids(item.app_name)
         used_policy_ids.extend(pid for pid in policy_ids if pid not in used_policy_ids)
-        if not policy_ids or provides_conversation(policy_ids):
+        if not policy_ids:
+            unclassified.append(item)
+        elif provides_conversation(policy_ids):
             conversation_items.append(item)
-            continue
-        entry = item.model_dump(by_alias=True, mode="json")
-        entry["policyIds"] = list(policy_ids)
-        notifications.append(entry)
+        else:
+            entry = item.model_dump(by_alias=True, mode="json")
+            entry["policyIds"] = list(policy_ids)
+            notifications.append(entry)
 
+    unclassified.sort(key=lambda m: _posted_sort_value(m.posted_at))
     return {
         "policies": policies_for_prompt(used_policy_ids),
         "notifications": notifications,
         "conversations": _conversations(conversation_items),
+        "unclassified": [item.model_dump(by_alias=True, mode="json") for item in unclassified],
     }
 
 

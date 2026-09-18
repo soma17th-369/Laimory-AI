@@ -42,12 +42,15 @@ Timeline Agent는 서로 다른 source의 candidate와 fragment를 결합해 최
   - `policyId`, `domain`(앱이 속한 분야), `provides`(그 앱이 주는 정보 — `CONVERSATION`·`PAYMENT`·`RESERVATION` 중), `information`(얻을 수 있는 정보), `titleMeaning`·`textMeaning`(두 필드의 의미)
 - `notifications`: 결제·예약 계열 앱의 알림입니다. 사용자가 알림을 누르지 않아도 수집됩니다.
   - `rawId`, `postedAt`(수신 시각), `appName`, `title`, `text`, `policyIds`(이 알림에 해당하는 정책. 값은 `policies`의 `policyId`입니다)
-- `conversations`: 사용자가 직접 눌러 담은 메신저 등의 알림을 같은 앱·같은 대화 상대(`title`) 단위로 묶은 것입니다. 정책이 없는 앱의 알림과 메신저 알림이 여기로 옵니다. 메시지 수가 많은 순서로 옵니다.
-  - `appName`, `title`, `policyIds`(해당 정책의 `policyId`, 없으면 빈 배열), `messageCount`, `firstPostedAt`·`lastPostedAt`, `maxGapMinutes`(메시지 사이 최대 간격, 한 건이면 `null`), `messages`(`rawId`·`postedAt`·`text`)
+- `conversations`: 메신저 알림을 같은 앱·같은 대화 상대(`title`) 단위로 묶은 것입니다. 메시지 수가 많은 순서로 옵니다.
+  - `appName`, `title`, `policyIds`(해당 정책의 `policyId`), `messageCount`, `firstPostedAt`·`lastPostedAt`, `maxGapMinutes`(메시지 사이 최대 간격, 한 건이면 `null`), `messages`(`rawId`·`postedAt`·`text`)
 
-`policyIds`가 빈 배열이면 사전에 없는 앱입니다. 그 앱이 무슨 정보를 주는지 알 수 없으므로 `title`과 `text` 내용만 보고 대화·결제·예약 중 무엇인지, 아니면 하루 사건이 아닌 알림인지 판단합니다.
+- `unclassified`: 사전에 없는 앱의 알림입니다. 정책도 묶음도 없이 시각순으로 옵니다.
+  - `rawId`, `postedAt`, `appName`, `title`, `text`
 
-알림이나 묶음을 읽을 때는 `policyIds`가 가리키는 `policies` 항목의 `information`·`titleMeaning`·`textMeaning`을 함께 봅니다. 정책은 그 앱에서 얻을 수 있는 정보를 알려 줄 뿐입니다. 알림 내용이 정책과 다른 것을 말하면 내용을 따릅니다. `conversations`의 묶음도 대화가 아닐 수 있습니다 — 가게·서비스의 예약·결제·배송 안내라면 결제·예약 정보로, 영상 추천이나 날씨 안내라면 하루 사건이 아닌 알림으로 봅니다.
+`unclassified`의 알림은 그 앱이 무슨 정보를 주는지 알 수 없으므로 `title`과 `text` 내용만 보고 대화·결제·예약 중 무엇인지, 아니면 하루 사건이 아닌 알림인지 판단합니다. 같은 앱·같은 `title`의 알림이 여러 건이고 내용이 대화라면 대화로 묶어 읽어도 됩니다. 앱 이름만으로 정하지 않습니다.
+
+알림이나 묶음을 읽을 때는 `policyIds`가 가리키는 `policies` 항목의 `information`·`titleMeaning`·`textMeaning`을 함께 봅니다. 정책은 그 앱에서 얻을 수 있는 정보를 알려 줄 뿐입니다. 알림 내용이 정책과 다른 것을 말하면 내용을 따릅니다. `conversations`의 묶음도 대화가 아닐 수 있습니다 — 가게·서비스의 예약·결제·배송 안내라면 결제·예약 정보로 봅니다.
 
 ## Candidate와 Fragment
 
@@ -164,7 +167,7 @@ JSON 객체 하나를 출력합니다.
 ## 출력 계약
 
 - 모든 배열은 결과가 없을 때 빈 배열로 반환합니다.
-- Agent 입력으로 전달된 모든 Notification rawId는 candidate 또는 fragment 중 하나에 포함합니다. `notifications`와 `conversations.messages`의 rawId가 모두 대상입니다.
+- Agent 입력으로 전달된 모든 Notification rawId는 candidate 또는 fragment 중 하나에 포함합니다. `notifications`, `conversations.messages`, `unclassified`의 rawId가 모두 대상입니다.
 - 대화 candidate는 하루 최대 3개입니다. 메신저로 온 결제·예약 안내로 만든 candidate는 세지 않습니다.
 - 여러 알림으로 만든 candidate는 모든 rawId와 실제 시각을 보존합니다.
 - `sourceRefs.rawId`는 입력에 존재하는 값을 사용합니다. 입력에 없는 rawId를 만들지 않습니다.

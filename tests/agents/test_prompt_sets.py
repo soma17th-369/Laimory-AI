@@ -395,7 +395,11 @@ def test_v3_notification_names_every_payload_key() -> None:
         )
 
     payload = build_notification_payload(
-        [item("pay", "토스", "결제"), item("chat", "카카오톡", "김민수")]
+        [
+            item("pay", "토스", "결제"),
+            item("chat", "카카오톡", "김민수"),
+            item("etc", "자리톡", "안내"),
+        ]
     )
     conversation = payload["conversations"][0]
     keys = (
@@ -404,6 +408,7 @@ def test_v3_notification_names_every_payload_key() -> None:
         | set(payload["notifications"][0])
         | set(conversation)
         | set(conversation["messages"][0])
+        | set(payload["unclassified"][0])
     )
     text = _event_prompt("notification")
 
@@ -418,7 +423,8 @@ def test_v3_notification_links_policy_ids_to_policies() -> None:
 
     assert "값은 `policies`의 `policyId`입니다" in text
     assert "`policyIds`가 가리키는 `policies` 항목" in text
-    assert "`policyIds`가 빈 배열이면" in text, "정책 없는 알림은 내용으로 판단한다고 적어야 합니다."
+    assert "`unclassified`의 알림은" in text, "사전에 없는 앱의 알림은 내용으로 판단한다고 적어야 합니다."
+    assert "앱 이름만으로 정하지 않습니다" in text
 
 
 def test_v3_notification_reads_payment_and_reservation_in_conversations() -> None:
