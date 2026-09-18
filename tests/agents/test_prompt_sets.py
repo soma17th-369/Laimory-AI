@@ -418,6 +418,7 @@ def test_v3_notification_links_policy_ids_to_policies() -> None:
 
     assert "값은 `policies`의 `policyId`입니다" in text
     assert "`policyIds`가 가리키는 `policies` 항목" in text
+    assert "`policyIds`가 빈 배열이면" in text, "정책 없는 알림은 내용으로 판단한다고 적어야 합니다."
 
 
 def test_v3_notification_reads_payment_and_reservation_in_conversations() -> None:

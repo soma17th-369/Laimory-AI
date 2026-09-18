@@ -42,8 +42,10 @@ Timeline Agent는 서로 다른 source의 candidate와 fragment를 결합해 최
   - `policyId`, `domain`(앱이 속한 분야), `provides`(그 앱이 주는 정보 — `CONVERSATION`·`PAYMENT`·`RESERVATION` 중), `information`(얻을 수 있는 정보), `titleMeaning`·`textMeaning`(두 필드의 의미)
 - `notifications`: 결제·예약 계열 앱의 알림입니다. 사용자가 알림을 누르지 않아도 수집됩니다.
   - `rawId`, `postedAt`(수신 시각), `appName`, `title`, `text`, `policyIds`(이 알림에 해당하는 정책. 값은 `policies`의 `policyId`입니다)
-- `conversations`: 사용자가 직접 눌러 담은 메신저 등의 알림을 같은 앱·같은 대화 상대(`title`) 단위로 묶은 것입니다. 정책이 없는 앱의 알림과 메신저(카카오톡·Instagram·Webex·Slack·Discord) 알림이 여기로 옵니다. 메시지 수가 많은 순서로 옵니다.
+- `conversations`: 사용자가 직접 눌러 담은 메신저 등의 알림을 같은 앱·같은 대화 상대(`title`) 단위로 묶은 것입니다. 정책이 없는 앱의 알림과 메신저 알림이 여기로 옵니다. 메시지 수가 많은 순서로 옵니다.
   - `appName`, `title`, `policyIds`(해당 정책의 `policyId`, 없으면 빈 배열), `messageCount`, `firstPostedAt`·`lastPostedAt`, `maxGapMinutes`(메시지 사이 최대 간격, 한 건이면 `null`), `messages`(`rawId`·`postedAt`·`text`)
+
+`policyIds`가 빈 배열이면 사전에 없는 앱입니다. 그 앱이 무슨 정보를 주는지 알 수 없으므로 `title`과 `text` 내용만 보고 대화·결제·예약 중 무엇인지, 아니면 하루 사건이 아닌 알림인지 판단합니다.
 
 알림이나 묶음을 읽을 때는 `policyIds`가 가리키는 `policies` 항목의 `information`·`titleMeaning`·`textMeaning`을 함께 봅니다. 정책은 그 앱에서 얻을 수 있는 정보를 알려 줄 뿐입니다. 알림 내용이 정책과 다른 것을 말하면 내용을 따릅니다. `conversations`의 묶음도 대화가 아닐 수 있습니다 — 가게·서비스의 예약·결제·배송 안내라면 결제·예약 정보로, 영상 추천이나 날씨 안내라면 하루 사건이 아닌 알림으로 봅니다.
 
@@ -62,7 +64,7 @@ Timeline Agent는 서로 다른 source의 candidate와 fragment를 결합해 최
 - 가게·서비스가 보낸 예약·결제·배송 안내는 대화가 아닙니다. 아래 결제·예약 규칙대로 씁니다.
 - 대화 상대 이름(앱에 따라 방·스페이스 이름이 함께 옵니다)과 대화 내용으로 대화의 성격을 가립니다.
   - 친목: 친구·지인과의 사적인 대화 → `SOCIAL`
-  - 업무: 업무·교육·과제를 조율하는 대화 → `WORK`
+  - 업무: 업무·교육·과제를 조율하는 대화 → `WORK`. 업무 메신저 정책이 붙은 묶음은 업무 대화일 가능성이 높지만, 내용이 사적인 대화면 내용을 따릅니다.
   - 정보성: 공지·안내·홍보가 오가는 대화 → 사용자가 한 일이 아니라 받은 안내라 친목·업무 대화보다 뒤에 둡니다.
 - 대화에서 대상 날짜에 만날 시간이나 장소가 정해졌다면 그 약속을 `MEETING` candidate로 만들 수 있습니다. 약속한 날이 대상 날짜가 아니면 만들지 않습니다.
 - 대화 내용이 많을수록 중요한 대화입니다. 메시지 수와 주제의 구체성을 함께 보고 **중요한 대화부터 하루 최대 3개**의 candidate만 만듭니다. 약속 candidate도 이 3개에 셉니다. 메신저로 온 결제·예약 안내로 만든 candidate는 대화가 아니므로 세지 않습니다. 나머지 대화의 메시지는 fragment로 둡니다.
