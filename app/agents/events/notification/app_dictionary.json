@@ -65,15 +65,26 @@
     },
     {
       "policyId": "MESSENGER",
-      "domain": "메신저",
+      "domain": "개인 메신저",
       "provides": [
         "CONVERSATION",
         "PAYMENT",
         "RESERVATION"
       ],
-      "information": "사람과 주고받은 대화가 대부분이다. 가게·서비스가 메신저로 보내는 예약·결제·배송 안내(카카오톡 알림톡 등)와 업무 메신저의 회의 안내도 같은 앱으로 온다. 어느 쪽인지는 메시지 내용으로 가린다.",
+      "information": "사람과 주고받은 사적인 대화가 대부분이다. 가게·서비스가 메신저로 보내는 예약·결제·배송 안내(카카오톡 알림톡 등)도 같은 앱으로 온다. 어느 쪽인지는 메시지 내용으로 가린다.",
       "titleMeaning": "대화 상대다. 1:1 대화면 상대 이름, 단체 대화방이면 대개 메시지를 보낸 사람이며, 앱에 따라 대화방·채널·스페이스 이름이 함께 온다. 안내 메시지면 보낸 가게·서비스 이름이다.",
-      "textMeaning": "받은 메시지 본문이다. 대화일 수도 있고 예약·결제·배송·회의 안내일 수도 있다."
+      "textMeaning": "받은 메시지 본문이다. 대화일 수도 있고 예약·결제·배송 안내일 수도 있다."
+    },
+    {
+      "policyId": "WORK_MESSENGER",
+      "domain": "업무 메신저",
+      "provides": [
+        "CONVERSATION",
+        "RESERVATION"
+      ],
+      "information": "업무·교육 대화가 대부분이다. 회의 시작·초대 안내도 같은 앱으로 온다. 사적인 대화보다 일·수업 맥락으로 읽는다.",
+      "titleMeaning": "대화 상대이거나 채널·스페이스 이름이다. `일반: 박천웅`처럼 방 이름과 보낸 사람이 함께 오기도 한다.",
+      "textMeaning": "받은 메시지 본문이다. 업무·교육 대화이거나 회의 안내다."
     }
   ],
   "apps": [
@@ -756,6 +767,16 @@
       ]
     },
     {
+      "appName": "Discord",
+      "applicationId": "com.discord",
+      "aliases": [
+        "디스코드"
+      ],
+      "policyIds": [
+        "MESSENGER"
+      ]
+    },
+    {
       "appName": "Webex",
       "applicationId": "com.cisco.wx2.android",
       "aliases": [
@@ -764,7 +785,7 @@
         "웹엑스"
       ],
       "policyIds": [
-        "MESSENGER"
+        "WORK_MESSENGER"
       ]
     },
     {
@@ -774,17 +795,18 @@
         "슬랙"
       ],
       "policyIds": [
-        "MESSENGER"
+        "WORK_MESSENGER"
       ]
     },
     {
-      "appName": "Discord",
-      "applicationId": "com.discord",
+      "appName": "Microsoft Teams",
+      "applicationId": "com.microsoft.teams",
       "aliases": [
-        "디스코드"
+        "Teams",
+        "팀즈"
       ],
       "policyIds": [
-        "MESSENGER"
+        "WORK_MESSENGER"
       ]
     }
   ]

@@ -2,7 +2,7 @@
 
 정책 원본은 Notion 「코드가 다루는 앱 목록」이다. 표에 있는 앱은 사용자가 알림을 누르지
 않아도 수집되고(결제·예약 계열), 표에 없는 앱은 사용자가 직접 눌러 담은 알림이다(대부분
-메신저). 메신저 앱들은 표 밖에서 대화·결제·예약을 모두 주는 정책 하나를 공유한다. 코드는 정책과
+메신저). 메신저는 표 밖에서 개인·업무 두 정책을 갖는다. 코드는 정책과
 대화 상대 묶음 같은 사실만 넘기고 판단은 모델에게 맡긴다.
 """
 
@@ -58,17 +58,23 @@ _NOTION_POLICIES = [
 
 def test_dictionary_mirrors_the_notion_app_list_plus_messengers() -> None:
     dictionary = load_app_dictionary()
-    notion_apps = [app for app in dictionary.apps if app.policy_ids != ["MESSENGER"]]
-    messengers = [app.app_name for app in dictionary.apps if app.policy_ids == ["MESSENGER"]]
+    messenger_policies = {"MESSENGER", "WORK_MESSENGER"}
+    notion_apps = [a for a in dictionary.apps if not messenger_policies & set(a.policy_ids)]
+    by_policy = {
+        policy: [a.app_name for a in dictionary.apps if a.policy_ids == [policy]]
+        for policy in messenger_policies
+    }
 
     assert [policy.policy_id for policy in dictionary.policies] == [
         *_NOTION_POLICIES,
         "MESSENGER",
+        "WORK_MESSENGER",
     ]
     assert len(notion_apps) == 90
-    assert messengers == ["카카오톡", "Instagram", "Webex", "Slack", "Discord"]
-    assert len({app.app_name for app in dictionary.apps}) == 95
-    assert len({app.application_id for app in dictionary.apps}) == 95
+    assert by_policy["MESSENGER"] == ["카카오톡", "Instagram", "Discord"]
+    assert by_policy["WORK_MESSENGER"] == ["Webex", "Slack", "Microsoft Teams"]
+    assert len({app.app_name for app in dictionary.apps}) == 96
+    assert len({app.application_id for app in dictionary.apps}) == 96
 
 
 def test_notion_policies_provide_only_payment_or_reservation() -> None:
@@ -81,21 +87,40 @@ def test_notion_policies_provide_only_payment_or_reservation() -> None:
 
 
 @pytest.mark.parametrize(
-    "app_name",
-    ["카카오톡", "com.kakao.talk", "Instagram", "인스타그램", "Webex", "Slack", "Discord"],
+    ("app_name", "expected"),
+    [
+        ("카카오톡", "MESSENGER"),
+        ("com.kakao.talk", "MESSENGER"),
+        ("Instagram", "MESSENGER"),
+        ("인스타그램", "MESSENGER"),
+        ("Discord", "MESSENGER"),
+        ("Webex", "WORK_MESSENGER"),
+        ("Slack", "WORK_MESSENGER"),
+        ("Microsoft Teams", "WORK_MESSENGER"),
+        ("Teams", "WORK_MESSENGER"),
+    ],
 )
-def test_messenger_apps_share_one_policy(app_name: str) -> None:
-    assert match_policy_ids(app_name) == ("MESSENGER",)
+def test_messenger_apps_match_their_policy(app_name: str, expected: str) -> None:
+    assert match_policy_ids(app_name) == (expected,)
 
 
-def test_messenger_provides_all_three_kinds() -> None:
-    """대화뿐 아니라 알림톡·회의 안내처럼 예약·결제 정보도 메신저로 온다."""
+def test_personal_messenger_provides_all_three_kinds() -> None:
+    """대화뿐 아니라 알림톡으로 온 예약·결제 안내도 개인 메신저로 온다."""
 
-    policy = next(
-        p for p in load_app_dictionary().policies if p.policy_id == "MESSENGER"
-    )
+    policies = {p.policy_id: p for p in load_app_dictionary().policies}
 
-    assert set(policy.provides) == set(NotificationInfo)
+    assert set(policies["MESSENGER"].provides) == set(NotificationInfo)
+
+
+def test_work_messenger_provides_conversation_and_reservation() -> None:
+    """업무 메신저는 업무 대화와 회의 안내가 오고 결제는 오지 않는다."""
+
+    policies = {p.policy_id: p for p in load_app_dictionary().policies}
+
+    assert set(policies["WORK_MESSENGER"].provides) == {
+        NotificationInfo.CONVERSATION,
+        NotificationInfo.RESERVATION,
+    }
 
 
 def test_naver_belongs_to_two_domains() -> None:
@@ -276,10 +301,10 @@ def test_messenger_goes_to_conversations_with_its_policy() -> None:
     payload = build_notification_payload(items)
 
     assert payload["notifications"] == []
-    assert [p["policyId"] for p in payload["policies"]] == ["MESSENGER"]
+    assert [p["policyId"] for p in payload["policies"]] == ["MESSENGER", "WORK_MESSENGER"]
     by_title = {c["title"]: c for c in payload["conversations"]}
     assert by_title["캐치테이블"]["policyIds"] == ["MESSENGER"]
-    assert by_title["박천웅"]["policyIds"] == ["MESSENGER"]
+    assert by_title["박천웅"]["policyIds"] == ["WORK_MESSENGER"]
     assert by_title["안내"]["policyIds"] == []
 
 

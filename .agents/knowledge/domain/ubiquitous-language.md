@@ -48,7 +48,7 @@
 | `places` | 한 지점을 가리킬 수 있는 장소명 **후보 목록**. 입력(`StayItem.places`)과 candidate에만 있다. 복수는 고를 후보(Timeline 입력), 단수 `place`는 고른 결과(Timeline 출력)라는 뜻이며, 그래서 candidate에는 단수 필드를 두지 않는다. |
 | `address` | 수집 원본에 실제로 있던 주소 문자열. 좌표에서 만들어 내지 않고, `인근`·`부근` 같은 근사 표현이 붙은 값은 주소로 쓰지 않는다. 근거로 뒷받침되지 않으면 확정 pass가 지운다. |
 | 이동 방식 (`mode`) | Location 파생 지표가 MOVEMENT마다 붙이는 두 갈래 구분(#114). `WALK`는 도보(걷기·달리기), `VEHICLE`은 이동수단 이용(자전거를 포함한 탈것 전부)이다. 어떤 탈것인지는 가르지 않는다. 산책 판정과 이동 정보 검증에만 쓰고 사용자 문장에는 싣지 않는다. 센서가 준 라벨 원본은 `transports`이며 둘을 같은 말로 쓰지 않는다. |
-| 알림 정책 (`policyId`) | 한 도메인(금융·결제, 쇼핑·택배, 예약·문화, 이동·여행, 배달·카페, 문자)의 앱에서 얻을 수 있는 정보(#116). `provides`는 `CONVERSATION`·`PAYMENT`·`RESERVATION` 중 무엇을 주는지다. Notion 표의 앱(사용자가 알림을 누르지 않아도 수집)은 결제·예약만 주고, 표 밖의 메신저(카카오톡·Instagram·Webex·Slack·Discord)는 세 가지를 모두 주는 정책 하나를 공유한다. 사용 판단(candidate 여부·confidence)을 담지 않는다. |
+| 알림 정책 (`policyId`) | 한 도메인(금융·결제, 쇼핑·택배, 예약·문화, 이동·여행, 배달·카페, 문자)의 앱에서 얻을 수 있는 정보(#116). `provides`는 `CONVERSATION`·`PAYMENT`·`RESERVATION` 중 무엇을 주는지다. Notion 표의 앱(사용자가 알림을 누르지 않아도 수집)은 결제·예약만 주고, 표 밖의 메신저는 개인(카카오톡·Instagram·Discord, 대화·결제·예약)과 업무(Webex·Slack·Microsoft Teams, 대화·예약) 두 정책으로 갈린다. 사용 판단(candidate 여부·confidence)을 담지 않는다. |
 | 대화 묶음 (`conversations`) | 정책이 없거나 대화를 주는 앱(메신저)의 알림을 같은 앱·같은 대화 상대(`title`) 단위로 묶은 Notification Agent 입력(#116). 단체방 이름이 입력에 없어 방 단위가 아니다. 대부분 대화지만 예약·결제 안내나 하루 사건이 아닌 알림일 수 있고, 판단은 prompt가 한다. Event Agent 출력 `candidate`와 다른 말이다. |
 | Warning | 복구 가능한 누락·충돌·품질 문제를 드러내는 내부 진단. task 실패와 동의어가 아니다. |
 | Confidence | event/candidate 확신도를 0~1로 표현한 값. 불확실성을 문장에 헤지하는 대신 metadata로 전달한다. |
