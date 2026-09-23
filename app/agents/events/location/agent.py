@@ -23,7 +23,7 @@ from app.agents.parsing import (
     SupportsComplete,
     build_infer_prompt,
     default_llm,
-    items_to_text_without_coordinates,
+    items_to_text_without_prompt_excluded_keys,
 )
 from app.agents.prompt_loader import load_prompt
 from app.core.config import settings
@@ -114,7 +114,7 @@ def _location_data_text(request: TimelineDraftRequest, items: list) -> str:
     좌표는 프롬프트에 싣지 않는다(#80). request 로는 계속 받고 코드가 파생 지표 계산에 쓴다.
     """
 
-    payload = json.loads(items_to_text_without_coordinates(items))
+    payload = json.loads(items_to_text_without_prompt_excluded_keys(items))
     metrics = build_location_metrics(request).as_prompt_dict()
     return json.dumps(
         {"locationItems": payload, "derivedMetrics": metrics},

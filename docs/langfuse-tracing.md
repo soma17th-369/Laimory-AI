@@ -61,6 +61,12 @@ cycle로 표현된다. 조회·정규화·개별 도구·저장·콜백은 graph
 - 저장·콜백: 저장할 Timeline과 콜백 payload, 처리 결과
 - generation: `system`/`user` 역할의 전체 prompt와 `assistant` 응답
 
+Photo Agent 결과를 검증할 때는 Event Agent·root의 요청 덤프에서 `request.photos[].photoUrl`을
+본다(이슈 #127). presigned 서명이 붙은 원문이 그대로 남으므로 어느 사진을 보고 만든 설명인지
+확인할 수 있다. 프롬프트(generation input)에는 이 값이 없다 — 이미지는 bytes로 따로 실리고
+URL은 좌표와 같은 프롬프트 경계에서 뺀다. 정책이 `NONE`이면 요청 덤프도 해시로 접히므로
+prod에서 보려면 `LANGFUSE_CONTENT_CAPTURE=SANITIZED`가 필요하다.
+
 generation은 표준 role message 배열로 저장하므로 Langfuse가 대화형으로 렌더링한다.
 provider, model, temperature, 이미지 개수와 MIME type도 함께 기록한다. 이미지 원본
 bytes는 기록하지 않는다.

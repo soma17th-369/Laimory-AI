@@ -113,9 +113,10 @@ rawId가 task 안에서 중복되지 않는지 확인한다. normalizer는 itemT
 결론만 넘긴다.
 
 `photoUrl`은 App Server가 주는 S3 이미지 URL이다. Photo Agent가 이 URL에서 실제
-이미지를 내려받아 vision 모델로 `description`을 만든다. presigned URL이면 query에
-서명 자격증명이 실리므로 **직렬화에서 제외**(`exclude=True`)되며, 프롬프트·운영
-로그·Langfuse 어디에도 값이 나가지 않는다.
+이미지를 내려받아 vision 모델로 `description`을 만든다. 값은 **프롬프트에 싣지 않는다**
+(좌표와 같은 프롬프트 경계에서 뺀다) — 이미지는 vision 호출에 bytes로 따로 실리므로 LLM이
+URL에서 얻을 정보가 없다. 운영 로그에도 싣지 않는다. Langfuse trace의 요청 덤프에는 원문이
+남아 어느 사진을 보고 만든 설명인지 검증할 수 있다(이슈 #127).
 
 `fileName`·`clientPhotoUri`·`photoFile`은 payload에 와도 무시한다. 각각 스토리지
 객체 이름(UUID)과 클라이언트 내부 URI(`content://…`)라 AI가 쓸 정보가 없고,
