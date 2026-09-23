@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from time import perf_counter
 
 from app.agents.events import merge_event_results
-from app.agents.parsing import strip_coordinates
+from app.agents.parsing import strip_prompt_excluded_keys
 from app.agents.events.base_event_agent import EventAgent
 from app.agents.timeline.timeline_agent import TimelineAgent
 from app.core.logging import get_logger
@@ -177,8 +177,9 @@ def _lookup_source(ctx: RepairContext, args: dict) -> str:
             f"rawId '{raw_id}' 인 입력 항목이 없습니다. 근거로 인용할 수 없는 값입니다."
         )
     source_type, item = found
-    # 좌표는 프롬프트에 싣지 않는다(#80). Repair Agent 도 좌표로 판단할 일이 없다.
-    payload = strip_coordinates(item.model_dump(by_alias=True, mode="json"))
+    # 좌표(#80)와 `photoUrl`(#127)은 프롬프트에 싣지 않는다. Repair Agent 는 좌표로 판단할
+    # 일이 없고, 사진 URL 은 내려받아야 의미가 있어 LLM 에게 정보가 아니다.
+    payload = strip_prompt_excluded_keys(item.model_dump(by_alias=True, mode="json"))
     return f"{source_type.value} {json.dumps(payload, ensure_ascii=False)}"
 
 
