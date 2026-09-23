@@ -80,7 +80,8 @@ app/
     ├── stay_merge.py          # 이동 없이 이어진 STAY 묶기
     ├── calendar_guard.py      # 누락된 캘린더 일정 복원
     ├── calendar_location.py   # 캘린더와 STAY 장소 일치 보강
-    ├── meal_guard.py          # MEAL 지속시간 강제
+    ├── meal_guard.py          # MEAL 지속시간 강제 + 시점 근거 없는 식사 confidence 상한
+    ├── event_count_guard.py   # 최종 event 개수 상한(24) 검사 (#118). 자르지 않고 warning
     ├── photo_guard.py         # 사진 단일 귀속 검사 (누락·중복 검출, 자동 해소는 안 함)
     ├── location_metrics.py    # Location raw 파생 지표 계산 (속도·구간 공백·수집 공백)
     ├── location_guard.py      # Location 결과 검증 (상위 여정 누락·공백 표시·rawId 보존)

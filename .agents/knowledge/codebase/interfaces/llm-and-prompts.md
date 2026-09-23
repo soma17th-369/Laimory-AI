@@ -42,6 +42,8 @@ LLM call은 provider/model/version, duration, 사용 가능한 token bucket을 L
 
 `PROMPT_VERSION`은 현재 `v1`·`v2`·`v3` 중 하나이고 모든 Agent가 같은 세트를 사용한다. loader는 module 옆 `prompts/{version}/{정확한 파일명}`만 UTF-8로 읽는다. version과 filename에 nested path를 허용하지 않으며, 파일이 없을 때 다른 version으로 fallback하지 않는다. v3은 v2의 활성 파일을 복사해 시작한 세트다(#112·#114). v2 디렉터리의 동결본(`timeline_v2.0.0.md` 등)은 v2의 이력이라 v3으로 옮기지 않았다.
 
+Timeline Agent가 provider에 싣는 구조화 출력 스키마는 내부 draft가 아니라 `TimelineAgentOutput`(`events`·`warnings`)이다(#118). 내부 모호성 질문의 자유형 `timeRange` dict가 없어져 OpenAI 경로는 strict schema로 잠글 수 있다. 이 계약은 버전을 가리지 않는다 — v2 프롬프트가 여전히 `questions`·`userId`를 내라고 하지만 parse가 무시한다. v3 Timeline·Question 프롬프트는 #118에서 v2와 갈라졌다(eventType 13종 규칙 표·예시, User Memory 별도 단계, Question 13종 예시). `tests/agents/test_timeline_v3_prompt.py`가 그 계약과 v2 무변경을 고정한다.
+
 prompt 세트에는 현재 Timeline, Repair, Question, UserMemory, Calendar, Notification, Location, SleepActivity, Photo Agent가 실제 로드하는 파일이 모두 있어야 한다. v1 Location/Sleep은 review prompt를 사용하지만 v2 이후는 단일 structured 호출이라 review 파일이 없어야 한다. Photo는 version마다 infer, metadata fallback, vision prompt가 필요하다.
 
 **Event Agent 출력 계약(`AiEventCandidate`)은 버전을 가리지 않고 하나다.** 필드를 빼면 옛 세트에도 곧바로 적용된다. #114에서 `evidenceSummary`·`semanticTags`를 뺐고 v1·v2 문구는 그대로 두었으므로, v1·v2 prompt는 여전히 두 필드를 내라고 하지만 모델이 내더라도 모르는 키로 버려지고 candidate는 살아남는다. Location의 `derivedMetrics`도 코드 하나가 모든 버전에 싣는다 — v2 prompt가 설명하는 `transports`·`transportConflict`는 더 이상 없고 `mode`·`modeConflict`가 그 자리를 대신한다. Notification 입력도 같다(#116). 코드는 버전을 가리지 않고 `policies`·`notifications`·`conversations`를 싣고, v1·v2 prompt가 설명하는 `appDictionary`·`appPolicy`·`timelineUseGuidance`·`messengerAnalysis`는 더 이상 오지 않는다.
@@ -69,7 +71,7 @@ UserMemory Agent(#64)는 Timeline pipeline 밖이지만 `PROMPT_VERSION`이 전�
 
 ## Known Gaps
 
-- 지원 version이 Settings의 `Literal["v1", "v2"]`와 테스트 상수에 수동으로 중복돼 있다.
+- 지원 version이 Settings의 `Literal["v1", "v2", "v3"]`와 테스트 상수에 수동으로 중복돼 있다.
 - gemini에는 티어 필드가 없다. `GEMINI_MODEL_FAST` 같은 값을 넣어도 `extra="ignore"`로 조용히 무시된다.
 - 실제 provider 품질·비용·schema 준수는 opt-in live test 없이는 검증되지 않는다.
 - provider model availability, 가격, service quota는 저장소 밖의 시점 의존 정보다.

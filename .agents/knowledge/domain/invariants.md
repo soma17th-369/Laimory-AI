@@ -30,6 +30,7 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - user memory는 근거가 아니라 해석·표현용 보조 context다. user memory만으로 사건 발생, 일정 참석, 장소, 이동 목적, 사람의 실명이나 정확한 관계를 확정하지 않고, 수집 원본과 충돌하면 원본이 이긴다. 이 경계는 prompt가 지키며 코드가 의미로 판정하지 않는다.
 - user memory는 rawId를 갖지 않으므로 `sourceRefs`에 넣지 않는다.
 - user memory는 해석·표현 계층(Timeline Agent, Question Agent)에만 주입한다. Event Agent와 Repair Agent는 받지 않는다. Event Agent 5종은 병렬로 돌고 Timeline이 결과를 병합하므로, 다섯이 같은 프로필을 읽으면 같은 근거 하나가 독립된 근거 다섯으로 세어진다.
+- v3 Timeline은 User Memory 반영을 **근거 구성 뒤의 별도 단계**로 둔다(#118). event의 존재·시간·장소 후보·활동 종류는 근거만으로 정한 뒤, 확정된 event 안에서 무엇을 했는지를 프로필로 구체화한다. 이 단계는 event를 추가·삭제하거나 시간·장소를 바꾸거나 confidence를 올리지 않고, 구체화한 event는 `INFERRED`로 둔다. 프롬프트 안의 단계이며 LLM 호출은 하나다. v2는 그대로다.
 - 소비 Agent 2종은 공용 projection 하나를 쓴다. Agent별로 필드를 골라 쓰거나 다르게 직렬화하지 않는다. 갱신 Agent가 "기존 프로필"을 읽을 때도 같은 projection이다.
 
 ### Event Agent 출력
@@ -62,8 +63,9 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - event/candidate의 end는 start보다 빠를 수 없다.
 - 접수 request의 window가 정본이며 완전히 밖인 candidate/event는 제외하고 경계에 걸친 구간은 clamp한다.
 - 수면 외 일반 event는 알려진 기상 경계 이전으로 확정하지 않는다. 경계를 알 수 없으면 시간을 지어내지 않는다.
-- MEAL duration은 20~60분 범위로 제한하는 전용 guard가 맡는다.
-- 비캘린더 장시간 event는 3시간 초과를 LOW warning으로 드러내되 코드가 임의 분할·절단하지 않는다. Calendar, Sleep, Movement, Meal은 이 검사에서 제외한다.
+- MEAL duration은 20~60분 범위로 제한하는 전용 guard가 맡는다. 시점 근거(사진·결제 알림)가 없는 MEAL은 길이와 무관하게 confidence를 0.6 이하로 묶는다(#118). 캘린더만 근거인 식사도 같다.
+- 비캘린더 장시간 event는 3시간 초과를 LOW warning으로 드러내되 코드가 임의 분할·절단하지 않는다. Calendar, Sleep, Movement, Meal은 이 검사에서 제외한다. eventType별 상한(`docs/ai-event-candidate.md`)은 v3 프롬프트가 지키고 코드 검사는 #119 몫이다.
+- 최종 event는 24개를 넘지 않는다(#118). 초과는 MEDIUM warning으로 드러내고 코드가 자르지 않는다 — 무엇을 합칠지는 의미 판단이다.
 - Location-only event의 시간은 참조한 STAY/MOVEMENT 근거 밖을 주장하지 않도록 맞추되, 다른 source가 섞이면 그 source의 시간 의미를 존중한다.
 
 ### 보존·병합
@@ -77,7 +79,8 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 
 ### 장소·민감정보
 
-- place/address는 source 근거로 확정한다. 근거 없는 address를 유지하지 않는다.
+- place/address는 source 근거로 확정한다. 근거 없는 address를 유지하지 않는다. MOVEMENT는 도착지만 쓴다 — 도착지에 이름이 없어도 출발지로 넘어가지 않는다(#118). `근처`·`주변`·`한 곳`·`일대`는 장소가 아니다.
+- v3 Timeline은 `places` 중 활동을 가장 잘 설명하는 장소 하나를 고른다(이동은 역·터미널, 식사는 음식점·카페, 업무·수업·진료·쇼핑은 회사·학교·병원·매장). 활동에 맞는 장소가 후보에 없으면 그 자리를 가장 잘 가리키는 이름을 고르고, 후보가 하나도 없을 때만 비운다. 비운 `place`는 확정 pass가 근거의 장소명으로 채운다.
 - Photo vision이 직접 읽은 상호명은 Photo에 구조화 place field가 없어도 제한적으로 보존할 수 있다.
 - Notification 원문의 개인정보·민감정보와 근거 없는 관계명은 candidate와 final draft 양쪽에서 검사한다.
 
@@ -87,13 +90,15 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - title은 30자 이내 명사구, description은 1~2문장 100자 안팎을 목표로 하며 120자 초과는 warning이다.
 - 최종 문장에 `듯해요` 같은 hedge와 분 단위 시각·걸음 수 같은 원본 수치를 쓰지 않는다. 모르는 내용은 빼고 confidence·inferenceLevel·uncertainty로 표현한다.
 - 이 문장 규칙은 Event Agent의 정확한 사실 보고에는 적용하지 않는다.
-- 병합·문장 수정이 끝난 뒤 길이와 duration을 검사하고, 반복마다 stale warning을 제거해 다시 계산한다.
+- v3 Timeline의 description은 시간 표현 없이 어디서·무엇을 했는지를 쓴다(#118). 언제는 `startTime`·`endTime`이 담는다. v2는 그대로다.
+- 병합·문장 수정이 끝난 뒤 길이·duration·event 개수를 검사하고, 반복마다 stale warning을 제거해 다시 계산한다.
 
 ### 질문
 
-- 내부 모호성 질문과 event 회고 질문은 목적·저장 경계가 다르다.
-- 회고 질문은 Repair 뒤 확정 event에만 붙고 Sleep/Wake/Movement에는 붙이지 않는다.
-- 회고 질문은 event당 최대 하나, 하루 최대 5개, 물음표 종료, 255자 이하다.
+- Timeline LLM 출력은 `events`·`warnings`뿐이다(`TimelineAgentOutput`, #118). 내부 모호성 질문(`questions`)은 없다.
+- Timeline의 LLM warning은 Timeline만 아는 판단 — 근거가 충돌해 한쪽을 고른 곳, 일부러 쓰지 않은 근거와 그 이유 — 에 한한다. 코드 guard가 남기는 것은 다시 적지 않는다.
+- 회고 질문은 Repair 뒤 **모든** 확정 event에 하나씩 붙는다. 종류에 따른 예외는 없다.
+- 회고 질문은 event당 하나, 물음표 종료, 255자 이하다. v3 프롬프트는 한 질문에 두 가지를 이어 묻는 것을 허용하고, 무엇을 했는지가 빠진 event는 그것을 먼저 묻는다.
 - Question Agent 실패가 Timeline task 전체를 실패시키지 않는다.
 
 ### 결과·상태·오류
