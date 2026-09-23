@@ -95,7 +95,7 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 
 ### 보안·관측·운영
 
-- taskToken·credential·presigned URL·사용자 본문은 허용되지 않은 로그·trace·result 경계로 보내지 않는다.
+- taskToken·credential·사용자 본문은 허용되지 않은 로그·trace·result 경계로 보내지 않는다. 사진의 presigned URL(`photoUrl`)은 prompt와 운영 로그에는 싣지 않지만 Langfuse 요청 덤프에는 원문이 남는다(#127).
 - 운영 이벤트는 allowlist field만 수집하며 일반 diagnostic log는 Elasticsearch에 적재하지 않는다.
 - 관측 실패는 Timeline 처리를 실패시키지 않는다.
 - 단일 worker와 프로세스 로컬 inflight를 유지해 `/ping` busy 의미와 배포 idle 대기를 보존한다.
