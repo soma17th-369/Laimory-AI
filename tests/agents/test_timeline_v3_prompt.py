@@ -111,6 +111,42 @@ def test_timeline_v3_no_longer_repeats_event_agent_judgements() -> None:
     assert "대상 날짜와 다르면" in text
 
 
+# --- Question v3 ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("event_type", EVENT_TYPES)
+def test_question_v3_has_an_example_for_every_event_type(event_type: str) -> None:
+    assert f"| `{event_type}` |" in _question_v3()
+
+
+def test_question_v3_removes_the_one_thing_per_question_limit() -> None:
+    text = _question_v3()
+
+    assert "하나의 질문에 하나만" not in text
+    assert "두 가지를 이어 물어도" in text
+
+
+def test_question_v3_asks_what_was_done_when_the_sentence_lacks_it() -> None:
+    text = _question_v3()
+
+    assert "무엇을 했는지가 빠진 event" in text
+    assert "시간을 보냈어요" in text
+
+
+def test_question_v3_examples_are_a_standard_not_answers() -> None:
+    assert "복사해서 쓰는 답안이 아닙니다" in _question_v3()
+
+
+def test_question_v3_examples_vary_their_endings() -> None:
+    """예시가 전부 같은 종결이면 모델도 그렇게 쓴다."""
+
+    rows = re.findall(r"^\| `[A-Z_]+` \| .*? \| (.*?\?) \| ", _question_v3(), re.M)
+    assert len(rows) == len(EVENT_TYPES)
+
+    endings = {question[-4:] for question in rows}
+    assert len(endings) >= 4, f"예시 종결이 {sorted(endings)} 로 단조롭습니다."
+
+
 # --- v2 는 그대로 --------------------------------------------------------------------
 
 
@@ -118,6 +154,8 @@ def test_v2_prompts_keep_their_old_structure() -> None:
     """v2 는 운영 세트다. #118 의 v3 변경이 새어 들면 안 된다."""
 
     timeline_v2 = _read("agents/timeline/prompts/v2/timeline.md")
+    question_v2 = _read("agents/question/prompts/v2/question.md")
 
     assert "## User Memory 반영" not in timeline_v2
     assert "## Questions와 Warnings" in timeline_v2
+    assert "하나의 질문에 하나만" in question_v2
