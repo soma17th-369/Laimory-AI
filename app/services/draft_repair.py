@@ -23,7 +23,7 @@ repair 순서와 이유:
     8. `체류 병합`       : 이동 없이 같은 장소에서 이어진 체류 event 를 하나로 합친다.
     9. `겹침 정리`       : 중복 event 를 병합하고, 모순되는 부분 겹침은 경고로 남긴다.
    10. `confidence 보강` : 캘린더 장소와 체류 장소가 일치하면 confidence 를 올린다.
-   11. `clientEventId`   : 최종 정렬 결과에 1번부터 다시 부여하고 질문 참조를 보정한다.
+   11. `clientEventId`   : 최종 정렬 결과에 1번부터 다시 부여한다.
 
 `장소 확정`이 `겹침 정리`보다 앞에 있는 이유: 중복 판별이 place 를 쓰므로,
 장소가 확정되기 전에 겹침을 보면 같은 곳의 두 event 를 다른 곳으로 오인한다.
@@ -400,13 +400,6 @@ def _absorb(target: TimelineEventDraft, other: TimelineEventDraft) -> None:
     target.source_refs = _dedupe_refs([*target.source_refs, *other.source_refs])
 
 
-def _remap_questions(draft: TimelineDraft, id_map: dict[str, str]) -> None:
-    for question in draft.questions:
-        question.related_event_ids = [
-            id_map.get(event_id, event_id) for event_id in question.related_event_ids
-        ]
-
-
 def _is_pure_stay_event(event: TimelineEventDraft, group: frozenset[str]) -> bool:
     """근거가 이 묶음의 STAY 뿐인가. 그런 event 만 "여기 있었다" 자체를 말한다."""
 
@@ -441,7 +434,6 @@ def merge_stay_events(draft: TimelineDraft, request: TimelineDraftRequest) -> No
     if not groups:
         return
 
-    id_map: dict[str, str] = {}
     merged_titles: list[str] = []
     absorbed: set[int] = set()  # 객체 identity. clientEventId 는 아직 중복일 수 있다.
 
@@ -457,7 +449,6 @@ def merge_stay_events(draft: TimelineDraft, request: TimelineDraftRequest) -> No
         target, *rest = members
         for event in rest:
             merged_titles.append(event.title)
-            id_map[event.client_event_id] = target.client_event_id
             absorbed.add(id(event))
             _absorb(target, event)
 
@@ -465,7 +456,6 @@ def merge_stay_events(draft: TimelineDraft, request: TimelineDraftRequest) -> No
         return
 
     draft.events = [event for event in draft.events if id(event) not in absorbed]
-    _remap_questions(draft, id_map)
     _add_warning(
         draft,
         TimelineWarningSeverity.LOW,
@@ -483,7 +473,6 @@ def resolve_overlaps(draft: TimelineDraft) -> None:
     """
 
     kept: list[TimelineEventDraft] = []
-    id_map: dict[str, str] = {}
     merged_titles: list[str] = []
 
     for event in draft.events:
@@ -492,12 +481,10 @@ def resolve_overlaps(draft: TimelineDraft) -> None:
             kept.append(event)
             continue
         merged_titles.append(event.title)
-        id_map[event.client_event_id] = target.client_event_id
         _absorb(target, event)
 
     draft.events = kept
-    if id_map:
-        _remap_questions(draft, id_map)
+    if merged_titles:
         _add_warning(
             draft,
             TimelineWarningSeverity.LOW,
@@ -518,61 +505,6 @@ def resolve_overlaps(draft: TimelineDraft) -> None:
             TimelineWarningSeverity.LOW,
             f"시간이 서로 겹치는 event {len(conflicts)}쌍이 있습니다: {_examples(conflicts)}",
         )
-
-
-# --- 질문 문장 다듬기 ---------------------------------------------------------
-
-
-def _polish_questions(draft: TimelineDraft) -> None:
-    """일반적인 검증 문구로 남은 질문을 사용자가 답할 수 있는 문장으로 바꾼다."""
-
-    events_by_id = {event.client_event_id: event for event in draft.events}
-    for question in draft.questions:
-        if not _is_generic_question(question.question):
-            continue
-        related_event = next(
-            (
-                events_by_id[event_id]
-                for event_id in question.related_event_ids
-                if event_id in events_by_id
-            ),
-            None,
-        )
-        question.question = _event_specific_question(question.time_range, related_event)
-
-
-def _is_generic_question(text: str) -> bool:
-    normalized = text.strip().lower()
-    generic = {
-        "q",
-        "확인 필요",
-        "시간 확인 필요",
-        "위치 확인 필요",
-        "일정 확인 필요",
-        "검증 필요",
-    }
-    return normalized in generic or len(normalized) <= 4
-
-
-def _event_specific_question(time_range: dict, related_event) -> str:
-    time_text = _korean_time_text(time_range.get("startTime"))
-    if related_event is not None:
-        return f"{time_text}쯤 {related_event.title} 활동이 맞나요?"
-    return f"{time_text}쯤 있었던 활동이 맞나요?"
-
-
-def _korean_time_text(value) -> str:
-    if value is None:
-        return "해당 시간"
-    hour = value.hour
-    minute = value.minute
-    period = "오전" if hour < 12 else "오후"
-    display_hour = hour if 1 <= hour <= 12 else abs(hour - 12)
-    if display_hour == 0:
-        display_hour = 12
-    if minute:
-        return f"{period} {display_hour}시 {minute:02d}분"
-    return f"{period} {display_hour}시"
 
 
 # --- 진입점 ------------------------------------------------------------------
@@ -632,16 +564,13 @@ def repair_draft(draft: TimelineDraft, request: TimelineDraftRequest) -> Timelin
     verify_narrative_length(draft)
     verify_event_duration(draft)
 
-    # 병합으로 event 구성이 바뀌었을 수 있어 한 번 더 정렬한 뒤
-    # 최종 id 를 부여한다. renumber_events 는 제거된 event 의 질문 참조도 버린다.
+    # 병합으로 event 구성이 바뀌었을 수 있어 한 번 더 정렬한 뒤 최종 id 를 부여한다.
     sort_events(draft)
     renumber_events(draft)
-    _polish_questions(draft)
 
     logger.debug(
-        "draft repair 완료: events=%d, questions=%d, warnings=%d",
+        "draft repair 완료: events=%d, warnings=%d",
         len(draft.events),
-        len(draft.questions),
         len(draft.warnings),
     )
     return draft

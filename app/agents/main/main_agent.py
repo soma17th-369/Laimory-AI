@@ -105,6 +105,12 @@ def _request_trace_input(request: TimelineDraftRequest) -> dict[str, object]:
     }
 
 
+def _retro_question_count(draft: TimelineDraft) -> int:
+    """회고 질문이 붙은 event 수. Question Agent 가 채운 값이며 저장 계약으로 나간다."""
+
+    return sum(1 for event in draft.events if event.question is not None)
+
+
 def _run_event_agent_traced(
     name: str,
     agent: EventAgent,
@@ -231,7 +237,6 @@ def _build_graph():
                 langfuse_observation,
                 output={
                     "eventCount": len(draft.events),
-                    "questionCount": len(draft.questions),
                     "warningCount": len(draft.warnings),
                     "durationMs": (perf_counter() - started) * 1000,
                     "tokenUsage": token_usage.summary(),
@@ -240,7 +245,6 @@ def _build_graph():
                 level="WARNING" if draft.warnings else "DEFAULT",
             )
             outcome["eventCount"] = len(draft.events)
-            outcome["questionCount"] = len(draft.questions)
             outcome["warningCount"] = len(draft.warnings)
         return {"draft": draft}
 
@@ -293,7 +297,6 @@ def _build_graph():
                 langfuse_observation,
                 output={
                     "eventCount": len(draft.events),
-                    "questionCount": len(draft.questions),
                     "warningCount": len(draft.warnings),
                     "durationMs": (perf_counter() - started) * 1000,
                     "tokenUsage": token_usage.summary(),
@@ -302,7 +305,6 @@ def _build_graph():
                 level="WARNING" if draft.warnings else "DEFAULT",
             )
             outcome["eventCount"] = len(draft.events)
-            outcome["questionCount"] = len(draft.questions)
             outcome["warningCount"] = len(draft.warnings)
         return {"draft": draft}
 
@@ -480,7 +482,7 @@ async def run_main_agent(
             langfuse_observation,
             output={
                 "eventCount": len(draft.events),
-                "questionCount": len(draft.questions),
+                "questionCount": _retro_question_count(draft),
                 "warningCount": len(draft.warnings),
                 "durationMs": (perf_counter() - started) * 1000,
                 "tokenUsage": token_usage.summary(),
@@ -489,6 +491,6 @@ async def run_main_agent(
             level="WARNING" if draft.warnings else "DEFAULT",
         )
         outcome["eventCount"] = len(draft.events)
-        outcome["questionCount"] = len(draft.questions)
+        outcome["questionCount"] = _retro_question_count(draft)
         outcome["warningCount"] = len(draft.warnings)
     return draft

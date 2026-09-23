@@ -18,7 +18,6 @@ from app.schemas import (
     TimelineDraft,
     TimeWindow,
     TimelineEventDraft,
-    TimelineQuestion,
     TimelineWarningSeverity,
 )
 from app.services.validator import (
@@ -121,30 +120,6 @@ def test_validate_draft_flags_partial_but_keeps():
 
     assert len(draft.events) == 1  # 경계 걸침은 유지
     assert any("경계" in w.message for w in draft.warnings)
-
-
-def test_related_event_ids_remapped_after_drop():
-    bounds = _bounds()
-    draft = TimelineDraft(
-        user_id="u",
-        date="2026-06-20",
-        timezone="Asia/Seoul",
-        events=[_event("event-001", *OUTSIDE), _event("event-002", *INSIDE)],
-        questions=[
-            TimelineQuestion(
-                question_id="question-001",
-                time_range={"startTime": INSIDE[0], "endTime": INSIDE[1]},
-                question="q",
-                reason="r",
-                related_event_ids=["event-001", "event-002"],
-            )
-        ],
-    )
-    validate_draft_to_window(draft, bounds)
-
-    # 제거된 event-001 참조는 버려지고, 살아남은 event-002 는 새 id(event-001)로 매핑된다.
-    assert draft.questions[0].related_event_ids == ["event-001"]
-
 
 
 # --- 저하 이벤트 (이슈 #101) -------------------------------------------------

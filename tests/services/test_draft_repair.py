@@ -15,7 +15,6 @@ from app.schemas import (
     SourceRef,
     TimelineDraft,
     TimelineEventDraft,
-    TimelineQuestion,
     TimelineWarningSeverity,
 )
 from app.services.draft_repair import (
@@ -71,13 +70,12 @@ def _event(
     )
 
 
-def _draft(*events, questions=()) -> TimelineDraft:
+def _draft(*events) -> TimelineDraft:
     return TimelineDraft(
         user_id="u",
         date=DAY,
         timezone="Asia/Seoul",
         events=list(events),
-        questions=list(questions),
     )
 
 
@@ -166,27 +164,16 @@ def test_sorting_is_deterministic_for_fully_tied_events():
 # --- clientEventId 재부여 ------------------------------------------------------
 
 
-def test_client_event_ids_are_assigned_after_sorting_and_questions_follow():
+def test_client_event_ids_are_assigned_after_sorting():
     draft = _draft(
         _event("event-001", "15:00", "16:00", STAY_REF, title="오후"),
         _event("event-002", "09:00", "10:00", PHOTO_REF, title="오전"),
-        questions=[
-            TimelineQuestion(
-                question_id="question-001",
-                time_range={"startTime": _t("15:00"), "endTime": _t("16:00")},
-                question="오후 3시쯤 무엇을 했나요?",
-                reason="확인 필요",
-                related_event_ids=["event-001"],  # 정렬 전의 '오후' event
-            )
-        ],
     )
 
     repair_draft(draft, _request())
 
     assert _titles(draft) == ["오전", "오후"]
     assert _ids(draft) == ["event-001", "event-002"]
-    # 질문은 여전히 '오후' event 를 가리켜야 한다. 새 id 는 event-002 다.
-    assert draft.questions[0].related_event_ids == ["event-002"]
 
 
 # --- 지속시간 repair ----------------------------------------------------------
