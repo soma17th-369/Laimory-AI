@@ -11,7 +11,6 @@ from app.schemas import (
     SourceRef,
     TimelineDraft,
     TimelineEventDraft,
-    TimelineQuestion,
     TimelineWarningSeverity,
 )
 from app.services.sleep_guard import enforce_sleep_boundary, sleep_spans, wake_time
@@ -62,13 +61,12 @@ def _event(
     )
 
 
-def _draft(*events, questions=()) -> TimelineDraft:
+def _draft(*events) -> TimelineDraft:
     return TimelineDraft(
         user_id="u",
         date=DAY,
         timezone="Asia/Seoul",
         events=list(events),
-        questions=list(questions),
     )
 
 
@@ -214,23 +212,12 @@ def test_a_nap_does_not_erase_the_morning():
     assert _titles(draft) == ["오전 작업"]  # 낮잠 구간만 금지된다
 
 
-def test_removing_an_event_renumbers_ids_and_drops_dangling_question_refs():
+def test_removing_an_event_renumbers_the_remaining_ids():
     draft = _draft(
         _event("event-001", "03:00", "04:00", title="새벽의 유령"),
         _event("event-002", "09:00", "10:00", title="오전 작업"),
-        questions=[
-            TimelineQuestion(
-                question_id="question-001",
-                time_range={"startTime": _t("03:00"), "endTime": _t("04:00")},
-                question="새벽에 무엇을 했나요?",
-                reason="확인 필요",
-                related_event_ids=["event-001", "event-002"],
-            )
-        ],
     )
 
     enforce_sleep_boundary(draft, _request())
 
     assert [event.client_event_id for event in draft.events] == ["event-001"]
-    # 사라진 event 참조는 버리고, 남은 event 는 새 id 로 가리킨다.
-    assert draft.questions[0].related_event_ids == ["event-001"]

@@ -193,7 +193,6 @@ class _TracedTimelineAgent:
         _trace(
             "timeline agent done: "
             f"events={len(draft.events)} "
-            f"questions={len(draft.questions)} "
             f"warnings={len(draft.warnings)} "
             f"elapsed={elapsed:.1f}s"
         )
@@ -269,7 +268,6 @@ def test_live_llm_pipeline_matches_data_fixture_shape_and_writes_comparison(
         "summary: "
         f"expected events={len(expected.get('events', []))}, "
         f"actual events={len(actual.get('events', []))}, "
-        f"questions={len(actual.get('questions', []))}, "
         f"warnings={len(actual.get('warnings', []))}"
     )
     print("\nactual result:")
@@ -278,7 +276,6 @@ def test_live_llm_pipeline_matches_data_fixture_shape_and_writes_comparison(
     assert actual["date"] == request.date
     assert actual["timezone"] == request.timezone
     assert isinstance(actual["events"], list)
-    assert isinstance(actual["questions"], list)
     assert isinstance(actual["warnings"], list)
 
     if os.getenv("LAIMORY_LIVE_LLM_STRICT") == "1":

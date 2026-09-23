@@ -251,13 +251,18 @@ app/
     ├── stay_merge.py          # 이동 없이 이어진 같은 장소 STAY 묶기 (끊긴 수집 복원, 입력만 분석)
     ├── calendar_guard.py      # timeline 에서 통째로 빠진 캘린더 일정을 event 로 복원 (누락 방지)
     ├── calendar_location.py    # 캘린더 locationText ↔ STAY place/address 일치 시 confidence 보강
-    ├── meal_guard.py           # MEAL event 지속시간 20~60분 강제 (긴 체류 전체를 식사로 잡지 않음)
+    ├── meal_guard.py           # MEAL event 지속시간 20~60분 강제 (긴 체류 전체를 식사로 잡지 않음).
+    │                           #   음식 사진·결제 알림 같은 시점 근거가 없는 식사는 길이와
+    │                           #   무관하게 confidence 를 0.6 이하로 묶는다(#118)
     ├── narrative_guard.py      # 사용자 노출 description 길이 검사 (#61). 120자 초과를 LOW
     │                           #   warning 으로 남긴다. 문체·문장 수는 재지 않는다(의미 판단)
     ├── duration_guard.py       # 비캘린더 event 지속시간 상한 검사 (#61). 3시간 초과를 LOW
     │                           #   warning 으로 남기고 **자르거나 나누지 않는다** — 어디서
     │                           #   끊을지는 Repair 의 판단이다. CALENDAR_EVENT·SLEEP·MOVEMENT
     │                           #   ·MEAL 은 제외(지속 구간이 근거에 직접 있거나 meal_guard 담당)
+    ├── event_count_guard.py    # 최종 event 개수 상한 검사 (#118). 24개 초과를 MEDIUM warning 으로
+    │                           #   남기고 **자르지 않는다** — 무엇을 합칠지는 의미 판단이라 코드가
+    │                           #   고르면 캘린더·사진 근거를 잃는다. 반복마다 다시 잰다
     ├── place_resolver.py       # 장소 확정의 유일한 자리. 우선순위(STAY→MOVEMENT→PHOTO→CALENDAR)를
     │                          #   `_PLACE_SOURCES` 목록 하나가 소유한다. 세 가지 일을 한다.
     │                          #   (1) resolve_candidate_places (#72): candidate 의 places/
@@ -333,9 +338,9 @@ app/
 #   앞 3개는 LLM 이 의미를 판단하는 확률적 단계, repair_draft 는 코드가 확정하는 결정론적 단계다.
 # repair_draft 순서: sourceType 정정 → 캘린더 복원 → duration → 근거 구간 정렬 → MEAL
 #   → 수면 경계 → window → 장소 확정 → 정렬 → 체류 병합 → 겹침 정리 → confidence 보강
-#   → 문장 길이·event 지속시간 검사 → clientEventId 재부여
-#   길이 검사 두 개는 맨 뒤여야 한다. 병합·겹침 정리로 문장과 시간이 바뀌므로 앞에 두면
-#   곧 사라질 값을 재게 된다. 둘 다 Repair 반복마다 자기 이전 warning 을 지우고 다시 잰다.
+#   → 문장 길이·event 지속시간·event 개수(24) 검사 → clientEventId 재부여
+#   검사 세 개는 맨 뒤여야 한다. 병합·겹침 정리로 문장·시간·개수가 바뀌므로 앞에 두면
+#   곧 사라질 값을 재게 된다. 셋 다 Repair 반복마다 자기 이전 warning 을 지우고 다시 잰다.
 # 결과 문장 계약(#61): title·description 은 사용자가 읽는 일기다. 1인칭 해요체 과거형,
 #   description 1~2문장 100자 내외, title 30자 이내 명사구. 추정 표현(`듯해요`)과 원본
 #   수치(분 단위 시각·걸음 수)를 문장에 쓰지 않는다 — 모르는 것은 헤지하지 말고 문장에서
@@ -350,7 +355,16 @@ app/
 #   질문 단계는 **반드시 Repair 뒤**다. Repair 가 event 를 병합·삭제하고 clientEventId 를
 #   다시 매기므로 그전에 만든 질문은 사라진 event 를 가리킨다.
 #   실패는 흡수한다(1209) — 질문이 없다고 하루 기록을 버리지 않는다.
-#   이것은 TimelineDraft.questions(모호성 확인, 내부 전용)와 **다른 값**이다.
+#   예전의 내부 모호성 질문(TimelineDraft.questions)은 #118 에서 없앴다 — 읽어서 쓰는 곳이
+#   없었다. Timeline 의 LLM 출력 계약은 TimelineAgentOutput(events·warnings)뿐이고, LLM
+#   warning 은 Timeline 만 아는 판단(근거 충돌에서 고른 쪽, 일부러 쓰지 않은 근거와 이유)에
+#   한한다. 코드 guard 가 남기는 것은 다시 적지 않는다.
+# Timeline v3(#118): 작업을 하루 구조 → 근거로 event 구성 → 활동 분류·장소 선택 →
+#   **User Memory 반영(별도 단계)** → 문장 순서로 나눈다. eventType 13종마다 다른 Event
+#   Agent 의 candidate 에서 무엇을 보고 어떻게 합치는지(병합 기준·정하는 근거·지속시간·다른
+#   Agent 데이터·User Memory 구체화 범위)와 candidate → event 예시를 갖는다. 최종 event 는
+#   24개 이내이고 description 에 시간 표현을 쓰지 않는다(언제는 startTime·endTime 이 담는다).
+#   Event Agent 가 이미 하는 판단은 Timeline 에서 지웠다. v2 는 그대로다.
 # User Memory 계약(#65): 입력 조회 응답의 선택 필드 `userMemory` 는 사용자 압축 프로필
 #   v1.0 이다. 전달 경로는 입력 조회 → CollectedSnapshot → normalize → TimelineDraftRequest
 #   → user_memory_to_text 하나뿐이고, **Timeline Agent 와 Question Agent 가 같은 문자열을

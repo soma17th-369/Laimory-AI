@@ -436,7 +436,6 @@ class RepairAgent(Agent):
                 extra=log_fields(
                     iteration=iteration,
                     eventCount=len(ctx.draft.events),
-                    questionCount=len(ctx.draft.questions),
                     warningCount=len(ctx.draft.warnings),
                 ),
             )

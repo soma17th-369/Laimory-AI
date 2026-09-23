@@ -30,10 +30,10 @@ from app.core.structured import StructuredOutputError
 from app.core.llm_stages import LLMStage
 from app.schemas import (
     AgentEventResult,
+    TimelineAgentOutput,
     TimelineDraft,
     TimelineDraftRequest,
     TimelineEventDraft,
-    TimelineQuestion,
     TimelineWarning,
     TimelineWarningSeverity,
 )
@@ -72,9 +72,10 @@ def build_timeline_prompt(
         "(e.g. movement + photo + notification + activity in the same window). "
         "Preserve every merged sourceRef, span the merged event from earliest startTime to "
         "latest endTime, and prefer a human event type over raw types. Do not force-merge "
-        "unrelated activities; when sources conflict, use questions or warnings instead. "
+        "unrelated activities; when sources conflict, pick one and record the conflict in "
+        "warnings or uncertainty instead. "
         "Sort events by actual candidate time, and expose uncertain or missing context "
-        "through questions, warnings, and uncertainty. "
+        "through warnings and uncertainty. "
         "Do not copy example dates; use the metadata date and the provided candidate times."
     )
 
@@ -114,11 +115,13 @@ def parse_timeline_draft(text: str, request: TimelineDraftRequest) -> TimelineDr
 
     - JSON 객체를 찾지 못하거나 ``json.loads`` 에 실패하면 예외를 던져 상위
       fallback(빈 draft)로 넘긴다.
-    - 개별 event/question/warning 이 스키마(ISO datetime·timezone·start/end 순서 등)
+    - 개별 event/warning 이 스키마(ISO datetime·timezone·start/end 순서 등)
       검증에 실패하면 그 항목만 건너뛰고 warning 으로 남긴다. 한 항목의 손상이
       전체 draft 를 무너뜨리지 않게 한다.
     - ``clientEventId`` 는 검증을 통과한 event 순서대로 다시 부여하고,
       ``userId``/``date``/``timezone`` 은 LLM 값 대신 요청 기준값을 신뢰한다.
+    - ``events``·``warnings`` 만 읽는다(:class:`TimelineAgentOutput`). 옛 프롬프트가
+      내는 ``questions`` 같은 다른 키는 무시한다(#118).
     """
 
     start = text.find("{")
@@ -144,18 +147,6 @@ def parse_timeline_draft(text: str, request: TimelineDraftRequest) -> TimelineDr
             _report_skipped_item("event", index, exc)
             skipped.append(_invalid_item_warning("event", index))
 
-    questions: list[TimelineQuestion] = []
-    for index, raw in enumerate(payload.get("questions") or [], start=1):
-        if not isinstance(raw, dict):
-            continue
-        item = {**raw}
-        item.setdefault("questionId", f"question-{len(questions) + 1:03d}")
-        try:
-            questions.append(TimelineQuestion.model_validate(item))
-        except ValidationError as exc:
-            _report_skipped_item("question", index, exc)
-            skipped.append(_invalid_item_warning("question", index))
-
     warnings: list[TimelineWarning] = []
     for index, raw in enumerate(payload.get("warnings") or [], start=1):
         if not isinstance(raw, dict):
@@ -175,7 +166,6 @@ def parse_timeline_draft(text: str, request: TimelineDraftRequest) -> TimelineDr
         date=request.date,
         timezone=request.timezone or _DEFAULT_TIMEZONE,
         events=events,
-        questions=questions,
         warnings=[*warnings, *skipped],
     )
 
@@ -247,8 +237,10 @@ class TimelineAgent(Agent):
             items_to_text(agent_result.candidates),
             items_to_text(agent_result.fragments),
         )
+        # 내부 draft 가 아니라 LLM 출력 계약을 스키마로 싣는다(#118). draft 전체를 실으면
+        # 코드가 채우는 clientEventId·question 까지 모델에게 쓰라고 하는 셈이 된다.
         text = self.llm.complete_json(
-            prompt, TimelineDraft, system=_SYSTEM_PROMPT, temperature=0.2
+            prompt, TimelineAgentOutput, system=_SYSTEM_PROMPT, temperature=0.2
         )
         draft = parse_timeline_draft(text, request)
         draft.warnings = [*carried_warnings, *draft.warnings]

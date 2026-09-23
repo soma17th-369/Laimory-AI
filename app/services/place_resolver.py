@@ -19,7 +19,10 @@
       LLM 이 지어낸 것이므로 지우고 경고한다.
 
 `place` 후보는 사용자가 정한 우선순위 STAY → MOVEMENT → PHOTO → CALENDAR 순으로 찾는다.
-PHOTO 의 장소는 안 들어올 수 있고, 그때는 그냥 후보를 내놓지 않는다.
+PHOTO 의 장소는 안 들어올 수 있고, 그때는 그냥 후보를 내놓지 않는다. MOVEMENT 는
+**도착지만** 본다(#118 장소 선택 규칙). 도착지에 이름이 없다고 출발지로 넘어가지
+않는다 — 이동의 장소는 어디로 갔는지이지 어디서 나왔는지가 아니고, 출발지가 섞이면
+`집` 을 보고 집에서 나온 것을 집에 있었던 것으로 뒤집어 읽는다. 주소도 같다.
 """
 
 import json
@@ -56,6 +59,7 @@ _VAGUE_PLACE_LABELS = frozenset(
         "근처",
         "주변",
         "부근",
+        "일대",
         "알 수 없음",
         "미상",
         "unknown",
@@ -165,11 +169,18 @@ def _stay_places(stay: StayItem) -> Iterator[str | None]:
 
 
 def _movement_places(movement: MovementItem) -> Iterator[str | None]:
-    # 이동은 도착지가 그 event 의 장소를 더 잘 설명한다.
-    for geo in (movement.end, movement.start):
-        if geo is not None:
-            yield geo.place
-            yield from geo.places
+    """이동에서 **도착지 이름만** 내놓는다.
+
+    출발지를 섞지 않는다. 이동의 장소는 어디로 갔는지다. candidate 의 `places` 는
+    Timeline 이 User Memory 와 대조할 후보인데, 출발지가 섞여 있으면 `집` 을 보고
+    "이 이동의 장소는 집" 으로 읽어 **집에서 나온 것을 집에 있었던 것으로 뒤집는다.**
+    draft 채움도 같다(#118 장소 선택 규칙 "MOVEMENT 는 도착지") — 도착지에 이름이
+    없으면 채우지 않고 비운다.
+    """
+
+    if movement.end is not None:
+        yield movement.end.place
+        yield from movement.end.places
 
 
 def _calendar_places(calendar: CalendarItem) -> Iterator[str | None]:
@@ -181,26 +192,7 @@ def _stay_addresses(stay: StayItem) -> Iterator[str | None]:
 
 
 def _movement_addresses(movement: MovementItem) -> Iterator[str | None]:
-    for geo in (movement.end, movement.start):
-        if geo is not None:
-            yield geo.address
-
-
-def _movement_destination_places(movement: MovementItem) -> Iterator[str | None]:
-    """이동에서 **도착지 이름만** 내놓는다(candidate 전용).
-
-    draft 쪽 `_movement_places` 와 달리 출발지를 섞지 않는다. candidate 의 `places` 는
-    Timeline 이 User Memory 와 대조할 후보인데, 출발지가 섞여 있으면 `집` 을 보고
-    "이 이동의 장소는 집" 으로 읽어 **집에서 나온 것을 집에 있었던 것으로 뒤집는다.**
-    """
-
-    if movement.end is not None:
-        yield movement.end.place
-        yield from movement.end.places
-
-
-def _movement_destination_addresses(movement: MovementItem) -> Iterator[str | None]:
-    """이동에서 **도착지 주소만** 내놓는다(candidate 전용).
+    """이동에서 **도착지 주소만** 내놓는다.
 
     출발지로 넘어가면 `place` 는 도착지인데 `address` 는 출발지가 되어 짝이 어긋난다.
     도착지 주소가 근사값(`인근`)이면 채우지 않고 비운다 — 다른 지점의 정확한 주소보다
@@ -246,25 +238,6 @@ _ADDRESS_SOURCES: tuple[tuple[str, Callable[[Any], Iterator[str | None]]], ...] 
 #: 주소가 근거에 실재하는지 대조할 때만 추가로 보는 출처.
 _ADDRESS_SUPPORT_SOURCES: tuple[tuple[str, Callable[[Any], Iterator[str | None]]], ...] = (
     ("calendars", _calendar_address_support),
-)
-
-#: candidate 전용 출처. draft 와 다른 점은 **이동에서 도착지만 본다**는 것뿐이다.
-#:
-#: draft 의 `place` 은 `_first` 로 하나만 고르므로 출발지가 뒤에 있어도 도착지가
-#: 이긴다. 하지만 candidate 의 `places` 는 **목록 전체**가 Timeline 으로 가고 `address` 는
-#: 도착지 주소가 근사값이면 출발지로 넘어간다. 그래서 candidate 에서는 아예 도착지로
-#: 좁힌다(이슈 #72).
-_CANDIDATE_PLACE_SOURCES: tuple[tuple[str, Callable[[Any], Iterator[str | None]]], ...] = (
-    ("stays", _stay_places),
-    ("movements", _movement_destination_places),
-    ("photos", _photo_places),
-    ("calendars", _calendar_places),
-)
-
-_CANDIDATE_ADDRESS_SOURCES: tuple[tuple[str, Callable[[Any], Iterator[str | None]]], ...] = (
-    ("stays", _stay_addresses),
-    ("movements", _movement_destination_addresses),
-    ("photos", _photo_addresses),
 )
 
 
@@ -414,7 +387,9 @@ def resolve_candidate_places(
     `places` 를 줄이지 않는 이유: 한 지점에 이름이 여럿일 수 있는데(`강남파이낸스센터` /
     `스타벅스 강남점`), 어느 것이 사용자의 `회사` 인지는 User Memory 를 가진 Timeline 만
     판단할 수 있다. 여기서 하나로 줄이면 그 대조 기회를 없앤다. 목록은 근거가 확실한
-    순서(STAY → MOVEMENT 도착지 → CALENDAR)로 담기므로 순서 자체가 우선순위다.
+    순서(STAY → MOVEMENT 도착지 → PHOTO → CALENDAR)로 담기므로 순서 자체가 우선순위다.
+    draft 채움과 같은 출처 목록을 쓴다 — 둘이 갈리면 Timeline 이 고른 후보를 코드가 다른
+    후보로 채운다.
     """
 
     if not result.candidates:
@@ -425,14 +400,12 @@ def resolve_candidate_places(
     filled_addresses = 0
     for candidate in result.candidates:
         refs = candidate.source_refs
-        labels = _unique_labels(
-            _from_sources(refs, evidence, _CANDIDATE_PLACE_SOURCES)
-        )
+        labels = _unique_labels(_place_label_candidates(refs, evidence))
         candidate.places = labels
         candidate.address = next(
             (
                 value.strip()
-                for value in _from_sources(refs, evidence, _CANDIDATE_ADDRESS_SOURCES)
+                for value in _address_candidates(refs, evidence)
                 if is_exact_address(value)
             ),
             None,

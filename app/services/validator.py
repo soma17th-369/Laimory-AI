@@ -195,27 +195,17 @@ def renumber_events(draft: TimelineDraft) -> None:
     """남은 event 에 `clientEventId` 를 1번부터 다시 매긴다(in-place).
 
     event 를 제거한 뒤에는 번호에 구멍이 생기므로 항상 이 함수로 다시 매긴다.
-    질문의 `relatedEventIds` 도 새 id 로 보정하고, 사라진 event 참조는 버린다.
     draft 에서 event 를 제거하는 검증(window·sourceRef)이 공유한다.
     """
 
-    id_map: dict[str, str] = {}
     for index, event in enumerate(draft.events, start=1):
-        new_id = f"event-{index:03d}"
-        id_map[event.client_event_id] = new_id
-        event.client_event_id = new_id
-
-    for question in draft.questions:
-        question.related_event_ids = [
-            id_map[old] for old in question.related_event_ids if old in id_map
-        ]
+        event.client_event_id = f"event-{index:03d}"
 
 
 def validate_draft_to_window(draft: TimelineDraft, bounds: WindowBounds) -> None:
     """draft 의 event 시간을 검증한다(in-place).
 
-    - 완전히 window 밖인 event 는 제거하고, `clientEventId` 를 다시 매겨
-      `questions.relatedEventIds` 를 함께 보정한다.
+    - 완전히 window 밖인 event 는 제거하고 `clientEventId` 를 다시 매긴다.
     - 경계에 걸친 event 는 유지하되 warning 을 남긴다.
 
     warning 은 `clientEventId` 대신 **제목**으로 event 를 가리킨다. 이 검증 뒤에

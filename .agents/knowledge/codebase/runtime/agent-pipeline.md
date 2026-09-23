@@ -26,7 +26,7 @@
 2. Agent별 결과를 유일한 Agent 이름으로 보관하고 하나의 `AgentEventResult`로 취합한다. 취합 직후 candidate의 `places`/`address`를 `sourceRefs`로 찾은 입력에서 그대로 복사한다. `places`는 근거가 확실한 순서로 담긴 후보 목록이며 단수 필드를 두지 않는다 — 복수는 고를 후보(Timeline 입력), 단수는 고른 결과(`place`, Timeline 출력)다. Event Agent는 이 필드를 채우지 않는다 — 한 지점에 장소명이 여럿일 때 어느 것이 맞는지 판단할 근거가 없기 때문이며, 고르는 것은 User Memory를 가진 Timeline Agent다. 복사 지점이 fan-in인 이유는 Repair의 `rerun_timeline_agent`도 같은 함수를 지나기 때문이다.
 3. Timeline Agent가 candidates와 fragments를 의미적으로 병합해 아직 확정되지 않은 draft를 만든다.
 4. Repair Agent가 결정론 확정과 최대 `REPAIR_MAX_ITERATIONS`회의 LLM 개선을 수행한다.
-5. Question Agent가 확정 event 중 질문할 가치가 있는 최대 5개에 회고 질문을 붙인다.
+5. Question Agent가 확정 event 모두에 회고 질문을 하나씩 붙인다.
 
 Agent별 이름은 Repair의 `rerun_event_agent`가 특정 결과만 교체하는 key다. 이름이 중복되면 suffix를 붙이며, `event_agents`와 `event_results`는 같은 key를 유지해야 한다.
 
@@ -42,9 +42,11 @@ Event Agent는 정확한 source 사실과 수치·시각을 보고하는 계층�
 
 ### Timeline Agent 경계
 
-Timeline Agent는 의미 병합과 tolerant parse를 맡는다. LLM payload의 개별 event/question이 schema를 어기면 해당 항목만 제외하고 warning을 남긴다. 최상위 JSON을 읽지 못하거나 호출이 실패하면 빈 draft와 HIGH warning으로 fallback한다.
+Timeline Agent는 의미 병합과 tolerant parse를 맡는다. LLM 출력 계약은 `TimelineAgentOutput`(`events`·`warnings`)이며 내부 draft 전체가 아니다(#118). 개별 event/warning이 schema를 어기면 해당 항목만 제외하고 warning을 남긴다. 최상위 JSON을 읽지 못하거나 호출이 실패하면 빈 draft와 HIGH warning으로 fallback한다. `questions` 같은 다른 키는 무시한다.
 
 LLM이 준 `userId`, date, timezone, `clientEventId`는 신뢰하지 않는다. date/timezone은 request 기준으로, event ID는 parse 순서로 임시 부여한다.
+
+v3 Timeline 프롬프트는 작업을 하루 구조 → 근거로 event 구성 → 활동 분류·장소 선택 → User Memory 반영 → 문장 순서로 나누고, eventType 13종마다 다른 Event Agent의 candidate에서 무엇을 보고 어떻게 합치는지(병합 기준·정하는 근거·지속시간·다른 Agent 데이터에서 참고할 것·User Memory 구체화 범위)와 candidate → event 예시를 갖는다. Event Agent가 이미 하는 판단(이동수단 라벨·경유지·예약 날짜·알림 가치·수면 유효성)은 Timeline에서 지웠다. v2는 그대로다.
 
 ### Repair Agent와 확정 pass
 
@@ -59,18 +61,18 @@ Repair는 시작할 때 LLM 호출 여부와 무관하게 `repair_draft`를 한 
 5. 정렬 → 이동 없는 연속 STAY 병합 → 중복·겹침 정리
 6. 병합 후 Photo 단일 귀속과 Notification 안전성 검사
 7. Calendar/STAY 장소 일치 confidence 보강
-8. 최종 문장 길이와 장시간 event 검사
-9. 재정렬 → `clientEventId` 재부여 → 내부 모호성 질문 문장 보정
+8. 최종 문장 길이, 장시간 event, event 개수(24) 검사
+9. 재정렬 → `clientEventId` 재부여
 
 `verify_fragment_usage`는 이 확정 pass 뒤에 실행해 최종 event가 fragment-only 근거인지 검사한다. 반복마다 동일 warning을 dedupe한다.
 
 ### Question Agent
 
-회고 질문은 Repair가 event를 삭제·병합하고 ID를 확정한 뒤 생성한다. `SLEEP`, `WAKE_UP`, `MOVEMENT`는 질문 대상에서 제외한다. LLM에는 event의 ID, 종류, title, 시간대, 선택적 description/place만 주며 confidence, inference level, uncertainty, sourceRef는 주지 않는다.
+회고 질문은 Repair가 event를 삭제·병합하고 ID를 확정한 뒤 생성한다. 모든 event가 대상이며 종류에 따른 예외는 없다. LLM에는 event의 ID, 종류, title, 시간대, 선택적 description/place만 주며 confidence, inference level, uncertainty, sourceRef는 주지 않는다.
 
-질문은 물음표로 끝나야 하고 255자 이하여야 하며 event당 첫 질문 하나만 적용한다. 모르는 event ID, 중복, 초과 질문은 제외한다. Question Agent 실패는 warning을 남기고 질문 없는 draft로 저장을 계속한다.
+질문은 물음표로 끝나야 하고 255자 이하여야 하며 event당 첫 질문 하나만 적용한다. 모르는 event ID와 중복은 제외하고, 1차에서 빠진 event는 한 번 더 묻는다. Question Agent 실패는 warning을 남기고 질문 없는 draft로 저장을 계속한다.
 
-`TimelineDraft.questions`는 시간·장소 모호성을 확인하는 내부 질문이고 `TimelineEventDraft.question`은 사용자에게 저장되는 회고 질문이다. 서로 대체하지 않는다.
+v3 Question 프롬프트는 eventType 13종마다 예시를 두고, 한 질문에 두 가지를 이어 묻는 것을 허용하며, 무엇을 했는지가 빠진 event는 그것을 먼저 묻는다(#118). 내부 모호성 질문(`TimelineDraft.questions`)은 #118에서 제거됐다.
 
 ## Invariants
 
@@ -80,7 +82,7 @@ Repair는 시작할 때 LLM 호출 여부와 무관하게 `repair_draft`를 한 
 - rawId 무결성과 request window는 candidate와 final draft 양쪽에서 방어한다.
 - Calendar 누락 방지, 정렬, ID, source/시간 확정은 LLM 선택에 의존하지 않는다.
 - 병합으로 event 구성이 바뀐 뒤에 Photo/Notification/길이 검사를 수행한다.
-- 길이·duration guard는 반복마다 자기 이전 warning을 제거하고 현재 draft를 다시 잰다.
+- 길이·duration·event 개수 guard는 반복마다 자기 이전 warning을 제거하고 현재 draft를 다시 잰다.
 - Question Agent는 Repair 뒤, 결과 저장 앞이다.
 
 ## Known Gaps
