@@ -12,11 +12,12 @@
 `photo_url` 은 App Server 가 주는 S3 이미지 URL 이다(이슈 #52). Photo Agent 가
 이 URL 로 실제 이미지를 내려받아 vision 모델에 넘긴다.
 
-**`exclude=True` 인 이유**: presigned URL 이면 query 에 서명 자격증명이 실린다.
-이 모델은 `model_dump()` 로 LLM 프롬프트에 그대로 들어가므로(`agent.py` 의
-`_enrich_photo_item`), 필드를 그냥 두면 URL 전체가 프롬프트·Langfuse 로 나간다.
-`exclude=True` 는 직렬화 경로 전체에서 값을 빼고, 코드에서는 `photo.photo_url` 로
-그대로 읽을 수 있다.
+**직렬화에서 빼지 않는다(이슈 #127).** presigned URL 이면 query 에 서명이 실리지만,
+Langfuse 에서 Photo Agent 결과를 검증하려면 어느 사진을 보고 만든 설명인지 봐야 하므로
+요청 덤프에는 원문이 남는다. LLM 프롬프트에는 계속 싣지 않는다 — 제외 지점은 좌표(#80)와
+같은 프롬프트 경계(`parsing.strip_prompt_excluded_keys`, Repair `_lookup_source`)다.
+이미지는 vision 호출에 bytes 로 따로 실리므로 LLM 이 URL 에서 얻을 정보가 없고,
+사진 수만큼 input token 만 늘어난다.
 
 `clientPhotoUri`(`content://media/...`)와 `fileName`(UUID 파일명)은 갖고 있지
 않는다. 둘 다 클라이언트/스토리지 내부 식별자라 AI 가 쓸 정보가 없고, 프롬프트에
@@ -42,5 +43,5 @@ class PhotoItem(CamelModel):
     places: list[str] = Field(default_factory=list)
     address: str | None = None
     description: str | None = None
-    #: S3 이미지 URL. 직렬화에서 제외한다(위 docstring 참고).
-    photo_url: str | None = Field(default=None, alias="photoUrl", exclude=True)
+    #: S3 이미지 URL. 요청 덤프에는 남고 프롬프트 경계에서 뺀다(위 docstring 참고).
+    photo_url: str | None = Field(default=None, alias="photoUrl")

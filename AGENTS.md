@@ -322,11 +322,13 @@ app/
 #   `dailyTimelines` 키를 비식별 요약(schemaVersion·채워진 필드 수·크기 / 타임라인 수·event 수·memo 수)
 #   으로 바꾸므로 호출부가 스냅샷이나 요청을 통째로 덤프해도 본문이 새지 않는다.
 #   Langfuse generation input(프롬프트 본문)에는 값이 들어가지만 운영은 콘텐츠 정책이 NONE 이다.
-# 좌표 경계(#80): `latitude`/`longitude` 는 request 로 계속 받지만 **프롬프트에는 싣지
-#   않는다.** 사람이 읽고 판단할 값이 아니라 input token 만 차지하고, 좌표가 필요한 판단
-#   (연속 MOVEMENT 사이 끝점 거리 등)은 코드가 `derivedMetrics` 로 계산해 결론만 넘긴다.
-#   제외 지점은 `parsing.items_to_text_without_coordinates`(Location·Photo Agent)와
-#   `repair/tools._lookup_source` 다. 입력 스키마에서 필드를 없애는 것이 아니다.
+# 프롬프트 제외 키(#80, #127): `latitude`/`longitude` 와 `photoUrl` 은 request 로 계속 받지만
+#   **프롬프트에는 싣지 않는다.** 좌표는 사람이 읽고 판단할 값이 아니라 input token 만 차지하고,
+#   좌표가 필요한 판단(연속 MOVEMENT 사이 끝점 거리 등)은 코드가 `derivedMetrics` 로 계산해
+#   결론만 넘긴다. `photoUrl` 은 이미지가 vision 호출에 bytes 로 따로 실려 LLM 이 URL 에서
+#   얻을 정보가 없다. 제외 지점은 `parsing.items_to_text_without_prompt_excluded_keys`
+#   (Location·Photo Agent)와 `repair/tools._lookup_source` 다. 입력 스키마에서 필드를 없애는
+#   것이 아니고 마스킹도 아니다 — `photoUrl` 은 Langfuse 요청 덤프에 원문이 남는다(사진 검증용).
 #   PHOTO 는 `places`/`address` 를 받아 처음으로 장소 근거가 된다 — 다만 **안 들어올 수
 #   있고**, 없으면 촬영 시각으로 STAY 를 대조하는 기존 경로가 답한다.
 # 프롬프트 동결본: 활성 프롬프트를 크게 바꿀 때 같은 디렉터리에 `<활성파일명>_v<버전>.md`
