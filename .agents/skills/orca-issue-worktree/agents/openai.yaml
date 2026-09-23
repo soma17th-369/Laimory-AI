@@ -1,0 +1,4 @@
+interface:
+  display_name: "Orca 이슈 워크트리"
+  short_description: "GitHub 이슈를 선택한 에이전트의 Orca 워크트리로 생성"
+  default_prompt: "$orca-issue-worktree를 사용해 이슈 번호와 에이전트를 지정하여 Orca 워크트리를 만들어 주세요."
