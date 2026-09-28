@@ -4,7 +4,7 @@
 
 - **입력** — 접수 schema 가 하루 타임라인을 최대 5건으로 제한한다. 그 안의 event와
   본문은 프롬프트에 실을 만큼으로 줄이며, event가 많은 정상적인 하루는 거절하지 않고
-  **자른다**.
+  **자른다**. 사용자가 고른 하루 감정은 날짜 항목에 그대로 싣는다(#121).
 - **출력** — LLM 이 만든 갱신본이 크기·민감정보 규칙을 지켰는지 본다. 여기서는
   **검출만** 하고 고치지 않는다. 압축은 의미 판단이라 코드가 문장을 자르면 뜻이
   달라진다(:mod:`app.services.duration_guard` 와 같은 철학이다).
@@ -47,7 +47,10 @@ USER_MEMORY_MAX_CHARS = 1_200
 #: 전체 상한 하나만 두면 event 가 몰린 하루가 다른 날의 자리를 다 먹는다. 정렬 기준이
 #: (메모 있음, 최근순)이라 오래된 날이 통째로 밀려나고, event 가 하나도 안 남은 날은
 #: payload 에서 빠져 모델에게는 애초에 없던 날이 된다.
-MAX_EVENTS_PER_TIMELINE = 20
+#:
+#: 24 는 Timeline 이 하루에 만드는 event 의 최대 개수다(#118). 그보다 작으면 AI 가 만든
+#: 정상적인 하루가 여기서 잘린다. 넘는 것은 사용자가 손으로 더한 event 가 있는 날뿐이다.
+MAX_EVENTS_PER_TIMELINE = 24
 
 #: 요청 전체 event 상한. 날짜별 몫에서 파생되므로 따로 정하지 않는다.
 MAX_EVENT_COUNT = MAX_DAILY_TIMELINE_COUNT * MAX_EVENTS_PER_TIMELINE
@@ -58,6 +61,10 @@ MEMO_MAX_CHARS = 500
 
 #: AI 가 쓴 문장(title/subtitle/question)의 상한. 저장 계약과 같은 값이다.
 TEXT_MAX_CHARS = 255
+
+#: 하루 감정 값의 상한. App Server 가 이 값을 담는 컬럼 길이와 같다. 값은 enum 이름
+#: (``HAPPY`` 등)이라 넘을 일이 없지만, 넘겨받은 값을 그대로 믿지 않는다.
+EMOTION_MAX_CHARS = 32
 
 
 @dataclass(frozen=True)
@@ -98,15 +105,21 @@ def _clip(value: str | None, limit: int) -> str | None:
 def _project_event(event: DailyTimelineEvent) -> dict[str, Any]:
     """event 하나를 프롬프트용 최소 형태로 접는다.
 
-    시각은 분을 버리고 시 단위로만 준다. 갱신 대상은 "몇 시 몇 분에 무엇을 했다" 가
-    아니라 **일정 기간 유효한 생활 구조**이고, 분 단위 값은 그 판단에 쓸모가 없으면서
-    프로필 문장에 새어 들어갈 위험만 만든다(#61 의 문장 계약과 같은 이유다).
+    시각은 분을 버리고 시 단위로만 준다. 프로필에 남길 것은 "몇 시 몇 분에 무엇을
+    했다" 가 아니라 **언제쯤 무엇을 하는 사람인가**이고, 분 단위 값은 그 판단에 쓸모가
+    없으면서 프로필 문장에 새어 들어갈 위험만 만든다(#61 의 문장 계약과 같은 이유다).
+
+    끝 시각도 같은 단위로 준다(#121). 시작만 있으면 그 일을 얼마 동안 했는지 알 수
+    없어, 근무 시간이나 저녁을 보내는 방식 같은 것을 읽을 수 없다. 자정을 넘긴 event 는
+    ``endHour`` 가 ``hour`` 보다 작다.
     """
 
     projected: dict[str, Any] = {
         "eventType": event.event_type,
         "hour": event.start_at.hour,
     }
+    if event.end_at is not None:
+        projected["endHour"] = event.end_at.hour
     title = _clip(event.title, TEXT_MAX_CHARS)
     if title:
         projected["title"] = title
@@ -187,7 +200,15 @@ def build_daily_timeline_digest(daily_timelines: list[DailyTimeline]) -> DailyTi
             continue
         # ``date`` 는 Agent 프롬프트용 내부 digest 키다. 공개 접수 계약의
         # ``recordDate`` 와 분리해 프롬프트 입력을 불필요하게 바꾸지 않는다.
-        payload.append({"date": entry.record_date, "events": events})
+        projected: dict[str, Any] = {"date": entry.record_date}
+        emotion = _clip(entry.emotion_type, EMOTION_MAX_CHARS)
+        if emotion:
+            # 사용자가 하루를 저장하며 **직접 고른** 값이다(#121). ``memo`` 와 함께
+            # 입력에서 사용자가 남긴 둘뿐인 신호다. 값의 뜻은 프롬프트가 설명한다 —
+            # 여기서 풀어 쓰면 App Server 가 값을 더했을 때 코드가 그것을 모른다.
+            projected["emotion"] = emotion
+        projected["events"] = events
+        payload.append(projected)
     payload.sort(key=lambda entry: entry["date"])
 
     return DailyTimelineDigest(
@@ -196,6 +217,7 @@ def build_daily_timeline_digest(daily_timelines: list[DailyTimeline]) -> DailyTi
             "dailyTimelineCount": len(payload),
             "eventCount": len(kept),
             "memoCount": memo_count,
+            "emotionCount": sum(1 for entry in payload if "emotion" in entry),
             "droppedDailyTimelineCount": dropped_timeline_count,
             "droppedEventCount": dropped_event_count,
         },

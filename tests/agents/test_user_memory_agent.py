@@ -26,8 +26,13 @@ _PROMPTS = (
 )
 
 
-def _digest(events=None):
-    payload = [daily_timeline(events=events if events is not None else [daily_timeline_event()])]
+def _digest(events=None, *, emotion_type=None):
+    payload = [
+        daily_timeline(
+            emotion_type=emotion_type,
+            events=events if events is not None else [daily_timeline_event()],
+        )
+    ]
     return build_daily_timeline_digest([DailyTimeline.model_validate(item) for item in payload])
 
 
@@ -69,6 +74,18 @@ def test_a_day_with_memo_gets_no_such_hint():
 
     assert "[근거 없음]" not in prompt
     assert "오늘은 좋았어요." in prompt
+
+
+def test_prompt_carries_the_emotion_the_user_picked():
+    prompt = build_update_prompt(None, _digest(emotion_type="VERY_UNHAPPY"))
+
+    assert '"emotion": "VERY_UNHAPPY"' in prompt
+
+
+def test_prompt_has_no_emotion_key_when_none_was_picked():
+    prompt = build_update_prompt(None, _digest(emotion_type=None))
+
+    assert '"emotion"' not in prompt
 
 
 def test_violations_are_sent_back_without_quoting_values():

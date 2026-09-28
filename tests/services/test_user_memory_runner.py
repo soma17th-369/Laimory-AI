@@ -148,6 +148,18 @@ def test_a_day_without_memo_still_succeeds():
     assert agent.calls[0][1].has_memo is False
 
 
+def test_picked_emotion_reaches_the_agent():
+    """접수한 하루 감정이 digest 를 거쳐 Agent 까지 간다(#121)."""
+
+    client = FakeAppServerClient()
+    agent = _StubAgent()
+
+    _run(client, agent, dailyTimelines=[daily_timeline(emotion_type="UNHAPPY")])
+
+    digest = agent.calls[0][1]
+    assert digest.daily_timelines[0]["emotion"] == "UNHAPPY"
+
+
 # --- 기존 프로필 계약 위반 (흡수) --------------------------------------
 
 
@@ -312,6 +324,25 @@ def test_event_reports_the_accepted_batch_size(caplog):
     event = _events(caplog)[-1]
     assert event["dailyTimelineCount"] == MAX_DAILY_TIMELINE_COUNT
     assert event["droppedDailyTimelineCount"] == 0
+
+
+def test_event_reports_how_many_days_carried_an_emotion(caplog):
+    """사용자가 직접 남긴 것이 있었는지를 결과만 보고 알 수 있어야 한다(#121).
+
+    남기는 것은 **개수**다. 어떤 감정을 골랐는지는 싣지 않는다.
+    """
+
+    daily_timelines = [
+        daily_timeline(record_date="2026-08-03", emotion_type="VERY_UNHAPPY"),
+        daily_timeline(record_date="2026-08-04", emotion_type=None),
+    ]
+
+    with caplog.at_level(logging.DEBUG):
+        _run(FakeAppServerClient(), dailyTimelines=daily_timelines)
+
+    event = _events(caplog)[-1]
+    assert event["emotionCount"] == 1
+    assert "VERY_UNHAPPY" not in str(event)
 
 
 def test_event_never_carries_timeline_or_memory_content(caplog):

@@ -3,7 +3,8 @@
 여기서 지키는 두 가지가 계약이다.
 
 - 입력 batch는 schema가 최대 5건으로 거절한다. 그 안의 event·본문은 자르며,
-  자를 때 메모 있는 event를 끝까지 남긴다.
+  자를 때 메모 있는 event를 끝까지 남긴다. 사용자가 고른 하루 감정은 날짜 항목에
+  싣는다(#121).
 - 출력은 **자르지 않고 지적한다.** 압축은 의미 판단이라 코드가 문장을 건드리지 않는다.
 """
 
@@ -11,7 +12,9 @@ import pytest
 
 from app.schemas.user_memory import UserMemory
 from app.schemas.user_memory_update import DailyTimeline
+from app.services.event_count_guard import MAX_EVENT_COUNT as TIMELINE_MAX_EVENT_COUNT
 from app.services.user_memory_limits import (
+    EMOTION_MAX_CHARS,
     MAX_DAILY_TIMELINE_COUNT,
     MAX_EVENT_COUNT,
     MAX_EVENTS_PER_TIMELINE,
@@ -175,6 +178,142 @@ def test_digest_of_nothing_is_empty_not_an_error():
 
     assert digest.daily_timelines == []
     assert digest.stats["eventCount"] == 0
+    assert digest.stats["emotionCount"] == 0
+
+
+# --- 하루 감정 (#121) ---------------------------------------------------
+
+
+def test_digest_carries_the_emotion_the_user_picked():
+    """감정은 하루에 하나다. event 가 아니라 날짜 항목에 싣는다."""
+
+    digest = build_daily_timeline_digest(
+        _entries([daily_timeline(emotion_type="VERY_HAPPY")])
+    )
+
+    entry = digest.daily_timelines[0]
+    assert entry["emotion"] == "VERY_HAPPY"
+    assert all("emotion" not in event for event in entry["events"])
+    assert digest.stats["emotionCount"] == 1
+
+
+@pytest.mark.parametrize("emotion_type", [None, "", "   "])
+def test_digest_omits_the_emotion_key_when_none_was_picked(emotion_type):
+    """감정을 받기 전에 저장된 기록은 값이 없다.
+
+    빈 값을 남기면 모델이 "감정이 없던 날" 을 근거로 삼을 수 있다.
+    """
+
+    digest = build_daily_timeline_digest(
+        _entries([daily_timeline(emotion_type=emotion_type)])
+    )
+
+    assert "emotion" not in digest.daily_timelines[0]
+    assert digest.stats["emotionCount"] == 0
+
+
+def test_digest_passes_an_unknown_emotion_through():
+    """값을 enum 으로 좁히지 않는다. App Server 가 값을 더해도 갱신이 죽지 않는다."""
+
+    digest = build_daily_timeline_digest(
+        _entries([daily_timeline(emotion_type="EXCITED")])
+    )
+
+    assert digest.daily_timelines[0]["emotion"] == "EXCITED"
+
+
+def test_digest_clips_an_oversized_emotion():
+    digest = build_daily_timeline_digest(
+        _entries([daily_timeline(emotion_type="가" * (EMOTION_MAX_CHARS + 50))])
+    )
+
+    assert len(digest.daily_timelines[0]["emotion"]) == EMOTION_MAX_CHARS
+
+
+def test_emotion_count_counts_days_not_events():
+    digest = build_daily_timeline_digest(
+        _entries(
+            [
+                daily_timeline(record_date="2026-08-03", emotion_type="UNHAPPY"),
+                daily_timeline(record_date="2026-08-04", emotion_type=None),
+                daily_timeline(record_date="2026-08-05", emotion_type="HAPPY"),
+            ]
+        )
+    )
+
+    assert digest.stats["emotionCount"] == 2
+
+
+def test_emotion_of_a_day_without_events_is_not_carried():
+    """event 가 하나도 없는 날은 통째로 싣지 않는다. 감정도 함께 빠지고 세지 않는다."""
+
+    digest = build_daily_timeline_digest(
+        _entries(
+            [
+                daily_timeline(record_date="2026-08-03", emotion_type="HAPPY", events=[]),
+                daily_timeline(record_date="2026-08-04", emotion_type=None),
+            ]
+        )
+    )
+
+    assert [entry["date"] for entry in digest.daily_timelines] == ["2026-08-04"]
+    assert digest.stats["emotionCount"] == 0
+
+
+# --- 끝 시각 (#121) -----------------------------------------------------
+
+
+def test_digest_carries_the_end_hour_without_minutes():
+    """시작만 있으면 그 일을 얼마 동안 했는지 알 수 없다."""
+
+    digest = build_daily_timeline_digest(
+        _entries(
+            [
+                daily_timeline(
+                    events=[
+                        daily_timeline_event(
+                            start_at="2026-08-04T09:12:00+09:00",
+                            end_at="2026-08-04T18:47:00+09:00",
+                        )
+                    ]
+                )
+            ]
+        )
+    )
+
+    event = digest.daily_timelines[0]["events"][0]
+    assert event["hour"] == 9
+    assert event["endHour"] == 18
+    assert "endAt" not in event
+    assert "47" not in str(event)
+
+
+def test_digest_omits_the_end_hour_of_a_single_point_event():
+    digest = build_daily_timeline_digest(
+        _entries([daily_timeline(events=[daily_timeline_event(end_at=None)])])
+    )
+
+    assert "endHour" not in digest.daily_timelines[0]["events"][0]
+
+
+def test_end_hour_of_an_event_crossing_midnight_is_smaller_than_its_start():
+    digest = build_daily_timeline_digest(
+        _entries(
+            [
+                daily_timeline(
+                    events=[
+                        daily_timeline_event(
+                            start_at="2026-08-04T23:10:00+09:00",
+                            end_at="2026-08-05T01:20:00+09:00",
+                        )
+                    ]
+                )
+            ]
+        )
+    )
+
+    event = digest.daily_timelines[0]["events"][0]
+    assert (event["hour"], event["endHour"]) == (23, 1)
 
 
 # --- 출력 검사 ---------------------------------------------------------
@@ -290,6 +429,15 @@ def test_total_cap_is_derived_from_the_daily_quota():
     """전체 상한을 따로 정하지 않는다. 두 값이 갈리면 어느 쪽이 이기는지 알기 어렵다."""
 
     assert MAX_EVENT_COUNT == MAX_DAILY_TIMELINE_COUNT * MAX_EVENTS_PER_TIMELINE
+
+
+def test_daily_quota_holds_a_full_day_the_timeline_can_produce():
+    """Timeline 은 하루에 event 를 24개까지 만든다(#118).
+
+    몫이 그보다 작으면 AI 가 만든 정상적인 하루가 여기서 잘린다.
+    """
+
+    assert MAX_EVENTS_PER_TIMELINE >= TIMELINE_MAX_EVENT_COUNT
 
 
 def test_a_full_request_never_exceeds_the_total_cap():
