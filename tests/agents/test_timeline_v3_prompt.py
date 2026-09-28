@@ -1,8 +1,11 @@
 """Timeline·Question v3 프롬프트 계약 (#118).
 
-v3 Timeline 은 다른 Event Agent 의 candidate 를 보고 판단하는 규칙을 eventType 13종마다
-갖고, User Memory 반영을 근거 구성 뒤의 별도 단계로 둔다. v3 Question 은 13종마다 예시를
-갖고 "한 질문에 하나만" 제한이 없다. v2 세트는 건드리지 않는다.
+v3 Timeline 은 다른 Event Agent 의 candidate 를 보고 판단하는 규칙을 eventType 마다
+갖고, User Memory 반영을 근거 구성 뒤의 별도 단계로 둔다. v3 Question 은 eventType 마다
+예시를 갖고 "한 질문에 하나만" 제한이 없다. v2 세트는 건드리지 않는다.
+
+v3 는 수면을 다루지 않는다. 수면 기록을 정확히 받을 수 없게 돼 `SLEEP`·`WAKE_UP` 은 규칙과
+예시에서 빠졌다. `EventType` 계약(App Server 와 같은 13종)은 그대로다.
 
 내용의 좋고 나쁨은 live 비교가 잰다. 여기서는 규칙이 **있는지**와 **자리**를 본다.
 """
@@ -16,7 +19,10 @@ from app.schemas import EventSourceType, EventType, InferenceLevel, TimelineWarn
 
 APP_ROOT = Path(__file__).resolve().parents[2] / "app"
 
-EVENT_TYPES = [member.value for member in EventType]
+#: v3 프롬프트가 다루지 않는 종류. 계약(`EventType`)에는 남아 있다.
+UNHANDLED_EVENT_TYPES = frozenset({EventType.SLEEP, EventType.WAKE_UP})
+
+EVENT_TYPES = [member.value for member in EventType if member not in UNHANDLED_EVENT_TYPES]
 
 
 def _read(path: str) -> str:
@@ -43,20 +49,20 @@ def test_timeline_v3_has_rules_and_an_example_for_every_event_type(event_type: s
     assert rows >= 4, f"timeline v3 에 `{event_type}` 행이 {rows}개뿐입니다. 표 네 개에 모두 있어야 합니다."
 
 
-def test_timeline_v3_uses_only_the_thirteen_event_types() -> None:
+def test_timeline_v3_uses_only_known_event_types() -> None:
     """서버가 모르는 타입을 쓰면 그 task 가 FAILED 가 된다. 프롬프트가 새 이름을 만들면 안 된다."""
 
     text = _timeline_v3()
     mentioned = set(re.findall(r"`([A-Z][A-Z_]+)`", text))
     allowed = (
-        set(EVENT_TYPES)
+        {member.value for member in EventType}
         | {member.value for member in EventSourceType}
         | {member.value for member in InferenceLevel}
         | {member.value for member in TimelineWarningSeverity}
     )
 
     assert mentioned <= allowed, f"허용되지 않은 대문자 토큰: {sorted(mentioned - allowed)}"
-    assert "|".join(EVENT_TYPES) in text, "출력 형식의 eventType enum 이 13종 순서 그대로여야 합니다."
+    assert "|".join(EVENT_TYPES) in text, "출력 형식의 eventType enum 이 수면을 뺀 순서 그대로여야 합니다."
 
 
 def test_timeline_v3_day_structure_assumes_neither_home_nor_movement() -> None:
@@ -75,6 +81,27 @@ def test_timeline_v3_day_structure_assumes_neither_home_nor_movement() -> None:
     assert "이동이 없는 날도 있습니다" in section
     assert "외출이나 이동을 넣지 않습니다" in section
     assert "근거가 없으면 event로 만들지 않습니다" in section
+
+
+def test_v3_prompts_do_not_handle_sleep() -> None:
+    """수면 기록을 정확히 받을 수 없다. v3 는 SLEEP·WAKE_UP 을 만들지도 근거로 쓰지도 않는다."""
+
+    timeline = _timeline_v3()
+    question = _question_v3()
+
+    for unhandled in sorted(member.value for member in UNHANDLED_EVENT_TYPES):
+        row = f"| `{unhandled}` |"
+        assert row not in timeline, f"timeline v3 표에 `{unhandled}` 행이 남아 있습니다."
+        assert row not in question, f"question v3 예시에 `{unhandled}` 행이 남아 있습니다."
+        assert f"{unhandled}|" not in timeline, f"출력 형식 enum 에 `{unhandled}` 가 남아 있습니다."
+        assert f"`{unhandled}`(" not in question
+
+    assert "수면과 기상은 다루지 않습니다" in timeline
+    assert "다른 event의 시간 경계로도 쓰지 않습니다" in timeline
+    assert "수면 경계" not in timeline
+
+    structure = timeline.split("## 하루의 구조", 1)[1].split("## 근거로 event 구성", 1)[0]
+    assert "기상" not in structure and "취침" not in structure
 
 
 def test_timeline_v3_limits_events_to_twenty_four() -> None:
