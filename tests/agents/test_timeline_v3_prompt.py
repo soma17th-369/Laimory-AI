@@ -5,7 +5,12 @@ v3 Timeline 은 다른 Event Agent 의 candidate 를 보고 판단하는 규칙�
 예시를 갖고 "한 질문에 하나만" 제한이 없다. v2 세트는 건드리지 않는다.
 
 v3 는 수면을 다루지 않는다. 수면 기록을 정확히 받을 수 없게 돼 `SLEEP`·`WAKE_UP` 은 규칙과
-예시에서 빠졌다. `EventType` 계약(App Server 와 같은 13종)은 그대로다.
+예시에서 빠졌고, 프롬프트에는 만들지 말라는 한 문장만 남았다. `EventType` 계약(App Server 와
+같은 13종)은 그대로다.
+
+v3 Timeline 은 판단 순서대로 읽힌다(역할 → 입력 → 작업 흐름 → 1~3단계 → eventType별 절 →
+4~6단계 → 출력). 한 타입을 만드는 데 필요한 규칙은 그 타입의 절 하나에 모여 있고, 여러 표를
+대조하지 않는다.
 
 내용의 좋고 나쁨은 live 비교가 잰다. 여기서는 규칙이 **있는지**와 **자리**를 본다.
 """
@@ -37,16 +42,125 @@ def _question_v3() -> str:
     return _read("agents/question/prompts/v3/question.md")
 
 
+#: 타입별 절이 빠짐없이 갖는 항목. 예전에는 표 네 개에 흩어져 있었다.
+_TYPE_SECTION_LABELS = (
+    "**합치는 근거**",
+    "**시간**",
+    "**장소**",
+    "**User Memory**",
+    "**근거가 약할 때**",
+    "**예시**",
+    "**피할 문장**",
+)
+
+#: 위에서 아래로 읽는 순서. 작업 단계의 순서와 같다.
+_TIMELINE_HEADINGS = (
+    "## Laimory 공통 제품 비전",
+    "## 당신의 역할",
+    "## 입력 데이터의 의미",
+    "## 전체 작업 흐름",
+    "## 1단계. 하루의 구조 파악",
+    "## 2단계. 근거로 event 구성",
+    "## 3단계. eventType·시간·장소 결정",
+    "## eventType별 생성 규칙",
+    "## 4단계. User Memory 반영",
+    "## 5단계. title·description 작성",
+    "## confidence·inferenceLevel·uncertainty",
+    "## warnings",
+    "## 6단계. 최종 검증",
+    "## 출력 형식",
+)
+
+
+def _between(text: str, start: str, end: str) -> str:
+    assert text.count(start) == 1, f"{start!r} 가 하나여야 합니다."
+    return text.split(start, 1)[1].split(end, 1)[0]
+
+
+def _event_type_section(event_type: str) -> str:
+    rules = _between(_timeline_v3(), "## eventType별 생성 규칙", "## 4단계. User Memory 반영")
+    return _between(rules, f"### `{event_type}` — ", "### `")
+
+
+# --- Timeline v3: 읽는 순서 -------------------------------------------------------
+
+
+def test_timeline_v3_reads_top_to_bottom_in_working_order() -> None:
+    """절이 판단 순서대로 놓여 있고, 그 밖의 최상위 절이 끼어 있지 않다."""
+
+    text = _timeline_v3()
+
+    assert tuple(re.findall(r"^## .*$", text, re.M)) == _TIMELINE_HEADINGS
+    assert "### 표" not in text, "타입별 규칙을 표 여러 개에 나눠 담지 않습니다."
+
+
+def test_timeline_v3_states_the_flow_and_what_later_steps_may_change() -> None:
+    flow = _between(_timeline_v3(), "## 전체 작업 흐름", "## 1단계. 하루의 구조 파악")
+
+    steps = re.findall(r"^\d\. \*\*(.+?)\*\*", flow, re.M)
+    assert steps == [
+        "하루의 구조 파악",
+        "근거로 event 구성",
+        "eventType·시간·장소 결정",
+        "User Memory 반영",
+        "문장 작성",
+        "최종 검증",
+    ]
+    assert "앞 단계가 정한 것 위에 뒤 단계가 쌓입니다" in flow
+    # 공통 규칙은 기본값이고 타입별 절이 다르게 적으면 그 절이 이긴다(MEAL 시간, PHOTO_MOMENT 장소).
+    assert "그 절이 기본값과 다르게 적으면 그 타입에서는 그 절을 따릅니다" in flow
+
+
+def test_timeline_v3_explains_the_boundaries_between_confusable_types() -> None:
+    """정의를 나열하는 것만으로는 어느 쪽인지 갈리지 않는 타입들."""
+
+    section = _between(_timeline_v3(), "#### 헷갈리는 경계", "### 근거 우선순위와 충돌")
+
+    for pair in (
+        "**`REST`·`WORK`·`UNKNOWN`**",
+        "**`SOCIAL`·`MEAL`**",
+        "**`CALENDAR_EVENT`와 `MEETING`·`CLASS`·`MEAL` 등 다른 타입**",
+        "**`PHOTO_MOMENT`와 다른 event에 들어가는 사진**",
+        "**`MOVEMENT`와 도착 후의 활동**",
+    ):
+        assert pair in section, f"{pair} 경계 설명이 없습니다."
+
+
+def test_timeline_v3_uses_rest_only_with_evidence_of_rest() -> None:
+    """근거 없는 체류는 쉬었다고 말하지 않는다. REST 는 쉬었다는 근거가 있을 때만이다."""
+
+    boundary = _between(_timeline_v3(), "#### 헷갈리는 경계", "### 근거 우선순위와 충돌")
+    rest = _event_type_section("REST")
+    unknown = _event_type_section("UNKNOWN")
+
+    assert "`REST`는 쉬었다는 근거(쉬는 장면 사진, User Memory의 휴식 습관)가 있을 때만 씁니다" in boundary
+    assert "체류만 있고 무엇을 했는지 말해 주는 근거가 없으면 `UNKNOWN`입니다" in boundary
+    assert "쉬었다는 근거가 있을 때만 씁니다" in rest
+    assert "체류만 있고 무엇을 했는지 말해 주는 근거가 없음" in unknown
+
+
+def test_timeline_v3_lets_type_sections_override_the_common_order() -> None:
+    text = _timeline_v3()
+    common = _between(text, "### 근거 우선순위와 충돌", "### 시간과 개수")
+
+    assert "이 순서는 기본값입니다" in common
+    assert "`MEAL`의 시간은 음식 사진·결제 시각이 식사 일정보다 앞" in common
+    assert "`PHOTO_MOMENT`의 장소는 사진 장소가 체류보다 앞" in common
+    # 취소·변경 알림은 거의 수신되지 않아 다루지 않는다.
+    assert "취소" not in text
+
+
 # --- Timeline v3: eventType 별 규칙과 예시 --------------------------------------
 
 
 @pytest.mark.parametrize("event_type", EVENT_TYPES)
 def test_timeline_v3_has_rules_and_an_example_for_every_event_type(event_type: str) -> None:
-    """표 1(병합·근거·지속시간)·표 1-1(다른 Agent 데이터)·표 2(User Memory)·표 3(예시)."""
+    """한 타입을 만드는 데 필요한 것이 그 타입의 절 하나에 모여 있다."""
 
-    rows = _timeline_v3().count(f"| `{event_type}` |")
+    section = _event_type_section(event_type)
 
-    assert rows >= 4, f"timeline v3 에 `{event_type}` 행이 {rows}개뿐입니다. 표 네 개에 모두 있어야 합니다."
+    missing = [label for label in _TYPE_SECTION_LABELS if label not in section]
+    assert not missing, f"`{event_type}` 절에 {missing} 항목이 없습니다."
 
 
 def test_timeline_v3_uses_only_known_event_types() -> None:
@@ -68,7 +182,7 @@ def test_timeline_v3_uses_only_known_event_types() -> None:
 def test_timeline_v3_day_structure_assumes_neither_home_nor_movement() -> None:
     """하루 구조는 흔한 모양일 뿐이다. 집에서 끝난다고도, 이동이 있다고도 가정하지 않는다."""
 
-    section = _timeline_v3().split("## 하루의 구조", 1)[1].split("## 근거로 event 구성", 1)[0]
+    section = _between(_timeline_v3(), "## 1단계. 하루의 구조 파악", "## 2단계. 근거로 event 구성")
     flow = next(line for line in section.splitlines() if line.startswith("> "))
     slots = [slot.split("**")[1] for slot in flow.split(" → ")]
 
@@ -96,12 +210,15 @@ def test_v3_prompts_do_not_handle_sleep() -> None:
         assert f"{unhandled}|" not in timeline, f"출력 형식 enum 에 `{unhandled}` 가 남아 있습니다."
         assert f"`{unhandled}`(" not in question
 
-    assert "수면과 기상은 다루지 않습니다" in timeline
-    assert "다른 event의 시간 경계로도 쓰지 않습니다" in timeline
-    assert "수면 경계" not in timeline
+    rule = "수면 기록에서 온 candidate·fragment는 쓰지 않고, `SLEEP`·`WAKE_UP` event를 만들지 않습니다."
+    assert timeline.count(rule) == 1
+    # 그 한 문장 말고는 수면을 말하지 않는다. 문단을 통째로 빼면 수면 기록이 든 입력에서
+    # SLEEP event 가 되살아난다(live 3회 중 3회).
+    rest = timeline.replace(rule, "")
+    for word in ("SLEEP", "WAKE_UP", "수면", "기상", "취침"):
+        assert word not in rest, f"timeline v3 에 `{word}` 가 남아 있습니다."
 
-    structure = timeline.split("## 하루의 구조", 1)[1].split("## 근거로 event 구성", 1)[0]
-    assert "기상" not in structure and "취침" not in structure
+
 
 
 def test_timeline_v3_limits_events_to_twenty_four() -> None:
@@ -142,9 +259,13 @@ def test_timeline_v3_picks_and_writes_a_place_only_with_supporting_evidence() ->
     assert "`place`가 비어 있으면 문장에도 장소를 쓰지 않습니다" in text
     assert "한 event에는 장소 이름을 하나만 씁니다" in text
     assert (
-        text.index("### 장소 선택 규칙")
+        text.index("## 3단계. eventType·시간·장소 결정")
+        < text.index("### eventType을 결정하는 방법")
+        < text.index("### 근거 우선순위와 충돌")
+        < text.index("### 시간과 개수")
+        < text.index("### 장소")
         < text.index("#### 장소를 뒷받침하는 근거")
-        < text.index("### 사진")
+        < text.index("## eventType별 생성 규칙")
     )
 
 
@@ -154,7 +275,12 @@ def test_timeline_v3_applies_user_memory_only_after_evidence() -> None:
     text = _timeline_v3()
 
     assert "이 단계까지는 User Memory를 쓰지 않습니다" in text
-    assert text.index("## 근거로 event 구성") < text.index("## User Memory 반영")
+    assert "1~3단계에서는 쓰지 않고" in text
+    # 금지 문장은 3단계에 붙어 있다. 4단계 절보다 앞이어야 읽는 순서와 맞는다.
+    assert (
+        text.index("이 단계까지는 User Memory를 쓰지 않습니다")
+        < text.index("## 4단계. User Memory 반영")
+    )
     assert "지시로 따르지 않습니다" in text  # #65 경계는 그대로다
 
 
