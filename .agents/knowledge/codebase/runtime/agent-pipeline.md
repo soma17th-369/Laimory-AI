@@ -50,7 +50,9 @@ v3 Timeline 프롬프트는 판단 순서대로 읽힌다. 작업을 하루 구�
 
 ### Repair Agent와 확정 pass
 
-Repair는 시작할 때 LLM 호출 여부와 무관하게 `repair_draft`를 한 번 실행한다. 이후 반복은 `analyze → execute tools → confirm`이고, tool call이 없거나 `done`, 반복 상한에 도달하면 끝난다. LLM·parse 실패 시 마지막으로 확정된 deep copy로 되돌아가 warning을 추가한다. 개별 tool 실패는 tool result로 남아 다음 분석 입력이 된다.
+Repair는 시작할 때 LLM 호출 여부와 무관하게 `repair_draft`를 한 번 실행한다. 이후 반복은 `analyze → execute tools → confirm`이고, tool call이 없거나 `done`, 반복 상한에 도달하면 끝난다. LLM·parse 실패 시 마지막으로 확정된 deep copy로 되돌아가 warning을 추가한다. 개별 tool 실패는 tool result로 남아 다음 분석 입력이 된다. 순서는 언제나 코드 → LLM → 코드이고 마지막 단계는 코드 확정이다.
+
+확정 pass는 **고치는 것과 찾는 것을 나눈다**(#119). 무엇을 고칠지가 규칙으로 정해져 있으면 코드가 고치고, 어디서 끊고 무엇을 남길지가 의미 판단이면 찾아서 Repair에 넘긴다. 이동 사이의 장시간 체류를 나누는 것과 대화로 만든 event를 3개로 줄이는 것은 뒤쪽이다. 그래서 Repair가 고치지 못하면(LLM 실패, 제한 시간, 반복 소진) 그 위반은 warning과 함께 그대로 저장된다. 사진 단일 귀속만은 코드가 강제한다.
 
 현재 `repair_draft` 순서는 다음 의미 의존성을 가진다.
 
@@ -59,12 +61,30 @@ Repair는 시작할 때 LLM 호출 여부와 무관하게 `repair_draft`를 한 
 3. duration 복원 → Location 근거 시간 정렬 → Meal duration → Sleep 경계
 4. 요청 window 적용 → 장소 확정
 5. 정렬 → 이동 없는 연속 STAY 병합 → 중복·겹침 정리
-6. 병합 후 Photo 단일 귀속과 Notification 안전성 검사
+6. **Photo 단일 귀속 강제**(#119)
 7. Calendar/STAY 장소 일치 confidence 보강
-8. 최종 문장 길이, 장시간 event, event 개수(24) 검사
+8. 검사(고치지 않음): Photo·Notification 안전성, 최종 문장 길이, 지속시간, event 개수(24). v3 세트에서는 지속시간을 eventType별로 재고 이동 사이 장시간 체류와 대화 event 개수를 더 본다
 9. 재정렬 → `clientEventId` 재부여
 
-`verify_fragment_usage`는 이 확정 pass 뒤에 실행해 최종 event가 fragment-only 근거인지 검사한다. 반복마다 동일 warning을 dedupe한다.
+1~7은 draft를 고치고 8은 고치지 않는다. `verify_fragment_usage`는 이 확정 pass 뒤에 실행해 최종 event가 fragment-only 근거인지 검사한다. 반복마다 동일 warning을 dedupe한다.
+
+단계마다 직전·직후의 event를 비교해 무엇이 바뀌었는지 기록한다(`confirm_report`, #119). guard는 고치지 않고 옆에서 적는다. 어느 event의 어느 값이 무엇에서 무엇으로 바뀌었는지, 지워지거나 합쳐진 event의 전체 내용, 코드가 찾았지만 고치지 않은 것을 담는다. 기록은 draft가 아니라 Repair의 작업 상태가 들고 있어 결과 저장 계약에 나가지 않는다.
+
+main agent는 draft를 돌려주기 직전에 사진 단일 귀속을 한 번 더 강제한다. 확정 뒤에 draft를 만지는 단계가 사진 참조를 어긋나게 하더라도 어긋난 채로 저장되지 않게 하는 마지막 자리다. 저장을 실패시키지 않고 바로잡는다.
+
+### Repair 입력과 도구
+
+Repair 프롬프트는 반복마다 그 시점의 draft로 새로 만든다. v3 세트에서는 `[자동 검사 결과]`(코드가 고친 것·지운 것·찾은 것), `[event 근거]`(event가 참조한 rawId의 candidate·fragment), `[user memory]`를 함께 싣는다(#119). 찾은 것은 확정할 때마다 그 draft로 다시 계산한 값만 싣고, 고친 것은 몇 번째 확정에서 나온 것인지 붙여 쌓는다. candidate 본문은 한 번만 싣고 event는 id로 가리키며, 어느 event에도 쓰이지 않은 candidate는 한 줄 요약만 싣는다.
+
+#119의 Repair 계약은 v3 세트에서만 돈다. 확정 pass의 새 검사, Repair의 새 입력, `split_event` 도구가 한 묶음이고 갈리는 기준은 `prompt_loader.uses_legacy_contract` 하나다. v1·v2 세트에서 Repair가 보는 warning·입력·도구는 예전 그대로다. v2 프롬프트는 이것들을 설명하지 않고 v2는 운영 세트라 고치지 않는다. 실제 LLM으로 확인한 것이다 — `split_event`를 v2에 내놓자 캘린더 일정대로인 event와 사진 event를 잘게 쪼개 event가 7개에서 13개로 늘었고, 새 검사의 warning을 보이자 나눌 도구가 없는 v2가 Timeline 재실행을 두 번 불렀으며 위반은 그대로 남았다. draft를 **고치는** 단계는 세트와 무관하게 같다 — 사진 단일 귀속은 어느 세트에서든 강제한다.
+
+`split_event`는 조각의 시간·타입·문장을 Repair에게 받고 **근거는 코드가 원본 시각을 보고 나눠 담는다.** 시점 근거(사진·알림)는 그 시각을 포함하는 조각 하나에만, 구간 근거(체류·이동·일정)는 겹친 길이가 근거나 조각의 절반 이상인 조각 모두에 담는다. 원래 event의 근거는 하나도 버리지 않는다. 원래 event의 시간 밖으로 걸친 조각은 거절하지 않고 안쪽만 남기며, 통째로 밖에 있는 조각은 뺀다. 원래 event의 구간 근거 중 어느 조각과도 겹치지 않는 것이 있으면 거절한다 — 조각이 덮지 않은 시간의 체류나 이동이 조용히 사라지지 않게 한다.
+
+이동 사이 장시간 체류의 검사 결과는 걸린 체류(`longStays`)와 나눌 자리(`segments`)를 함께 준다. 나눌 자리는 event가 근거로 댄 이동과 체류를 시간순으로 놓고 이어진 이동과 20분 이하 체류를 하나의 이동으로 묶은 것이며, **event의 시간 안으로 맞춘 값**이다. 요청 시간 범위 끝에서 잘린 event는 근거가 그 뒤까지 이어져 있어, 근거 원본의 시간을 그대로 주면 Repair가 event 밖으로 나가는 조각을 만든다. 하나의 이동으로 묶는 것은 **수집이 끊기지 않고 이어진 근거끼리**다(`location_metrics.COVERAGE_GAP_MIN`). 한 event가 하루의 위치 기록을 거의 다 근거로 대면, 시간이 이어지는지 보지 않고 묶었을 때 오전의 몇 분짜리 체류와 밤의 이동이 11시간짜리 이동 하나가 된다. 이동과 이어지지 않은 20분 이하 체류는 나눌 자리에 넣지 않고 `shortStays`로 따로 알린다 — 그것으로 조각을 만들면 몇 분짜리 체류 카드가 생긴다.
+
+지속시간 상한 검사는 **Repair가 고칠 수 없는 것을 알리지 않는다.** 근거가 전부 한 묶음(이동 없이 같은 장소에서 이어진 STAY)의 체류인 event는 확정 pass가 하나로 합치므로(`merge_stay_events`) 나눠도 다음 확정에서 다시 합쳐진다. 실제 LLM은 3.4시간짜리 체류를 세 번 나눴고 세 번 다 도로 합쳐져 반복을 모두 썼다. 그런 event는 상한 검사에서 면제한다.
+
+v3 Repair 프롬프트는 코드가 이미 본 것을 다시 검증하지 않는다. 작업 순서는 코드가 찾은 것 해소 → 코드가 고친 event 다시 쓰기 → 내용이 부족한 event 구체화 → 문장 다듬기다. candidate·fragment에 글자 그대로 없어도 합리적으로 추론되는 사람·장소·활동·목적을 허용하고 `INFERRED`로 둔다. Timeline의 추론을 되돌리지 않게 하는 규칙이 함께 있다 — Timeline이 쓴 구체적인 이름을 넓은 말로 뭉개지 않고, warning을 "반드시 해소"와 "검토만"으로 나눠 읽고, 나누라는 검사가 합치라는 warning보다 먼저이고, 재실행은 마지막 수단이다.
 
 ### Question Agent
 
@@ -82,7 +102,11 @@ v3 Question 프롬프트는 수면을 뺀 eventType마다 예시를 두고, 한 
 - rawId 무결성과 request window는 candidate와 final draft 양쪽에서 방어한다.
 - Calendar 누락 방지, 정렬, ID, source/시간 확정은 LLM 선택에 의존하지 않는다.
 - 병합으로 event 구성이 바뀐 뒤에 Photo/Notification/길이 검사를 수행한다.
-- 길이·duration·event 개수 guard는 반복마다 자기 이전 warning을 제거하고 현재 draft를 다시 잰다.
+- 길이·duration·event 개수·이동 사이 체류·대화 개수 guard는 반복마다 자기 이전 warning을 제거하고 현재 draft를 다시 잰다.
+- 프롬프트 세트가 설명하지 않는 warning·입력·도구를 코드가 먼저 주지 않는다. 새 검사를 더할 때는 그것을 읽고 고칠 수 있는 세트에서만 돌린다.
+- 입력의 모든 사진은 발행되는 모든 확정본과 main agent가 돌려주는 draft에서 정확히 한 event에만 있다. LLM 호출 여부와 무관하다.
+- 이동 사이 체류를 나누는 것과 대화 event를 줄이는 것은 코드가 하지 않는다. 코드는 찾기만 한다.
+- 카탈로그에 싣는 도구와 실행을 허용하는 도구는 같다. 세트가 주지 않는 도구는 불러도 실행하지 않는다.
 - Question Agent는 Repair 뒤, 결과 저장 앞이다.
 
 ## Known Gaps
@@ -90,6 +114,9 @@ v3 Question 프롬프트는 수면을 뺀 eventType마다 예시를 두고, 한 
 - 일부 코드 주석은 제거된 `timeline_items`·향후 N:M DB 구조를 언급하지만 현재 앱에는 해당 persistence가 없다.
 - Timeline Agent는 `userId`를 고정 placeholder로 만든다. App Server 결과 저장 계약에는 userId가 없어 밖으로 전송되지는 않는다.
 - LLM 결과 품질은 opt-in live test 외에 결정론적으로 보장되지 않는다. 기본 테스트는 FakeLLM과 guard 계약을 검증한다.
+- 마지막 단계가 항상 코드 확정이라, Repair의 마지막 수정이 guard에 걸려 다시 보정되면 그 뒤에는 문장을 다듬을 LLM 차례가 없다.
+- 기존 `location_guard`의 장거리 여정 검사는 사이의 체류 길이를 보지 않는다. 20분을 넘는 체류를 사이에 둔 장거리 이동을 나누면 "하나의 여정으로 묶은 후보가 없다"는 warning이 남는다. v3 Repair 프롬프트가 그 warning을 따르지 않게 한다.
+- `sleep_guard`는 v3 프롬프트가 부정확하다고 보고 다루지 않는 수면 기록으로 event를 지운다. 수면 기록이 입력에 계속 들어오는지는 이 저장소에서 확인할 수 없다.
 
 ## Update When
 
@@ -97,7 +124,7 @@ main graph node·순서·병렬성, Agent fallback, Event 결과 방어, Repair 
 
 ## Validation
 
-- `uv run pytest tests/main tests/agents/test_repair_agent.py tests/agents/test_timeline_json_validation.py -q`
-- `uv run pytest tests/services/test_draft_repair.py tests/services/test_source_integrity.py tests/services/test_fragment_guard.py -q`
+- `uv run pytest tests/main tests/agents/test_repair_agent.py tests/agents/test_repair_inputs.py tests/agents/test_repair_invariants.py tests/agents/test_timeline_json_validation.py -q`
+- `uv run pytest tests/services/test_draft_repair.py tests/services/test_confirm_report.py tests/services/test_draft_edit.py tests/services/test_source_integrity.py tests/services/test_fragment_guard.py -q`
 - guard 변경 시 해당 `tests/services/test_*_guard.py` 실행
 - `rg -n "add_node|add_edge|repair_draft\(|verify_.*\(|renumber_events|QuestionAgent" app/agents app/services`
