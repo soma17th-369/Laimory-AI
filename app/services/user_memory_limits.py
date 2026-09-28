@@ -81,7 +81,9 @@ class DailyTimelineDigest:
     def has_memo(self) -> bool:
         """사용자가 직접 쓴 글이 하나라도 있는가.
 
-        없으면 성향 계열 필드는 갱신할 근거가 없다. 그것은 정상이며 실패가 아니다.
+        이 값으로 동작이 갈리는 것은 v1·v2 프롬프트 세트뿐이다. 거기서는 ``memo`` 가
+        없으면 성향 계열 필드를 갱신할 근거가 없고, 그것은 정상이며 실패가 아니다.
+        v3 는 AI 가 쓴 문장도 근거로 읽으므로 이 값을 보지 않는다(#121).
         """
 
         return self.stats["memoCount"] > 0
@@ -135,9 +137,9 @@ def _project_event(event: DailyTimelineEvent) -> dict[str, Any]:
 def _event_priority(item: tuple[int, int, DailyTimelineEvent]) -> tuple[int, float]:
     """남길 순서를 정하는 키(작을수록 먼저 남긴다).
 
-    **메모가 있는 event 를 끝까지 지킨다.** 사용자가 직접 쓴 글은 성향 계열 필드의
-    유일한 근거다. 그것을 먼저 버리면 갱신할 수 있는 것이 AI 가 쓴 문장밖에 남지
-    않는다. 같은 조건이면 최근 것을 남긴다.
+    **메모가 있는 event 를 끝까지 지킨다.** event 안에서 사용자가 직접 쓴 글은 이것
+    하나다. 그것을 먼저 버리면 남는 것이 AI 가 쓴 문장뿐이고, 둘이 어긋날 때 무엇이
+    맞는지 가릴 근거가 사라진다. 같은 조건이면 최근 것을 남긴다.
     """
 
     _, _, event = item

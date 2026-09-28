@@ -1,9 +1,14 @@
-"""User Memory 갱신 Agent (#64).
+"""User Memory 갱신 Agent (#64, #121).
 
-프롬프트가 지켜야 하는 것 하나가 이 파일의 핵심이다. **AI 가 쓴 문장에서 사용자
-성향을 뽑지 않는다.** 그 규칙이 프롬프트에서 사라지면 모델은 반드시 `title` 과
-`subtitle` 에서 성격을 만들어 내고, 그 프로필이 다시 다음 타임라인 문장을 만드는 데
-쓰여 스스로를 강화한다. 결과만 봐서는 알아채기 어려운 종류의 고장이다.
+무엇을 근거로 읽는지는 **프롬프트 세트가 정한다.**
+
+- v1·v2 는 AI 가 쓴 문장에서 사용자 성향을 뽑지 않는다. 그 규칙이 프롬프트에서
+  사라지면 모델은 `title` 과 `subtitle` 에서 성격을 만들어 내고, 그 프로필이 다시 다음
+  타임라인 문장을 만드는 데 쓰여 스스로를 강화한다.
+- v3 는 AI 가 쓴 문장도 근거로 읽고, 폭넓게 모으고, 한 번 나온 정보도 남긴다(#121).
+
+두 정책이 섞이면 어느 쪽도 지켜지지 않는다. 그래서 세트마다 자기 문구를 갖는지,
+상대의 문구가 남아 있지 않은지를 함께 본다.
 """
 
 from pathlib import Path
@@ -11,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from app.agents.user_memory import UserMemoryAgent, build_update_prompt
+from app.agents.user_memory import user_memory_agent
 from app.schemas.user_memory import NARRATIVE_MAX_LENGTH, UserMemory
 from app.services.user_memory_limits import build_daily_timeline_digest
 from app.schemas.user_memory_update import DailyTimeline
@@ -36,6 +42,25 @@ def _digest(events=None, *, emotion_type=None):
     return build_daily_timeline_digest([DailyTimeline.model_validate(item) for item in payload])
 
 
+@pytest.fixture
+def memo_only_traits(monkeypatch: pytest.MonkeyPatch):
+    """성향 근거를 `memo` 로 제한하는 세트(v1·v2)로 조립한다.
+
+    분기값은 모듈 로드 시점에 `PROMPT_VERSION` 으로 정해진다. 그대로 두면 이 테스트의
+    결과가 실행 환경의 `.env` 를 따라간다. 버전에서 분기값이 정해지는 것 자체는
+    `test_prompt_version_graph.py` 가 본다.
+    """
+
+    monkeypatch.setattr(user_memory_agent, "_MEMO_ONLY_TRAITS", True)
+
+
+@pytest.fixture
+def ai_sentences_as_evidence(monkeypatch: pytest.MonkeyPatch):
+    """AI 가 쓴 문장도 근거로 읽는 세트(v3)로 조립한다."""
+
+    monkeypatch.setattr(user_memory_agent, "_MEMO_ONLY_TRAITS", False)
+
+
 # --- 프롬프트 조립 -----------------------------------------------------
 
 
@@ -59,7 +84,7 @@ def test_missing_profile_reads_the_same_as_an_empty_one():
     assert "정보 없음" in none_prompt
 
 
-def test_a_day_without_memo_is_told_so_explicitly():
+def test_memo_only_set_is_told_when_a_day_has_no_memo(memo_only_traits):
     """빈 자리를 메우려는 것을 막는다. 알려 주지 않으면 AI 문장에서 성향을 만든다."""
 
     prompt = build_update_prompt(None, _digest([daily_timeline_event(memo=None)]))
@@ -69,11 +94,44 @@ def test_a_day_without_memo_is_told_so_explicitly():
     assert "기존 값을 그대로" in prompt
 
 
-def test_a_day_with_memo_gets_no_such_hint():
+def test_memo_only_set_gets_no_such_hint_when_there_is_a_memo(memo_only_traits):
     prompt = build_update_prompt(None, _digest([daily_timeline_event(memo="오늘은 좋았어요.")]))
 
     assert "[근거 없음]" not in prompt
     assert "오늘은 좋았어요." in prompt
+
+
+def test_v3_is_never_told_to_leave_traits_untouched(ai_sentences_as_evidence):
+    """v3 는 `memo` 없는 날에도 갱신한다(#121).
+
+    "성향 필드는 그대로 두라" 는 지시가 user prompt 에 남으면 시스템 프롬프트와 정면으로
+    어긋나고, 모델은 둘 중 뒤에 온 쪽을 따르기 쉽다.
+    """
+
+    prompt = build_update_prompt(None, _digest([daily_timeline_event(memo=None)]))
+
+    assert "[근거 없음]" not in prompt
+    assert "기존 값을 그대로" not in prompt
+
+
+@pytest.mark.parametrize("fixture_name", ["memo_only_traits", "ai_sentences_as_evidence"])
+def test_request_asks_for_the_whole_document_without_stating_a_policy(
+    fixture_name: str, request: pytest.FixtureRequest
+):
+    """출력이 문서 전체라는 계약은 세트를 가리지 않는다.
+
+    무엇을 남기고 버릴지는 시스템 프롬프트의 몫이라 여기서 말하지 않는다. 예전 문장은
+    "압축·삭제" 를 지시했는데, 한 번 나온 정보도 남기는 v3 와 어긋난다.
+    """
+
+    request.getfixturevalue(fixture_name)
+
+    prompt = build_update_prompt(None, _digest([daily_timeline_event(memo="메모")]))
+
+    assert "User Memory 전체" in prompt
+    assert "전체 갱신본" in prompt
+    assert "압축" not in prompt
+    assert "삭제" not in prompt
 
 
 def test_prompt_carries_the_emotion_the_user_picked():

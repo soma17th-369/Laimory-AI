@@ -10,17 +10,22 @@ rewrite 다 — 출력이 기존 값을 통째로 대체한다.
 여기 입력은 여러 날의 확정 기록이고 출력도 타임라인이 아니다. 형태를 억지로 맞추면
 "이것도 타임라인 단계 중 하나" 로 읽힌다.
 
-## AI 가 쓴 문장에서 성향을 뽑지 않는다
+## 무엇을 근거로 읽는지는 프롬프트 세트가 정한다
 
 입력의 ``title``·``subtitle``·``question`` 은 **이 시스템의 타임라인 AI 가 쓴
-문장**이다. 거기서 성격·가치관·취향을 읽어 프로필에 넣으면, 모델이 자기 출력을 읽고
-사용자를 만들어 내는 되먹임이 된다. 그렇게 쌓이는 것은 사용자가 아니라 프롬프트의
-문체이고, 그 프로필이 다시 다음 타임라인 문장을 만드는 데 쓰이므로 한 번 시작되면
-스스로를 강화한다.
+문장**이고, 사용자가 직접 남긴 것은 ``memo`` 와 하루 감정(``emotion``)뿐이다. 이 출처를
+어떻게 다루는지가 세트마다 다르다.
 
-사용자의 실제 발화는 ``memo`` 뿐이고 **비어 있을 수 있다.** 메모 없는 날은 성향 계열
-필드가 그대로인 것이 정상이며, 그것은 실패가 아니다. 이 규칙을 프롬프트에 명시하지
-않으면 모델은 반드시 AI 문장에서 성향을 만들어 낸다.
+- **v1·v2** 는 AI 가 쓴 문장에서 성향을 뽑지 않는다(#64). 모델이 자기 출력을 읽고
+  사용자를 만들어 내는 되먹임을 막으려는 것이다. 성향 계열 필드의 근거는 ``memo`` 뿐이고,
+  메모 없는 날은 그 필드가 그대로인 것이 정상이다.
+- **v3** 는 AI 가 쓴 문장도 근거로 읽는다(#121). 사용자가 읽고 저장한 기록이므로
+  받아들인 내용으로 본다. ``memo`` 를 쓰지 않는 사용자의 프로필이 자라지 않는 것이 더 큰
+  문제라고 판단했다. 되먹임은 없어지지 않는다 — 프롬프트가 문장의 표현이 아니라 사실을
+  읽게 하고, 사용자가 직접 남긴 것과 어긋나면 그쪽을 따르게 해서 줄인다.
+
+그래서 이 모듈은 근거 정책을 갖지 않는다. 하나 남은 예외가 :data:`_MEMO_ONLY_TRAITS`
+이고 v1·v2 의 동작을 그대로 지키려고 둔 것이다.
 
 ## 무엇을 LLM 이 정하고 무엇을 코드가 정하는가
 
@@ -39,6 +44,7 @@ from collections.abc import Sequence
 
 from app.agents.parsing import SupportsComplete, default_llm, user_memory_to_text
 from app.agents.prompt_loader import load_prompt
+from app.core.config import settings
 from app.core.execution_context import ExecutionStage, execution_scope
 from app.core.logging import get_logger, log_fields
 from app.core.llm_stages import LLMStage
@@ -51,6 +57,14 @@ _SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
 
 #: 갱신은 창작이 아니라 정리다. 표현을 흔들 이유가 없어 낮게 둔다.
 _TEMPERATURE = 0.2
+
+#: 성향 계열 필드의 근거를 ``memo`` 로만 제한하는 세트인가(#121).
+#:
+#: v1·v2 가 그렇다. 그 세트에서는 메모 없는 날에 "근거 없음" 을 user prompt 로 한 번 더
+#: 알린다. v3 는 AI 가 쓴 문장도 근거로 읽으므로 그 지시가 시스템 프롬프트와 정면으로
+#: 어긋난다. 지시를 통째로 지우지 않고 가른 것은 ``PROMPT_VERSION`` 을 v2 로 되돌렸을 때
+#: 그 세트의 근거 정책이 예전처럼 지켜져야 하기 때문이다.
+_MEMO_ONLY_TRAITS = settings.prompt_version in ("v1", "v2")
 
 
 def build_update_prompt(
@@ -74,7 +88,7 @@ def build_update_prompt(
         f"[dailyTimelines]\n{json.dumps(digest.daily_timelines, ensure_ascii=False, indent=2)}",
     ]
 
-    if not digest.has_memo:
+    if _MEMO_ONLY_TRAITS and not digest.has_memo:
         # 모델이 빈 자리를 메우려 드는 것을 막는다. "근거가 없다" 를 명시적으로
         # 알려 주지 않으면 AI 가 쓴 title/subtitle 에서 성향을 만들어 낸다.
         sections.append(
@@ -93,10 +107,11 @@ def build_update_prompt(
             "위 지적을 반영해 User Memory 전체를 다시 만드세요."
         )
 
+    # 무엇을 남기고 버릴지는 여기서 말하지 않는다. 그것은 시스템 프롬프트의 정책이고
+    # 세트마다 다르다. 여기서 고정하는 것은 출력이 **문서 전체**라는 계약뿐이다.
     sections.append(
         "위 기록을 반영해 **User Memory 전체**를 다시 만드세요. "
-        "기존 프로필에 덧붙이는 것이 아니라 병합·수정·압축·삭제를 거친 최신 상태 "
-        "하나를 출력합니다."
+        "바뀐 부분만이 아니라 기존 정보와 새 정보를 합친 전체 갱신본 하나를 출력합니다."
     )
     return "\n\n".join(sections)
 
@@ -124,7 +139,7 @@ class UserMemoryAgent:
     ) -> UserMemory:
         """전체 갱신본을 만든다.
 
-        스키마 검증(필드 200자·``customAttributes`` 5개·모르는 최상위 필드)은
+        스키마 검증(필드와 ``customAttributes`` 값의 길이·모르는 최상위 필드)은
         ``complete_structured`` 안의 교정 재시도가 맡는다. 크기 총량과 민감정보는
         그 위에서 :mod:`app.services.user_memory_repair` 가 본다.
 

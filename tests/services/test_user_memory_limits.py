@@ -52,7 +52,7 @@ def test_digest_keeps_only_the_most_recent_timelines():
 
 
 def test_digest_keeps_memo_events_when_over_budget():
-    """메모는 성향 계열 필드의 유일한 근거다. 마지막까지 지킨다."""
+    """메모는 event 안에서 사용자가 직접 쓴 유일한 글이다. 마지막까지 지킨다."""
 
     events = [
         daily_timeline_event(
@@ -399,7 +399,7 @@ def test_each_day_gets_its_own_event_quota():
 
     전체 상한 하나로 자르면 정렬 기준이 (메모 있음, 최근순)이라 최근의 바쁜 하루가
     앞자리를 다 차지하고, 밀려난 날은 payload 에서 빠져 모델에게는 애초에 없던 날이
-    된다. "여러 날에서 반복 확인" 판단의 근거가 통째로 사라진다.
+    된다. 여러 날에 걸쳐 같은 일이 있었는지 볼 근거가 통째로 사라진다.
     """
 
     busy = daily_timeline(

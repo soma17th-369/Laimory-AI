@@ -45,8 +45,8 @@ class DailyTimelineEvent(CamelModel):
     """확정된 하루 타임라인의 event 하나.
 
     ``title``·``subtitle``·``question`` 은 **이 시스템의 타임라인 AI 가 쓴 문장**이고
-    ``memo`` 만 사용자가 직접 쓴 글이다. 이 구분은 갱신 프롬프트가 지키며, 근거는
-    :mod:`app.agents.user_memory.user_memory_agent` 에 적었다.
+    ``memo`` 만 사용자가 직접 쓴 글이다. 이 출처를 어떻게 다룰지는 갱신 프롬프트가
+    정하며 세트마다 다르다(:mod:`app.agents.user_memory.user_memory_agent`).
     """
 
     event_type: str = Field(alias="eventType", min_length=1)

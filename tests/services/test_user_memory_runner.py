@@ -133,7 +133,7 @@ def test_existing_memory_is_handed_to_the_agent():
 
 
 def test_a_day_without_memo_still_succeeds():
-    """성향 필드가 안 바뀌는 것이 정상이다. 실패가 아니다."""
+    """메모가 없는 것은 실패가 아니다. 무엇을 갱신할지는 프롬프트 세트가 정한다."""
 
     client = FakeAppServerClient()
     agent = _StubAgent()
