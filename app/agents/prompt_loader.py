@@ -4,6 +4,23 @@ from pathlib import Path
 
 from app.core.config import settings
 
+#: #119 이전의 계약으로 도는 프롬프트 세트. 이 세트들은 확정 pass 의 새 검사(이동 사이
+#: 장시간 체류, 대화 event 개수, 타입별 지속시간)와 Repair 의 새 입력·도구를 쓰지 않는다.
+#:
+#: v2 는 운영 세트다. 프롬프트가 설명하지 않는 warning·입력·도구를 코드가 먼저 주면 운영
+#: 결과가 달라진다. 새 세트는 이름을 여기 더하지 않는 한 새 계약으로 돈다.
+LEGACY_PROMPT_VERSIONS = frozenset({"v1", "v2"})
+
+
+def uses_legacy_contract(version: str | None = None) -> bool:
+    """이 프롬프트 세트가 #119 이전의 계약으로 도는가.
+
+    문자열 대소 비교(`< "v3"`)는 `"v10" < "v3"` 이 참이라 쓰지 않는다.
+    """
+
+    selected = str(version or settings.prompt_version).strip().lower()
+    return selected in LEGACY_PROMPT_VERSIONS
+
 
 def load_prompt(
     module_file: str | Path,
