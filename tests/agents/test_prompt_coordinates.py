@@ -1,10 +1,14 @@
-"""프롬프트에 좌표를 싣지 않는다 (#80).
+"""프롬프트에 좌표(#80)와 photoUrl(#127)을 싣지 않는다.
 
 위경도는 사람이 읽고 판단할 값이 아니다. Agent 가 직접 해석할 일이 없는데도 원본 항목마다
 실려 나가면서 input token 만 차지한다. 좌표가 필요한 판단(연속 MOVEMENT 사이 끝점 거리 등)은
 코드가 `derivedMetrics` 로 계산해 결론만 넘기므로 원본에서 빼도 근거가 줄지 않는다.
 
-**입력 스키마에서 없앤 것이 아니다.** request 로는 그대로 받고 코드가 계속 쓴다.
+`photoUrl` 도 같은 경계에서 뺀다. 이미지는 vision 호출에 bytes 로 따로 실리므로 LLM 이 URL 에서
+얻을 정보가 없다.
+
+**입력 스키마에서 없앤 것이 아니고 마스킹도 아니다.** request 로는 그대로 받고 코드가 계속 쓰며,
+`model_dump()` 에는 남아 Langfuse 요청 덤프에서 어느 사진을 보고 만든 설명인지 확인할 수 있다.
 """
 
 import json
@@ -22,6 +26,7 @@ from tests.fixtures.requests import (
 )
 
 COORDINATE_KEYS = ("latitude", "longitude", '"lat"', '"lon"')
+PHOTO_URL = "https://images.example.com/p.jpg?X-Amz-Signature=deadbeefcafe&X-Amz-Expires=900"
 
 
 def _request():
@@ -33,7 +38,7 @@ def _request():
     return make_request(
         stays=[stay_item(1, raw_id="stay-1", lat=37.15, lon=127.07, place="집")],
         movements=[movement],
-        photos=[photo_item(3, raw_id="photo-1", lat=37.15, lon=127.07)],
+        photos=[photo_item(3, raw_id="photo-1", lat=37.15, lon=127.07, photo_url=PHOTO_URL)],
     )
 
 
@@ -78,17 +83,45 @@ def test_photo_prompt_keeps_place_fields():
     assert payload[0]["address"] == "서울 영등포구 여의동로 330"
 
 
-def test_lookup_source_has_no_coordinates():
+def test_photo_url_stays_in_the_dump_but_not_in_the_prompt():
+    """`photoUrl` 은 마스킹이 아니라 프롬프트 경계에서만 뺀다(#127).
+
+    `model_dump()` 에는 남아야 Langfuse 요청 덤프에서 어느 사진을 보고 만든 설명인지
+    확인할 수 있고, 프롬프트에는 없어야 사진 수만큼 input token 이 늘지 않는다.
+    """
+
+    photo = photo_item(9, raw_id="photo-9", photo_url=PHOTO_URL)
+
+    dumped = photo.model_dump(by_alias=True, mode="json")
+    text = _photo_items_to_text([photo])
+
+    assert dumped["photoUrl"] == PHOTO_URL
+    assert "photoUrl" not in text
+    assert "X-Amz-Signature" not in text
+    assert json.loads(text)[0]["rawId"] == fixture_raw_id("photo-9")
+
+
+def _repair_context():
     request = _request()
-    ctx = RepairContext(
+    return RepairContext(
         request=request,
         draft=TimelineDraft(user_id="u", date="2026-06-20", timezone="Asia/Seoul"),
     )
 
-    text = _lookup_source(ctx, {"rawId": fixture_raw_id("stay-1")})
+
+def test_lookup_source_has_no_coordinates():
+    text = _lookup_source(_repair_context(), {"rawId": fixture_raw_id("stay-1")})
 
     _assert_no_coordinates(text)
     assert "집" in text  # 좌표만 빠지고 나머지는 그대로
+
+
+def test_lookup_source_has_no_photo_url():
+    text = _lookup_source(_repair_context(), {"rawId": fixture_raw_id("photo-1")})
+
+    assert "photoUrl" not in text
+    assert "X-Amz-Signature" not in text
+    assert fixture_raw_id("photo-1") in text  # URL 만 빠지고 나머지는 그대로
 
 
 def test_empty_input_is_unchanged():

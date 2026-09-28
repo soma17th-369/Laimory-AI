@@ -7,6 +7,7 @@ from app.core.redaction import (
     REDACTED,
     capture_external_content,
     capture_payload,
+    redact_text,
     redact_value,
     summarize_content,
 )
@@ -317,3 +318,23 @@ def test_daily_timelines_of_unknown_shape_are_folded_whole() -> None:
     )
 
     assert redacted["dailyTimelines"]["contentCaptured"] is False
+
+
+def test_photo_url_with_presigned_signature_is_not_masked() -> None:
+    """`photoUrl` 은 키 이름으로도 서명 패턴으로도 가리지 않는다(#127).
+
+    Langfuse 에서 어느 사진을 보고 만든 설명인지 확인하려면 원문이 필요하다. 프롬프트
+    쪽은 마스킹이 아니라 `parsing.strip_prompt_excluded_keys` 가 싣지 않는다.
+    """
+
+    url = "https://images.example.com/p.jpg?X-Amz-Signature=deadbeefcafe&X-Amz-Credential=AKIA%2F20260620"
+    payload = {"photos": [{"rawId": "p-1", "photoUrl": url}], "apiKey": "sk-abcdefghijklmnop"}
+
+    assert redact_text(url) == url
+    assert redact_value(payload)["photos"][0]["photoUrl"] == url
+    assert redact_value(payload)["apiKey"] == REDACTED  # 다른 키 마스킹은 그대로다
+
+    captured = capture_external_content(
+        payload, ContentCapture.SANITIZED, max_bytes=4096
+    )
+    assert captured["photos"][0]["photoUrl"] == url

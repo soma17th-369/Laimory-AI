@@ -64,42 +64,48 @@ def items_to_text(items: list) -> str:
     return json.dumps(dumped, ensure_ascii=False, indent=2)
 
 
-#: 프롬프트에 싣지 않는 키. 좌표는 **코드만** 쓴다(이슈 #80).
-_COORDINATE_KEYS = frozenset({"latitude", "longitude"})
+#: 프롬프트에 싣지 않는 키. **코드만** 쓰는 값이다 — 좌표(이슈 #80)와 사진 URL(이슈 #127).
+_PROMPT_EXCLUDED_KEYS = frozenset({"latitude", "longitude", "photoUrl"})
 
 
-def strip_coordinates(payload):
-    """직렬화한 payload 에서 위경도를 걷어낸다.
+def strip_prompt_excluded_keys(payload):
+    """직렬화한 payload 에서 프롬프트에 싣지 않는 키를 걷어낸다.
 
     좌표는 사람이 읽고 판단할 값이 아니다. Agent 가 직접 해석할 일이 없는데도 원본 항목마다
     실려 나가면서 input token 만 차지한다. 좌표가 필요한 판단(연속 MOVEMENT 사이 끝점 거리
     등)은 코드가 `derivedMetrics` 로 계산해 결론만 넘기므로, 원본에서 빼도 근거가 줄지 않는다.
 
+    `photoUrl` 도 같다. 이미지는 vision 호출에 bytes 로 따로 실리므로 LLM 이 URL 에서 얻을
+    정보가 없고, presigned 서명까지 붙어 사진 수만큼 input token 만 늘어난다. 요청 덤프
+    (Langfuse)에는 남긴다 — 어느 사진을 보고 만든 설명인지 검증하는 자리라서다.
+
     `MovementItem` 은 `start`/`end` 안에 좌표를 중첩하므로 재귀로 훑는다. 입력 스키마에서
-    좌표를 없애는 것이 아니다 — request 로는 그대로 받고 프롬프트에만 싣지 않는다.
+    필드를 없애는 것이 아니다 — request 로는 그대로 받고 프롬프트에만 싣지 않는다.
     """
 
     if isinstance(payload, dict):
         return {
-            key: strip_coordinates(value)
+            key: strip_prompt_excluded_keys(value)
             for key, value in payload.items()
-            if key not in _COORDINATE_KEYS
+            if key not in _PROMPT_EXCLUDED_KEYS
         }
     if isinstance(payload, list):
-        return [strip_coordinates(item) for item in payload]
+        return [strip_prompt_excluded_keys(item) for item in payload]
     return payload
 
 
-def items_to_text_without_coordinates(items: list) -> str:
-    """`items_to_text` 와 같되 위경도만 뺀다.
+def items_to_text_without_prompt_excluded_keys(items: list) -> str:
+    """`items_to_text` 와 같되 프롬프트에 싣지 않는 키(좌표·`photoUrl`)만 뺀다.
 
-    위치 원본을 프롬프트에 싣는 곳(Location·Photo Agent)이 함께 쓴다.
+    위치·사진 원본을 프롬프트에 싣는 곳(Location·Photo Agent)이 함께 쓴다.
     """
 
     if not items:
         return items_to_text(items)
     return json.dumps(
-        strip_coordinates([m.model_dump(by_alias=True, mode="json") for m in items]),
+        strip_prompt_excluded_keys(
+            [m.model_dump(by_alias=True, mode="json") for m in items]
+        ),
         ensure_ascii=False,
         indent=2,
     )
