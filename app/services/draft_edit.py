@@ -7,8 +7,8 @@ event 의 지정한 필드에만 닿고, 나머지 값은 원본 그대로 남�
 
 바꿀 수 있는 필드는 `_EDITABLE_FIELDS` 로 한정한다. `clientEventId` 는 편집 대상이
 아니다. 그 id 는 repair 파이프라인이 정렬 결과에 맞춰 다시 부여하는 값이라
-(`validator.renumber_events`), LLM 이 임의로 바꾸면 질문의 `relatedEventIds` 가
-가리키는 곳이 어긋난다.
+(`validator.renumber_events`), LLM 이 임의로 바꾸면 같은 계획 안의 다음 도구 호출과
+Question Agent 가 가리키는 곳이 어긋난다.
 
 여기서는 **id 를 다시 매기지 않는다.** 한 번의 개선 계획이 여러 도구 호출을 담기
 때문이다. 삭제할 때마다 번호를 다시 매기면 같은 계획 안의 다음 호출이 가리키는
@@ -104,23 +104,10 @@ def update_event(
 
 
 def delete_event(draft: TimelineDraft, client_event_id: str) -> TimelineEventDraft:
-    """event 한 건을 지운다(in-place). 지워진 event 를 돌려준다.
-
-    지워진 event 를 가리키던 질문의 `relatedEventIds` 에서 그 id 를 뺀다. 참조가
-    모두 사라진 질문 자체는 남긴다. 질문은 "이 시간대에 무엇을 했는가" 를 묻는
-    것이라, event 가 사라졌다고 해서 물어볼 것이 없어지는 것은 아니다.
-    """
+    """event 한 건을 지운다(in-place). 지워진 event 를 돌려준다."""
 
     event = find_event(draft, client_event_id)
     draft.events.remove(event)
-
-    for question in draft.questions:
-        if client_event_id in question.related_event_ids:
-            question.related_event_ids = [
-                event_id
-                for event_id in question.related_event_ids
-                if event_id != client_event_id
-            ]
 
     # 제목은 사용자 콘텐츠라 남기지 않는다. 무엇이 지워졌는지는 Langfuse 의 도구
     # 실행 기록에서 본다.

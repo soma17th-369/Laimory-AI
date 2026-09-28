@@ -14,7 +14,6 @@ from app.schemas import (
     SourceRef,
     TimelineDraft,
     TimelineEventDraft,
-    TimelineQuestion,
 )
 from app.services.draft_edit import DraftEditError, delete_event, find_event, update_event
 from tests.fixtures.requests import fixture_raw_id
@@ -41,26 +40,12 @@ def _event(client_event_id: str, title: str = "체류", start: str = "09:00", en
     )
 
 
-def _draft(*events, questions=None) -> TimelineDraft:
+def _draft(*events) -> TimelineDraft:
     return TimelineDraft(
         user_id="u",
         date="2026-06-20",
         timezone="Asia/Seoul",
         events=list(events),
-        questions=list(questions or []),
-    )
-
-
-def _question(*related_ids) -> TimelineQuestion:
-    return TimelineQuestion(
-        question_id="question-001",
-        time_range={
-            "startTime": "2026-06-20T09:00:00+09:00",
-            "endTime": "2026-06-20T10:00:00+09:00",
-        },
-        question="이 시간에 무엇을 했나요?",
-        reason="근거가 약하다",
-        related_event_ids=list(related_ids),
     )
 
 
@@ -111,19 +96,13 @@ def test_update_event_reports_missing_event():
         update_event(draft, "event-999", {"title": "x"})
 
 
-def test_delete_event_removes_event_and_question_reference():
-    draft = _draft(
-        _event("event-001"),
-        _event("event-002", title="산책"),
-        questions=[_question("event-001", "event-002")],
-    )
+def test_delete_event_removes_only_that_event():
+    draft = _draft(_event("event-001"), _event("event-002", title="산책"))
 
     removed = delete_event(draft, "event-001")
 
     assert removed.title == "체류"
     assert [event.client_event_id for event in draft.events] == ["event-002"]
-    # 사라진 event 참조만 빠지고 질문 자체는 남는다.
-    assert draft.questions[0].related_event_ids == ["event-002"]
 
 
 def test_delete_event_does_not_renumber_remaining_events():

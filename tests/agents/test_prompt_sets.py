@@ -174,14 +174,30 @@ def test_timeline_states_tone_and_length(version: str, marker: str, why: str) ->
 
 
 @pytest.mark.parametrize("version", _QUALITY_VERSIONS)
-def test_timeline_puts_tone_rules_before_input_section(version: str) -> None:
-    """말투 규정은 프롬프트 **앞쪽**에 둔다 (#61).
+def test_timeline_tone_rules_have_one_home(version: str) -> None:
+    """말투 규정의 자리 (#61, #118).
 
-    앞 지시가 더 세게 작동하므로 「결과 문장의 말투」를 「입력 의미」보다 먼저 둔다.
-    뒤쪽 「제목과 설명」은 규정이 아니라 예시 자리다 — 같은 문장을 두 번 쓰지 않는다.
+    v2 는 앞 지시가 더 세게 작동한다는 이유로 「결과 문장의 말투」를 「입력 의미」보다 먼저
+    둔다. 뒤쪽 「제목과 설명」은 규정이 아니라 예시 자리다.
+
+    v3 는 판단 순서대로 읽히도록 말투 규정을 문장을 쓰는 5단계에 모았다(#118). 같은
+    candidate 로 앞·뒤 배치를 3회씩 비교했을 때 차이가 작았다.
+
+    어느 쪽이든 규정은 한 곳에만 있다 — 같은 문장을 두 번 쓰지 않는다.
     """
 
     text = _timeline(version)
+    assert text.count("1인칭 해요체 과거형") == 1
+
+    if version == "v3":
+        inputs = text.index("## 입력 데이터의 의미")
+        writing = text.index("## 5단계. title·description 작성")
+        tone = text.index("### 말투와 길이")
+        examples = text.index("### 나쁜 예")
+
+        assert inputs < writing < tone < examples
+        return
+
     tone = text.index("## 결과 문장의 말투")
     inputs = text.index("## 입력 의미")
     examples = text.index("## 제목과 설명")

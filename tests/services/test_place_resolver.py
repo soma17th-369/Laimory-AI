@@ -84,8 +84,11 @@ def _draft(*events) -> TimelineDraft:
 # --- 얼버무림 판정 -------------------------------------------------------------
 
 
-@pytest.mark.parametrize("label", ["한 곳", "한곳", "근처", "주변", "어떤 장소", "  ", None])
+@pytest.mark.parametrize(
+    "label", ["한 곳", "한곳", "근처", "주변", "일대", "어떤 장소", "  ", None]
+)
 def test_vague_labels_are_not_places(label):
+    # `일대` 는 #118 장소 선택 규칙이 명시한 얼버무림이다.
     assert is_vague_place_label(label)
 
 
@@ -159,6 +162,23 @@ def test_movement_prefers_its_destination_place():
     assert draft.events[0].place == "도착 공원"
 
 
+def test_movement_without_a_destination_name_is_not_filled_from_the_origin():
+    """장소 선택 규칙(#118): MOVEMENT 의 place 는 출발지가 아니라 도착지다.
+
+    도착지에 이름이 없다고 출발지 이름을 넣으면 `집` 에서 나온 이동이 집에 있었던
+    것처럼 읽힌다. 채울 것이 없으면 비운다.
+    """
+
+    request = _request()
+    request.movements[0].end = GeoPlace(place=None, address=None, places=[])
+    draft = _draft(_event(MOVE_REF))
+
+    resolve_places(draft, request)
+
+    assert draft.events[0].place is None
+    assert draft.events[0].address is None
+
+
 def test_calendar_supplies_the_friendly_label_when_no_location_evidence():
     draft = _draft(_event(CALENDAR_REF))
 
@@ -209,7 +229,7 @@ def test_exact_address_passes():
     assert is_exact_address(HOME_ADDRESS)
 
 
-def test_approximate_evidence_address_is_skipped_when_filling():
+def test_approximate_destination_address_is_left_empty_not_replaced_by_the_origin():
     # 수집 원본이 도착지 주소를 `... 90 인근` 으로 준다. 그것은 주소가 아니다.
     request = _request()
     request.movements[0].end = GeoPlace(place="도착 공원", address="경기도 오산시 운암로 90 인근")
@@ -217,8 +237,8 @@ def test_approximate_evidence_address_is_skipped_when_filling():
 
     resolve_places(draft, request)
 
-    # 도착지가 근사값이라 건너뛰고, 정확한 출발지 주소로 채운다.
-    assert draft.events[0].address == "경기도 오산시 운암로 90"
+    # 도착지가 근사값이면 비운다. 출발지 주소로 넘어가면 place(도착지)와 짝이 어긋난다.
+    assert draft.events[0].address is None
     assert draft.events[0].place == "도착 공원"  # place 은 근사여도 이름이다
 
 

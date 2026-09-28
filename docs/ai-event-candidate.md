@@ -48,8 +48,35 @@
 - `MEAL` 은 보통 20~60분이다. 식당·카페에 오래 머물렀더라도 그 체류 전체를 `MEAL` 로
   만들지 않는다. 긴 체류는 체류대로 두고, 음식 사진·결제 알림 같은 **시점 근거** 부근의
   짧은 식사 event 를 따로 둔다. `app/services/meal_guard.py` 가 60분을 넘는 `MEAL` 을
-  결정론적으로 잘라 낸다.
-- 어디에도 맞지 않으면 `UNKNOWN` 으로 둔다.
+  결정론적으로 잘라 내고, 시점 근거가 없는 `MEAL` 은 길이와 무관하게 confidence 를
+  0.6 이하로 묶는다(#118) — 캘린더만 근거인 식사도 같다.
+- 어디에도 맞지 않으면 `UNKNOWN` 으로 둔다. 쇼핑·진료·미용실처럼 13종에 없는 활동도
+  `UNKNOWN` 이며 무엇을 했는지는 title·description 이 말한다(#118). 새 타입을 만들지
+  않는다 — App Server 는 이 13종만 받는다.
+
+## eventType 별 지속시간 (#118)
+
+Timeline v3 프롬프트가 지시하는 상한이다. 캘린더 근거가 있으면 어느 타입이든 일정 시간을
+따르고, "최대"는 근거 구간 안에서 자르는 상한이지 근거 밖으로 늘리는 값이 아니다.
+
+| eventType | 지속시간 | 코드가 강제하는가 |
+| --- | --- | --- |
+| `WAKE_UP` | 순간(시작=끝) | 예 (`draft_repair.repair_durations`) |
+| `SLEEP` | 수면 기록 구간 그대로 | 아니오 |
+| `MOVEMENT` | 첫 출발~최종 도착 그대로 | 부분 (`align_location_events` 가 이동을 통째로 품게 한다) |
+| `CALENDAR_EVENT` | 일정 시작~종료(window 안) | 아니오 |
+| `MEAL` | 20~60분 | 예 (`meal_guard`) |
+| `PHOTO_MOMENT` | 촬영 순간~마지막 촬영, 최대 1시간 | 아니오 |
+| `MEETING` | 일정 시간, 일정이 없으면 최대 2시간 | 아니오 |
+| `CLASS` | 일정 시간, 일정이 없으면 최대 3시간 | 아니오 |
+| `WORK` | 최대 3시간, 넘으면 오전·오후처럼 나눈다 | 3시간 초과 warning 만 (`duration_guard`) |
+| `EXERCISE` | 산책은 왕복 구간 그대로, 그 외 최대 2시간 | 3시간 초과 warning 만 |
+| `SOCIAL` | 최대 3시간 | 3시간 초과 warning 만 |
+| `REST` | 최대 3시간 | 3시간 초과 warning 만 |
+| `UNKNOWN` | 최대 3시간 | 3시간 초과 warning 만 |
+
+타입별 상한을 코드로 검사하는 것은 #119 의 몫이다. 그 전까지 `duration_guard` 는 비캘린더
+event 를 일괄 3시간으로 잰다.
 
 ## sourceRefs 구조
 

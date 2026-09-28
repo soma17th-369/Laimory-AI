@@ -11,12 +11,14 @@ event 를 따로 만든다" 를 안내하고, 이 모듈이 draft repair 단계�
 
     - 60분을 넘는 `MEAL` 은 **시점 근거**(음식 사진 촬영 시각, 결제 알림 시각)를
       기준으로 최대 60분 창으로 줄인다.
-    - 시점 근거가 없으면 event 시작부터 60분으로 줄이고 `confidence` 를 낮춘다.
-      식사 시각을 특정할 근거가 없다는 뜻이기 때문이다.
+    - 시점 근거가 없으면 event 시작부터 60분으로 줄인다.
     - 20분보다 짧은 `MEAL`(예: 사진 한 장이 만든 순간 event)은 20분으로 늘린다.
+    - 시점 근거가 없는 `MEAL` 은 **길이와 무관하게** `confidence` 를 0.6 이하로 묶는다
+      (#118). 식사 시각을 특정할 근거가 없다는 뜻이기 때문이다. 캘린더만 근거인
+      식사도 여기 든다 — 일정은 계획이지 먹은 시점이 아니다.
 
-조정한 event 에는 `uncertainty` 를 남기고 draft `warnings` 로 알린다. 이 가드는
-요청 window 검증 **앞**에서 돌아, 늘어난 시간의 최종 경계는 window 검증이 정한다.
+조정한 event 에는 `uncertainty` 를 남기고, 시간을 바꾼 것은 draft `warnings` 로 알린다.
+이 가드는 요청 window 검증 **앞**에서 돌아, 늘어난 시간의 최종 경계는 window 검증이 정한다.
 """
 
 from datetime import datetime, timedelta, tzinfo
@@ -49,6 +51,9 @@ _ANCHORED_NOTE = (
 )
 _UNANCHORED_NOTE = (
     "식사 시각을 특정할 근거가 없어 체류 시작 시각 기준 60분으로 제한했다."
+)
+_UNANCHORED_CONFIDENCE_NOTE = (
+    "음식 사진이나 결제 알림 같은 시점 근거가 없어 confidence 를 낮췄다."
 )
 _EXPANDED_NOTE = "식사 시각 근거가 한 시점뿐이라 최소 20분으로 잡았다."
 
@@ -122,7 +127,6 @@ def _shrink(event: TimelineEventDraft, moments: list[datetime]) -> None:
     else:
         start = lower
         end = start + MEAL_MAX_DURATION
-        event.confidence = min(event.confidence, _UNANCHORED_MAX_CONFIDENCE)
         note = _UNANCHORED_NOTE
 
     event.start_time, event.end_time = _fit(start, end, lower, upper)
@@ -136,8 +140,20 @@ def _expand(event: TimelineEventDraft) -> None:
     event.uncertainty.append(_EXPANDED_NOTE)
 
 
+def _limit_unanchored_confidence(event: TimelineEventDraft) -> None:
+    """시점 근거가 없는 식사의 confidence 를 상한으로 묶는다(길이와 무관)."""
+
+    if event.confidence <= _UNANCHORED_MAX_CONFIDENCE:
+        return
+    event.confidence = _UNANCHORED_MAX_CONFIDENCE
+    event.uncertainty.append(_UNANCHORED_CONFIDENCE_NOTE)
+
+
 def enforce_meal_duration(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
-    """draft 의 `MEAL` event 지속시간을 20~60분으로 강제한다(in-place)."""
+    """draft 의 `MEAL` event 지속시간을 20~60분으로 강제한다(in-place).
+
+    시점 근거가 없는 식사는 길이가 범위 안이어도 confidence 를 묶는다(#118).
+    """
 
     tz = resolve_timezone(request.timezone)
     anchors = _anchor_times(request)
@@ -147,15 +163,17 @@ def enforce_meal_duration(draft: TimelineDraft, request: TimelineDraftRequest) -
         if event.event_type is not EventType.MEAL:
             continue
 
+        moments = _event_anchors(event, anchors, tz)
         before = event.end_time - event.start_time
-        if MEAL_MIN_DURATION <= before <= MEAL_MAX_DURATION:
-            continue
-
         if before > MEAL_MAX_DURATION:
-            _shrink(event, _event_anchors(event, anchors, tz))
-        else:
+            _shrink(event, moments)
+            adjusted.append((event, before))
+        elif before < MEAL_MIN_DURATION:
             _expand(event)
-        adjusted.append((event, before))
+            adjusted.append((event, before))
+
+        if not moments:
+            _limit_unanchored_confidence(event)
 
     seq = len(draft.warnings)
     for event, before in adjusted:

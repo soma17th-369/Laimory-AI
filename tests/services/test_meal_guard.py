@@ -23,6 +23,7 @@ from app.services.meal_guard import (
     enforce_meal_duration,
 )
 from tests.fixtures.requests import (
+    calendar_item,
     fixture_raw_id,
     make_request,
     notification_item,
@@ -152,6 +153,73 @@ def test_photo_outside_the_event_window_is_not_used_as_an_anchor():
 
     assert draft.events[0].start_time == _at(STAY_START)
     assert draft.events[0].confidence <= 0.6
+
+
+def test_in_range_meal_without_an_anchor_keeps_its_span_but_loses_confidence():
+    """길이가 맞아도 시점 근거가 없으면 confidence 를 묶는다(#118).
+
+    이슈의 식사 규칙: "근거가 없으면 confidence 를 최대 0.6 으로 낮춘다." 예전에는 60분을
+    넘겨 줄일 때만 낮춰서, 40분짜리 무근거 식사는 0.9 그대로 나갔다.
+    """
+
+    draft = _draft(
+        _event(STAY_REF, start="2026-06-20T13:00:00", end="2026-06-20T13:40:00", confidence=0.9)
+    )
+
+    enforce_meal_duration(draft, _request(photo_taken=None))
+
+    meal = draft.events[0]
+    assert _duration(meal) == timedelta(minutes=40)  # 시간은 건드리지 않는다
+    assert meal.confidence == pytest.approx(0.6)
+    assert any("시점 근거가 없어" in note for note in meal.uncertainty)
+    assert draft.warnings == []  # 시간을 바꾸지 않았으니 warning 도 없다
+
+
+def test_calendar_only_meal_is_unanchored_too():
+    """일정은 계획이지 먹은 시점이 아니다. 캘린더만 근거인 식사도 상한을 받는다."""
+
+    request = make_request(
+        calendars=[
+            calendar_item(
+                5,
+                "점심 약속",
+                start="2026-06-20T12:00:00",
+                end="2026-06-20T13:00:00",
+                raw_id="cal-1",
+            )
+        ]
+    )
+    draft = _draft(
+        _event(
+            (EventSourceType.CALENDAR, "cal-1"),
+            start="2026-06-20T12:00:00",
+            end="2026-06-20T13:00:00",
+            confidence=0.95,
+        )
+    )
+
+    enforce_meal_duration(draft, request)
+
+    assert draft.events[0].confidence == pytest.approx(0.6)
+
+
+def test_anchored_meal_keeps_its_confidence():
+    draft = _draft(
+        _event(STAY_REF, PHOTO_REF, start="2026-06-20T13:00:00", end="2026-06-20T13:40:00", confidence=0.9)
+    )
+
+    enforce_meal_duration(draft, _request())
+
+    assert draft.events[0].confidence == pytest.approx(0.9)
+
+
+def test_already_low_confidence_gets_no_extra_note():
+    draft = _draft(_event(STAY_REF, start="2026-06-20T13:00:00", end="2026-06-20T13:40:00", confidence=0.5))
+
+    enforce_meal_duration(draft, _request(photo_taken=None))
+
+    assert draft.events[0].confidence == pytest.approx(0.5)
+    assert draft.events[0].uncertainty == []
 
 
 # --- 경계와 비대상 ------------------------------------------------------------

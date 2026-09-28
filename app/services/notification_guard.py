@@ -185,8 +185,6 @@ def _draft_texts(draft: TimelineDraft) -> list[str]:
         texts.extend(event.tags)
         texts.extend(event.uncertainty)
         texts.extend(ref.reason or "" for ref in event.source_refs)
-    for question in draft.questions:
-        texts.extend([question.question, question.reason])
     return [text for text in texts if text]
 
 

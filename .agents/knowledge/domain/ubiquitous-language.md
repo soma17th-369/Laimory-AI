@@ -35,15 +35,15 @@
 | Fragment | candidate로 확정하기에는 약하지만 다른 source와 결합할 수 있는 단서. 원본 단순 요약과 동의어가 아니다. |
 | SourceRef | candidate 또는 event가 어떤 source `rawId`를 왜 근거로 삼는지 나타내는 참조. `sourceType` label은 실제 입력 type으로 정정될 수 있다. |
 | Timeline Agent | 여러 candidate/fragment를 의미적으로 합쳐 넓은 `TimelineDraft`를 만드는 Agent. 결과는 아직 확정 전이다. |
-| Timeline draft | event, 내부 모호성 질문, warning과 판단 metadata를 담는 편집 가능한 내부 결과. App Server 저장 request보다 넓다. |
+| Timeline Agent 출력 계약 | `TimelineAgentOutput`. Timeline LLM이 쓰는 `events`(`TimelineAgentEvent`)와 `warnings`뿐이다(#118). 코드가 부여하는 `clientEventId`와 Question Agent가 채우는 `question`은 여기 없고, `TimelineEventDraft`가 `TimelineAgentEvent`를 상속해 그 둘을 더한다. |
+| Timeline draft | event, warning과 판단 metadata를 담는 편집 가능한 내부 결과. App Server 저장 request보다 넓다. |
 | Timeline event | 사용자가 읽는 하루의 사건 단위. source에 근거해야 하며 Repair 뒤 시간순 ID를 갖는다. |
 | `clientEventId` | 현재 draft 안에서만 쓰는 `event-NNN` 식별자. 병합·삭제 뒤 코드가 다시 부여하며 App Server result에는 보내지 않는다. |
 | Repair Agent | draft를 코드로 확정하고 남은 의미 문제를 LLM tool plan으로 제한 횟수 개선하는 Agent. |
 | Confirm/확정 pass | `repair_draft`와 fragment 검사를 실행해 source·시간·정렬·ID 등 결정론 규칙을 재적용하는 단계. |
 | Guard | 특정 불변식을 검사·보정하거나 warning으로 드러내는 결정론 service. 모든 guard가 값을 자동 수정하는 것은 아니다. |
-| Question Agent | Repair가 확정한 event에 사용자 회고 유도 질문을 선택적으로 붙이는 Agent. |
-| 내부 모호성 질문 | `TimelineDraft.questions`. 불확실한 시간·장소를 확인하는 내부 draft 정보이며 App Server로 보내지 않는다. |
-| 회고 유도 질문 | `TimelineEventDraft.question`/result event의 `question`. 사용자가 경험·감정·이유를 덧붙이도록 event에 중첩해 저장하는 질문. |
+| Question Agent | Repair가 확정한 모든 event에 사용자 회고 유도 질문을 하나씩 붙이는 Agent. |
+| 회고 유도 질문 | `TimelineEventDraft.question`/result event의 `question`. 사용자가 경험·감정·이유를 덧붙이도록 event에 중첩해 저장하는 질문. 예전의 내부 모호성 질문(`TimelineDraft.questions`)은 #118에서 제거됐다 — 읽어서 쓰는 곳이 없었고, 그 자리는 event `uncertainty`와 Timeline warning이 맡는다. |
 | `place` | 장소명. 파이프라인 전 구간이 이 한 이름을 쓴다 — 입력 `StayItem.place`/`GeoPlace.place`, draft event의 `place`, result event의 `place`. 예전 draft 필드명 `placeLabel`은 #72에서 통합됐고 back-compat alias로만 남는다. |
 | `places` | 한 지점을 가리킬 수 있는 장소명 **후보 목록**. 입력(`StayItem.places`)과 candidate에만 있다. 복수는 고를 후보(Timeline 입력), 단수 `place`는 고른 결과(Timeline 출력)라는 뜻이며, 그래서 candidate에는 단수 필드를 두지 않는다. |
 | `address` | 수집 원본에 실제로 있던 주소 문자열. 좌표에서 만들어 내지 않고, `인근`·`부근` 같은 근사 표현이 붙은 값은 주소로 쓰지 않는다. 근거로 뒷받침되지 않으면 확정 pass가 지운다. |
@@ -68,7 +68,7 @@
 
 ## Invariants
 
-- “질문”을 쓸 때 내부 모호성 질문인지 회고 유도 질문인지 구분한다.
+- “질문”은 회고 유도 질문(`event.question`)을 뜻한다. 내부 모호성 질문은 #118 이후 없다.
 - “저장”은 App Server result 제출을 뜻하며 callback과 구분한다.
 - “source ID”는 특별한 설명이 없으면 rawId를 뜻한다.
 - “task 상태”와 프로세스 로컬 inflight/busy를 같은 것으로 부르지 않는다.
