@@ -263,7 +263,7 @@ AI → App Server   POST /user-memory/updates/{taskId}/result       (성공·실
 | `dailyTimelines` | `object[]` | O | 확정된 하루 타임라인입니다. 비어 있어도 되며 최대 5건입니다. |
 | `dailyTimelines[].recordDate` | `string` | O | 대상 날짜(`YYYY-MM-DD`)입니다. |
 | `dailyTimelines[].recordTimeZone` | `string` | | 시간대입니다. 기본값은 `Asia/Seoul`입니다. |
-| `dailyTimelines[].emotionType` | `string \| null` | | 현재 항상 `null`입니다. 받아만 두고 사용하지 않습니다. |
+| `dailyTimelines[].emotionType` | `string \| null` | | 사용자가 그 하루를 저장하며 고른 감정입니다(이슈 #121). **하루에 하나**이며 event별 감정은 없습니다. `VERY_HAPPY`, `HAPPY`, `NEUTRAL`, `UNHAPPY`, `VERY_UNHAPPY` 중 하나이고, 감정을 받기 전에 저장된 기록은 `null`입니다. enum으로 제한하지 않으며 다섯 값이 아닌 값은 갱신에 쓰지 않습니다. |
 | `dailyTimelines[].events[].eventType` | `string` | O | **자유 문자열**입니다. enum으로 제한하지 않습니다. |
 | `dailyTimelines[].events[].title` | `string` | | AI가 쓴 제목입니다. |
 | `dailyTimelines[].events[].subtitle` | `string \| null` | | AI가 쓴 부제입니다. |
@@ -283,7 +283,7 @@ AI → App Server   POST /user-memory/updates/{taskId}/result       (성공·실
     {
       "recordDate": "2026-08-04",
       "recordTimeZone": "Asia/Seoul",
-      "emotionType": null,
+      "emotionType": "HAPPY",
       "events": [
         {
           "eventType": "MEAL",
@@ -301,6 +301,29 @@ AI → App Server   POST /user-memory/updates/{taskId}/result       (성공·실
 ```
 
 전체 예시는 [docs/samples/user-memory-update.sample.json](samples/user-memory-update.sample.json)에 있습니다.
+
+### 갱신에 쓰는 값 (이슈 #121)
+
+AI 서버는 접수한 하루 타임라인을 아래처럼 줄여 갱신에 씁니다. 접수 계약은 바뀌지
+않으며, 이 표는 받은 값 가운데 무엇이 실제로 쓰이는지를 말합니다.
+
+| 접수 필드 | 갱신에 쓰는 형태 |
+|---|---|
+| `recordDate` | 그대로 씁니다. |
+| `emotionType` | 값이 있으면 그대로 씁니다. 없으면 싣지 않습니다. |
+| `events[].eventType`, `title`, `subtitle`, `memo` | 그대로 씁니다. 비어 있으면 싣지 않습니다. |
+| `events[].startAt`, `endAt` | **시 단위**로만 씁니다. 분은 버립니다. |
+| `events[].question` | 쓰지 않습니다. |
+
+하루에 event가 24개를 넘으면 `memo`가 있는 event를 먼저 남기고 나머지는 최근 것부터
+24개까지 남깁니다.
+
+무엇을 근거로 프로필을 쓰는지는 프롬프트 세트(`PROMPT_VERSION`)가 정합니다.
+
+| 세트 | 근거 |
+|---|---|
+| `v1`, `v2` | 성격·가치관·취향 계열은 `memo`만 근거로 씁니다. `memo`가 없는 날은 그 필드가 그대로입니다. 여러 날에 반복된 것만 남깁니다. |
+| `v3` | `title`·`subtitle`도 근거로 쓰고 폭넓게 모읍니다. 한 번 나온 정보도 남기며, 기존 내용과 겹치면 합치고 새 내용은 더하고 충돌하면 새 정보로 바꿉니다. `memo`·`emotionType`과 AI가 쓴 문장이 어긋나면 사용자가 직접 남긴 쪽을 따릅니다. |
 
 ### Success Response
 
@@ -578,11 +601,16 @@ Task-Token: {taskToken}
 |---|---|---|
 | `schemaVersion` | `string` | `"1.0"`만 지원합니다. |
 | `updatedAt` | `string \| null` | 마지막 갱신 시각입니다. 프롬프트에는 싣지 않습니다. |
-| `basicProfile`, `lifeContext`, `relationships`, `personality`, `values`, `preferences`, `routines`, `currentFocus`, `emotionalPatterns`, `memoryStyle` | `string` | 자연어 필드이며 각 **최대 200자**입니다. 비어 있으면 프롬프트에서 생략합니다. |
-| `customAttributes` | `object` | 고정 필드로 담기지 않는 값입니다. **최대 5개**, 값당 **최대 150자**입니다. |
+| `basicProfile`, `lifeContext`, `relationships`, `personality`, `values`, `preferences`, `routines`, `currentFocus`, `emotionalPatterns`, `memoryStyle` | `string` | 자연어 필드이며 각 **최대 500자**입니다. 비어 있으면 프롬프트에서 생략합니다. |
+| `customAttributes` | `object` | 고정 필드로 담기지 않는 값입니다. 값당 **최대 500자**이며 **개수 제한은 없습니다**. |
 
 최상위 필드는 고정입니다. 위 목록에 없는 최상위 필드, 지원하지 않는
-`schemaVersion`, 길이·개수 초과는 계약 위반입니다.
+`schemaVersion`, 길이 초과는 계약 위반입니다.
+
+상한은 이슈 #121에서 넓어졌습니다(필드 200자 → 500자, `customAttributes` 값 150자 →
+500자, 개수 5개 → 제한 없음). `schemaVersion`은 `"1.0"` 그대로이며 예전 상한으로 쓴
+문서는 모두 그대로 읽힙니다. 문서 전체의 크기는 갱신 쪽이 2,000자로 제한합니다
+([5.4](#54-user-memory-결과-저장-이슈-64)).
 
 **계약 위반은 타임라인을 실패시키지 않습니다.** 오류 코드 `1106`으로 기록하고
 User Memory 없이 생성을 계속합니다(흡수). 보조 context 하나 때문에 하루치 수집
@@ -782,6 +810,13 @@ Task-Token: {taskToken}
 - `schemaVersion`과 `updatedAt`은 **AI 서버가 확정**합니다. LLM이 만든 값을 쓰지 않습니다.
 - 응답은 상태 코드만 봅니다. `2xx`가 성공이고, 재시도·중단 규칙은 타임라인 경로와 같습니다.
 - `taskToken`은 갱신되지 않습니다. 접수 요청 body의 값을 끝까지 사용합니다.
+- `userMemory`는 프롬프트에 실리는 형태(빈 필드와 메타데이터를 뺀 JSON)로 **전체 2,000자
+  이하**입니다(이슈 #121, 이전 1,200자). 필드별 상한의 합이 이보다 크므로 실제 제약은 이
+  값입니다. 넘으면 자르지 않고 직전 출력을 고치게 다시 요청하며, 재요청 뒤에도 넘으면
+  `1304`로 실패합니다.
+- AI 서버는 모델에게 2,000자가 아니라 **1,600자를 목표로** 알려 줍니다. 모델이 글자 수를
+  정확히 맞추지 못하기 때문이며, 저장되는 문서는 대개 1,600~2,000자 사이입니다. App Server가
+  알아야 할 계약은 상한 2,000자뿐입니다.
 
 ##### `FAILED`의 의미 — `SAVED` 전이와 분리됩니다
 
