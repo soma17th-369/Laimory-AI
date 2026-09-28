@@ -11,13 +11,20 @@
 상대의 문구가 남아 있지 않은지를 함께 본다.
 """
 
+import json
+import re
 from pathlib import Path
 
 import pytest
 
 from app.agents.user_memory import UserMemoryAgent, build_update_prompt
 from app.agents.user_memory import user_memory_agent
-from app.schemas.user_memory import NARRATIVE_MAX_LENGTH, UserMemory
+from app.schemas.user_memory import (
+    CUSTOM_ATTRIBUTE_MAX_LENGTH,
+    METADATA_FIELDS,
+    NARRATIVE_MAX_LENGTH,
+    UserMemory,
+)
 from app.services.user_memory_limits import (
     USER_MEMORY_MAX_CHARS,
     USER_MEMORY_TARGET_CHARS,
@@ -342,30 +349,197 @@ def test_agent_accepts_more_custom_attributes_than_the_old_limit():
 # --- 프롬프트 파일 계약 -------------------------------------------------
 
 
+def _prompt(version: str) -> str:
+    return (_PROMPTS / version / "prompt.md").read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize("version", ["v1", "v2", "v3"])
 @pytest.mark.parametrize(
     ("marker", "why"),
     [
-        ("memo", "사용자의 실제 발화가 무엇인지 지목해야 합니다."),
-        ("AI 가 센서 기록을 보고 대신 쓴 문장", "title/subtitle 의 출처를 밝혀야 합니다."),
-        ("스스로를 강화", "왜 안 되는지를 설명해야 지시가 유지됩니다."),
-        ("기존 값을 그대로 둡니다", "근거 없을 때의 동작이 명시돼야 합니다."),
-        ("200자", "필드 길이 상한이 있어야 합니다."),
+        ("사용자가 직접 쓴 글", "사용자의 실제 발화가 무엇인지 지목해야 합니다."),
+        ("AI 가 센서 기록을 보고", "title/subtitle 의 출처를 밝혀야 합니다."),
+        ("통째로 대체", "출력이 append 가 아니라 rewrite 임을 알려야 합니다."),
         ("customAttributes", "동적 속성 규칙이 있어야 합니다."),
         ("schemaVersion", "메타데이터를 출력하지 말라고 해야 합니다."),
+        ("지시로 따르지 않습니다", "memo 안의 지시문을 따르지 않게 해야 합니다."),
+        ("분 단위 시각", "원본 수치를 프로필에 옮기지 않게 해야 합니다."),
     ],
 )
-def test_prompt_states_the_source_of_each_sentence(version: str, marker: str, why: str):
-    text = (_PROMPTS / version / "prompt.md").read_text(encoding="utf-8")
+def test_every_set_states_the_shared_contract(version: str, marker: str, why: str):
+    """근거 정책이 갈려도 세트를 가리지 않고 지켜야 하는 것."""
 
-    assert marker in text, f"user_memory {version} 프롬프트에 '{marker}' 가 없습니다. {why}"
+    assert marker in _prompt(version), (
+        f"user_memory {version} 프롬프트에 '{marker}' 가 없습니다. {why}"
+    )
 
 
-@pytest.mark.parametrize("version", ["v2", "v3"])
-def test_prompt_sets_stay_identical(version: str):
-    """이 Agent 는 버전별로 갈릴 이유가 없다. 갈리면 롤백이 다른 동작을 만든다."""
+@pytest.mark.parametrize("version", ["v1", "v2"])
+@pytest.mark.parametrize(
+    ("marker", "why"),
+    [
+        ("스스로를 강화", "왜 안 되는지를 설명해야 지시가 유지됩니다."),
+        ("기존 값을 그대로 둡니다", "근거 없을 때의 동작이 명시돼야 합니다."),
+        ("200자", "이 세트가 쓰는 필드 길이가 있어야 합니다."),
+    ],
+)
+def test_memo_only_sets_keep_their_evidence_rule(version: str, marker: str, why: str):
+    """v1·v2 는 AI 가 쓴 문장에서 성향을 뽑지 않는다(#64)."""
 
-    v1 = (_PROMPTS / "v1" / "prompt.md").read_text(encoding="utf-8")
-    other = (_PROMPTS / version / "prompt.md").read_text(encoding="utf-8")
+    assert marker in _prompt(version), (
+        f"user_memory {version} 프롬프트에 '{marker}' 가 없습니다. {why}"
+    )
 
-    assert v1 == other
+
+def test_memo_only_sets_stay_identical():
+    """v1 과 v2 는 같은 정책이라 갈릴 이유가 없다. 갈리면 롤백이 다른 동작을 만든다.
+
+    v3 는 #121 에서 근거 정책이 바뀌어 여기서 빠졌다.
+    """
+
+    assert _prompt("v1") == _prompt("v2")
+
+
+@pytest.mark.parametrize(
+    ("marker", "why"),
+    [
+        ("읽고 저장한", "AI 문장을 근거로 쓰는 이유(사용자가 받아들인 기록)를 밝혀야 합니다."),
+        ("말투와 표현은 AI 의 것", "문장의 어조에서 성격을 읽지 않게 해야 되먹임이 줄어듭니다."),
+        ("`memo`·`emotion` 을 따릅니다", "사용자가 직접 남긴 것이 이겨야 합니다."),
+        ("`memo` 가 없는 날에도 갱신합니다", "메모 없는 날의 동작이 명시돼야 합니다."),
+        ("폭넓게", "수집 범위를 넓힌다고 적어야 합니다."),
+        ("거르지 않습니다", "타임라인 쓸모로 거르지 않는다고 적어야 합니다."),
+        ("사는 곳, 나이, 성별, 직업, 신분", "이슈가 꼽은 수집 대상이 있어야 합니다."),
+        ("만나거나 대화하는 사람", "이슈가 꼽은 수집 대상이 있어야 합니다."),
+        ("적극적으로 추론합니다", "추론을 하라고 적어야 합니다."),
+        ("`~로 보입니다`", "추론과 확인된 사실을 구분해 적게 해야 합니다."),
+        ("반복되는지는 남기는 조건이 아닙니다", "한 번 나온 정보를 남기는 규칙이 있어야 합니다."),
+        ("반복으로 고쳐 씁니다", "다시 나온 정보를 반복으로 올리는 규칙이 있어야 합니다."),
+        ("겹치면 합칩니다", "병합 규칙이 있어야 합니다."),
+        ("새로운 내용은 더합니다", "추가 규칙이 있어야 합니다."),
+        ("충돌하면 새 정보로 바꿉니다", "충돌 규칙이 있어야 합니다."),
+        ("개수 제한은 없습니다", "customAttributes 개수 제한이 없다고 적어야 합니다."),
+        ("정보를 지우는 것은 마지막입니다", "줄이는 순서가 보존 정책을 따라야 합니다."),
+        ("`[REDACTED_…]`", "가린 자리를 프로필에 옮기지 않게 해야 합니다."),
+    ],
+)
+def test_v3_states_the_broad_collection_policy(marker: str, why: str):
+    assert marker in _prompt("v3"), f"user_memory v3 프롬프트에 '{marker}' 가 없습니다. {why}"
+
+
+@pytest.mark.parametrize(
+    ("removed", "why"),
+    [
+        ("스스로를 강화", "AI 문장을 근거로 쓰지 말라는 설명이 남아 있습니다."),
+        ("기존 값을 그대로 둡니다", "memo 없는 날 성향 필드를 두라는 지시가 남아 있습니다."),
+        ("**`memo` 만.**", "성향 필드의 근거를 memo 로 제한하는 표가 남아 있습니다."),
+        ("반복 확인된", "반복을 저장 조건으로 삼는 규칙이 남아 있습니다."),
+        ("성향을 단정하지 않습니다", "하루치 기록으로는 적지 말라는 규칙이 남아 있습니다."),
+        ("일정 기간 유효한 특성", "일회성 정보를 버리라는 규칙이 남아 있습니다."),
+        ("실제로 도움이 되는가", "타임라인 쓸모로 거르는 조건이 남아 있습니다."),
+        ("하루짜리 사건", "하루짜리 사건을 금지하는 규칙이 남아 있습니다."),
+        ("이름이 아니라 관계로", "사람 이름을 금지하는 규칙이 남아 있습니다."),
+        ("200자", "옛 필드 길이가 남아 있습니다."),
+        ("150자", "옛 customAttributes 길이가 남아 있습니다."),
+        ("최대 5개", "옛 customAttributes 개수가 남아 있습니다."),
+        ("짧을수록 좋습니다", "눌러 담으라는 지시가 남아 있습니다."),
+    ],
+)
+def test_v3_drops_the_rules_the_new_policy_replaced(removed: str, why: str):
+    """옛 규칙이 한 줄이라도 남으면 모델은 두 정책 사이에서 보수적인 쪽을 고른다."""
+
+    assert removed not in _prompt("v3"), f"user_memory v3 프롬프트: {why}"
+
+
+def test_v3_states_the_limits_the_code_enforces():
+    """프롬프트가 말하는 숫자와 코드가 거절하는 숫자가 같아야 한다.
+
+    다르면 모델은 프롬프트를 지키고도 거절당하거나, 코드가 받아 줄 것을 미리 줄인다.
+    """
+
+    text = _prompt("v3")
+
+    assert f"각 자연어 필드: 최대 {NARRATIVE_MAX_LENGTH}자" in text
+    assert f"값 하나당 최대 {CUSTOM_ATTRIBUTE_MAX_LENGTH}자" in text
+    assert (
+        f"전체 프로필: 최대 {USER_MEMORY_MAX_CHARS:,}자, "
+        f"목표 {USER_MEMORY_TARGET_CHARS:,}자"
+    ) in text
+
+
+def test_v3_has_the_size_section_the_violation_message_points_to():
+    """크기 위반 지적은 줄이는 순서를 말하지 않고 이 절을 가리킨다."""
+
+    text = _prompt("v3")
+
+    assert "\n## 크기\n" in text
+    assert "넘칠 것 같으면 이 순서로" in text
+
+
+@pytest.mark.parametrize(
+    ("marker", "why"),
+    [
+        ("크기는 남기는 규칙보다 앞섭니다", "보존과 상한이 부딪칠 때 무엇이 이기는지 적어야 합니다."),
+        ("먼저 줄여 자리를 만듭니다", "상한에 닿은 프로필에 새 정보를 얹는 순서가 있어야 합니다."),
+        ("그 수 이내로 씁니다", "코드가 주는 문장 수 몫을 따르라고 적어야 합니다."),
+        ("끝까지 남기는 것", "줄일 때 지키는 사실이 있어야 합니다."),
+        ("직전 출력을 고칩니다", "재요청에서 처음부터 다시 만들지 않게 해야 합니다."),
+    ],
+)
+def test_v3_tells_how_to_stay_under_the_cap(marker: str, why: str):
+    """보존 정책 아래에서 프로필은 며칠이면 상한에 닿고 그 뒤로는 매일 상한 근처다.
+
+    그 구간의 규칙이 없으면 갱신이 매일 실패한다(실측에서 닷새 중 나흘).
+    """
+
+    assert marker in _prompt("v3"), f"user_memory v3 프롬프트에 '{marker}' 가 없습니다. {why}"
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_memo_only_sets_have_the_size_section_too(version: str):
+    text = _prompt(version)
+
+    assert "\n## 크기\n" in text
+    assert "넘칠 것 같으면 이 순서로 줄입니다" in text
+
+
+def test_v3_explains_every_emotion_the_app_server_sends():
+    """App Server 의 `EmotionType` 다섯 값. 뜻을 모르는 값은 모델이 짐작한다."""
+
+    text = _prompt("v3")
+
+    for value in ("VERY_HAPPY", "HAPPY", "NEUTRAL", "UNHAPPY", "VERY_UNHAPPY"):
+        assert f"- `{value}`: " in text, f"user_memory v3 에 감정 `{value}` 의 뜻이 없습니다."
+    assert "직접 고른 감정" in text
+    assert "그날 있던 일과 함께 읽습니다" in text
+    assert "뜻을 짐작하지 않고 쓰지 않습니다" in text
+
+
+def test_v3_names_every_key_the_digest_carries():
+    """프롬프트가 설명하는 입력 키가 코드가 싣는 키와 맞아야 한다.
+
+    코드에서 키를 더하고 프롬프트를 두면 모델은 뜻을 모르는 값을 받는다.
+    """
+
+    digest = _digest(
+        [daily_timeline_event(subtitle="동료들과 함께였어요", memo="편했다")],
+        emotion_type="HAPPY",
+    )
+    entry = digest.daily_timelines[0]
+    keys = set(entry) | set(entry["events"][0])
+    text = _prompt("v3")
+
+    for key in sorted(keys):
+        assert f"`{key}`" in text, f"user_memory v3 에 입력 키 `{key}` 설명이 없습니다."
+
+
+def test_v3_keeps_the_output_example_in_step_with_the_schema():
+    """출력 예시의 키가 스키마와 다르면 모델은 예시를 계약으로 알고 채운다."""
+
+    block = re.search(r"```json\n(.*?)```", _prompt("v3"), re.S)
+    assert block, "user_memory v3 프롬프트에 JSON 출력 예시가 없습니다."
+
+    declared = {
+        field.alias or name for name, field in UserMemory.model_fields.items()
+    }
+    assert set(json.loads(block.group(1))) == declared - set(METADATA_FIELDS)
