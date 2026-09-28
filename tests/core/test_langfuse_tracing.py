@@ -1,6 +1,7 @@
 """Langfuse 어댑터의 no-op·콘텐츠 보호·trace 계약을 검증한다."""
 
 import asyncio
+import json
 from contextlib import contextmanager
 
 import pytest
@@ -533,3 +534,24 @@ def test_generation_without_a_stage_falls_back(monkeypatch) -> None:
         pass
 
     assert fake.started[0]["name"] == "call-llm"
+
+
+def test_sanitized_capture_keeps_photo_url_for_photo_verification(monkeypatch) -> None:
+    """`photoUrl` 은 presigned 서명이 붙어도 원문이 남는다(#127).
+
+    본문 캡처와 export 직전 OTel attribute 재마스킹이 같은 값을 그대로 둬야 Langfuse
+    화면에서 어느 사진을 보고 만든 설명인지 확인할 수 있다.
+    """
+
+    monkeypatch.setattr(
+        langfuse_tracing.settings, "langfuse_content_capture", "SANITIZED"
+    )
+    url = "https://images.example.com/p.jpg?X-Amz-Signature=deadbeefcafe&X-Amz-Expires=900"
+    body = {"request": {"photos": [{"rawId": "p-1", "photoUrl": url}]}}
+
+    captured = langfuse_tracing.capture_langfuse_body(body)
+    assert captured["request"]["photos"][0]["photoUrl"] == url
+
+    serialized = json.dumps(captured, ensure_ascii=False)
+    assert langfuse_tracing._mask_attribute(serialized) == serialized
+    assert langfuse_tracing._mask_attribute(url) == url

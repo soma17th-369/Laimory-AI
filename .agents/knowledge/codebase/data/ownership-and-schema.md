@@ -52,7 +52,7 @@ source batch는 taskId 일치, 1건 이상, rawId 유일성을 요구한다. Eve
 
 result mapper는 내부 판단 필드를 버리고 사람이 읽는 event와 sourceRawIds만 전송한다. description은 subtitle이 되고, rawId는 reference 순서를 보존해 dedupe한다. date/time은 draft timezone으로 localize한다. event가 0개여도 확정 결과로 전송한다.
 
-Photo의 `photoUrl`은 image fetch에만 사용하며 Pydantic serialization에서 제외된다. presigned query가 prompt·trace로 유출되지 않도록 하기 위한 데이터 경계다. client URI와 filename은 schema에 없어 무시된다.
+Photo의 `photoUrl`은 코드가 image fetch에 쓰고 LLM prompt에는 싣지 않는다(좌표와 같은 prompt 제외 키, #80·#127). serialization에서는 제외하지 않으므로 Langfuse 요청 덤프에는 presigned URL 원문이 남는다 — 어느 사진을 보고 만든 설명인지 검증하기 위한 것이다. client URI와 filename은 schema에 없어 무시된다.
 
 User Memory는 App Server가 소유하고 AI 서버는 읽기(input 조회)와 쓰기(갱신 결과 저장) 둘 다 HTTP로만 한다. 갱신은 append가 아니라 **전체 rewrite**이며, 출력이 기존 값을 통째로 대체한다. `schemaVersion`과 `updatedAt`은 LLM 값이 아니라 서버가 박는다 — 모델이 정하게 두면 언젠가 우리가 모르는 버전이 저장되고 다음 날 읽기가 깨진다.
 

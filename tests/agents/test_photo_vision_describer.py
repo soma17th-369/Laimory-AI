@@ -239,8 +239,9 @@ def test_photo_agent_default_path_downloads_and_describes(monkeypatch):
 def test_photo_url_never_reaches_the_prompt(has_image):
     """presigned URL 은 어떤 프롬프트에도 실리지 않는다.
 
-    `PhotoItem.photo_url` 이 `exclude=True` 라 `model_dump()` 경로에서 빠지고,
-    describe 프롬프트도 URL 을 넣지 않는다.
+    infer 프롬프트는 좌표와 같은 프롬프트 경계(`strip_prompt_excluded_keys`)에서
+    `photoUrl` 을 빼고(#127), describe 프롬프트는 URL 을 넣지 않는다. `model_dump()`
+    자체에서 빠지는 것이 아니다 — Langfuse 요청 덤프에는 남는다.
     """
 
     images = {PHOTO_1: ImageInput(data=JPEG, mime_type="image/jpeg")} if has_image else {}

@@ -21,7 +21,15 @@ from tests.fixtures.pipeline import (
     confirm_only_repair_agent,
     silent_question_agent,
 )
-from tests.fixtures.requests import fixture_raw_id, make_request, stay_item
+from tests.fixtures.requests import (
+    fixture_raw_id,
+    make_request,
+    photo_item,
+    stay_item,
+)
+
+# presigned 서명이 붙은 사진 URL. 요청 덤프에 원문이 남아야 한다(#127).
+PHOTO_URL = "https://images.example.com/p.jpg?X-Amz-Signature=deadbeefcafe&X-Amz-Expires=900"
 
 
 class _FakeCompletions:
@@ -80,6 +88,7 @@ def test_main_agent_trace_has_full_recursive_hierarchy_and_rollups(
 
     request = make_request(
         stays=[stay_item(1, raw_id="s-1")],
+        photos=[photo_item(2, raw_id="p-1", photo_url=PHOTO_URL)],
     )
     source_result = AgentEventResult.model_validate(
         {
@@ -174,6 +183,8 @@ def test_main_agent_trace_has_full_recursive_hierarchy_and_rollups(
         ]
     )
     assert event_input["request"]["stays"][0]["rawId"] == fixture_raw_id("s-1")
+    # 사진 검증용으로 photoUrl 원문이 남는다(#127). export 직전 재마스킹은 test_langfuse_tracing 이 본다.
+    assert event_input["request"]["photos"][0]["photoUrl"] == PHOTO_URL
     assert "result" in _trace_output(spans["event-agent-source-a"])
     assert "mergedResult" in _trace_output(spans["merge-event-results"])
     assert "timeline" in _trace_output(spans["timeline-agent"])
