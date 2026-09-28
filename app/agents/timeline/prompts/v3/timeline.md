@@ -60,6 +60,28 @@ Event Agent가 이미 정해 둔 것은 다시 판단하지 않습니다.
 
 Event Agent는 User Memory를 받지 않습니다. 프로필이 있어야 하는 판단은 4단계에서만 합니다.
 
+### user memory가 말하는 것
+
+값은 자연어 문장이고, 비어 있는 필드는 들어오지 않습니다.
+
+상황과 사건 맥락을 해석하는 데 쓰는 필드:
+
+- `basicProfile`: 연령대, 신분, 직업·역할, 생애 단계
+- `lifeContext`: 지금 삶의 시기와 상황
+- `relationships`: 생활과 감정에 중요한 관계의 유형과 의미
+- `routines`: 반복되는 생활 구조와 주요 활동
+- `currentFocus`: 지금 관심과 에너지를 가장 많이 쓰는 목표·과제·고민
+
+중요도 판단과 표현 선택에 쓰는 필드:
+
+- `personality`: 반복되는 사고방식, 행동 특성, 의사소통 성향
+- `values`: 중요하게 여기는 가치와 판단 기준
+- `preferences`: 좋아하거나 피하는 대상·환경·경험
+- `emotionalPatterns`: 반복되는 감정 반응, 스트레스 요인, 안정 조건
+- `memoryStyle`: 하루에서 무엇을 어떻게 기억하고 싶어 하는지
+
+`customAttributes`는 위 필드에 담기지 않는 값이고, 관련성이 분명할 때만 참고합니다.
+
 ## 전체 작업 흐름
 
 작업은 여섯 단계이고 아래 순서로 합니다. 앞 단계가 정한 것 위에 뒤 단계가 쌓입니다.
@@ -414,7 +436,7 @@ eventType은 11종 중 하나입니다: `MOVEMENT`, `CALENDAR_EVENT`, `MEAL`, `P
   - User Memory의 휴식 습관이 그 체류를 설명하면 `REST`로 볼 수 있습니다.
   - 마지막 이동이 User Memory의 집으로 이어지면 귀가로 읽습니다.
 - **사람**: Notification candidate는 사람을 이름이나 대화방 이름으로만 부릅니다. `엄마`, `팀장님` 같은 관계 호칭은 **User Memory의 `relationships`가 그 사람을 그렇게 부를 때만** 씁니다. 근거가 없으면 입력에 있는 이름을 그대로 둡니다.
-- **표현의 결**: `personality`, `values`, `preferences`, `emotionalPatterns`, `memoryStyle`은 무엇이 중요한 사건인지 판단하고 사용자에게 맞는 표현을 고르는 데 참고합니다. `customAttributes`는 관련성이 분명할 때만 참고합니다.
+- **표현의 결**: `personality`, `values`, `preferences`, `emotionalPatterns`, `memoryStyle`은 무엇이 중요한 사건인지 판단하고 사용자에게 맞는 표현을 고르는 데 참고합니다.
 
 ### 이 단계에서 할 수 없는 것
 

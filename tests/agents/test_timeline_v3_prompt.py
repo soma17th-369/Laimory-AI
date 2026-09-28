@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from app.schemas import EventSourceType, EventType, InferenceLevel, TimelineWarningSeverity
+from app.schemas.user_memory import NARRATIVE_FIELDS
 
 APP_ROOT = Path(__file__).resolve().parents[2] / "app"
 
@@ -267,6 +268,33 @@ def test_timeline_v3_picks_and_writes_a_place_only_with_supporting_evidence() ->
         < text.index("#### 장소를 뒷받침하는 근거")
         < text.index("## eventType별 생성 규칙")
     )
+
+
+def test_timeline_v3_defines_every_user_memory_field() -> None:
+    """입력에 들어오는 필드는 모두 뜻이 적혀 있다.
+
+    `basicProfile` 은 입력에 실리는데 v3 를 다시 쓰면서 프롬프트에서 빠진 적이 있다. 이름만
+    보고는 `lifeContext` 와 갈리지 않는다.
+    """
+
+    section = _between(_timeline_v3(), "### user memory가 말하는 것", "## 전체 작업 흐름")
+
+    for name in NARRATIVE_FIELDS:
+        assert f"- `{name}`: " in section, f"user memory 필드 `{name}` 의 설명이 없습니다."
+    assert "`customAttributes`" in section
+
+
+def test_timeline_v3_reads_user_memory_fields_as_the_writer_defines_them() -> None:
+    """필드의 뜻은 프로필을 쓰는 쪽(User Memory Agent)이 정본이다. 읽는 쪽이 다르게 적으면
+    같은 문장을 서로 다른 뜻으로 쓰고 읽는다."""
+
+    writer = _read("agents/user_memory/prompts/v3/prompt.md")
+    definitions = dict(re.findall(r"^\| `(\w+)` \| ([^|]+?) \| [^|]+ \|$", writer, re.M))
+    section = _between(_timeline_v3(), "### user memory가 말하는 것", "## 전체 작업 흐름")
+
+    assert set(definitions) == set(NARRATIVE_FIELDS)
+    for name, definition in definitions.items():
+        assert f"- `{name}`: {definition}" in section, f"`{name}` 의 뜻이 쓰는 쪽과 다릅니다."
 
 
 def test_timeline_v3_applies_user_memory_only_after_evidence() -> None:
