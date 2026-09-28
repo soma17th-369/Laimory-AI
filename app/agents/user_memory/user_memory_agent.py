@@ -112,6 +112,7 @@ def build_update_prompt(
     digest: DailyTimelineDigest,
     *,
     violations: Sequence[str] = (),
+    previous: UserMemory | None = None,
 ) -> str:
     """갱신 요청 user prompt 를 만든다.
 
@@ -121,6 +122,12 @@ def build_update_prompt(
 
     ``violations`` 는 직전 출력이 어긴 규칙이다(:mod:`app.services.user_memory_repair`
     가 채운다). 값은 인용하지 않고 어느 필드가 어떤 규칙을 어겼는지만 담긴다.
+
+    ``previous`` 는 그 규칙을 어긴 직전 출력이다(#121). 주어지면 처음부터 다시 만들지
+    않고 **그 문서를 고치게** 한다. 지적만 붙여 다시 만들게 하면 매번 같은 입력에서
+    출발하므로 같은 크기의 문서가 다시 나온다 — 실측에서 재요청 세 번이 2,085 →
+    2,062 → 2,011자로 상한(2,000자)을 끝내 넘지 못했다. 고칠 문서를 주면 시도마다
+    앞의 결과에서 이어 줄인다.
     """
 
     sections = [
@@ -142,6 +149,19 @@ def build_update_prompt(
             "기존 값을 그대로 두세요. 생활 구조 쪽(routines·lifeContext·currentFocus)만 "
             "event 구조를 근거로 갱신합니다."
         )
+
+    if violations and previous is not None:
+        listed = "\n".join(f"- {item}" for item in violations)
+        sections.append(f"[직전 출력]\n{user_memory_to_text(previous)}")
+        sections.append(f"[직전 출력이 규칙을 어겼습니다]\n{listed}")
+        # 직전 출력에는 이번 기록이 이미 반영돼 있다. 다시 만들면 그 작업을 버리고
+        # 같은 자리에서 출발한다.
+        sections.append(
+            "처음부터 다시 만들지 말고 **직전 출력을 고쳐** User Memory 전체를 "
+            "출력하세요. 지적된 규칙에 맞게 고치고, 바뀐 부분만이 아니라 문서 전체를 "
+            "출력합니다."
+        )
+        return "\n\n".join(sections)
 
     if violations:
         listed = "\n".join(f"- {item}" for item in violations)
@@ -180,6 +200,7 @@ class UserMemoryAgent:
         digest: DailyTimelineDigest,
         *,
         violations: Sequence[str] = (),
+        previous: UserMemory | None = None,
     ) -> UserMemory:
         """전체 갱신본을 만든다.
 
@@ -187,10 +208,14 @@ class UserMemoryAgent:
         ``complete_structured`` 안의 교정 재시도가 맡는다. 크기 총량과 민감정보는
         그 위에서 :mod:`app.services.user_memory_repair` 가 본다.
 
+        ``previous`` 는 규칙을 어긴 직전 출력이다. 주어지면 그 문서를 고쳐서 낸다.
+
         실패는 삼키지 않고 그대로 올린다 — 코드 부여와 기록은 흡수하는 쪽의 몫이다.
         """
 
-        prompt = build_update_prompt(existing, digest, violations=violations)
+        prompt = build_update_prompt(
+            existing, digest, violations=violations, previous=previous
+        )
         with execution_scope(ExecutionStage.USER_MEMORY_AGENT, agent=self.name):
             logger.debug(
                 "User Memory 갱신 요청",

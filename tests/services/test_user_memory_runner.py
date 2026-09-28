@@ -41,7 +41,7 @@ class _StubAgent:
         self._delay_sec = delay_sec
         self.calls: list[tuple] = []
 
-    def generate(self, existing, digest, *, violations=()):
+    def generate(self, existing, digest, *, violations=(), previous=None):
         self.calls.append((existing, digest, list(violations)))
         if self._delay_sec:
             time.sleep(self._delay_sec)

@@ -205,6 +205,52 @@ def test_size_section_carries_numbers_not_a_policy():
         assert policy_word not in section
 
 
+def test_retry_with_the_previous_output_asks_to_fix_it_not_to_start_over():
+    """재요청이 직전 출력에서 이어 가야 시도마다 줄어든다(#121)."""
+
+    previous = UserMemory(basic_profile="직전에 낸 문서입니다.")
+
+    prompt = build_update_prompt(
+        None,
+        _digest(),
+        violations=["전체 크기가 상한을 넘었습니다."],
+        previous=previous,
+    )
+
+    assert "[직전 출력]" in prompt
+    assert "직전에 낸 문서입니다." in prompt
+    assert "직전 출력을 고쳐" in prompt
+    assert "처음부터 다시 만들지 말고" in prompt
+    assert "User Memory 전체" in prompt
+    # 두 지시가 함께 나가면 모델은 뒤에 온 쪽을 따른다.
+    assert "다시 만드세요" not in prompt
+    assert prompt.index("[직전 출력]") < prompt.index("[직전 출력이 규칙을 어겼습니다]")
+
+
+def test_previous_output_is_ignored_without_a_violation():
+    """고칠 이유가 없으면 고칠 문서도 싣지 않는다."""
+
+    prompt = build_update_prompt(
+        None, _digest(), previous=UserMemory(basic_profile="직전에 낸 문서입니다.")
+    )
+
+    assert "[직전 출력]" not in prompt
+    assert "직전에 낸 문서입니다." not in prompt
+
+
+def test_agent_passes_the_previous_output_to_the_model():
+    llm = FakeLLM([memory_json()])
+
+    UserMemoryAgent(llm=llm).generate(
+        None,
+        _digest(),
+        violations=["전체 크기가 상한을 넘었습니다."],
+        previous=UserMemory(basic_profile="직전에 낸 문서입니다."),
+    )
+
+    assert "직전에 낸 문서입니다." in llm.calls[0].prompt
+
+
 def test_prompt_carries_the_emotion_the_user_picked():
     prompt = build_update_prompt(None, _digest(emotion_type="VERY_UNHAPPY"))
 

@@ -25,14 +25,16 @@ _NOW = datetime(2026, 8, 6, 9, 0, tzinfo=_KST)
 
 
 class _StubAgent:
-    """호출 순서대로 준비한 메모리를 돌려주고, 받은 지적을 기록한다."""
+    """호출 순서대로 준비한 메모리를 돌려주고, 받은 지적과 직전 출력을 기록한다."""
 
     def __init__(self, memories: list[UserMemory]) -> None:
         self._memories = list(memories)
         self.violations_seen: list[list[str]] = []
+        self.previous_seen: list[UserMemory | None] = []
 
-    def generate(self, existing, digest, *, violations=()) -> UserMemory:
+    def generate(self, existing, digest, *, violations=(), previous=None) -> UserMemory:
         self.violations_seen.append(list(violations))
+        self.previous_seen.append(previous)
         index = min(len(self.violations_seen) - 1, len(self._memories) - 1)
         return self._memories[index]
 
@@ -78,6 +80,23 @@ def test_violation_is_sent_back_and_the_second_answer_is_kept():
     assert agent.violations_seen[0] == []
     assert agent.violations_seen[1] and "상한" in agent.violations_seen[1][0]
     assert outcome.memory.basic_profile == "짧게 줄였습니다."
+
+
+def test_retry_hands_back_the_document_that_broke_the_rule():
+    """재요청은 직전 출력을 **고치게** 한다(#121).
+
+    지적만 붙여 처음부터 다시 만들게 하면 매번 같은 입력에서 출발해 같은 크기의 문서가
+    다시 나온다. 상한에 닿은 프로필로 실측했을 때 재요청 세 번이 상한을 끝내 넘지 못했다.
+    """
+
+    first, second = _oversized(), _oversized().model_copy(update={"routines": "가" * 400})
+    agent = _StubAgent([first, second, UserMemory(basic_profile="줄였습니다.")])
+
+    outcome = build_user_memory(agent, None, _digest(), updated_at=_NOW)
+
+    assert outcome.repair_attempts == 2
+    # 1차에는 고칠 문서가 없고, 그 뒤로는 바로 앞 시도의 출력을 받는다.
+    assert agent.previous_seen == [None, first, second]
 
 
 def test_exhausted_retries_produce_no_document():

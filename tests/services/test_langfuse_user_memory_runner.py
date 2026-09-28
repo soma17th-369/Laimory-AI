@@ -23,7 +23,7 @@ _TASK_ID = "task-langfuse-user-memory"
 
 
 class _StubAgent:
-    def generate(self, existing, digest, *, violations=()):
+    def generate(self, existing, digest, *, violations=(), previous=None):
         return UserMemory(basic_profile="30대 개발자입니다.")
 
 

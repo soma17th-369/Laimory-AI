@@ -1,10 +1,13 @@
 """User Memory 갱신본 확정 (#64).
 
-Agent 가 만든 문서가 크기·민감정보 규칙을 지켰는지 보고, 어겼으면 **위반 내용을
-붙여 다시 요청한다.** 코드가 문장을 자르지 않는다 — 압축 5단계(중복 제거 → 오래된
-관심사 제거 → 영향 적은 정보 제거 → 문장 병합 → customAttributes 제거)는 전부 의미
-판단이고, 잘린 문장은 뜻이 달라진다. 그걸 근거로 쓴 해석은 되돌릴 방법이 없다.
-:mod:`app.services.duration_guard` 가 "자르거나 나누지 않는다" 고 한 것과 같은 이유다.
+Agent 가 만든 문서가 크기·민감정보 규칙을 지켰는지 보고, 어겼으면 **위반 내용과 그
+문서를 함께 돌려주고 고치게 한다.** 코드가 문장을 자르지 않는다 — 무엇을 합치고 무엇을
+지울지는 전부 의미 판단이고, 잘린 문장은 뜻이 달라진다. 그걸 근거로 쓴 해석은 되돌릴
+방법이 없다. :mod:`app.services.duration_guard` 가 "자르거나 나누지 않는다" 고 한 것과
+같은 이유다. 줄이는 순서는 프롬프트 세트가 갖는다(#121).
+
+재요청이 **직전 출력에서 이어 가는** 것이 중요하다. 상한에 닿은 프로필은 매일 상한
+근처에서 갱신되므로, 재요청이 줄어드는 쪽으로 모이지 않으면 실패가 매일 반복된다.
 
 재시도까지 실패하면 **저장 문서를 만들지 않는다.** 규칙을 어긴 프로필을 저장하느니
 기존 값을 그대로 두는 편이 낫다 — 갱신은 매일 다시 시도된다.
@@ -84,14 +87,20 @@ def build_user_memory(
     """
 
     violations: list[str] = []
+    # 규칙을 어긴 직전 출력. 재요청은 이것을 **고치게** 한다(#121). 지적만 붙여 처음부터
+    # 다시 만들게 하면 매번 같은 입력에서 출발해 같은 크기의 문서가 다시 나온다.
+    previous: UserMemory | None = None
     for attempt in range(max_attempts + 1):
-        memory = agent.generate(existing, digest, violations=violations)
+        memory = agent.generate(
+            existing, digest, violations=violations, previous=previous
+        )
         violations = find_violations(memory)
         if not violations:
             return UserMemoryOutcome(
                 memory=finalize(memory, updated_at=updated_at),
                 repair_attempts=attempt,
             )
+        previous = memory
         # 위반 문장에는 값이 들어 있지 않다(어느 필드가 어떤 규칙을 어겼는지만).
         # 그래도 개수만 남긴다 — 지적 문구까지 매 시도 로그에 쌓을 이유가 없다.
         logger.info(
