@@ -359,16 +359,26 @@ app/
 #   없었다. Timeline 의 LLM 출력 계약은 TimelineAgentOutput(events·warnings)뿐이고, LLM
 #   warning 은 Timeline 만 아는 판단(근거 충돌에서 고른 쪽, 일부러 쓰지 않은 근거와 이유)에
 #   한한다. 코드 guard 가 남기는 것은 다시 적지 않는다.
-# Timeline v3(#118): 작업을 하루 구조 → 근거로 event 구성 → 활동 분류·장소 선택 →
-#   **User Memory 반영(별도 단계)** → 문장 순서로 나눈다. eventType 마다 다른 Event
-#   Agent 의 candidate 에서 무엇을 보고 어떻게 합치는지(병합 기준·정하는 근거·지속시간·다른
-#   Agent 데이터·User Memory 구체화 범위)와 candidate → event 예시를 갖는다. 최종 event 는
-#   24개 이내이고 description 에 시간 표현을 쓰지 않는다(언제는 startTime·endTime 이 담는다).
-#   Event Agent 가 이미 하는 판단은 Timeline 에서 지웠다. v2 는 그대로다.
+# Timeline v3(#118): **판단 순서대로 위에서 아래로 읽힌다.** 하루 구조 → 근거로 event 구성 →
+#   eventType·시간·장소 결정 → **User Memory 반영(별도 단계)** → 문장 → 최종 검증의 여섯
+#   단계이고, 3단계까지는 User Memory 를 쓰지 않는다. 2·3단계의 공통 규칙은 **기본값**이며
+#   타입별 절이 다르게 적으면 그 타입에서는 그 절이 이긴다(MEAL 의 시간, PHOTO_MOMENT 의 장소).
+#   한 타입을 만드는 데 필요한 것(합치는 근거·보태는 근거·시간과 지속시간·장소·User Memory
+#   범위·근거가 약할 때·예시)은 **그 타입의 절 하나**에 모여 있다 — 표 여러 개를 대조하지
+#   않는다. 헷갈리는 타입의 경계는 3단계에 따로 둔다. 최종 event 는 24개 이내이고 description
+#   에 시간 표현을 쓰지 않는다(언제는 startTime·endTime 이 담는다). 말투 규정은 v2 와 달리
+#   문장을 쓰는 5단계에 있다. Event Agent 가 이미 하는 판단은 Timeline 에서 지웠다. v2 는 그대로다.
+#   User Memory 필드 10개와 customAttributes 의 뜻을 입력 절에 적는다. **정본은 프로필을 쓰는
+#   쪽(User Memory Agent 프롬프트)의 정의 표**이고, 읽는 쪽 문장이 그것과 같은지 테스트가 본다 —
+#   다르게 적으면 같은 문장을 서로 다른 뜻으로 쓰고 읽는다. Question v3 에는 아직 넣지 않았다.
+#   `REST` 는 쉬었다는 근거(쉬는 장면 사진, User Memory 의 휴식 습관)가 있을 때만 쓰고,
+#   근거 없는 체류는 `UNKNOWN` 이다. 취소·변경 알림은 거의 수신되지 않아 다루지 않는다.
 #   **v3 는 수면을 다루지 않는다.** 수면 기록을 정확히 받을 수 없게 돼 Timeline·Question v3 에서
-#   `SLEEP`·`WAKE_UP` 의 규칙과 예시를 뺐고, 수면 기록을 event 근거로도 시간 경계로도 쓰지
-#   않는다. **프롬프트만 그렇다** — `EventType` 13종 계약, SleepActivity Agent, sleep_guard 는
-#   그대로라 수면 기록이 입력에 들어오면 코드는 여전히 그 경계를 강제한다.
+#   `SLEEP`·`WAKE_UP` 의 규칙과 예시를 뺐다. Timeline 에는 "수면 기록에서 온 candidate·fragment
+#   는 쓰지 않고 SLEEP·WAKE_UP event 를 만들지 않는다"는 한 문장만 남겼다 — 통째로 빼면 수면
+#   기록이 든 입력에서 SLEEP event 가 되살아난다. **프롬프트만 그렇다** — `EventType` 13종
+#   계약, SleepActivity Agent, sleep_guard 는 그대로라 수면 기록이 입력에 들어오면 코드는
+#   여전히 그 경계를 강제한다.
 # User Memory 계약(#65): 입력 조회 응답의 선택 필드 `userMemory` 는 사용자 압축 프로필
 #   v1.0 이다. 전달 경로는 입력 조회 → CollectedSnapshot → normalize → TimelineDraftRequest
 #   → user_memory_to_text 하나뿐이고, **Timeline Agent 와 Question Agent 가 같은 문자열을

@@ -46,7 +46,7 @@ Timeline Agent는 의미 병합과 tolerant parse를 맡는다. LLM 출력 계�
 
 LLM이 준 `userId`, date, timezone, `clientEventId`는 신뢰하지 않는다. date/timezone은 request 기준으로, event ID는 parse 순서로 임시 부여한다.
 
-v3 Timeline 프롬프트는 작업을 하루 구조 → 근거로 event 구성 → 활동 분류·장소 선택 → User Memory 반영 → 문장 순서로 나누고, eventType마다 다른 Event Agent의 candidate에서 무엇을 보고 어떻게 합치는지(병합 기준·정하는 근거·지속시간·다른 Agent 데이터에서 참고할 것·User Memory 구체화 범위)와 candidate → event 예시를 갖는다. Event Agent가 이미 하는 판단(이동수단 라벨·경유지·예약 날짜·알림 가치·수면 유효성)은 Timeline에서 지웠다. v2는 그대로다. v3 Timeline·Question은 수면을 다루지 않는다 — 수면 기록을 정확히 받을 수 없어 `SLEEP`·`WAKE_UP`의 규칙·예시가 없고 수면 기록을 event 근거나 시간 경계로 쓰지 않는다. 이는 프롬프트에 한한 것이고 `EventType` 13종 계약, SleepActivity Agent, `sleep_guard`는 그대로다.
+v3 Timeline 프롬프트는 판단 순서대로 읽힌다. 작업을 하루 구조 → 근거로 event 구성 → eventType·시간·장소 결정 → User Memory 반영 → 문장 → 최종 검증의 여섯 단계로 나누고, 3단계까지는 User Memory를 쓰지 않는다. 2·3단계의 공통 규칙은 기본값이고 타입별 절이 다르게 적으면 그 타입에서는 그 절이 이긴다. eventType마다 다른 Event Agent의 candidate에서 무엇을 보고 어떻게 합치는지(합치는 근거·보태는 근거·시간과 지속시간·장소·User Memory 구체화 범위·근거가 약할 때)와 candidate → event 예시는 그 타입의 절 하나에 모여 있다. `REST`는 쉬었다는 근거가 있을 때만 쓰고 근거 없는 체류는 `UNKNOWN`이다. 취소·변경 알림은 다루지 않는다. Event Agent가 이미 하는 판단(이동수단 라벨·경유지·예약 날짜·알림 가치·수면 유효성)은 Timeline에서 지웠다. v2는 그대로다. v3 Timeline·Question은 수면을 다루지 않는다 — 수면 기록을 정확히 받을 수 없어 `SLEEP`·`WAKE_UP`의 규칙·예시가 없고, Timeline에는 수면 기록을 쓰지 말고 두 event를 만들지 말라는 한 문장만 있다. 이는 프롬프트에 한한 것이고 `EventType` 13종 계약, SleepActivity Agent, `sleep_guard`는 그대로다.
 
 ### Repair Agent와 확정 pass
 
