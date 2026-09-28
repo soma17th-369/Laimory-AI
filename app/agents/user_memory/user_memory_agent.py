@@ -49,7 +49,13 @@ from app.core.execution_context import ExecutionStage, execution_scope
 from app.core.logging import get_logger, log_fields
 from app.core.llm_stages import LLMStage
 from app.schemas.user_memory import UserMemory
-from app.services.user_memory_limits import DailyTimelineDigest
+from app.services.user_memory_limits import (
+    USER_MEMORY_MAX_CHARS,
+    USER_MEMORY_TARGET_CHARS,
+    DailyTimelineDigest,
+    serialized_chars,
+    shrink_budget,
+)
 
 logger = get_logger(__name__)
 
@@ -65,6 +71,40 @@ _TEMPERATURE = 0.2
 #: 어긋난다. 지시를 통째로 지우지 않고 가른 것은 ``PROMPT_VERSION`` 을 v2 로 되돌렸을 때
 #: 그 세트의 근거 정책이 예전처럼 지켜져야 하기 때문이다.
 _MEMO_ONLY_TRAITS = settings.prompt_version in ("v1", "v2")
+
+
+def _size_section(existing: UserMemory | None) -> str | None:
+    """기존 프로필의 크기를 목표·상한과 함께 알려 준다(#121). 비어 있으면 ``None``.
+
+    모델은 글자 수를 세지 못한다. 기존 프로필이 얼마나 큰지 모르면 새 정보를 그대로
+    얹어 상한을 넘기고, 넘은 프로필은 저장되지 않는다. 실측에서 이 절 없이는 상한에
+    닿은 프로필의 갱신이 대부분 실패했다.
+
+    여기서 주는 것은 **숫자와 순서**뿐이다(먼저 줄이고 나서 더한다). 무엇을 줄일지는
+    시스템 프롬프트의 정책이고 세트마다 다르다. 기존 프로필이 목표를 넘었으면 항목마다
+    몇 문장까지 쓸 수 있는지도 함께 준다 — 모델이 따르는 단위가 글자 수가 아니라 문장
+    수이기 때문이다(:func:`~app.services.user_memory_limits.shrink_budget`).
+    """
+
+    if existing is None or not existing.prompt_payload():
+        return None
+
+    size = serialized_chars(existing)
+    lines = [
+        "[크기]",
+        f"기존 프로필은 {size}자입니다. 갱신본의 목표 크기는 "
+        f"{USER_MEMORY_TARGET_CHARS}자이고, {USER_MEMORY_MAX_CHARS}자를 넘으면 "
+        "저장되지 않습니다.",
+    ]
+    budget = shrink_budget(existing)
+    if budget:
+        lines.append(
+            f"기존 프로필이 이미 목표를 {size - USER_MEMORY_TARGET_CHARS}자 넘었습니다. "
+            "새 정보를 더하기 전에 기존 내용을 아래 항목마다 적힌 문장 수 이내로 먼저 "
+            "줄이세요."
+        )
+        lines.extend(f"  - {line}" for line in budget)
+    return "\n".join(lines)
 
 
 def build_update_prompt(
@@ -87,6 +127,10 @@ def build_update_prompt(
         f"[existing user memory]\n{user_memory_to_text(existing)}",
         f"[dailyTimelines]\n{json.dumps(digest.daily_timelines, ensure_ascii=False, indent=2)}",
     ]
+
+    size_section = _size_section(existing)
+    if size_section:
+        sections.append(size_section)
 
     if _MEMO_ONLY_TRAITS and not digest.has_memo:
         # 모델이 빈 자리를 메우려 드는 것을 막는다. "근거가 없다" 를 명시적으로

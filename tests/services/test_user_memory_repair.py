@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.core.error_codes import ErrorCode
-from app.schemas.user_memory import SCHEMA_VERSION, UserMemory
+from app.schemas.user_memory import NARRATIVE_MAX_LENGTH, SCHEMA_VERSION, UserMemory
 from app.services.user_memory_limits import build_daily_timeline_digest
 from app.services.user_memory_repair import (
     UserMemoryLimitError,
@@ -42,17 +42,17 @@ def _digest():
 
 
 def _oversized() -> UserMemory:
+    """필드는 저마다 상한 안인데 합치면 전체 상한(2,000자)을 넘는 문서."""
+
     return UserMemory(
         **{
-            field: "가" * 200
+            field: "가" * NARRATIVE_MAX_LENGTH
             for field in (
                 "basic_profile",
                 "life_context",
                 "relationships",
                 "personality",
                 "values",
-                "preferences",
-                "routines",
             )
         }
     )

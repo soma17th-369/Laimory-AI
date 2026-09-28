@@ -10,7 +10,7 @@
 
 import pytest
 
-from app.schemas.user_memory import UserMemory
+from app.schemas.user_memory import NARRATIVE_MAX_LENGTH, UserMemory
 from app.schemas.user_memory_update import DailyTimeline
 from app.services.event_count_guard import MAX_EVENT_COUNT as TIMELINE_MAX_EVENT_COUNT
 from app.services.user_memory_limits import (
@@ -21,9 +21,11 @@ from app.services.user_memory_limits import (
     MEMO_MAX_CHARS,
     TEXT_MAX_CHARS,
     USER_MEMORY_MAX_CHARS,
+    USER_MEMORY_TARGET_CHARS,
     build_daily_timeline_digest,
     find_violations,
     serialized_chars,
+    shrink_budget,
 )
 from tests.fixtures.user_memory import daily_timeline, daily_timeline_event
 
@@ -325,21 +327,31 @@ def test_clean_memory_has_no_violations():
     assert find_violations(memory) == []
 
 
-def test_oversized_memory_is_reported_without_being_cut():
-    memory = UserMemory(
+def _oversized_memory() -> UserMemory:
+    """필드는 저마다 상한 안인데 합치면 전체 상한을 넘는 문서."""
+
+    return UserMemory(
         **{
-            field: "가" * 200
+            field: "가" * NARRATIVE_MAX_LENGTH
             for field in (
                 "basic_profile",
                 "life_context",
                 "relationships",
                 "personality",
                 "values",
-                "preferences",
-                "routines",
             )
         }
     )
+
+
+def test_total_cap_is_2000_chars():
+    """값이 바뀌면 프롬프트·문서가 말하는 숫자도 함께 바뀌어야 한다(#121)."""
+
+    assert USER_MEMORY_MAX_CHARS == 2_000
+
+
+def test_oversized_memory_is_reported_without_being_cut():
+    memory = _oversized_memory()
 
     violations = find_violations(memory)
 
@@ -347,7 +359,145 @@ def test_oversized_memory_is_reported_without_being_cut():
     assert len(violations) == 1
     assert str(USER_MEMORY_MAX_CHARS) in violations[0]
     # 지적했을 뿐 문장은 그대로다.
-    assert len(memory.basic_profile) == 200
+    assert len(memory.basic_profile) == NARRATIVE_MAX_LENGTH
+
+
+def test_size_violation_leaves_the_order_of_cuts_to_the_prompt():
+    """무엇부터 줄일지는 갱신 정책이고 정책은 프롬프트 세트가 갖는다(#121).
+
+    순서를 코드에 박아 두면 재요청 때 시스템 프롬프트와 다른 말을 한다. 예전 문장은
+    "오래된 단기 관심사 제거" 를 앞에 뒀는데, v3 는 정보를 지우는 것이 마지막이다.
+    """
+
+    violation = find_violations(_oversized_memory())[0]
+
+    assert "「크기」" in violation
+    for policy_word in ("제거", "병합", "중복", "관심사", "오래된"):
+        assert policy_word not in violation
+
+
+def test_size_violation_says_how_much_in_sentences_per_item():
+    """얼마나 줄일지는 코드가 말한다. 모델이 스스로 세지 못하는 값이다(#121).
+
+    단위는 문장 수다. 같은 문서로 실측했을 때 전체 글자 수 지시는 1%, 항목별 글자 수는
+    5%, 항목별 문장 수는 14% 가 줄었고 앞의 둘로는 상한 아래로 내려오지 못했다.
+    """
+
+    memory = UserMemory(
+        basic_profile="첫 문장입니다. 둘째 문장입니다. 셋째 문장입니다. " + "가" * 450,
+        life_context="나" * NARRATIVE_MAX_LENGTH,
+        relationships="다" * NARRATIVE_MAX_LENGTH,
+        personality="라" * NARRATIVE_MAX_LENGTH,
+        values="마" * NARRATIVE_MAX_LENGTH,
+    )
+
+    violation = find_violations(memory)[0]
+
+    assert str(USER_MEMORY_TARGET_CHARS) in violation
+    assert "`basicProfile`: 지금 4문장 → 2문장 이내" in violation
+    assert "`lifeContext`: 지금 1문장 → 1문장 이내" in violation
+    # 값은 어디에도 없다.
+    assert "첫 문장" not in violation
+    assert "가가" not in violation
+
+
+# --- 줄일 몫 (#121) -----------------------------------------------------
+
+
+def test_no_budget_when_the_document_fits_the_target():
+    assert shrink_budget(UserMemory(basic_profile="30대 개발자입니다.")) == []
+
+
+def test_target_is_below_the_cap():
+    """모델이 겨냥하는 값이 상한과 같으면 넘치는 몫을 받아 낼 자리가 없다."""
+
+    assert USER_MEMORY_TARGET_CHARS < USER_MEMORY_MAX_CHARS
+    assert USER_MEMORY_TARGET_CHARS == 1_600
+
+
+def test_budget_scales_sentences_by_the_size_ratio():
+    sentences = " ".join(f"문장 {index}번입니다." for index in range(10))
+    memory = UserMemory(basic_profile=sentences, life_context=sentences)
+
+    budget = shrink_budget(memory, target_chars=serialized_chars(memory) // 2)
+
+    assert budget[:2] == [
+        "`basicProfile`: 지금 10문장 → 5문장 이내",
+        "`lifeContext`: 지금 10문장 → 5문장 이내",
+    ]
+
+
+def test_budget_cuts_at_least_one_sentence_from_a_multi_sentence_item():
+    """목표를 한 글자만 넘어도 두 문장 이상인 항목은 한 문장이 준다. 몫을 내림으로 정한다."""
+
+    memory = UserMemory(basic_profile="하나입니다. 둘입니다.")
+
+    budget = shrink_budget(memory, target_chars=serialized_chars(memory) - 1)
+
+    assert budget[0] == "`basicProfile`: 지금 2문장 → 1문장 이내"
+
+
+def test_budget_never_asks_for_zero_sentences():
+    memory = UserMemory(basic_profile="하나입니다.", life_context="둘입니다. 셋입니다.")
+
+    budget = shrink_budget(memory, target_chars=10)
+
+    assert "`basicProfile`: 지금 1문장 → 1문장 이내" in budget
+    assert "`lifeContext`: 지금 2문장 → 1문장 이내" in budget
+
+
+def test_budget_names_custom_attributes_by_key_without_their_values():
+    memory = UserMemory(
+        custom_attributes={"반려동물": "고양이를 키웁니다. 병원에 다녀왔습니다."}
+    )
+
+    budget = shrink_budget(memory, target_chars=10)
+
+    assert budget[0] == "`customAttributes.반려동물`: 지금 2문장 → 1문장 이내"
+    assert all("고양이" not in line for line in budget)
+
+
+def test_budget_asks_for_fewer_custom_attributes_when_sentences_cannot_shrink():
+    """한 문장짜리 항목은 문장 수로 줄일 수 없다.
+
+    개수 제한이 없는 자리라 문서가 커지는 쪽은 대개 여기다. 문장 수를 맞춰도 목표를
+    넘으면 항목 수의 몫을 함께 준다.
+    """
+
+    memory = UserMemory(
+        custom_attributes={f"속성{index}": "한 문장짜리 값입니다." for index in range(40)}
+    )
+    size = serialized_chars(memory)
+
+    budget = shrink_budget(memory, target_chars=size // 2)
+
+    assert "`customAttributes` 항목 수: 지금 40개 → 20개 이내" in budget
+    assert budget[-1].startswith("문장 수를 맞춰도 목표를 넘습니다")
+
+
+def test_budget_does_not_touch_the_attribute_count_when_sentences_are_enough():
+    sentences = " ".join(f"문장 {index}번입니다." for index in range(10))
+    memory = UserMemory(
+        basic_profile=sentences,
+        custom_attributes={"반려동물": "고양이를 키웁니다."},
+    )
+
+    budget = shrink_budget(memory, target_chars=serialized_chars(memory) * 3 // 4)
+
+    assert not any("항목 수" in line for line in budget)
+
+
+def test_many_small_custom_attributes_are_bounded_by_the_total_cap():
+    """개수 제한이 없어졌으므로 끝을 막는 것은 전체 상한 하나다(#121)."""
+
+    memory = UserMemory(
+        custom_attributes={f"속성{index}": "가" * 40 for index in range(60)}
+    )
+
+    violations = find_violations(memory)
+
+    assert serialized_chars(memory) > USER_MEMORY_MAX_CHARS
+    assert len(violations) == 1
 
 
 @pytest.mark.parametrize(

@@ -18,7 +18,12 @@ import pytest
 from app.agents.user_memory import UserMemoryAgent, build_update_prompt
 from app.agents.user_memory import user_memory_agent
 from app.schemas.user_memory import NARRATIVE_MAX_LENGTH, UserMemory
-from app.services.user_memory_limits import build_daily_timeline_digest
+from app.services.user_memory_limits import (
+    USER_MEMORY_MAX_CHARS,
+    USER_MEMORY_TARGET_CHARS,
+    build_daily_timeline_digest,
+    serialized_chars,
+)
 from app.schemas.user_memory_update import DailyTimeline
 from tests.fixtures.fake_llm import FakeLLM
 from tests.fixtures.user_memory import daily_timeline, daily_timeline_event, memory_json
@@ -132,6 +137,72 @@ def test_request_asks_for_the_whole_document_without_stating_a_policy(
     assert "전체 갱신본" in prompt
     assert "압축" not in prompt
     assert "삭제" not in prompt
+
+
+# --- 크기 (#121) --------------------------------------------------------
+
+
+def _profile_over_the_target() -> UserMemory:
+    sentences = " ".join(f"문장 {index}번입니다." for index in range(40))
+    return UserMemory(
+        basic_profile=sentences[:NARRATIVE_MAX_LENGTH],
+        life_context=sentences[:NARRATIVE_MAX_LENGTH],
+        relationships=sentences[:NARRATIVE_MAX_LENGTH],
+        personality=sentences[:NARRATIVE_MAX_LENGTH],
+    )
+
+
+def test_prompt_tells_the_size_of_the_existing_profile():
+    """모델은 글자 수를 세지 못한다. 알려 주지 않으면 상한에 닿은 줄 모르고 얹는다."""
+
+    existing = UserMemory(basic_profile="30대 개발자입니다.")
+
+    prompt = build_update_prompt(existing, _digest())
+
+    assert "[크기]" in prompt
+    assert f"기존 프로필은 {serialized_chars(existing)}자입니다" in prompt
+    assert f"목표 크기는 {USER_MEMORY_TARGET_CHARS}자" in prompt
+    assert f"{USER_MEMORY_MAX_CHARS}자를 넘으면 저장되지 않습니다" in prompt
+
+
+@pytest.mark.parametrize("existing", [None, UserMemory()])
+def test_prompt_has_no_size_section_without_a_profile(existing):
+    assert "[크기]" not in build_update_prompt(existing, _digest())
+
+
+def test_small_profile_gets_no_shrink_budget():
+    prompt = build_update_prompt(UserMemory(basic_profile="30대 개발자입니다."), _digest())
+
+    assert "먼저 줄이세요" not in prompt
+    assert "문장 →" not in prompt
+
+
+def test_profile_over_the_target_gets_a_sentence_budget_before_new_information():
+    """상한에 닿은 프로필은 매일 이 경로를 지난다.
+
+    먼저 줄이고 나서 얹어야 1차 출력이 상한 안에 든다. 몫은 문장 수로 준다 — 모델이
+    따르는 단위가 그것이다.
+    """
+
+    existing = _profile_over_the_target()
+
+    prompt = build_update_prompt(existing, _digest())
+
+    assert serialized_chars(existing) > USER_MEMORY_TARGET_CHARS
+    assert "기존 프로필이 이미 목표를" in prompt
+    assert "먼저 줄이세요" in prompt
+    assert "  - `basicProfile`: 지금 " in prompt
+    assert "  - `personality`: 지금 " in prompt
+
+
+def test_size_section_carries_numbers_not_a_policy():
+    """무엇을 줄일지는 시스템 프롬프트의 정책이고 세트마다 다르다."""
+
+    prompt = build_update_prompt(_profile_over_the_target(), _digest())
+    section = prompt.split("[크기]")[1].split("\n\n")[0]
+
+    for policy_word in ("제거", "병합", "중복", "오래된"):
+        assert policy_word not in section
 
 
 def test_prompt_carries_the_emotion_the_user_picked():

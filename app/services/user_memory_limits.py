@@ -9,25 +9,41 @@
   **검출만** 하고 고치지 않는다. 압축은 의미 판단이라 코드가 문장을 자르면 뜻이
   달라진다(:mod:`app.services.duration_guard` 와 같은 철학이다).
 
-## 1,000토큰을 문자 수로 재는 이유
+## 전체 크기를 문자 수로 재는 이유
 
-이슈가 정한 상한은 "전체 1,000토큰" 인데, 정확한 토큰 수는 tokenizer 종속이다. 이
-프로젝트는 OpenAI·Gemini·Bedrock 을 모두 지원하고 tokenizer 의존성이 없다. provider
-를 바꿨다고 저장 가능 여부가 달라지면 안 되므로, provider 와 무관한 **직렬화 문자
-수**를 정본으로 삼는다.
+정확한 토큰 수는 tokenizer 종속이다. 이 프로젝트는 OpenAI·Gemini·Bedrock 을 모두
+지원하고 tokenizer 의존성이 없다. provider 를 바꿨다고 저장 가능 여부가 달라지면 안
+되므로, provider 와 무관한 **직렬화 문자 수**를 정본으로 삼는다.
 
-한국어는 tokenizer 에 따라 1자당 0.6~1.5 토큰이라 여유를 두고 1,200자로 잡았다.
-이 값은 이후 Timeline·Question 프롬프트에 **매 요청마다** 실리므로 작을수록 낫다.
-표준이 아니라 우리가 고른 값이고, 상수 하나라 언제든 바꿀 수 있다.
+## 전체 상한이 하는 일 (#121)
 
-필드별 상한 합계(10×200 + 5×150 = 2,750자)는 전체 상한보다 크다. 즉 실질 제약은
-전체 상한이고, 필드를 많이 채우면 압축 재요청이 돈다. 의도한 동작이다 — 필드 상한은
-한 필드가 전체를 잡아먹지 못하게 하는 방어선이고, 총량은 별도 예산이다.
+처음(#64)에는 1,200자였고 "짧게 눌러 담는 예산" 이었다. 지금은 2,000자이고 **문서가
+끝없이 커지는 것을 막는 선**이다. 갱신 정책이 "한 번 나온 정보도 남긴다" 로 바뀌고
+``customAttributes`` 개수 제한이 없어져, 끝을 막는 값이 이것 하나뿐이다.
+
+없앨 수 없는 이유는 갱신이 **전체 rewrite** 이기 때문이다. 모델은 매번 문서 전체를 다시
+출력하므로, 문서가 출력 한도(제한 시간·``maxTokens``)를 한 번 넘으면 그 뒤의 모든
+갱신이 같은 이유로 실패한다. 실패는 "프로필이 안 바뀌었다" 이므로 큰 문서가 그대로
+남고, 되돌아올 길이 없다.
+
+2,000자는 표준이 아니라 우리가 고른 값이다. 이 문서는 이후 Timeline·Question
+프롬프트에도 **매 요청마다** 실린다.
+
+필드별 상한 합계(10×500자)는 전체 상한보다 크다. 즉 실질 제약은 전체 상한이다. 필드
+상한은 한 필드가 전체를 잡아먹지 못하게 하는 방어선이고, 총량은 별도 예산이다.
+
+## 상한과 목표가 따로 있다
+
+거절 기준(:data:`USER_MEMORY_MAX_CHARS`)과 모델에게 알려 주는 목표
+(:data:`USER_MEMORY_TARGET_CHARS`)는 다른 값이다. 보존 정책 아래에서 프로필은 며칠이면
+상한에 닿고 그 뒤로는 **매일** 상한 근처에서 갱신된다. 그 구간에서 갱신이 안정적으로
+통과하려면 모델이 겨냥하는 값이 상한보다 낮아야 한다.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,8 +55,21 @@ from app.schemas.user_memory_update import (
 )
 from app.services.notification_guard import SENSITIVE_PATTERNS
 
-#: 갱신본 전체의 직렬화 문자 수 상한(이슈의 1,000토큰을 문자 수로 옮긴 값).
-USER_MEMORY_MAX_CHARS = 1_200
+#: 갱신본 전체의 직렬화 문자 수 상한(#121 에서 1,200 → 2,000).
+USER_MEMORY_MAX_CHARS = 2_000
+
+#: 모델에게 **목표로 알려 주는** 크기. 거절 기준은 여전히 :data:`USER_MEMORY_MAX_CHARS` 다.
+#:
+#: 둘을 가른 것은 모델이 글자 수를 세지 못하기 때문이다. 상한에 닿은 프로필에 하루씩
+#: 갱신을 얹어 실측했을 때(#121), 상한만 알려 주면 모델은 2,010~2,140자를 냈고 재요청
+#: 세 번을 다 쓰고도 통과하지 못했다. 통과하지 못하면 프로필이 그대로 남아 다음 날도
+#: 같은 자리에서 시작하므로 **한 번의 실패가 매일 반복된다** — 닷새 중 나흘이 실패했다.
+#:
+#: 그래서 모델에게는 상한보다 낮은 값을 겨냥하게 하고, 넘치는 몫은 상한과의 사이에서
+#: 받아 낸다. 저장되는 프로필은 대개 이 값과 상한 사이에 있다.
+#:
+#: 1,600(상한의 80%)은 표준이 아니라 실측으로 고른 값이다.
+USER_MEMORY_TARGET_CHARS = 1_600
 
 #: 하루당 최대 event 수. **날짜별 몫이다.**
 #:
@@ -65,6 +94,9 @@ TEXT_MAX_CHARS = 255
 #: 하루 감정 값의 상한. App Server 가 이 값을 담는 컬럼 길이와 같다. 값은 enum 이름
 #: (``HAPPY`` 등)이라 넘을 일이 없지만, 넘겨받은 값을 그대로 믿지 않는다.
 EMOTION_MAX_CHARS = 32
+
+#: 문장의 끝. 마침표·물음표·느낌표 뒤에 공백이 오는 자리에서 가른다.
+_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
 
 
 @dataclass(frozen=True)
@@ -240,6 +272,74 @@ def serialized_chars(memory: UserMemory) -> int:
     )
 
 
+def _sentence_count(text: str) -> int:
+    """문장 수. 끝맺음 부호가 없는 글도 한 문장으로 센다."""
+
+    return len([part for part in _SENTENCE_BOUNDARY.split(text.strip()) if part])
+
+
+def _prompt_items(memory: UserMemory) -> list[tuple[str, str]]:
+    """프롬프트에 실리는 (항목 이름, 값) 목록. 고정 필드 다음에 ``customAttributes`` 다.
+
+    값은 크기를 재는 데만 쓴다. 이 모듈이 내보내는 문장에 값을 싣지 않는다.
+    """
+
+    payload = memory.prompt_payload()
+    items = [
+        (name, value) for name, value in payload.items() if name != "customAttributes"
+    ]
+    items.extend(
+        (f"customAttributes.{key}", value)
+        for key, value in payload.get("customAttributes", {}).items()
+    )
+    return items
+
+
+def shrink_budget(
+    memory: UserMemory, *, target_chars: int = USER_MEMORY_TARGET_CHARS
+) -> list[str]:
+    """문서를 목표 크기에 맞추려면 항목마다 몇 문장까지 쓸 수 있는지(#121).
+
+    목표 안이면 빈 목록이다. 돌려주는 줄에는 항목 이름과 숫자만 있고 값은 없다.
+
+    **글자 수가 아니라 문장 수로 말한다.** 모델은 글자 수를 세지 못한다. 상한을 넘은
+    같은 문서를 두고 지시 형태만 바꿔 실측했을 때, "전체 N자 줄여라" 는 1% 가, 항목별
+    글자 수는 5% 가, 항목별 문장 수는 14% 가 줄었다. 앞의 둘로는 재요청을 다 써도
+    상한 아래로 내려오지 못했다.
+
+    몫은 지금 문장 수에 (목표 ÷ 현재 크기)를 곱해 내림한 값이고 1보다 작아지지 않는다.
+    내림이라 두 문장 이상인 항목은 적어도 한 문장이 준다. **무엇을 줄일지는 정하지
+    않는다** — 어느 문장을 남길지는 의미 판단이고 프롬프트 세트의 정책이다.
+
+    한 문장짜리 항목은 문장 수로 줄일 수 없다. 그런 항목이 많아 문장 수를 맞춰도 목표를
+    넘으면 ``customAttributes`` 항목 수의 몫을 함께 준다. 개수 제한이 없는 자리라 문서가
+    커지는 쪽은 대개 여기다.
+    """
+
+    size = serialized_chars(memory)
+    if size <= target_chars:
+        return []
+
+    lines: list[str] = []
+    estimated = size
+    for name, value in _prompt_items(memory):
+        count = _sentence_count(value)
+        allowed = max(1, count * target_chars // size)
+        estimated -= len(value) * (count - allowed) // count
+        lines.append(f"`{name}`: 지금 {count}문장 → {allowed}문장 이내")
+
+    if estimated > target_chars:
+        attribute_count = len(memory.prompt_payload().get("customAttributes", {}))
+        keep = attribute_count * target_chars // estimated
+        if 0 < keep < attribute_count:
+            lines.append(
+                f"`customAttributes` 항목 수: 지금 {attribute_count}개 → {keep}개 이내"
+            )
+        lines.append("문장 수를 맞춰도 목표를 넘습니다. 남긴 문장도 짧게 다시 쓰세요.")
+
+    return lines
+
+
 def find_violations(memory: UserMemory) -> list[str]:
     """갱신본이 어긴 규칙을 사람이 읽을 한 줄씩으로 돌려준다(빈 목록이면 통과).
 
@@ -247,18 +347,26 @@ def find_violations(memory: UserMemory) -> list[str]:
     규칙을 어겼는지까지만 적고 값은 인용하지 않는다 — 민감정보를 지적하면서 그 값을
     같이 남기면 막으려던 것이 로그로 새어 나간다.
 
-    필드별 길이·``customAttributes`` 개수는 Pydantic 이 이미 막았으므로 여기서는
-    전체 크기와 민감정보만 본다.
+    필드별 길이는 Pydantic 이 이미 막았으므로 여기서는 전체 크기와 민감정보만 본다.
+
+    **무엇부터 줄일지는 여기 적지 않는다**(#121). 그것은 갱신 정책이고 정책은 프롬프트
+    세트가 갖는다 — 무엇을 남기는지가 버전마다 다른데 줄이는 순서를 코드에 박아 두면
+    재요청 때 시스템 프롬프트와 다른 말을 하게 된다.
+
+    **얼마나 줄일지는 적는다.** 그것은 셀 수 있는 값이고 모델이 스스로 세지 못하는
+    값이다. 항목마다 문장 수로 준다(:func:`shrink_budget`).
     """
 
     violations: list[str] = []
 
     size = serialized_chars(memory)
     if size > USER_MEMORY_MAX_CHARS:
+        budget = "\n".join(f"  - {line}" for line in shrink_budget(memory))
         violations.append(
             f"전체 크기가 {size}자로 상한 {USER_MEMORY_MAX_CHARS}자를 넘었습니다. "
-            "중복 표현 제거 → 오래된 단기 관심사 제거 → 영향이 적은 정보 제거 → "
-            "문장 병합 → 중요도가 낮은 customAttributes 제거 순으로 줄이세요."
+            f"목표 크기 {USER_MEMORY_TARGET_CHARS}자에 맞도록 아래 항목마다 적힌 "
+            "문장 수 이내로 다시 쓰세요. 무엇부터 줄일지는 시스템 프롬프트의 「크기」 "
+            f"절을 따릅니다.\n{budget}"
         )
 
     for field, label in _sensitive_hits(memory):
