@@ -80,6 +80,29 @@ def test_timeline_v3_states_the_place_selection_rules() -> None:
     assert "`일대`" in text
 
 
+def test_timeline_v3_picks_and_writes_a_place_only_with_supporting_evidence() -> None:
+    """후보 목록에 이름이 있다는 것만으로 장소를 고르거나 문장에 쓰지 않는다.
+
+    사진·캘린더·알림이 뒷받침하면 `place` 로 고르고 title·description 에 같은 이름으로
+    적극적으로 쓴다. 뒷받침이 없으면 짐작으로 고르지 않고 목록의 첫 이름을 둔다.
+    """
+
+    text = _timeline_v3()
+
+    assert "그 장소를 뒷받침하는 다른 근거가 있어야 합니다" in text
+    assert "짐작으로 고르지 않습니다" in text
+    assert "`place`와 같은 이름" in text
+    assert "후보 목록의 첫 이름" in text
+    assert "근거 없이 체류지를 `집`이라고 부르지 않습니다" in text
+    assert "`place`가 비어 있으면 문장에도 장소를 쓰지 않습니다" in text
+    assert "한 event에는 장소 이름을 하나만 씁니다" in text
+    assert (
+        text.index("### 장소 선택 규칙")
+        < text.index("#### 장소를 뒷받침하는 근거")
+        < text.index("### 사진")
+    )
+
+
 def test_timeline_v3_applies_user_memory_only_after_evidence() -> None:
     """User Memory 반영은 근거 구성 뒤의 별도 단계다."""
 
@@ -94,6 +117,9 @@ def test_timeline_v3_narrows_llm_warnings_and_has_no_internal_questions() -> Non
     text = _timeline_v3()
 
     assert "일부러 쓰지 않은 근거" in text
+    # 사진·캘린더는 '쓰지 않은 근거'가 될 수 없다. 코드가 누락을 HIGH 로 잡는다.
+    assert "사진과 캘린더 일정은 쓰지 않을 수 없습니다" in text
+    assert "사진은 예외입니다" in text
     assert "questions" not in text
     assert '"warnings": [' in text
 
