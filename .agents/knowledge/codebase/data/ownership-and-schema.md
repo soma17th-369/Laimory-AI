@@ -57,7 +57,9 @@ Photo의 `photoUrl`은 코드가 image fetch에 쓰고 LLM prompt에는 싣지 �
 
 User Memory는 App Server가 소유하고 AI 서버는 읽기(input 조회)와 쓰기(갱신 결과 저장) 둘 다 HTTP로만 한다. 갱신은 append가 아니라 **전체 rewrite**이며, 출력이 기존 값을 통째로 대체한다. `schemaVersion`과 `updatedAt`은 LLM 값이 아니라 서버가 박는다 — 모델이 정하게 두면 언젠가 우리가 모르는 버전이 저장되고 다음 날 읽기가 깨진다.
 
-갱신 입력의 `title`·`subtitle`·`question`은 **이 시스템의 Timeline·Question Agent가 쓴 문장**이고, 사용자가 직접 쓴 글은 `memo` 뿐이다. 이 출처 구분이 계약 수준의 의미를 갖는다 — AI가 쓴 문장에서 성향을 뽑으면 모델이 자기 출력을 읽고 사용자를 만들어 내는 되먹임이 되고, 그 profile이 다시 다음 Timeline 문장을 만드는 데 쓰여 스스로를 강화한다. 성향 계열 다섯 필드(`personality`, `values`, `preferences`, `emotionalPatterns`, `memoryStyle`)의 근거는 `memo` 뿐이며, `memo`가 없는 날은 그 필드가 그대로인 것이 정상이고 결과는 `SUCCESS`다.
+갱신 입력의 `title`·`subtitle`·`question`은 **이 시스템의 Timeline·Question Agent가 쓴 문장**이고, 사용자가 직접 남긴 것은 `memo`와 하루 감정(`emotionType`)뿐이다. 이 출처를 어떻게 다루는지는 prompt 세트가 정한다(#121). v1·v2는 AI가 쓴 문장에서 성향을 뽑지 않는다 — 모델이 자기 출력을 읽고 사용자를 만들어 내는 되먹임이 되고, 그 profile이 다시 다음 Timeline 문장을 만드는 데 쓰여 스스로를 강화하기 때문이다. 그 세트에서 성향 계열 다섯 필드(`personality`, `values`, `preferences`, `emotionalPatterns`, `memoryStyle`)의 근거는 `memo` 뿐이며, `memo`가 없는 날은 그 필드가 그대로인 것이 정상이고 결과는 `SUCCESS`다. v3는 AI가 쓴 문장도 근거로 읽고 한 번 나온 정보도 남긴다. 사용자가 읽고 저장한 기록을 받아들인 내용으로 보며, 직접 남긴 것과 어긋나면 그쪽을 따른다.
+
+하루 감정은 App Server가 `dailyTimelines[].emotionType`으로 보낸다. 하루에 하나이고 event별 감정은 없다. 값은 `VERY_HAPPY`·`HAPPY`·`NEUTRAL`·`UNHAPPY`·`VERY_UNHAPPY`이며 감정을 받기 전에 저장된 기록은 null이다. AI 서버는 값을 enum으로 좁히지 않고 digest의 날짜 항목에 그대로 싣는다.
 
 ## Invariants
 
@@ -69,15 +71,16 @@ User Memory는 App Server가 소유하고 AI 서버는 읽기(input 조회)와 �
 - URL·token·내부 파일 식별자를 LLM 입력이나 저장 결과에 섞지 않는다.
 - source 하나가 여러 event의 근거가 되는 것은 허용한다.
 - User Memory의 `schemaVersion`·`updatedAt`은 서버가 확정한다. LLM 출력값을 그대로 저장하지 않는다.
-- 성향 계열 필드는 사용자가 직접 쓴 `memo`만 근거로 한다. AI가 쓴 문장에서 사용자 특성을 만들지 않는다.
+- User Memory 갱신의 근거 정책은 prompt 세트가 갖는다. v1·v2는 성향 계열 필드의 근거를 사용자가 직접 쓴 `memo`로 제한하고, v3는 AI가 쓴 문장도 근거로 읽는다. 어느 세트든 사용자가 직접 남긴 것이 AI가 쓴 문장보다 앞선다.
 - 크기 상한을 넘은 갱신본은 잘라서 저장하지 않는다. 다시 요청하고, 소진하면 저장하지 않는다.
+- User Memory schema의 상한은 넓히기만 한다. 좁히면 이미 저장된 문서가 읽기에서 계약 위반(1106)으로 흡수되고, 갱신은 그 프로필을 처음부터 다시 만든다.
 
 ## Known Gaps
 
 - App Server의 실제 DB table, column, transaction, retention, unique constraint는 이 저장소에 없다. 255자 절단은 mapper 코드와 기존 계약에 근거하지만 DB DDL로 직접 검증할 수 없다.
 - `TimelineInputResponse.userMemory`는 선택 필드다. App Server가 실제로 값을 채우는지는 이 저장소에서 확인할 수 없고, 없으면 `CollectedSnapshot.userMemory`가 `None`이다.
 - source의 시각은 boundary schema에서 문자열로 유지하고 여러 형식을 관대하게 parse한다. 모든 source timestamp가 schema 단계에서 timezone-aware임을 강제하지 않는다.
-- `UserMemory`는 고정 schema v1.0이다(#65). 자유도는 `customAttributes`(최대 5개, 값당 150자) 안에만 있고, 최상위는 `extra="forbid"`다. AI가 만드는 `customAttributes` 키에 결정론 코드가 의존하지 않는다.
+- `UserMemory`는 고정 schema v1.0이다(#65). 자유도는 `customAttributes`(값당 500자, 개수 제한 없음) 안에만 있고, 최상위는 `extra="forbid"`다. AI가 만드는 `customAttributes` 키에 결정론 코드가 의존하지 않는다. 상한은 #121에서 넓혔고(필드 200 → 500자, 값 150 → 500자, 개수 5 → 제한 없음) `schemaVersion`은 올리지 않았다. 그래서 **문서만 보고는 어느 상한으로 쓴 것인지 알 수 없고**, #121 이전 코드는 새 상한으로 쓴 문서를 읽지 못한다.
 - 코드 일부에 과거 DB table·향후 N:M 연결을 설명하는 stale 주석이 남아 있으나 현재 구현 계약은 아니다.
 
 ## Update When

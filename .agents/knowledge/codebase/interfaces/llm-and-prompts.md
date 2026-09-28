@@ -48,7 +48,11 @@ prompt 세트에는 현재 Timeline, Repair, Question, UserMemory, Calendar, Not
 
 **Event Agent 출력 계약(`AiEventCandidate`)은 버전을 가리지 않고 하나다.** 필드를 빼면 옛 세트에도 곧바로 적용된다. #114에서 `evidenceSummary`·`semanticTags`를 뺐고 v1·v2 문구는 그대로 두었으므로, v1·v2 prompt는 여전히 두 필드를 내라고 하지만 모델이 내더라도 모르는 키로 버려지고 candidate는 살아남는다. Location의 `derivedMetrics`도 코드 하나가 모든 버전에 싣는다 — v2 prompt가 설명하는 `transports`·`transportConflict`는 더 이상 없고 `mode`·`modeConflict`가 그 자리를 대신한다. Notification 입력도 같다(#116). 코드는 버전을 가리지 않고 `policies`·`notifications`·`conversations`를 싣고, v1·v2 prompt가 설명하는 `appDictionary`·`appPolicy`·`timelineUseGuidance`·`messengerAnalysis`는 더 이상 오지 않는다.
 
-UserMemory Agent(#64)는 Timeline pipeline 밖이지만 `PROMPT_VERSION`이 전역이라 버전마다 `prompt.md`를 갖는다. 세 파일은 **같은 내용**이며 테스트가 동일성을 강제한다 — 이 Agent에는 되돌릴 v1 동작이 없어서, 갈라지면 rollback이 다른 동작을 만든다.
+UserMemory Agent(#64)는 Timeline pipeline 밖이지만 `PROMPT_VERSION`이 전역이라 버전마다 `prompt.md`를 갖는다. v1과 v2는 **같은 내용**이며 테스트가 동일성을 강제한다. v3는 #121에서 갈라졌다 — AI가 쓴 `title`·`subtitle`도 근거로 읽고, 폭넓게 모으고, 한 번 나온 정보도 남기고, 하루 감정을 반영한다. 갱신 요청에 붙는 `[근거 없음]` 지시(`memo` 없는 날 성향 필드를 그대로 두라는 것)는 코드에 있어 버전으로 가른다(`_MEMO_ONLY_TRAITS`). v1·v2에서만 붙고, `PROMPT_VERSION`을 되돌리면 지시도 함께 돌아온다.
+
+UserMemory 갱신 요청(user prompt)은 `[existing user memory]`, `[dailyTimelines]`, `[크기]`, (v1·v2만) `[근거 없음]`, 재요청이면 `[직전 출력]`과 `[직전 출력이 규칙을 어겼습니다]` 순서로 조립한다. `[크기]`는 기존 프로필의 크기·목표(1,600자)·상한(2,000자)을 알리고, 기존 프로필이 목표를 넘었으면 항목별 문장 수 몫을 함께 준다. 재요청은 직전 출력을 고치게 하며 "다시 만드세요" 지시를 함께 싣지 않는다. 이 조립은 버전을 가리지 않는다.
+
+UserMemory의 digest와 schema 상한은 버전을 가리지 않는다. 하루 감정(`emotion`)과 끝 시각(`endHour`)은 v1·v2 입력에도 실리며, 그 세트의 prompt는 두 키를 설명하지 않는다. v3 prompt가 말하는 상한(필드·값 500자, 전체 2,000자)과 목표(1,600자), 감정 다섯 값, 입력 키, 출력 예시의 키는 코드와 같아야 하고 `tests/agents/test_user_memory_agent.py`가 고정한다. 크기 위반 지적은 줄이는 순서를 말하지 않고 prompt의 「크기」 절을 가리키므로 **모든 세트가 그 절을 가져야 한다.**
 
 활성 prompt의 큰 의미 변경 전에는 같은 디렉터리에 version suffix 동결본을 둘 수 있다. loader는 활성 코드가 요청하는 정확한 filename만 읽으므로 동결본은 실행에 영향을 주지 않는다.
 
@@ -67,7 +71,8 @@ UserMemory Agent(#64)는 Timeline pipeline 밖이지만 `PROMPT_VERSION`이 전�
 - `photo_describe`가 속한 티어의 모델은 vision을 지원해야 한다. 이미지 입력을 쓰는 유일한 단계다.
 - 티어 이름은 모델의 성질만 가리킨다. 단계 배치는 바뀌는 값이므로 이름에 용도를 담지 않는다.
 - 티어 설정은 provider 별이다. 한 provider 의 티어 값이 다른 provider 에 새지 않는다.
-- UserMemory prompt는 문장 출처 구분(AI가 쓴 `title`/`subtitle`/`question` vs 사용자가 쓴 `memo`)을 명시한다. 이 지시가 빠지면 모델은 반드시 AI 문장에서 성향을 만들어 낸다.
+- UserMemory prompt는 세트를 가리지 않고 문장 출처(AI가 쓴 `title`/`subtitle` vs 사용자가 남긴 `memo`·감정)를 명시한다. v1·v2에서 이 지시가 빠지면 모델은 AI 문장에서 성향을 만들어 내고, v3에서 빠지면 문장의 말투를 성격으로 옮겨 적는다.
+- UserMemory의 두 근거 정책을 한 prompt에 섞지 않는다. 옛 규칙이 한 줄이라도 남으면 모델은 둘 중 보수적인 쪽을 고른다.
 
 ## Known Gaps
 

@@ -195,13 +195,17 @@ app/
 │   │                          #   userMemory 는 원본 dict 로 느슨하게 받고 parse_user_memory() 가
 │   │                          #   따로 검증한다 — 여기서 엄격히 선언하면 보조 context 하나가
 │   │                          #   응답 전체를 1102 로 죽인다
-│   ├── user_memory.py         # 사용자 압축 프로필 v1.0 (#65). 고정 자연어 10필드(각 200자) +
-│   │                          #   customAttributes(5개·150자). extra="forbid". prompt_payload() 가
-│   │                          #   projection 규칙(빈 필드·메타데이터 제외, 선언 순서)을 소유한다
+│   ├── user_memory.py         # 사용자 압축 프로필 v1.0 (#65). 고정 자연어 10필드(각 500자) +
+│   │                          #   customAttributes(값 500자, **개수 제한 없음**, #121).
+│   │                          #   extra="forbid". prompt_payload() 가 projection 규칙(빈 필드·
+│   │                          #   메타데이터 제외, 선언 순서)을 소유한다. 상한은 넓히기만 한다 —
+│   │                          #   좁히면 저장된 문서가 1106 으로 흡수돼 프로필을 처음부터 다시 만든다
 │   ├── user_memory_update.py  # 갱신 접수·저장 계약 (#64). dailyTimelines 는 최대 5건이고
 │   │                          #   그 안의 events[] 를 **느슨하게** 받는다
 │   │                          #   (eventType 자유 문자열, endAt·subtitle·question·memo nullable,
-│   │                          #   길이 상한 없음). UserMemoryResultRequest 는 status 에 따라 필드 짝
+│   │                          #   길이 상한 없음). emotionType 은 사용자가 고른 하루 감정이다(#121).
+│   │                          #   하루에 하나이고 enum 으로 좁히지 않는다.
+│   │                          #   UserMemoryResultRequest 는 status 에 따라 필드 짝
 │   │                          #   (SUCCESS→userMemory / FAILED→errorCode)을 강제한다
 │   ├── timeline_result.py     # App Server 결과 저장 요청 계약 (#40, #66). eventType/title/subtitle/
 │   │                          #   startAt/endAt/sourceRawIds/question. question 은 event 안에 중첩한다 —
@@ -224,10 +228,15 @@ app/
 │   │                          #   User Memory 를 받는다(#65) — 무엇을 물을지가 아니라 어떻게
 │   │                          #   물을지(문체·결)를 고르는 자료다
 │   ├── user_memory/user_memory_agent.py  # User Memory 전체 갱신본 생성 (#64). append 가 아니라
-│   │                          #   rewrite 다. **title·subtitle·question 은 우리 AI 가 쓴 문장이라
-│   │                          #   성향 근거로 쓰지 않는다** — 그러면 모델이 자기 출력을 읽고 사용자를
-│   │                          #   만들어 내는 되먹임이 된다. 성향 계열 5필드의 근거는 memo 뿐이고,
-│   │                          #   memo 없는 날은 그 필드가 그대로인 것이 정상이다.
+│   │                          #   rewrite 다. **무엇을 근거로 읽는지는 프롬프트 세트가 정한다**(#121).
+│   │                          #   title·subtitle·question 은 우리 AI 가 쓴 문장이고 사용자가 직접
+│   │                          #   남긴 것은 memo 와 하루 감정뿐이다.
+│   │                          #   v1·v2 는 AI 문장에서 성향을 뽑지 않는다 — 모델이 자기 출력을 읽고
+│   │                          #   사용자를 만들어 내는 되먹임이 된다. 성향 계열 5필드의 근거는 memo
+│   │                          #   뿐이고, memo 없는 날은 그 필드가 그대로인 것이 정상이다.
+│   │                          #   v3 는 AI 문장도 근거로 읽는다(아래 「User Memory v3」).
+│   │                          #   코드에 남은 근거 정책은 `_MEMO_ONLY_TRAITS` 하나다. v1·v2 에서만
+│   │                          #   memo 없는 날 `[근거 없음]` 지시를 붙인다.
 │   │                          #   타임라인 파이프라인 밖이라 base.Agent 를 상속하지 않는다
 │   └── main/main_agent.py     # events → timeline → repair → question 조율(LangGraph)
 │
@@ -281,12 +290,24 @@ app/
     │                          #   결과 계약 변환. **App Server 를 부르지 않는다.** 제한 시간과
     │                          #   초과 처리(#76), execution_context, track_inflight 는 runner 와
     │                          #   같게 쓰고 저장·콜백·토큰 코드는 갖지 않는다
-    ├── user_memory_limits.py  # 갱신 크기 정책 (#64). dailyTimelines 는 schema 에서 최대 5건,
-    │                          #   그 안의 입력은 **거절하지 않고 자른다**(하루당 event 20개,
-    │                          #   memo 있는 event 우선 보존). 출력은 **자르지 않고
-    │                          #   지적한다**(전체 1,200자·민감정보). 지적 문장에 값을 인용하지 않는다
+    ├── user_memory_limits.py  # 갱신 크기 정책 (#64, #121). dailyTimelines 는 schema 에서 최대 5건,
+    │                          #   그 안의 입력은 **거절하지 않고 자른다**(하루당 event 24개,
+    │                          #   memo 있는 event 우선 보존). digest 는 날짜마다 하루 감정
+    │                          #   (`emotion`)을, event 마다 시 단위 시작·끝(`hour`·`endHour`)을
+    │                          #   싣고 분 단위 시각과 question 은 싣지 않는다. 출력은 **자르지 않고
+    │                          #   지적한다**(전체 2,000자·민감정보). 지적 문장에 값을 인용하지 않고
+    │                          #   **무엇부터 줄일지도 적지 않는다** — 그것은 프롬프트 세트의 정책이다.
+    │                          #   customAttributes 개수 제한이 없어 끝을 막는 값은 전체 상한 하나다.
+    │                          #   **거절 기준(2,000자)과 모델에게 알려 주는 목표(1,600자)가 따로
+    │                          #   있다.** 모델은 글자 수를 세지 못해 상한을 겨냥하게 하면 넘긴다.
+    │                          #   **얼마나 줄일지는 항목별 문장 수로 준다**(`shrink_budget`) —
+    │                          #   글자 수로 주면 모델이 따르지 않는다(실측: 전체 글자 수 1%,
+    │                          #   항목별 글자 수 5%, 항목별 문장 수 14% 감소)
     ├── user_memory_repair.py  # 갱신본 확정 (#64). 위반을 붙여 재요청(기본 2회), 소진 시 문서를
-    │                          #   만들지 않는다(1304). schemaVersion·updatedAt 은 서버가 박는다
+    │                          #   만들지 않는다(1304). schemaVersion·updatedAt 은 서버가 박는다.
+    │                          #   재요청은 **직전 출력을 함께 돌려주고 고치게 한다**(#121) —
+    │                          #   지적만 붙여 다시 만들게 하면 매번 같은 입력에서 출발해 같은
+    │                          #   크기가 다시 나온다
     └── user_memory_runner.py  # 백그라운드(무상태): 기존 프로필 해석→digest→Agent→확정→**결과 저장
                                #   1회**. 모든 실패 경로가 그 한 번으로 수렴해야 한다
 
@@ -301,6 +322,29 @@ app/
 #   둘을 묶으면 AI 실패가 사용자의 일기 저장을 되돌린다.
 #   `user_memory_timeout_sec`(기본 120초)로 감싼다 — llm.py 에 자체 timeout 이 없어
 #   상한이 없으면 한 작업이 10분 매달리고 그동안 /ping 이 HealthyBusy 라 배포가 막힌다.
+# User Memory v3(#121): **v3 프롬프트만 새 정책이고 v1·v2 파일은 그대로다**(v1 과 v2 는 서로
+#   같아야 한다). v3 는 `title`·`subtitle` 도 근거로 읽는다 — 사용자가 읽고 저장한 기록이라
+#   받아들인 내용으로 본다. 폭넓게 모으고 타임라인 쓸모로 거르지 않으며, **반복 여부를 저장
+#   조건으로 삼지 않는다.** 갱신 Agent 는 이번 기록만 보고 반복을 알 수 없고, 적어 둔 것이
+#   있어야 다음 기록에서 반복임을 알 수 있다. 한 번 있던 일은 한 번 있던 일로, 추론은
+#   `~로 보입니다` 로 구분해 적는다. 겹치면 합치고, 새 내용은 더하고, 충돌하면 새 정보로 바꾼다.
+#   되먹임(AI 가 쓴 문장을 읽고 사용자를 만들어 내는 것)은 없어지지 않는다. 프롬프트가 문장의
+#   말투가 아니라 사실을 읽게 하고, memo·감정과 어긋나면 사용자가 직접 남긴 쪽을 따르게 해 줄인다.
+#   사람 이름과 장소 이름은 남길 수 있다 — Timeline v3 의 4단계가 `relationships` 의 호칭과
+#   생활 장소명을 전제한다. 연락처·금융·인증값과 상세 주소는 계속 금지다.
+#   하루 감정(`emotionType`)은 App Server 가 5단계 값으로 보낸다. 하루에 하나이고 event 별
+#   감정은 없다. `eventType`(활동 종류)과 다른 값이다.
+#   **상한에 닿은 뒤가 평소다.** 보존 정책 아래에서 프로필은 며칠이면 상한에 닿고 그 뒤로는
+#   매일 상한 근처에서 갱신된다. 갱신이 전체 rewrite 라 한 번 상한을 넘겨 실패하면 프로필이
+#   그대로 남아 다음 날도 같은 자리에서 실패한다(실측: 상한만 알려 줬을 때 닷새 중 나흘 실패).
+#   그래서 갱신 요청의 `[크기]` 절이 기존 프로필의 크기와 목표를 알리고, 목표를 넘었으면
+#   **새 정보를 얹기 전에 먼저 줄일 몫**을 항목별 문장 수로 준다. 크기는 남기는 규칙보다
+#   앞서고, 줄일 때도 사는 곳·직업·나이·성별·사람의 이름과 관계는 끝까지 남긴다.
+#   **버전을 가리지 않는 것**: 스키마 상한, 전체 상한과 목표, digest(감정·`endHour`·하루 24개),
+#   `[크기]` 절, 직전 출력을 고치는 재요청.
+#   v1·v2 프롬프트는 `emotion`·`endHour` 를 설명하지 않지만 입력에는 실린다.
+#   v3 프롬프트가 말하는 숫자·감정 값·입력 키·출력 예시는 코드와 같아야 하고 테스트가 본다.
+#   필드 정의 표를 고치면 Timeline v3 의 「user memory가 말하는 것」도 같은 문장으로 고친다.
 # 처리 흐름: taskId+taskToken+dailyRecordId+window 접수 → 202 즉시응답 →
 #   (백그라운드) 입력 조회 API → 요청 window 를 정본으로 덮어쓰기 → normalize → main agent
 #   → 저장 전 자체검증 → 결과 저장 API(200 확인) → 콜백(SUCCESS/FAILED 통보만)
