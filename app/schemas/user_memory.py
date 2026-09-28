@@ -18,9 +18,14 @@ Agent 프롬프트가 갖는다).
 
 ## 크기
 
-각 자연어 필드 200자, ``customAttributes`` 는 5개·값당 150자다. 상한은 프롬프트
-토큰을 지키려는 것이지 의미 규칙이 아니다. 넘치면 자르지 않고 거절한다 — 잘린
-문장은 뜻이 달라지고, 그걸 근거로 쓴 해석은 되돌릴 방법이 없다.
+각 자연어 필드와 ``customAttributes`` 값 하나는 500자다(#121). ``customAttributes`` 의
+**개수는 제한하지 않는다** — 한 번 나온 정보도 남겨 이후 기록으로 보완하는 것이 갱신
+정책이라, 개수를 세면 새 정보를 담으려고 옛 정보를 버리게 된다. 문서가 끝없이 커지는
+것은 개수가 아니라 전체 크기 상한
+(:data:`app.services.user_memory_limits.USER_MEMORY_MAX_CHARS`)이 막는다.
+
+상한은 프롬프트 토큰을 지키려는 것이지 의미 규칙이 아니다. 넘치면 자르지 않고
+거절한다 — 잘린 문장은 뜻이 달라지고, 그걸 근거로 쓴 해석은 되돌릴 방법이 없다.
 """
 
 import json
@@ -34,11 +39,10 @@ from app.schemas.common import CamelModel
 SCHEMA_VERSION = "1.0"
 
 #: 고정 자연어 필드 하나의 최대 길이.
-NARRATIVE_MAX_LENGTH = 200
+NARRATIVE_MAX_LENGTH = 500
 
-#: ``customAttributes`` 최대 개수와 값 하나의 최대 길이.
-CUSTOM_ATTRIBUTE_MAX_COUNT = 5
-CUSTOM_ATTRIBUTE_MAX_LENGTH = 150
+#: ``customAttributes`` 값 하나의 최대 길이. 개수 상한은 없다.
+CUSTOM_ATTRIBUTE_MAX_LENGTH = 500
 
 NarrativeText = Annotated[str, StringConstraints(max_length=NARRATIVE_MAX_LENGTH)]
 CustomAttributeText = Annotated[
@@ -97,9 +101,7 @@ class UserMemory(CamelModel):
     #: 고정 필드로 담기지 않는 값. **키는 AI 가 만든다** — 결정론 코드가 특정 키의
     #: 존재를 전제하지 않는다.
     custom_attributes: dict[str, CustomAttributeText] = Field(
-        default_factory=dict,
-        alias="customAttributes",
-        max_length=CUSTOM_ATTRIBUTE_MAX_COUNT,
+        default_factory=dict, alias="customAttributes"
     )
 
     def prompt_payload(self) -> dict[str, Any]:

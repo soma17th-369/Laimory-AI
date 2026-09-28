@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from app.agents.user_memory import UserMemoryAgent, build_update_prompt
-from app.schemas.user_memory import UserMemory
+from app.schemas.user_memory import NARRATIVE_MAX_LENGTH, UserMemory
 from app.services.user_memory_limits import build_daily_timeline_digest
 from app.schemas.user_memory_update import DailyTimeline
 from tests.fixtures.fake_llm import FakeLLM
@@ -120,11 +120,11 @@ def test_agent_sends_the_system_prompt():
 
 
 def test_over_length_field_is_repaired_by_the_structured_path():
-    """필드 200자는 Pydantic 이 잡고, 교정 재시도가 한 번 더 묻는다."""
+    """필드 길이는 Pydantic 이 잡고, 교정 재시도가 한 번 더 묻는다."""
 
     llm = FakeLLM(
         [
-            memory_json(basicProfile="가" * 201),
+            memory_json(basicProfile="가" * (NARRATIVE_MAX_LENGTH + 1)),
             memory_json(basicProfile="짧게 줄였습니다."),
         ]
     )
@@ -133,6 +133,18 @@ def test_over_length_field_is_repaired_by_the_structured_path():
 
     assert memory.basic_profile == "짧게 줄였습니다."
     assert len(llm.calls) == 2
+
+
+def test_agent_accepts_more_custom_attributes_than_the_old_limit():
+    """개수 제한이 없어졌다(#121). 예전에는 6개째에서 교정 재시도로 떨어졌다."""
+
+    attributes = {f"속성{index}": "값" for index in range(8)}
+    llm = FakeLLM([memory_json(customAttributes=attributes)])
+
+    memory = UserMemoryAgent(llm=llm).generate(None, _digest())
+
+    assert len(memory.custom_attributes) == 8
+    assert len(llm.calls) == 1
 
 
 # --- 프롬프트 파일 계약 -------------------------------------------------

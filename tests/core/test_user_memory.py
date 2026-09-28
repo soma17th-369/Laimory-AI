@@ -3,8 +3,9 @@
 여기서 지키는 것은 두 가지다.
 
 1. **계약을 어긴 값은 조용히 통과하지 않는다.** 모르는 최상위 필드, 지원하지 않는
-   버전, 길이·개수 초과는 전부 거절한다. 흡수는 이 뒤(입력 조회 경계)의 판단이고,
-   스키마 자신은 애매하게 받아 주지 않는다.
+   버전, 길이 초과는 전부 거절한다. 흡수는 이 뒤(입력 조회 경계)의 판단이고,
+   스키마 자신은 애매하게 받아 주지 않는다. ``customAttributes`` 의 개수는 세지
+   않는다(#121) — 끝은 전체 크기 상한이 막는다.
 2. **같은 메모리는 언제나 같은 문자열이 된다.** 6개 Agent 가 같은 문자열을 봐야
    무엇을 근거로 판단했는지 재현할 수 있다.
 """
@@ -17,7 +18,6 @@ from pydantic import ValidationError
 from app.agents.parsing import user_memory_to_text
 from app.schemas import UserMemory
 from app.schemas.user_memory import (
-    CUSTOM_ATTRIBUTE_MAX_COUNT,
     CUSTOM_ATTRIBUTE_MAX_LENGTH,
     METADATA_FIELDS,
     NARRATIVE_FIELDS,
@@ -69,11 +69,24 @@ def test_narrative_field_at_limit_is_accepted():
     assert len(memory.basic_profile) == NARRATIVE_MAX_LENGTH
 
 
-def test_too_many_custom_attributes_are_rejected():
-    attributes = {f"키{index}": "값" for index in range(CUSTOM_ATTRIBUTE_MAX_COUNT + 1)}
+def test_field_and_custom_attribute_limits_are_500_chars():
+    """값이 바뀌면 프롬프트·문서가 말하는 숫자도 함께 바뀌어야 한다(#121)."""
 
-    with pytest.raises(ValidationError):
-        _memory(customAttributes=attributes)
+    assert NARRATIVE_MAX_LENGTH == 500
+    assert CUSTOM_ATTRIBUTE_MAX_LENGTH == 500
+
+
+def test_custom_attributes_have_no_count_limit():
+    """한 번 나온 정보도 남기는 정책이라 개수를 세지 않는다(#121).
+
+    개수를 세면 새 정보를 담으려고 옛 정보를 버리게 된다. 예전 상한은 5개였다.
+    """
+
+    attributes = {f"키{index}": "값" for index in range(30)}
+
+    memory = _memory(customAttributes=attributes)
+
+    assert len(memory.custom_attributes) == 30
 
 
 def test_custom_attribute_value_over_limit_is_rejected():
@@ -81,6 +94,24 @@ def test_custom_attribute_value_over_limit_is_rejected():
         _memory(customAttributes={"메모": "가" * (CUSTOM_ATTRIBUTE_MAX_LENGTH + 1)})
 
     assert exc.value.errors()[0]["type"] == "string_too_long"
+
+
+def test_custom_attribute_value_at_limit_is_accepted():
+    memory = _memory(customAttributes={"메모": "가" * CUSTOM_ATTRIBUTE_MAX_LENGTH})
+
+    assert len(memory.custom_attributes["메모"]) == CUSTOM_ATTRIBUTE_MAX_LENGTH
+
+
+def test_memory_written_under_the_old_limits_still_reads():
+    """상한은 넓어지기만 했다. 예전 계약(200자·5개·150자)으로 쓴 문서는 그대로 읽힌다."""
+
+    memory = _memory(
+        basicProfile="가" * 200,
+        customAttributes={f"키{index}": "나" * 150 for index in range(5)},
+    )
+
+    assert len(memory.basic_profile) == 200
+    assert len(memory.custom_attributes) == 5
 
 
 # --- projection ---------------------------------------------------------
