@@ -46,7 +46,7 @@ Timeline Agent는 의미 병합과 tolerant parse를 맡는다. LLM 출력 계�
 
 LLM이 준 `userId`, date, timezone, `clientEventId`는 신뢰하지 않는다. date/timezone은 request 기준으로, event ID는 parse 순서로 임시 부여한다.
 
-v3 Timeline 프롬프트는 작업을 하루 구조 → 근거로 event 구성 → 활동 분류·장소 선택 → User Memory 반영 → 문장 순서로 나누고, eventType 13종마다 다른 Event Agent의 candidate에서 무엇을 보고 어떻게 합치는지(병합 기준·정하는 근거·지속시간·다른 Agent 데이터에서 참고할 것·User Memory 구체화 범위)와 candidate → event 예시를 갖는다. Event Agent가 이미 하는 판단(이동수단 라벨·경유지·예약 날짜·알림 가치·수면 유효성)은 Timeline에서 지웠다. v2는 그대로다.
+v3 Timeline 프롬프트는 작업을 하루 구조 → 근거로 event 구성 → 활동 분류·장소 선택 → User Memory 반영 → 문장 순서로 나누고, eventType마다 다른 Event Agent의 candidate에서 무엇을 보고 어떻게 합치는지(병합 기준·정하는 근거·지속시간·다른 Agent 데이터에서 참고할 것·User Memory 구체화 범위)와 candidate → event 예시를 갖는다. Event Agent가 이미 하는 판단(이동수단 라벨·경유지·예약 날짜·알림 가치·수면 유효성)은 Timeline에서 지웠다. v2는 그대로다. v3 Timeline·Question은 수면을 다루지 않는다 — 수면 기록을 정확히 받을 수 없어 `SLEEP`·`WAKE_UP`의 규칙·예시가 없고 수면 기록을 event 근거나 시간 경계로 쓰지 않는다. 이는 프롬프트에 한한 것이고 `EventType` 13종 계약, SleepActivity Agent, `sleep_guard`는 그대로다.
 
 ### Repair Agent와 확정 pass
 
@@ -72,7 +72,7 @@ Repair는 시작할 때 LLM 호출 여부와 무관하게 `repair_draft`를 한 
 
 질문은 물음표로 끝나야 하고 255자 이하여야 하며 event당 첫 질문 하나만 적용한다. 모르는 event ID와 중복은 제외하고, 1차에서 빠진 event는 한 번 더 묻는다. Question Agent 실패는 warning을 남기고 질문 없는 draft로 저장을 계속한다.
 
-v3 Question 프롬프트는 eventType 13종마다 예시를 두고, 한 질문에 두 가지를 이어 묻는 것을 허용하며, 무엇을 했는지가 빠진 event는 그것을 먼저 묻는다(#118). 내부 모호성 질문(`TimelineDraft.questions`)은 #118에서 제거됐다.
+v3 Question 프롬프트는 수면을 뺀 eventType마다 예시를 두고, 한 질문에 두 가지를 이어 묻는 것을 허용하며, 무엇을 했는지가 빠진 event는 그것을 먼저 묻는다(#118). 내부 모호성 질문(`TimelineDraft.questions`)은 #118에서 제거됐다.
 
 ## Invariants
 

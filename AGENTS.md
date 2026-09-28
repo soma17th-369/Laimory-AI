@@ -360,11 +360,15 @@ app/
 #   warning 은 Timeline 만 아는 판단(근거 충돌에서 고른 쪽, 일부러 쓰지 않은 근거와 이유)에
 #   한한다. 코드 guard 가 남기는 것은 다시 적지 않는다.
 # Timeline v3(#118): 작업을 하루 구조 → 근거로 event 구성 → 활동 분류·장소 선택 →
-#   **User Memory 반영(별도 단계)** → 문장 순서로 나눈다. eventType 13종마다 다른 Event
+#   **User Memory 반영(별도 단계)** → 문장 순서로 나눈다. eventType 마다 다른 Event
 #   Agent 의 candidate 에서 무엇을 보고 어떻게 합치는지(병합 기준·정하는 근거·지속시간·다른
 #   Agent 데이터·User Memory 구체화 범위)와 candidate → event 예시를 갖는다. 최종 event 는
 #   24개 이내이고 description 에 시간 표현을 쓰지 않는다(언제는 startTime·endTime 이 담는다).
 #   Event Agent 가 이미 하는 판단은 Timeline 에서 지웠다. v2 는 그대로다.
+#   **v3 는 수면을 다루지 않는다.** 수면 기록을 정확히 받을 수 없게 돼 Timeline·Question v3 에서
+#   `SLEEP`·`WAKE_UP` 의 규칙과 예시를 뺐고, 수면 기록을 event 근거로도 시간 경계로도 쓰지
+#   않는다. **프롬프트만 그렇다** — `EventType` 13종 계약, SleepActivity Agent, sleep_guard 는
+#   그대로라 수면 기록이 입력에 들어오면 코드는 여전히 그 경계를 강제한다.
 # User Memory 계약(#65): 입력 조회 응답의 선택 필드 `userMemory` 는 사용자 압축 프로필
 #   v1.0 이다. 전달 경로는 입력 조회 → CollectedSnapshot → normalize → TimelineDraftRequest
 #   → user_memory_to_text 하나뿐이고, **Timeline Agent 와 Question Agent 가 같은 문자열을
