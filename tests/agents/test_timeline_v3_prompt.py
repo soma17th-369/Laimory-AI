@@ -59,6 +59,24 @@ def test_timeline_v3_uses_only_the_thirteen_event_types() -> None:
     assert "|".join(EVENT_TYPES) in text, "출력 형식의 eventType enum 이 13종 순서 그대로여야 합니다."
 
 
+def test_timeline_v3_day_structure_assumes_neither_home_nor_movement() -> None:
+    """하루 구조는 흔한 모양일 뿐이다. 집에서 끝난다고도, 이동이 있다고도 가정하지 않는다."""
+
+    section = _timeline_v3().split("## 하루의 구조", 1)[1].split("## 근거로 event 구성", 1)[0]
+    flow = next(line for line in section.splitlines() if line.startswith("> "))
+    slots = [slot.split("**")[1] for slot in flow.split(" → ")]
+
+    assert slots == ["시작", "이동", "주요 활동", "이동", "마무리"]
+    assert "집" not in flow, "시작·마무리 자리에 집을 박으면 밖에서 시작하거나 끝난 날을 설명하지 못합니다."
+    assert "집으로 돌아왔는가" not in section
+
+    assert "시작과 마무리는 집이 아닐 수 있습니다" in section
+    assert "귀가 event를 덧붙이지 않습니다" in section
+    assert "이동이 없는 날도 있습니다" in section
+    assert "외출이나 이동을 넣지 않습니다" in section
+    assert "근거가 없으면 event로 만들지 않습니다" in section
+
+
 def test_timeline_v3_limits_events_to_twenty_four() -> None:
     assert "24개를 넘지 않" in _timeline_v3()
 
