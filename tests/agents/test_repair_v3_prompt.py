@@ -60,12 +60,17 @@ def test_repair_v3_works_after_the_code_has_confirmed() -> None:
     assert "코드가 찾았지만 고치지 못한 것을 도구로 해소합니다" in text
 
 
-def test_repair_v3_does_not_verify_again_what_the_code_already_checked() -> None:
-    section = _between(_repair_v3(), "### 코드가 이미 본 것", "## 입력 의미")
+def test_repair_v3_explains_the_confirm_result_not_what_the_code_checks() -> None:
+    """코드가 무엇을 검사하는지는 나열하지 않는다. 확정 결과를 읽는 법으로 충분하다."""
 
-    assert "다시 검증하지 않습니다" in section
-    for checked in ("rawId", "window", "clientEventId", "캘린더", "`MEAL`", "사진"):
-        assert checked in section, f"코드가 이미 보는 `{checked}` 가 목록에 없습니다."
+    text = _repair_v3()
+    role = _between(text, "## 당신의 역할", "## 입력 의미")
+
+    assert "### 코드가 이미 본 것" not in text
+    assert "코드가 확정한 값은 다시 검증하지 않습니다" in role
+    assert "`[자동 검사 결과]`" in role
+    for checked in ("rawId", "window", "clientEventId", "`MEAL`"):
+        assert checked not in role, f"역할 절이 코드의 검사 항목 `{checked}` 를 나열합니다."
 
 
 def test_repair_v3_reads_top_to_bottom_in_working_order() -> None:
