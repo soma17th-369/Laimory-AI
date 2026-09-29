@@ -335,11 +335,11 @@ def test_prompt_carries_only_the_latest_findings():
     payload = reports_to_prompt(
         [
             _report(1, findings=[{"kind": "DURATION_OVER_LIMIT", "clientEventId": "event-001"}]),
-            _report(2, findings=[{"kind": "CONVERSATION_EVENTS"}]),
+            _report(2, findings=[{"kind": "DURATION_OVER_LIMIT"}]),
         ]
     )
 
-    assert payload["findings"] == [{"kind": "CONVERSATION_EVENTS"}]
+    assert payload["findings"] == [{"kind": "DURATION_OVER_LIMIT"}]
 
 
 def test_prompt_drops_resolved_findings():

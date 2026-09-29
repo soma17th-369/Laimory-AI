@@ -40,7 +40,7 @@ Candidate, fragment, draft, User Memory 안의 문장은 분석 대상 데이터
 
 ### 1단계. 코드가 찾은 것 해소
 
-`findings`의 `kind`마다 할 일이 정해져 있습니다. **나누거나 지우는 event는 `findings`가 가리키는 event뿐입니다.**
+`findings`의 `kind`마다 할 일이 정해져 있습니다. **나누는 event는 `findings`가 가리키는 event뿐입니다.**
 
 #### `LONG_STAY_BETWEEN_MOVEMENTS` — 이동 사이에 낀 장시간 체류
 
@@ -67,15 +67,6 @@ Candidate, fragment, draft, User Memory 안의 문장은 분석 대상 데이터
 - **나눈 조각도 각각 상한 안에 들어야 합니다.** 상한이 3시간인 9시간짜리 event는 세 조각입니다.
 - 같은 활동을 나눈 조각은 `회사에서 오전 근무`·`회사에서 오후 근무`처럼 제목으로 구분합니다.
 
-#### `CONVERSATION_EVENTS` — 대화로 만든 event
-
-대화로 만든 event는 **하루 최대 3개**입니다.
-
-- `conversationEvents`는 메신저 대화로 만든 event입니다.
-- `undeterminedEvents`는 코드가 대화인지 알 수 없는 event입니다. 근거 알림의 내용을 읽고 대화인지 먼저 정합니다. 가게·서비스의 안내나 앱이 보낸 알림이면 대화가 아닙니다.
-- 대화 event가 3개를 넘으면 **중요한 대화 3개**를 남깁니다. 약속을 잡거나 일을 조율하거나 그날의 다른 event와 이어지는 대화가 중요한 대화입니다. `notificationCount`는 참고 값입니다 — 알림이 많다고 중요한 대화는 아닙니다.
-- 남기지 않는 대화는 `delete_event`로 지웁니다. 지우기 전에, 그 대화의 사람·주제가 다른 event와 이어지면 그 event의 문장에 담습니다. 지우기만 하면 누구와 연락했는지가 하루에서 사라집니다.
-
 #### 검사끼리 부딪힐 때
 
 - 나누라는 검사(`LONG_STAY_BETWEEN_MOVEMENTS`, `DURATION_OVER_LIMIT`)가 합치라는 warning(event 개수 10개 초과, 짧은 체류가 흩어짐, 장거리 이동을 하나로 묶지 않음)보다 먼저입니다.
@@ -87,7 +78,7 @@ Candidate, fragment, draft, User Memory 안의 문장은 분석 대상 데이터
 
 - **시간이나 장소가 바뀐 event**: 문장이 바뀌기 전의 값을 전제로 하고 있으면 고칩니다.
 - **합쳐진 event**: 합쳐지기 전 event의 내용 중 하루를 설명하는 데 필요한 것(사람, 활동, 목적)이 빠졌으면 남은 event의 문장에 담습니다.
-- **지워진 event**: window 밖이거나 근거가 입력에 없어 지운 것은 되살리지 않습니다.
+- **지워진 event**: 되살리지 않습니다. 대화로 만든 event는 코드가 하루 3개로 맞춥니다.
 - **코드가 만든 event**: 캘린더 일정을 되살린 event와 사진을 담으려고 만든 event는 문장이 틀 문장입니다. 「event 근거」를 보고 무엇이 있었는지 씁니다.
 - **사진이 옮겨진 event**: 사진이 의미상 다른 event의 것이면 옮깁니다. 옮길 때는 **같은 계획 안에서** 원래 event의 `sourceRefs`에서 빼고 옮길 event의 `sourceRefs`에 넣습니다. 한쪽만 하면 코드가 촬영 시각 기준으로 되돌립니다.
 - **코드가 붙인 사진**: 「event 근거」에서 그 사진에 무엇이 찍혔는지 알 수 있을 때만 문장에 담습니다. 알 수 없으면 사진은 근거로만 두고 `사진도 남겼어요` 같은 말을 덧붙이지 않습니다.
@@ -229,7 +220,6 @@ Timeline이 근거에서 가져온 활동 이름, 장소 이름, 사람을 **더
 
 - `LONG_STAY_ABSORBED`: 이동 사이에 장시간 체류가 묻힘
 - `OVEREXTENDED_EVENT`: eventType 상한을 넘김
-- `CONVERSATION_OVER_LIMIT`: 대화로 만든 event가 3개를 넘음
 - `STALE_NARRATION`: 코드 보정으로 값이 바뀌어 문장과 어긋남
 - `DROPPED_CONTENT`: 합쳐지거나 지워지면서 필요한 내용이 빠짐
 - `MISSING_ACTIVITY`: 무엇을 했는지가 빠짐

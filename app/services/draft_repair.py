@@ -78,7 +78,7 @@ from app.schemas import (
 from app.services.calendar_guard import ensure_calendar_events
 from app.services.calendar_location import reinforce_calendar_location
 from app.services.confirm_report import ConfirmReport
-from app.services.conversation_guard import verify_conversation_limit
+from app.services.conversation_guard import enforce_conversation_limit
 from app.services.duration_guard import verify_event_duration
 from app.services.event_count_guard import (
     LEGACY_MAX_EVENT_COUNT,
@@ -582,6 +582,14 @@ _CORRECTION_STEPS: tuple[
     ("캘린더 장소 일치", reinforce_calendar_location),
 )
 
+#: v3 프롬프트가 정한 규칙으로 고치는 단계. v1·v2 세트에서는 돌리지 않는다.
+#:
+#: 대화 event 하루 3개는 Notification v3 가 정한 규칙이다(#116). 그 지시를 받은 적 없는
+#: 세트가 만든 event 를 같은 규칙으로 지우면 운영 결과가 달라진다.
+_EXTENDED_CORRECTION_STEPS: tuple[
+    tuple[str, Callable[[TimelineDraft, TimelineDraftRequest], object]], ...
+] = (("대화 개수 제한", enforce_conversation_limit),)
+
 
 def _inspect(
     draft: TimelineDraft,
@@ -622,11 +630,6 @@ def _inspect(
         # 나눌 자리는 event 의 시간 안으로 맞춘 값이라 최종 시간이 정해진 뒤에 만든다.
         report.add_finding("LONG_STAY_BETWEEN_MOVEMENTS", found.detail, event=found.event)
 
-    conversations = verify_conversation_limit(draft, request)
-    if conversations.needs_review:
-        # event 여럿을 id 로 가리키므로 최종 id 가 매겨진 뒤에 만든다.
-        report.add_finding("CONVERSATION_EVENTS", conversations.detail)
-
 
 def repair_draft(
     draft: TimelineDraft,
@@ -640,14 +643,15 @@ def repair_draft(
     `report` 를 주면 이번 확정에서 고친 것과 찾은 것을 거기에 적는다(#119). 주지 않아도
     확정 자체는 똑같이 돈다.
 
-    `extended` 는 #119 의 검사를 돌릴지다. draft 를 **고치는** 단계는 이 값과 무관하게 같다
-    — 사진 단일 귀속은 어느 프롬프트 세트에서든 강제한다. 달라지는 것은 찾기만 하는 검사다.
+    `extended` 는 v3 프롬프트가 정한 규칙을 적용할지다. 거짓이면 #119 의 검사와 대화 개수
+    제한을 돌리지 않는다. 사진 단일 귀속은 이 값과 무관하게 어느 세트에서든 강제한다.
     Repair Agent 가 프롬프트 세트를 보고 정해 넘긴다.
     """
 
     report = report if report is not None else ConfirmReport()
 
-    for name, step in _CORRECTION_STEPS:
+    steps = _CORRECTION_STEPS + (_EXTENDED_CORRECTION_STEPS if extended else ())
+    for name, step in steps:
         report.run(name, draft, lambda step=step: step(draft, request))
 
     # source 하나를 여러 event가 근거로 사용할 수 있다. 현재는 timeline_items에

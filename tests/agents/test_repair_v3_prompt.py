@@ -18,7 +18,6 @@ import pytest
 from app.agents.repair.tools import RepairContext, tool_catalog_text
 from app.schemas import EventType, TimelineDraft
 from app.schemas.user_memory import NARRATIVE_FIELDS
-from app.services.conversation_guard import MAX_CONVERSATION_EVENTS
 from app.services.event_count_guard import MAX_EVENT_COUNT
 from tests.fixtures.requests import make_request
 
@@ -149,7 +148,6 @@ def test_repair_v3_names_every_key_the_code_sends(key: str) -> None:
     [
         "LONG_STAY_BETWEEN_MOVEMENTS",
         "DURATION_OVER_LIMIT",
-        "CONVERSATION_EVENTS",
     ],
 )
 def test_repair_v3_says_what_to_do_for_every_finding_kind(kind: str) -> None:
@@ -175,9 +173,6 @@ def test_repair_v3_says_what_to_do_for_every_finding_kind(kind: str) -> None:
         "eventEndTime",
         "limitHours",
         "durationHours",
-        "conversationEvents",
-        "undeterminedEvents",
-        "notificationCount",
     ],
 )
 def test_repair_v3_names_the_finding_fields_it_relies_on(key: str) -> None:
@@ -235,7 +230,7 @@ def test_repair_v3_splits_only_what_the_findings_point_at() -> None:
     )
     warnings = _between(text, "## warning을 읽는 법", "## 문제 분류")
 
-    assert "나누거나 지우는 event는 `findings`가 가리키는 event뿐입니다" in head
+    assert "나누는 event는 `findings`가 가리키는 event뿐입니다" in head
     assert "20분 이하 체류를 묶은 하나의 이동" in section
     # 후보에 대한 warning 은 나눌 event 를 가리키지 않는다.
     assert "`[location]`으로 시작하는 warning" in warnings
@@ -280,7 +275,7 @@ def test_repair_v3_divides_the_evidence_not_only_the_time() -> None:
 def test_repair_v3_keeps_every_piece_within_the_limit() -> None:
     """실제 LLM 이 9시간짜리 근무를 3시간과 6시간으로 나눠 상한 초과가 그대로 남았다."""
 
-    section = _between(_repair_v3(), "#### `DURATION_OVER_LIMIT`", "#### `CONVERSATION_EVENTS`")
+    section = _between(_repair_v3(), "#### `DURATION_OVER_LIMIT`", "#### 검사끼리 부딪힐 때")
 
     assert "나눈 조각도 각각 상한 안에 들어야 합니다" in section
     assert "제목으로 구분합니다" in section
@@ -298,7 +293,7 @@ def test_repair_v3_does_not_mistake_its_own_tool_log_for_the_code() -> None:
 def test_repair_v3_does_not_cut_at_a_fragment_of_a_stay() -> None:
     """실제 LLM 이 15시간짜리 근무를 8분·10분짜리 체류 기록의 경계에서 나눴다."""
 
-    section = _between(_repair_v3(), "#### `DURATION_OVER_LIMIT`", "#### `CONVERSATION_EVENTS`")
+    section = _between(_repair_v3(), "#### `DURATION_OVER_LIMIT`", "#### 검사끼리 부딪힐 때")
 
     assert "몇 분짜리 체류 기록의 시작과 끝은 경계가 아닙니다" in section
     assert "고르게 나눕니다" in section
@@ -314,15 +309,21 @@ def test_repair_v3_splits_an_over_limit_stay_in_the_same_call() -> None:
     assert "같은 호출에서" in section
 
 
-def test_repair_v3_picks_conversations_by_importance_not_by_count() -> None:
-    section = _between(_repair_v3(), "#### `CONVERSATION_EVENTS`", "#### 검사끼리 부딪힐 때")
+def test_repair_v3_leaves_the_conversation_limit_to_the_code() -> None:
+    """대화 event 하루 3개는 코드가 알림 수로 맞춘다. Repair 가 고를 것이 없다.
 
-    assert f"하루 최대 {MAX_CONVERSATION_EVENTS}개" in section
-    assert "알림이 많다고 중요한 대화는 아닙니다" in section
-    # 코드가 대화인지 모르는 event 는 내용을 읽고 정한다.
-    assert "대화인지 먼저 정합니다" in section
-    # 지우기만 하면 누구와 연락했는지가 하루에서 사라진다.
-    assert "그 event의 문장에 담습니다" in section
+    Repair 에 맡겼을 때 실제 LLM 은 알림 수 순서로 지우라는 지시를 4번 중 3번 따르지 않았다.
+    """
+
+    text = _repair_v3()
+
+    assert "CONVERSATION_EVENTS" not in text
+    assert "CONVERSATION_OVER_LIMIT" not in text
+    assert "notificationCount" not in text
+    # 코드가 지운 대화를 Repair 가 되살리면 다음 확정에서 다시 지워진다.
+    section = _between(text, "### 2단계.", "### 3단계.")
+    assert "대화로 만든 event는 코드가 하루 3개로 맞춥니다" in section
+    assert "되살리지 않습니다" in section
 
 
 def test_repair_v3_orders_the_checks_that_pull_in_opposite_directions() -> None:
