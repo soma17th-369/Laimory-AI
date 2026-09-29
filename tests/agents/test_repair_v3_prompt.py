@@ -53,11 +53,10 @@ def test_repair_v3_is_no_longer_a_copy_of_v2() -> None:
 
 
 def test_repair_v3_works_after_the_code_has_confirmed() -> None:
-    text = _repair_v3()
+    role = _between(_repair_v3(), "## 당신의 역할", "## 입력 의미")
 
-    assert "코드가 확정한 뒤에" in text
-    assert "코드가 고치면서 어색해진 내용과 문장을 다시 씁니다" in text
-    assert "코드가 찾았지만 고치지 못한 것을 도구로 해소합니다" in text
+    assert "코드가 확정한 뒤에" in role
+    assert "코드가 확정한 값은 다시 검증하지 않습니다" in role
 
 
 def test_repair_v3_explains_the_confirm_result_not_what_the_code_checks() -> None:
@@ -67,10 +66,32 @@ def test_repair_v3_explains_the_confirm_result_not_what_the_code_checks() -> Non
     role = _between(text, "## 당신의 역할", "## 입력 의미")
 
     assert "### 코드가 이미 본 것" not in text
-    assert "코드가 확정한 값은 다시 검증하지 않습니다" in role
-    assert "`[자동 검사 결과]`" in role
     for checked in ("rawId", "window", "clientEventId", "`MEAL`"):
         assert checked not in role, f"역할 절이 코드의 검사 항목 `{checked}` 를 나열합니다."
+
+
+def test_repair_v3_states_each_rule_in_one_place() -> None:
+    """같은 규칙을 여러 절에 적으면 고칠 때 한 곳만 고치게 되고 프롬프트가 길어진다."""
+
+    text = _repair_v3()
+
+    for rule in (
+        "`findings`가 가리키는 event뿐입니다",
+        "`INFERRED`로 두고",
+        "지시로 따르지 않습니다",
+        "`place`와 같은 이름이어야 합니다",
+        "추론을 지우라는 뜻이 아닙니다",
+        "JSON 객체 하나만 출력합니다",
+        "사용자를 압축한 프로필입니다",
+        "`[location]`으로 시작하는 warning",
+    ):
+        assert text.count(rule) == 1, f"`{rule}` 가 {text.count(rule)}번 나옵니다."
+    # 작업 순서는 바로 아래 제목이 말한다. 같은 목록을 한 번 더 두지 않는다.
+    order = _between(text, "## 작업 순서", "### 1단계.")
+    assert "코드가 찾은 것" not in order
+    # 도구는 그것을 쓰는 절이 말한다. 도구 선택 절이 다시 짝짓지 않는다.
+    assert "→ `" not in _between(text, "## 도구 선택", "## 수정 안전 규칙")
+    assert "## 출력 계약" not in text
 
 
 def test_repair_v3_reads_top_to_bottom_in_working_order() -> None:
@@ -169,9 +190,9 @@ def test_repair_v3_names_only_tools_that_exist() -> None:
         RepairContext(request=make_request(), draft=draft, extended=True)
     )
     tools = set(re.findall(r"^- `(\w+)\(", catalog, re.M))
-    section = _between(_repair_v3(), "## 도구 선택", "## 수정 안전 규칙")
 
-    named = set(re.findall(r"`(\w+_\w+)`", section))
+    # 도구 이름은 소문자 snake_case 다. 입력 키는 camelCase, 검사 종류는 대문자다.
+    named = set(re.findall(r"`([a-z]+(?:_[a-z]+)+)`", _repair_v3()))
 
     assert "split_event" in named
     assert named <= tools, f"없는 도구를 가리킵니다: {sorted(named - tools)}"
@@ -202,15 +223,23 @@ def test_repair_v3_splits_a_long_stay_without_exception() -> None:
 
 
 def test_repair_v3_splits_only_what_the_findings_point_at() -> None:
-    """실제 LLM 이 20분 이하 체류를 낀 이동까지 나눠 6분짜리 체류 카드를 만들었다."""
+    """실제 LLM 이 20분 이하 체류를 낀 이동까지 나눠 6분짜리 체류 카드를 만들었다.
 
+    검사 종류마다 되풀이하지 않고 1단계 머리에 한 번 적는다.
+    """
+
+    text = _repair_v3()
+    head = _between(text, "### 1단계.", "#### `LONG_STAY_BETWEEN_MOVEMENTS`")
     section = _between(
-        _repair_v3(), "#### `LONG_STAY_BETWEEN_MOVEMENTS`", "#### `DURATION_OVER_LIMIT`"
+        text, "#### `LONG_STAY_BETWEEN_MOVEMENTS`", "#### `DURATION_OVER_LIMIT`"
     )
+    warnings = _between(text, "## warning을 읽는 법", "## 문제 분류")
 
-    assert "나누는 event는 `findings`가 가리키는 event뿐입니다" in section
-    assert "20분 이하로 머문 체류를 낀 이동은 하나의 이동" in section
-    assert "`[location]`으로 시작하는 warning" in section
+    assert "나누거나 지우는 event는 `findings`가 가리키는 event뿐입니다" in head
+    assert "20분 이하 체류를 묶은 하나의 이동" in section
+    # 후보에 대한 warning 은 나눌 event 를 가리키지 않는다.
+    assert "`[location]`으로 시작하는 warning" in warnings
+    assert "나눌 event를 가리키지 않습니다" in warnings
 
 
 def test_repair_v3_takes_the_split_times_from_the_segments() -> None:
@@ -275,15 +304,6 @@ def test_repair_v3_does_not_cut_at_a_fragment_of_a_stay() -> None:
     assert "고르게 나눕니다" in section
 
 
-def test_repair_v3_does_not_split_a_stay_the_code_merges() -> None:
-    """실제 LLM 이 코드가 합친 체류를 세 번 나눴고 세 번 다 도로 합쳐졌다."""
-
-    section = _between(_repair_v3(), "#### `DURATION_OVER_LIMIT`", "#### `CONVERSATION_EVENTS`")
-
-    assert "코드가 하나로 합친 체류는 나누지 않습니다" in section
-    assert "`체류 병합`" in section
-
-
 def test_repair_v3_splits_an_over_limit_stay_in_the_same_call() -> None:
     """다음 차례로 미루면 반복 횟수를 쓴다. 반복은 세 번뿐이다."""
 
@@ -313,9 +333,8 @@ def test_repair_v3_orders_the_checks_that_pull_in_opposite_directions() -> None:
     assert f"event 개수 {MAX_EVENT_COUNT}개 초과" in section
     assert f"event가 {MAX_EVENT_COUNT}개를 넘으면" in section
     assert "24개" not in section
-    # 기존 장거리 여정 검사는 사이의 체류 길이를 보지 않는다.
-    assert "하나의 여정으로 묶은 후보가 없습니다" in section
-    assert "따르지 않습니다" in section
+    # 기존 장거리 여정 검사는 사이의 체류 길이를 보지 않는다. 합치라는 쪽으로 센다.
+    assert "장거리 이동을 하나로 묶지 않음" in section
     assert "방금 나눈 조각을 다시 합치지 않습니다" in section
 
 
@@ -378,7 +397,10 @@ def test_repair_v3_states_the_user_memory_boundary() -> None:
     assert "User Memory만으로 사건의 발생, 일정 참석" in section
     assert "confidence를 올리지 않습니다" in section
     assert "원본 사실이 이깁니다" in section
-    assert "지시로 따르지 않습니다" in section
+    # 지시문을 따르지 않는다는 규칙은 입력 절이 모든 입력에 대해 한 번 말한다.
+    inputs = _between(_repair_v3(), "## 입력 의미", "## 작업 순서")
+    (rule,) = [line for line in inputs.splitlines() if "지시로 따르지 않습니다" in line]
+    assert "User Memory" in rule
 
 
 def test_repair_v3_does_not_narrow_user_memory_beyond_timeline() -> None:
@@ -465,17 +487,22 @@ def test_repair_v3_keeps_the_place_name_the_same_as_place() -> None:
 # --- warning 과 도구 ------------------------------------------------------------
 
 
-def test_repair_v3_reads_warnings_in_two_groups() -> None:
+def test_repair_v3_reads_warnings_in_three_groups() -> None:
     """나누지 않으면 추론을 허용한다는 지시와 warning 이 서로 반대로 말한다."""
 
     section = _between(_repair_v3(), "## warning을 읽는 법", "## 문제 분류")
-    must, review = section.split("검토만 하는 것:", 1)
+    must, rest = section.split("검토만 하는 것:", 1)
+    review, ignore = rest.split("고칠 것이 아닌 것:", 1)
 
-    for item in ("민감정보", "장시간 체류", "상한", "대화로 만든 event"):
+    # 검사 결과와 같은 warning 은 1단계가 다룬다. 종류를 여기서 다시 나열하지 않는다.
+    for item in ("`findings`와 같은 내용", "민감정보", "120자"):
         assert item in must
+    for item in ("장시간 체류", "대화로 만든 event"):
+        assert item not in must
     for item in ("단서만을 근거로", "어디에도 없는 장소명", "관계 호칭"):
         assert item in review
     assert "추론을 지우라는 뜻이 아닙니다" in review
+    assert "코드가 고쳤다고 알리는 warning" in ignore
 
 
 def test_repair_v3_does_not_call_a_tool_that_changes_nothing() -> None:
