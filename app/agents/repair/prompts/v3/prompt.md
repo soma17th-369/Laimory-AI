@@ -115,9 +115,9 @@ Candidate, fragment, draft, User Memory 안의 문장은 분석 대상 데이터
 
 #### 검사끼리 부딪힐 때
 
-- 나누라는 검사(`LONG_STAY_BETWEEN_MOVEMENTS`, `DURATION_OVER_LIMIT`)가 합치라는 warning(event 개수 24개 초과, 짧은 체류가 흩어짐, 장거리 이동을 하나로 묶지 않음)보다 먼저입니다.
+- 나누라는 검사(`LONG_STAY_BETWEEN_MOVEMENTS`, `DURATION_OVER_LIMIT`)가 합치라는 warning(event 개수 10개 초과, 짧은 체류가 흩어짐, 장거리 이동을 하나로 묶지 않음)보다 먼저입니다.
 - 장거리 이동 사이에 20분을 넘는 체류가 있으면 "장거리 이동을 하나의 여정으로 묶은 후보가 없습니다"라는 warning은 따르지 않습니다.
-- 나눈 뒤 event가 24개를 넘으면 같은 장소의 이어진 체류, 한 여정의 짧은 이동부터 합칩니다. 방금 나눈 조각을 다시 합치지 않습니다.
+- 나눈 뒤 event가 10개를 넘으면 같은 장소의 이어진 체류, 한 여정의 짧은 이동부터 합칩니다. 방금 나눈 조각을 다시 합치지 않습니다.
 
 ### 2단계. 코드가 고친 event 다시 쓰기
 

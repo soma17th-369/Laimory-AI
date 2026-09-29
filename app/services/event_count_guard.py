@@ -1,23 +1,30 @@
 """최종 event 개수 상한 검사 (#118).
 
-프롬프트는 하루의 event 를 최대 24개로 구성하라고 지시한다. 지켰는지 재는 코드가 없으면
+프롬프트는 하루의 event 를 최대 10개로 구성하라고 지시한다. 지켰는지 재는 코드가 없으면
 잘게 쪼개진 하루가 그대로 저장돼도 결과를 볼 때까지 모른다. 이 guard 는 그 초과를
 드러내는 결정론적 안전망이다.
 
 **재기만 하고 자르지 않는다.** 무엇을 버리고 무엇을 합칠지는 의미 판단이라, 코드가
 confidence 순으로 잘라 내면 캘린더·사진처럼 반드시 남아야 할 근거를 잃는다
 (`duration_guard` 와 같은 원칙). 합치는 것은 Repair 의 판단이다.
+
+상한은 세트에 따라 다르다. 10개는 Timeline·Repair v3 프롬프트가 지시하는 값이다.
+v1·v2 Timeline 프롬프트에는 개수 지시가 없어, 그 세트에 10개를 재면 지시받은 적 없는
+규칙으로 warning 이 붙고 v2 Repair 가 그것을 줄이려 든다. 그 세트는 예전 값 24개로 잰다.
 """
 
 from app.schemas import TimelineDraft, TimelineWarning, TimelineWarningSeverity
 
-#: 하루 타임라인의 최대 event 수.
-MAX_EVENT_COUNT = 24
+#: 하루 타임라인의 최대 event 수. v3 프롬프트가 지시하는 값이다.
+MAX_EVENT_COUNT = 10
+
+#: 개수 지시가 없는 예전 세트(v1·v2)에 재는 값. 줄이기 전의 상한이다.
+LEGACY_MAX_EVENT_COUNT = 24
 
 _WARNING_ID_PREFIX = "warning-event-count-"
 
 
-def verify_event_count(draft: TimelineDraft) -> None:
+def verify_event_count(draft: TimelineDraft, *, limit: int = MAX_EVENT_COUNT) -> None:
     """상한을 넘는 event 수를 경고하고 이전 검사 결과를 재계산한다."""
 
     draft.warnings = [
@@ -27,7 +34,7 @@ def verify_event_count(draft: TimelineDraft) -> None:
     ]
 
     count = len(draft.events)
-    if count <= MAX_EVENT_COUNT:
+    if count <= limit:
         return
 
     draft.warnings.append(
@@ -35,7 +42,7 @@ def verify_event_count(draft: TimelineDraft) -> None:
             warning_id=f"{_WARNING_ID_PREFIX}001",
             severity=TimelineWarningSeverity.MEDIUM,
             message=(
-                f"event 가 {count}개로 하루 최대 {MAX_EVENT_COUNT}개를 넘었습니다. "
+                f"event 가 {count}개로 하루 최대 {limit}개를 넘었습니다. "
                 "같은 장소의 이어진 체류, 같은 대화방의 대화, 같은 장면의 사진, "
                 "한 여정의 짧은 이동부터 합쳐야 합니다."
             ),

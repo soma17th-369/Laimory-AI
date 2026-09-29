@@ -80,7 +80,11 @@ from app.services.calendar_location import reinforce_calendar_location
 from app.services.confirm_report import ConfirmReport
 from app.services.conversation_guard import verify_conversation_limit
 from app.services.duration_guard import verify_event_duration
-from app.services.event_count_guard import verify_event_count
+from app.services.event_count_guard import (
+    LEGACY_MAX_EVENT_COUNT,
+    MAX_EVENT_COUNT,
+    verify_event_count,
+)
 from app.services.meal_guard import enforce_meal_duration
 from app.services.movement_stay_guard import verify_movement_stay_boundary
 from app.services.narrative_guard import verify_narrative_length
@@ -592,8 +596,9 @@ def _inspect(
     반복마다 이전 것을 지우고 현재 draft 로 다시 계산하므로, Repair 가 문장을 줄이거나
     event 를 나누고 합친 뒤 stale warning 이 남지 않는다.
 
-    `extended` 가 거짓이면 #119 의 검사를 돌리지 않고 지속시간도 예전처럼 일괄 3시간으로
-    잰다. 찾은 것은 warning 으로 draft 에 남고 Repair 가 그것을 읽기 때문이다. 나눌 도구도
+    `extended` 가 거짓이면 #119 의 검사를 돌리지 않고 지속시간은 예전처럼 일괄 3시간,
+    event 개수는 예전처럼 24개로 잰다. 찾은 것은 warning 으로 draft 에 남고 Repair 가
+    그것을 읽기 때문이다. 나눌 도구도
     그 warning 을 읽는 법도 없는 세트에 "나눠야 합니다"를 보이면 Timeline 재실행만 되풀이한다.
     """
 
@@ -606,7 +611,9 @@ def _inspect(
     verify_narrative_length(draft)
     for finding in verify_event_duration(draft, request, by_type=extended):
         report.add_finding("DURATION_OVER_LIMIT", finding.detail(), event=finding.event)
-    verify_event_count(draft)
+    verify_event_count(
+        draft, limit=MAX_EVENT_COUNT if extended else LEGACY_MAX_EVENT_COUNT
+    )
 
     if not extended:
         return

@@ -19,6 +19,7 @@ from app.agents.repair.tools import RepairContext, tool_catalog_text
 from app.schemas import EventType, TimelineDraft
 from app.schemas.user_memory import NARRATIVE_FIELDS
 from app.services.conversation_guard import MAX_CONVERSATION_EVENTS
+from app.services.event_count_guard import MAX_EVENT_COUNT
 from tests.fixtures.requests import make_request
 
 APP_ROOT = Path(__file__).resolve().parents[2] / "app"
@@ -303,7 +304,10 @@ def test_repair_v3_orders_the_checks_that_pull_in_opposite_directions() -> None:
     section = _between(_repair_v3(), "#### 검사끼리 부딪힐 때", "### 2단계.")
 
     assert "보다 먼저입니다" in section
-    assert "24개" in section
+    # 프롬프트가 말하는 개수와 코드가 재는 개수가 같아야 한다.
+    assert f"event 개수 {MAX_EVENT_COUNT}개 초과" in section
+    assert f"event가 {MAX_EVENT_COUNT}개를 넘으면" in section
+    assert "24개" not in section
     # 기존 장거리 여정 검사는 사이의 체류 길이를 보지 않는다.
     assert "하나의 여정으로 묶은 후보가 없습니다" in section
     assert "따르지 않습니다" in section
