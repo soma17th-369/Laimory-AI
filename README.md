@@ -85,7 +85,7 @@ app/
     ├── duration_guard.py      # eventType 별 지속시간 상한 검사 (#119). 자르지 않고 warning
     ├── event_count_guard.py   # 최종 event 개수 상한(v3 10, v1·v2 24) 검사 (#118). 자르지 않고 warning
     ├── movement_stay_guard.py # 이동 사이에 낀 20분 초과 체류 검사 (#119). 찾기만 하고 나누지 않음
-    ├── conversation_guard.py  # 대화로 만든 event 개수(하루 3개) 검사 (#119). 세기만 하고 지우지 않음
+    ├── conversation_guard.py  # 대화로 만든 event 개수(하루 3개) 제한 (#119). 알림이 많은 3개만 남김(v3)
     ├── photo_guard.py         # 사진 단일 귀속 강제 (#119). 모든 사진이 정확히 한 event 에만 있게 만든다
     ├── location_metrics.py    # Location raw 파생 지표 계산 (속도·구간 공백·수집 공백)
     ├── location_guard.py      # Location 결과 검증 (상위 여정 누락·공백 표시·rawId 보존)
@@ -135,7 +135,8 @@ Repair Agent 는 초안을 직접 다시 쓰지 않고 **결정론 서비스와 
 
 확정 pass 는 고치는 것과 찾는 것을 나눕니다(#119). 무엇을 고칠지가 규칙으로 정해져 있으면 코드가
 고치고, 어디서 끊고 무엇을 남길지가 의미 판단이면 찾아서 Repair 에 넘깁니다. 이동 사이에 낀
-20분 초과 체류를 나누는 것과 대화로 만든 event 를 하루 3개로 줄이는 것은 Repair 가 합니다.
+20분 초과 체류와 상한을 넘긴 event 를 나누는 것은 Repair 가 합니다. 대화로 만든 event 를 하루
+3개로 줄이는 것은 코드가 알림 수로 합니다.
 `PROMPT_VERSION=v3` 에서 Repair 는 코드가 고친 것과 찾은 것, event 별 근거, User Memory 를 함께
 받아 코드가 이미 본 것을 다시 검증하지 않고 내용과 문장을 다듬습니다.
 

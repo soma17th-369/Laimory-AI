@@ -52,7 +52,7 @@ v3 Timeline 프롬프트는 판단 순서대로 읽힌다. 작업을 하루 구�
 
 Repair는 시작할 때 LLM 호출 여부와 무관하게 `repair_draft`를 한 번 실행한다. 이후 반복은 `analyze → execute tools → confirm`이고, tool call이 없거나 `done`, 반복 상한에 도달하면 끝난다. LLM·parse 실패 시 마지막으로 확정된 deep copy로 되돌아가 warning을 추가한다. 개별 tool 실패는 tool result로 남아 다음 분석 입력이 된다. 순서는 언제나 코드 → LLM → 코드이고 마지막 단계는 코드 확정이다.
 
-확정 pass는 **고치는 것과 찾는 것을 나눈다**(#119). 무엇을 고칠지가 규칙으로 정해져 있으면 코드가 고치고, 어디서 끊고 무엇을 남길지가 의미 판단이면 찾아서 Repair에 넘긴다. 이동 사이의 장시간 체류를 나누는 것과 대화로 만든 event를 3개로 줄이는 것은 뒤쪽이다. 그래서 Repair가 고치지 못하면(LLM 실패, 제한 시간, 반복 소진) 그 위반은 warning과 함께 그대로 저장된다. 사진 단일 귀속만은 코드가 강제한다.
+확정 pass는 **고치는 것과 찾는 것을 나눈다**(#119). 무엇을 고칠지가 규칙으로 정해져 있으면 코드가 고치고, 어디서 끊고 무엇을 남길지가 의미 판단이면 찾아서 Repair에 넘긴다. 이동 사이의 장시간 체류와 상한을 넘긴 event를 나누는 것은 뒤쪽이다. 그래서 Repair가 고치지 못하면(LLM 실패, 제한 시간, 반복 소진) 그 위반은 warning과 함께 그대로 저장된다. 코드가 강제하는 것은 사진 단일 귀속과 대화 event 하루 3개다. 대화는 기준이 알림 수 하나라 코드가 고를 수 있다.
 
 현재 `repair_draft` 순서는 다음 의미 의존성을 가진다.
 
@@ -63,8 +63,9 @@ Repair는 시작할 때 LLM 호출 여부와 무관하게 `repair_draft`를 한 
 5. 정렬 → 이동 없는 연속 STAY 병합 → 중복·겹침 정리
 6. **Photo 단일 귀속 강제**(#119)
 7. Calendar/STAY 장소 일치 confidence 보강
-8. 검사(고치지 않음): Photo·Notification 안전성, 최종 문장 길이, 지속시간, event 개수. event 개수는 v3 세트에서 10개, v1·v2 세트에서 24개로 잰다. v3 세트에서는 지속시간을 eventType별로 재고 이동 사이 장시간 체류와 대화 event 개수를 더 본다
-9. 재정렬 → `clientEventId` 재부여
+8. **대화 event 개수 제한**(#119, v3 세트): 3개를 넘으면 알림이 많은 3개만 남긴다
+9. 검사(고치지 않음): Photo·Notification 안전성, 최종 문장 길이, 지속시간, event 개수. event 개수는 v3 세트에서 10개, v1·v2 세트에서 24개로 잰다. v3 세트에서는 지속시간을 eventType별로 재고 이동 사이 장시간 체류를 더 본다
+10. 재정렬 → `clientEventId` 재부여
 
 1~7은 draft를 고치고 8은 고치지 않는다. `verify_fragment_usage`는 이 확정 pass 뒤에 실행해 최종 event가 fragment-only 근거인지 검사한다. 반복마다 동일 warning을 dedupe한다.
 
@@ -84,7 +85,7 @@ Repair 프롬프트는 반복마다 그 시점의 draft로 새로 만든다. v3 
 
 지속시간 상한 검사는 **Repair가 고칠 수 없는 것을 알리지 않는다.** 근거가 전부 한 묶음(이동 없이 같은 장소에서 이어진 STAY)의 체류인 event는 확정 pass가 하나로 합치므로(`merge_stay_events`) 나눠도 다음 확정에서 다시 합쳐진다. 실제 LLM은 3.4시간짜리 체류를 세 번 나눴고 세 번 다 도로 합쳐져 반복을 모두 썼다. 그런 event는 상한 검사에서 면제한다.
 
-v3 Repair 프롬프트는 코드가 이미 본 것을 다시 검증하지 않는다. 작업 순서는 코드가 찾은 것 해소 → 코드가 고친 event 다시 쓰기 → 내용이 부족한 event 구체화 → 문장 다듬기다. candidate·fragment에 글자 그대로 없어도 합리적으로 추론되는 사람·장소·활동·목적을 허용하고 `INFERRED`로 둔다. Timeline의 추론을 되돌리지 않게 하는 규칙이 함께 있다 — Timeline이 쓴 구체적인 이름을 넓은 말로 뭉개지 않고, warning을 "반드시 해소"와 "검토만"으로 나눠 읽고, 나누라는 검사가 합치라는 warning보다 먼저이고, 재실행은 마지막 수단이다.
+v3 Repair 프롬프트는 코드가 이미 본 것을 다시 검증하지 않는다. 작업 순서는 코드가 찾은 것 해소 → 코드가 고친 event 다시 쓰기 → 내용이 부족한 event 구체화 → 문장 다듬기다. candidate·fragment에 글자 그대로 없어도 합리적으로 추론되는 사람·장소·활동·목적을 허용하고 `INFERRED`로 둔다. Timeline의 추론을 되돌리지 않게 하는 규칙이 함께 있다 — Timeline이 쓴 구체적인 이름을 넓은 말로 뭉개지 않고, warning을 "해소"와 "검토만"으로 나눠 읽고, 나누라는 검사가 합치라는 warning보다 먼저이고, 재실행은 마지막 수단이다.
 
 ### Question Agent
 
@@ -102,10 +103,11 @@ v3 Question 프롬프트는 수면을 뺀 eventType마다 예시를 두고, 한 
 - rawId 무결성과 request window는 candidate와 final draft 양쪽에서 방어한다.
 - Calendar 누락 방지, 정렬, ID, source/시간 확정은 LLM 선택에 의존하지 않는다.
 - 병합으로 event 구성이 바뀐 뒤에 Photo/Notification/길이 검사를 수행한다.
-- 길이·duration·event 개수·이동 사이 체류·대화 개수 guard는 반복마다 자기 이전 warning을 제거하고 현재 draft를 다시 잰다.
+- 길이·duration·event 개수·이동 사이 체류 guard는 반복마다 자기 이전 warning을 제거하고 현재 draft를 다시 잰다.
 - 프롬프트 세트가 설명하지 않는 warning·입력·도구를 코드가 먼저 주지 않는다. 새 검사를 더할 때는 그것을 읽고 고칠 수 있는 세트에서만 돌린다.
 - 입력의 모든 사진은 발행되는 모든 확정본과 main agent가 돌려주는 draft에서 정확히 한 event에만 있다. LLM 호출 여부와 무관하다.
-- 이동 사이 체류를 나누는 것과 대화 event를 줄이는 것은 코드가 하지 않는다. 코드는 찾기만 한다.
+- 이동 사이 체류와 상한을 넘긴 event를 나누는 것은 코드가 하지 않는다. 코드는 찾기만 한다.
+- 대화 event는 v3 세트에서 확정할 때마다 3개 이하로 맞춘다. 기준은 알림 수이고 같으면 먼저 시작한 대화를 남긴다.
 - 카탈로그에 싣는 도구와 실행을 허용하는 도구는 같다. 세트가 주지 않는 도구는 불러도 실행하지 않는다.
 - Question Agent는 Repair 뒤, 결과 저장 앞이다.
 

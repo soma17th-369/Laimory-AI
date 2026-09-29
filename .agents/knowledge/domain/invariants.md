@@ -68,7 +68,7 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - eventType별 상한(`docs/ai-event-candidate.md`)을 넘는 event는 LOW warning으로 드러내되 코드가 임의 분할·절단하지 않는다(#119). `PHOTO_MOMENT` 1시간, `MEETING`·`EXERCISE` 2시간, 나머지 3시간이다. Calendar, Sleep, Movement, Meal은 이 검사에서 제외한다. 캘린더 근거가 있고 event 길이가 그 일정의 길이를 넘지 않으면 타입과 무관하게 면제하고, MOVEMENT 근거가 있는 `EXERCISE`(산책)도 면제한다. 근거가 전부 한 묶음(이동 없이 같은 장소에서 이어진 STAY)의 체류인 event도 면제한다 — 확정 pass가 그런 event를 하나로 합치므로 나눠도 다시 합쳐져 Repair가 고칠 수 없다. v1·v2 세트에서는 예전처럼 일괄 3시간으로 재고 이 세 면제도 없다.
 - 하나의 candidate·event가 `MOVEMENT → 20분을 넘는 STAY → MOVEMENT`를 함께 품으면 위반이다(#119). 기준은 Location 파생 지표의 `SHORT_STAY_MAX` 하나이고, 역·터미널·공항에서의 환승·대기도 20분을 넘으면 예외가 없다. eventType을 가리지 않는다. 코드는 찾기만 하고 나누는 것은 Repair가 한다. 20분 이하 STAY를 낀 연속 이동은 그대로 둔다. v3 세트에서만 검사한다.
 - 최종 event는 10개를 넘지 않는다(#118). 초과는 MEDIUM warning으로 드러내고 코드가 자르지 않는다 — 무엇을 합칠지는 의미 판단이다. 10개는 Timeline·Repair v3 프롬프트가 지시하는 값이고, 개수 지시가 없는 v1·v2 세트는 예전 값 24개로 잰다.
-- 대화로 만든 event는 하루 최대 3개다(#119). 근거가 전부 알림이고 eventType이 `SOCIAL`·`WORK`·`MEETING`인 event를 센다. 위치·사진·캘린더 근거가 함께 있으면 실제 사건이라 세지 않는다. **메신저 정책이 있는 앱의 알림만 대화로 세고**, 사전에 없는 앱의 알림이 섞인 event는 "대화 여부 미정"으로 Repair에 넘긴다 — 그 앱이 무엇인지 코드는 모른다. 초과는 MEDIUM warning으로 드러내고 코드가 지우지 않는다. 무엇이 중요한 대화인지는 내용을 봐야 안다. v3 세트에서만 센다.
+- 대화로 만든 event는 하루 최대 3개다(#119). 근거가 전부 알림이고 eventType이 `SOCIAL`·`WORK`·`MEETING`인 event를 센다. 위치·사진·캘린더 근거가 함께 있으면 실제 사건이라 세지 않는다. **메신저 정책이 있는 앱의 알림만 대화로 세고**, 사전에 없는 앱의 알림이 섞인 event는 세지도 지우지도 않는다 — 그 앱이 무엇인지 코드는 모른다. 3개를 넘으면 **알림이 많은 3개만 남기고 코드가 지운다.** 알림 수가 같으면 먼저 시작한 대화를 남긴다. 기준을 알림 수 하나로 둔 것은 Notification Agent가 candidate를 고르는 기준(대화 내용이 많을수록 중요)과 맞추기 위해서다. 그래서 알림이 적은 약속 대화가 지워지고 알림이 많은 공지방이 남을 수 있다. v3 세트에서만 적용한다.
 - Location-only event의 시간은 참조한 STAY/MOVEMENT 근거 밖을 주장하지 않도록 맞추되, 다른 source가 섞이면 그 source의 시간 의미를 존중한다.
 
 ### 보존·병합
@@ -132,7 +132,7 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 
 - Timeline trigger window의 역전은 endpoint에서 거절되지 않는다.
 - 최종 문체의 1인칭·해요체·문장 수는 코드가 의미적으로 판정하지 않고 prompt와 live 품질 검증에 의존한다.
-- 이동 사이 장시간 체류와 대화 event 초과는 Repair가 고쳐야 해소된다. Repair가 실패하거나 제한 시간이 끝나면 warning과 함께 그대로 저장된다.
+- 이동 사이 장시간 체류와 지속시간 초과는 Repair가 고쳐야 해소된다. Repair가 실패하거나 제한 시간이 끝나면 warning과 함께 그대로 저장된다.
 - App Server DB constraint와 callback/result idempotency는 이 저장소에서 확인할 수 없다.
 - inbound 인증·인가가 없어 호출 주체 불변식은 코드로 강제되지 않는다.
 - user memory 소비 경로는 input API 응답까지 열려 있으나, App Server가 실제로 값을 채워 보내는지는 이 저장소에서 확인할 수 없다.
