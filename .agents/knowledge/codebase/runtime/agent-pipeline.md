@@ -63,7 +63,7 @@ Repair는 시작할 때 LLM 호출 여부와 무관하게 `repair_draft`를 한 
 5. 정렬 → 이동 없는 연속 STAY 병합 → 중복·겹침 정리
 6. **Photo 단일 귀속 강제**(#119)
 7. Calendar/STAY 장소 일치 confidence 보강
-8. 검사(고치지 않음): Photo·Notification 안전성, 최종 문장 길이, 지속시간, event 개수(24). v3 세트에서는 지속시간을 eventType별로 재고 이동 사이 장시간 체류와 대화 event 개수를 더 본다
+8. 검사(고치지 않음): Photo·Notification 안전성, 최종 문장 길이, 지속시간, event 개수. event 개수는 v3 세트에서 10개, v1·v2 세트에서 24개로 잰다. v3 세트에서는 지속시간을 eventType별로 재고 이동 사이 장시간 체류와 대화 event 개수를 더 본다
 9. 재정렬 → `clientEventId` 재부여
 
 1~7은 draft를 고치고 8은 고치지 않는다. `verify_fragment_usage`는 이 확정 pass 뒤에 실행해 최종 event가 fragment-only 근거인지 검사한다. 반복마다 동일 warning을 dedupe한다.

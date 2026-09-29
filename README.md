@@ -83,7 +83,7 @@ app/
     ├── calendar_location.py   # 캘린더와 STAY 장소 일치 보강
     ├── meal_guard.py          # MEAL 지속시간 강제 + 시점 근거 없는 식사 confidence 상한
     ├── duration_guard.py      # eventType 별 지속시간 상한 검사 (#119). 자르지 않고 warning
-    ├── event_count_guard.py   # 최종 event 개수 상한(24) 검사 (#118). 자르지 않고 warning
+    ├── event_count_guard.py   # 최종 event 개수 상한(v3 10, v1·v2 24) 검사 (#118). 자르지 않고 warning
     ├── movement_stay_guard.py # 이동 사이에 낀 20분 초과 체류 검사 (#119). 찾기만 하고 나누지 않음
     ├── conversation_guard.py  # 대화로 만든 event 개수(하루 3개) 검사 (#119). 세기만 하고 지우지 않음
     ├── photo_guard.py         # 사진 단일 귀속 강제 (#119). 모든 사진이 정확히 한 event 에만 있게 만든다

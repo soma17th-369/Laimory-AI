@@ -67,7 +67,7 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - MEAL duration은 20~60분 범위로 제한하는 전용 guard가 맡는다. 시점 근거(사진·결제 알림)가 없는 MEAL은 길이와 무관하게 confidence를 0.6 이하로 묶는다(#118). 캘린더만 근거인 식사도 같다.
 - eventType별 상한(`docs/ai-event-candidate.md`)을 넘는 event는 LOW warning으로 드러내되 코드가 임의 분할·절단하지 않는다(#119). `PHOTO_MOMENT` 1시간, `MEETING`·`EXERCISE` 2시간, 나머지 3시간이다. Calendar, Sleep, Movement, Meal은 이 검사에서 제외한다. 캘린더 근거가 있고 event 길이가 그 일정의 길이를 넘지 않으면 타입과 무관하게 면제하고, MOVEMENT 근거가 있는 `EXERCISE`(산책)도 면제한다. 근거가 전부 한 묶음(이동 없이 같은 장소에서 이어진 STAY)의 체류인 event도 면제한다 — 확정 pass가 그런 event를 하나로 합치므로 나눠도 다시 합쳐져 Repair가 고칠 수 없다. v1·v2 세트에서는 예전처럼 일괄 3시간으로 재고 이 세 면제도 없다.
 - 하나의 candidate·event가 `MOVEMENT → 20분을 넘는 STAY → MOVEMENT`를 함께 품으면 위반이다(#119). 기준은 Location 파생 지표의 `SHORT_STAY_MAX` 하나이고, 역·터미널·공항에서의 환승·대기도 20분을 넘으면 예외가 없다. eventType을 가리지 않는다. 코드는 찾기만 하고 나누는 것은 Repair가 한다. 20분 이하 STAY를 낀 연속 이동은 그대로 둔다. v3 세트에서만 검사한다.
-- 최종 event는 24개를 넘지 않는다(#118). 초과는 MEDIUM warning으로 드러내고 코드가 자르지 않는다 — 무엇을 합칠지는 의미 판단이다.
+- 최종 event는 10개를 넘지 않는다(#118). 초과는 MEDIUM warning으로 드러내고 코드가 자르지 않는다 — 무엇을 합칠지는 의미 판단이다. 10개는 Timeline·Repair v3 프롬프트가 지시하는 값이고, 개수 지시가 없는 v1·v2 세트는 예전 값 24개로 잰다.
 - 대화로 만든 event는 하루 최대 3개다(#119). 근거가 전부 알림이고 eventType이 `SOCIAL`·`WORK`·`MEETING`인 event를 센다. 위치·사진·캘린더 근거가 함께 있으면 실제 사건이라 세지 않는다. **메신저 정책이 있는 앱의 알림만 대화로 세고**, 사전에 없는 앱의 알림이 섞인 event는 "대화 여부 미정"으로 Repair에 넘긴다 — 그 앱이 무엇인지 코드는 모른다. 초과는 MEDIUM warning으로 드러내고 코드가 지우지 않는다. 무엇이 중요한 대화인지는 내용을 봐야 안다. v3 세트에서만 센다.
 - Location-only event의 시간은 참조한 STAY/MOVEMENT 근거 밖을 주장하지 않도록 맞추되, 다른 source가 섞이면 그 source의 시간 의미를 존중한다.
 

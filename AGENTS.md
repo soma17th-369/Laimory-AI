@@ -304,9 +304,11 @@ app/
     │                           #   남지 않는 event(사진만으로 만든 PHOTO_MOMENT)는 지운다. 누락은
     │                           #   촬영 시각 기준으로 붙이고, event 가 하나도 없으면 PHOTO_MOMENT 를
     │                           #   만든다. 한 event 에 사진 여러 장(N:1)은 그대로 허용한다
-    ├── event_count_guard.py    # 최종 event 개수 상한 검사 (#118). 24개 초과를 MEDIUM warning 으로
+    ├── event_count_guard.py    # 최종 event 개수 상한 검사 (#118). 10개 초과를 MEDIUM warning 으로
     │                           #   남기고 **자르지 않는다** — 무엇을 합칠지는 의미 판단이라 코드가
-    │                           #   고르면 캘린더·사진 근거를 잃는다. 반복마다 다시 잰다
+    │                           #   고르면 캘린더·사진 근거를 잃는다. 반복마다 다시 잰다.
+    │                           #   10개는 v3 프롬프트가 지시하는 값이다. **v1·v2 세트는 예전 값
+    │                           #   24개로 잰다** — 그 Timeline 프롬프트에는 개수 지시가 없다
     ├── place_resolver.py       # 장소 확정의 유일한 자리. 우선순위(STAY→MOVEMENT→PHOTO→CALENDAR)를
     │                          #   `_PLACE_SOURCES` 목록 하나가 소유한다. 세 가지 일을 한다.
     │                          #   (1) resolve_candidate_places (#72): candidate 의 places/
@@ -383,7 +385,7 @@ app/
 #   main agent 는 draft 를 돌려주기 직전에 사진 단일 귀속을 한 번 더 강제한다(#119).
 # repair_draft 순서: sourceType 정정 → 캘린더 복원 → duration → 근거 구간 정렬 → MEAL
 #   → 수면 경계 → window → 장소 확정 → 정렬 → 체류 병합 → 겹침 정리 → **사진 단일 귀속**
-#   → confidence 보강 → 검사(사진·알림 안전성, 문장 길이, 타입별 지속시간, event 개수(24),
+#   → confidence 보강 → 검사(사진·알림 안전성, 문장 길이, 타입별 지속시간, event 개수(10),
 #   이동 사이 장시간 체류, 대화 event 개수) → clientEventId 재부여
 #   검사는 맨 뒤여야 한다. 병합·겹침 정리로 문장·시간·개수가 바뀌므로 앞에 두면
 #   곧 사라질 값을 재게 된다. 자기 warning 을 가진 검사는 Repair 반복마다 이전 것을 지우고 다시 잰다.
@@ -441,7 +443,7 @@ app/
 #   타입별 절이 다르게 적으면 그 타입에서는 그 절이 이긴다(MEAL 의 시간, PHOTO_MOMENT 의 장소).
 #   한 타입을 만드는 데 필요한 것(합치는 근거·보태는 근거·시간과 지속시간·장소·User Memory
 #   범위·근거가 약할 때·예시)은 **그 타입의 절 하나**에 모여 있다 — 표 여러 개를 대조하지
-#   않는다. 헷갈리는 타입의 경계는 3단계에 따로 둔다. 최종 event 는 24개 이내이고 description
+#   않는다. 헷갈리는 타입의 경계는 3단계에 따로 둔다. 최종 event 는 10개 이내이고 description
 #   에 시간 표현을 쓰지 않는다(언제는 startTime·endTime 이 담는다). 말투 규정은 v2 와 달리
 #   문장을 쓰는 5단계에 있다. Event Agent 가 이미 하는 판단은 Timeline 에서 지웠다. v2 는 그대로다.
 #   User Memory 필드 10개와 customAttributes 의 뜻을 입력 절에 적는다. **정본은 프로필을 쓰는
