@@ -295,6 +295,33 @@ def test_success_closes_the_task_with_one_operational_event(caplog):
     assert "errorCode" not in event
 
 
+def test_event_reports_how_much_of_the_profile_changed(caplog):
+    """무엇이 바뀌었는지는 본문이라 남기지 않는다. 몇 항목이 바뀌었는지만 남긴다(#121).
+
+    둘 다 0 이면 이번 기록이 프로필을 바꾸지 않은 것이다.
+    """
+
+    existing = memory_body(
+        basicProfile="망원동에 사는 개발자입니다.",
+        customAttributes={"반려동물": "고양이"},
+    )
+    updated = UserMemory(
+        basic_profile="망원동에 사는 개발자입니다.",
+        routines="비밀 루틴 문장",
+        custom_attributes={"반려동물": "고양이", "비밀 키": "비밀 값"},
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        _run(FakeAppServerClient(), _StubAgent(updated), userMemory=existing)
+
+    event = _events(caplog)[-1]
+    assert event["changedFieldCount"] == 1
+    assert event["changedAttributeCount"] == 1
+    serialized = str(event)
+    for body in ("비밀 루틴 문장", "비밀 키", "비밀 값"):
+        assert body not in serialized
+
+
 def test_failed_result_call_is_visible_in_the_event(caplog):
     client = FakeAppServerClient(
         user_memory_error=AppServerError(

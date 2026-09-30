@@ -127,6 +127,8 @@ async def process_user_memory_task(
                         output={
                             "status": TaskStatus.SUCCESS.value,
                             "repairAttempts": outcome.repair_attempts,
+                            "changedFieldCount": outcome.changed_field_count,
+                            "changedAttributeCount": outcome.changed_attribute_count,
                             "durationMs": (perf_counter() - started) * 1000,
                             "tokenUsage": token_usage.summary(),
                             # 본문이 아니라 모양만 남긴다.
@@ -305,6 +307,8 @@ def _emit_completed(
         summary = outcome.memory.trace_summary()
         fields.update(
             repairAttempts=outcome.repair_attempts,
+            changedFieldCount=outcome.changed_field_count,
+            changedAttributeCount=outcome.changed_attribute_count,
             schemaVersion=summary["schemaVersion"],
             filledFieldCount=summary["filledFieldCount"],
             customAttributeCount=summary["customAttributeCount"],

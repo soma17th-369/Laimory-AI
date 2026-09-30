@@ -28,7 +28,7 @@ from datetime import datetime
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import AppError
 from app.core.logging import get_logger, log_fields
-from app.schemas.user_memory import SCHEMA_VERSION, UserMemory
+from app.schemas.user_memory import NARRATIVE_FIELDS, SCHEMA_VERSION, UserMemory
 from app.services.user_memory_limits import find_violations, serialized_chars
 
 logger = get_logger(__name__)
@@ -46,12 +46,40 @@ class UserMemoryLimitError(AppError):
 
 @dataclass(frozen=True)
 class UserMemoryOutcome:
-    """확정된 갱신본과 거기까지 걸린 재요청 횟수."""
+    """확정된 갱신본과, 그것이 기존 문서에서 얼마나 달라졌는지."""
 
     memory: UserMemory
     #: 규칙 위반으로 **다시 물어본** 횟수. 1차에 통과하면 0 이다. 재요청을 하지 않는
     #: 기본 설정에서는 언제나 0 이다.
     repair_attempts: int
+    #: 기존 문서와 값이 달라진 고정 필드의 수. 0 이면 이번 기록이 고정 필드를 바꾸지
+    #: 않은 것이다.
+    changed_field_count: int = 0
+    #: 더하거나 바꾸거나 지운 ``customAttributes`` 의 수.
+    changed_attribute_count: int = 0
+
+
+def count_changes(before: UserMemory | None, after: UserMemory) -> tuple[int, int]:
+    """기존 문서와 갱신본 사이에 달라진 (고정 필드 수, 속성 수).
+
+    모델이 낸 패치를 세지 않고 **두 문서를 비교한다.** 패치에 담겼어도 값이 같으면
+    바뀐 것이 아니고, 문서 전체를 다시 쓰는 세트(v1·v2)에서도 같은 숫자가 나온다.
+    돌려주는 것은 개수뿐이다 — 어느 항목이 무엇으로 바뀌었는지는 본문이라 남기지 않는다.
+    """
+
+    old = (before or UserMemory()).prompt_payload()
+    new = after.prompt_payload()
+    fields = sum(
+        1 for name in NARRATIVE_FIELDS if old.get(name, "") != new.get(name, "")
+    )
+    old_attributes = old.get("customAttributes", {})
+    new_attributes = new.get("customAttributes", {})
+    attributes = sum(
+        1
+        for key in old_attributes.keys() | new_attributes.keys()
+        if old_attributes.get(key) != new_attributes.get(key)
+    )
+    return fields, attributes
 
 
 def finalize(memory: UserMemory, *, updated_at: datetime) -> UserMemory:
@@ -104,9 +132,12 @@ def build_user_memory(
         )
         violations = find_violations(memory)
         if not violations:
+            changed_fields, changed_attributes = count_changes(existing, memory)
             return UserMemoryOutcome(
                 memory=finalize(memory, updated_at=updated_at),
                 repair_attempts=attempt,
+                changed_field_count=changed_fields,
+                changed_attribute_count=changed_attributes,
             )
         if attempt == max_attempts:
             break

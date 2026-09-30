@@ -19,6 +19,7 @@ from app.services.user_memory_repair import (
     MAX_REPAIR_ATTEMPTS,
     UserMemoryLimitError,
     build_user_memory,
+    count_changes,
     finalize,
 )
 
@@ -170,6 +171,63 @@ def test_sensitive_output_never_becomes_a_document():
 
     with pytest.raises(UserMemoryLimitError):
         build_user_memory(agent, None, _digest(), updated_at=_NOW, max_attempts=1)
+
+
+# --- 무엇이 달라졌는가 (#121) ---------------------------------------------
+
+
+def _profile() -> UserMemory:
+    return UserMemory(
+        basic_profile="망원동에 사는 개발자입니다.",
+        routines="평일에는 회사에서 일합니다.",
+        custom_attributes={"반려동물": "고양이", "여행": "강릉"},
+    )
+
+
+def test_unchanged_profile_counts_no_changes():
+    profile = _profile()
+
+    assert count_changes(profile, profile.model_copy()) == (0, 0)
+
+
+def test_changes_are_counted_by_comparing_the_two_documents():
+    """모델이 낸 것을 세지 않고 두 문서를 비교한다. 값이 같으면 바뀐 것이 아니다."""
+
+    before = _profile()
+    after = before.model_copy(
+        update={
+            "routines": "평일에는 회사에서 일하고 주말에 클라이밍을 합니다.",
+            "personality": "계획을 세워 움직입니다.",
+            "custom_attributes": {"반려동물": "고양이 두 마리", "운동": "클라이밍"},
+        }
+    )
+
+    # 필드: routines 교체 + personality 추가. 속성: 교체 1 + 추가 1 + 삭제 1.
+    assert count_changes(before, after) == (2, 3)
+
+
+def test_first_profile_counts_everything_it_fills():
+    assert count_changes(None, _profile()) == (2, 2)
+
+
+def test_metadata_is_not_a_change():
+    """``updatedAt`` 은 갱신마다 바뀐다. 그것을 세면 언제나 "바뀌었다" 가 된다."""
+
+    before = _profile()
+    after = finalize(before, updated_at=_NOW)
+
+    assert count_changes(before, after) == (0, 0)
+
+
+def test_outcome_reports_how_much_changed():
+    existing = _profile()
+    updated = existing.model_copy(update={"routines": "주말에 클라이밍을 합니다."})
+    agent = _StubAgent([updated])
+
+    outcome = build_user_memory(agent, existing, _digest(), updated_at=_NOW)
+
+    assert outcome.changed_field_count == 1
+    assert outcome.changed_attribute_count == 0
 
 
 def test_metadata_comes_from_the_server_not_the_model():
