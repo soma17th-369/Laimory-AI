@@ -55,7 +55,7 @@ result mapper는 내부 판단 필드를 버리고 사람이 읽는 event와 sou
 
 Photo의 `photoUrl`은 코드가 image fetch에 쓰고 LLM prompt에는 싣지 않는다(좌표와 같은 prompt 제외 키, #80·#127). serialization에서는 제외하지 않으므로 Langfuse 요청 덤프에는 presigned URL 원문이 남는다 — 어느 사진을 보고 만든 설명인지 검증하기 위한 것이다. client URI와 filename은 schema에 없어 무시된다.
 
-User Memory는 App Server가 소유하고 AI 서버는 읽기(input 조회)와 쓰기(갱신 결과 저장) 둘 다 HTTP로만 한다. App Server로 보내는 갱신 결과는 언제나 **문서 전체**이고 기존 값을 통째로 대체한다. 다만 v3 세트에서 모델이 내는 것은 문서가 아니라 바꿀 항목만 담은 `UserMemoryPatch`이고, AI 서버가 그것을 기존 문서에 끼워 넣어 문서 전체를 만든다(#121). 패치는 AI 서버 안의 계약이라 저장 형식과 서버간 계약은 달라지지 않는다. v1·v2 세트는 모델이 문서 전체를 다시 출력한다. `schemaVersion`과 `updatedAt`은 LLM 값이 아니라 서버가 박는다 — 모델이 정하게 두면 언젠가 우리가 모르는 버전이 저장되고 다음 날 읽기가 깨진다.
+User Memory는 App Server가 소유하고 AI 서버는 읽기(input 조회)와 쓰기(갱신 결과 저장) 둘 다 HTTP로만 한다. App Server로 보내는 갱신 결과는 언제나 **문서 전체**이고 기존 값을 통째로 대체한다. 다만 v3 세트에서 모델이 내는 것은 문서가 아니라 변경 목록(어느 항목을 추가·수정·삭제할지와 그 항목의 새 문장)을 담은 `UserMemoryPatch`이고, AI 서버가 그것을 기존 문서에 끼워 넣어 문서 전체를 만든다(#121). 변경 목록은 AI 서버 안의 계약이라 저장 형식과 서버간 계약은 달라지지 않는다. v1·v2 세트는 모델이 문서 전체를 다시 출력한다. `schemaVersion`과 `updatedAt`은 LLM 값이 아니라 서버가 박는다 — 모델이 정하게 두면 언젠가 우리가 모르는 버전이 저장되고 다음 날 읽기가 깨진다.
 
 갱신 입력의 `title`·`subtitle`·`question`은 **이 시스템의 Timeline·Question Agent가 쓴 문장**이고, 사용자가 직접 남긴 것은 `memo`와 하루 감정(`emotionType`)뿐이다. 이 출처를 어떻게 다루는지는 prompt 세트가 정한다(#121). v1·v2는 AI가 쓴 문장에서 성향을 뽑지 않는다 — 모델이 자기 출력을 읽고 사용자를 만들어 내는 되먹임이 되고, 그 profile이 다시 다음 Timeline 문장을 만드는 데 쓰여 스스로를 강화하기 때문이다. 그 세트에서 성향 계열 다섯 필드(`personality`, `values`, `preferences`, `emotionalPatterns`, `memoryStyle`)의 근거는 `memo` 뿐이며, `memo`가 없는 날은 그 필드가 그대로인 것이 정상이고 결과는 `SUCCESS`다. v3는 AI가 쓴 문장도 근거로 읽고 한 번 나온 정보도 남긴다. 사용자가 읽고 저장한 기록을 받아들인 내용으로 보며, 직접 남긴 것과 어긋나면 그쪽을 따른다.
 
