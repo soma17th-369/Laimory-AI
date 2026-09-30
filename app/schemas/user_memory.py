@@ -169,12 +169,15 @@ class UserMemoryChangeAction(str, Enum):
     REMOVE = "삭제"
 
 
-# ``추가`` 와 ``수정`` 은 같게 적용한다(그 항목을 ``text`` 로 둔다). 비어 있던 항목인지
-# 내용이 있던 항목인지를 모델이 잘못 짚었다고 변경을 버릴 이유가 없다. 둘을 나눠 받는
-# 것은 모델이 무엇을 하려는지 스스로 말하게 하기 위해서다.
+# ``text`` 는 덧붙일 조각이 아니라 기존 내용과 합친 결과다. 겹치는 말을 합치고 충돌하는
+# 말을 바꾸는 것은 의미 판단이라 코드가 하지 않는다. ``수정`` 은 그 항목을 ``text`` 로
+# 바꿔 끼운다.
 #
-# ``text`` 는 덧붙일 조각이 아니라 기존 내용과 합친 결과다. 코드는 문장을 이어 붙이지
-# 않는다 — 겹치는 말을 합치고 충돌하는 말을 바꾸는 것은 의미 판단이다.
+# ``추가`` 는 비어 있던 항목을 처음 채우는 동작이다. 그런데 모델은 내용이 있는 항목에도
+# ``추가`` 를 쓰고, 그때 ``text`` 에 새 문장만 담는다(실측). 그것을 ``수정`` 처럼 바꿔
+# 끼우면 기존 내용이 말없이 사라진다. 그래서 내용이 있는 항목에 온 ``추가`` 는 **기존
+# 내용 뒤에 덧붙인다**(:func:`_added_text`). 동작 이름을 잘못 고른 것이 기존 내용을
+# 지우는 쪽으로 해석되지 않게 하려는 것이고, 코드가 문장을 이어 붙이는 자리는 여기뿐이다.
 #
 # 길이 제한은 항목 값 하나에 걸리고 저장 문서와 같은 값이다. 그래서 변경을 통과한 값은
 # 적용한 뒤에도 문서 계약을 어기지 않는다.
@@ -248,6 +251,26 @@ class UserMemoryChange(CamelModel):
         return CUSTOM_ATTRIBUTE_MAX_LENGTH
 
 
+def _added_text(current: str, text: str, limit: int) -> str:
+    """``추가`` 를 적용한 뒤 그 항목에 남을 문장.
+
+    비어 있던 항목이면 ``text`` 그대로다. 내용이 있던 항목이면 기존 내용을 지키고 뒤에
+    덧붙인다. 모델이 기존 내용까지 담아 냈으면(``text`` 가 기존 내용을 품고 있으면)
+    다시 붙일 것이 없어 ``text`` 그대로다.
+
+    덧붙인 결과가 길이 제한을 넘으면 **기존 내용을 그대로 둔다.** 잘라 맞추면 문장의
+    뜻이 달라지고, ``text`` 로 바꿔 끼우면 기존 내용이 사라진다. 버려지는 것은 이번에
+    더하려던 문장 하나다.
+    """
+
+    if not current or current in text:
+        return text
+    if text in current:
+        return current
+    joined = f"{current} {text}"
+    return joined if len(joined) <= limit else current
+
+
 # v3 세트의 LLM 출력 계약이다(#121). 갱신할 때마다 모델이 문서 전체를 다시 쓰면 건드릴
 # 이유가 없던 항목까지 조금씩 달라지거나 빠진다. 그래서 모델에게는 "어느 항목을
 # 추가·수정·삭제할지" 만 받고 코드가 그것을 기존 문서에 끼워 넣는다. 목록에 없는 항목은
@@ -272,25 +295,38 @@ class UserMemoryPatch(CamelModel):
         ``memory`` 가 ``None`` 이면 빈 문서에 적용한다. 기존 문서가 없는 것과 비어
         있는 것을 가를 이유가 없다 — 어느 쪽이든 채울 것만 채우면 된다.
 
-        같은 항목이 목록에 두 번 나오면 뒤의 것이 이긴다. 없는 속성을 지우라는 것은
-        아무 일도 하지 않는다.
+        변경은 목록 순서대로 적용한다. 같은 항목이 두 번 나오면 뒤의 것이 앞의 결과
+        위에 적용된다. 없는 속성을 지우라는 것은 아무 일도 하지 않는다.
+
+        ``수정`` 은 그 항목을 ``text`` 로 바꿔 끼우고, ``삭제`` 는 고정 필드를 비우고
+        속성은 키째로 지운다. ``추가`` 는 비어 있던 항목을 채우며, 내용이 있던 항목에
+        오면 기존 내용 뒤에 덧붙인다(:func:`_added_text`).
         """
 
         base = memory if memory is not None else UserMemory()
-        update: dict[str, Any] = {}
+        fields = {
+            alias: getattr(base, name) for alias, name in _ATTRIBUTE_BY_ALIAS.items()
+        }
         attributes = dict(base.custom_attributes)
 
         for change in self.changes:
-            removing = change.action is UserMemoryChangeAction.REMOVE
-            text = "" if removing else (change.text or "").strip()
             key = change.attribute_key
-            if key is None:
-                update[_ATTRIBUTE_BY_ALIAS[change.item]] = text
-            elif removing:
-                attributes.pop(key, None)
-            else:
-                attributes[key] = text
+            target = fields if key is None else attributes
+            name = change.item if key is None else key
+            if change.action is UserMemoryChangeAction.REMOVE:
+                if key is None:
+                    fields[name] = ""
+                else:
+                    attributes.pop(name, None)
+                continue
+            text = (change.text or "").strip()
+            if change.action is UserMemoryChangeAction.ADD:
+                text = _added_text(target.get(name, ""), text, change.max_length)
+            target[name] = text
 
+        update: dict[str, Any] = {
+            _ATTRIBUTE_BY_ALIAS[alias]: value for alias, value in fields.items()
+        }
         update["custom_attributes"] = attributes
         return base.model_copy(update=update)
 

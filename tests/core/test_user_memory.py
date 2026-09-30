@@ -251,6 +251,68 @@ def test_empty_item_is_filled_by_either_action(action: str):
     assert filled.life_context == "마감을 앞둔 시기입니다."
 
 
+def test_add_to_an_item_that_has_content_keeps_the_content():
+    """모델은 내용이 있는 항목에도 `추가` 를 쓰고 그때 새 문장만 담는다(실측).
+
+    그것을 바꿔 끼우면 기존 내용이 말없이 사라진다. 동작 이름을 잘못 고른 것이 기존
+    내용을 지우는 쪽으로 해석되면 안 된다.
+    """
+
+    updated = _patch(
+        change("routines", "추가", "주말에 클라이밍을 합니다."),
+        change("customAttributes.반려동물", "추가", "강아지도 한 마리 키웁니다."),
+    ).apply_to(_profile())
+
+    assert updated.routines == "평일에는 회사에서 일합니다. 주말에 클라이밍을 합니다."
+    assert updated.custom_attributes["반려동물"] == "고양이 한 마리 강아지도 한 마리 키웁니다."
+
+
+def test_add_that_already_carries_the_old_content_is_not_doubled():
+    """모델이 기존 내용까지 담아 냈으면 다시 붙일 것이 없다."""
+
+    full = "평일에는 회사에서 일합니다. 주말에 클라이밍을 합니다."
+
+    updated = _patch(change("routines", "추가", full)).apply_to(_profile())
+
+    assert updated.routines == full
+
+
+def test_add_of_a_sentence_the_item_already_has_changes_nothing():
+    profile = _profile()
+
+    updated = _patch(change("routines", "추가", "평일에는 회사에서 일합니다.")).apply_to(profile)
+
+    assert updated == profile
+
+
+def test_add_that_would_overflow_the_item_leaves_the_old_content():
+    """덧붙인 결과가 길이 제한을 넘으면 기존 내용을 그대로 둔다.
+
+    잘라 맞추면 뜻이 달라지고, 바꿔 끼우면 기존 내용이 사라진다. 어느 쪽이든 문서
+    계약(항목 하나 500자)은 지켜진다.
+    """
+
+    old = "가" * (NARRATIVE_MAX_LENGTH - 5)
+    profile = _memory(routines=old)
+
+    updated = _patch(change("routines", "추가", "새로 알게 된 문장입니다.")).apply_to(profile)
+
+    assert updated.routines == old
+    assert len(updated.routines) <= NARRATIVE_MAX_LENGTH
+
+
+def test_applied_document_still_satisfies_the_document_contract():
+    """`model_copy` 는 검증하지 않는다. 적용한 결과가 저장 계약을 어기지 않는지 직접 본다."""
+
+    updated = _patch(
+        change("routines", "추가", "나" * 300),
+        change("routines", "추가", "다" * 300),
+        change("customAttributes.메모", "추가", "라" * CUSTOM_ATTRIBUTE_MAX_LENGTH),
+    ).apply_to(_memory(routines="가" * 100))
+
+    assert UserMemory.model_validate(updated.model_dump(by_alias=True)) == updated
+
+
 def test_remove_clears_a_fixed_field():
     updated = _patch(change("basicProfile", "삭제")).apply_to(_profile())
 
