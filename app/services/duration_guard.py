@@ -4,7 +4,9 @@
 지켰는지 재는 코드가 없으면, 하루가 8~12시간짜리 event 하나로 뭉개져도 결과를 볼 때까지
 알 수 없다. 이 guard 는 그 초과를 드러내는 결정론적 안전망이다.
 
-상한은 #118 이 Timeline v3 프롬프트와 `docs/ai-event-candidate.md` 에 정한 값이다.
+상한은 #118 이 Timeline v3 프롬프트와 `docs/ai-event-candidate.md` 에 정한 값이다. 코드의
+정본은 `DURATION_LIMITS` 표 하나이고 **모든 eventType 을 한 줄씩 적는다.** 값을 바꿀 때는
+그 줄만 고치면 되고, 프롬프트·문서가 같은 값을 말하는지는 테스트가 본다.
 
 **재기만 하고 자르거나 나누지 않는다.** 긴 event 를 어디서 끊을지는 의미 판단이라
 코드가 정할 수 없다. 분할은 Repair 가 `OVEREXTENDED_EVENT` 로 잡아
@@ -12,8 +14,8 @@
 
 면제는 네 가지다.
 
-- 지속 구간이 근거에 직접 있는 타입(`_EXEMPT_EVENT_TYPES`). `MEAL` 은 `meal_guard` 가
-  20~60분으로 이미 전담하므로 여기서 두 번 경고하지 않는다.
+- 표에서 값이 `None` 인 타입. 지속 구간이 근거에 직접 있거나 다른 guard 가 맡는다.
+  `MEAL` 은 `meal_guard` 가 20~60분으로 이미 전담하므로 여기서 두 번 경고하지 않는다.
 - **캘린더 근거가 있고 event 길이가 그 일정의 길이를 넘지 않는 event.** 타입을 가리지
   않는다. 일정이 09:00~23:00 이면 그 시간을 따르는 `WORK` 는 길어도 일정대로다.
   1시간짜리 일정을 근거로 댄 8시간 event 는 일정대로가 아니므로 면제하지 않는다.
@@ -41,25 +43,37 @@ from app.services.source_lookup import raw_id_of
 from app.services.stay_merge import mergeable_stay_groups
 from app.services.validator import parse_datetime, resolve_timezone
 
-#: 타입별 절에 따로 적히지 않은 타입의 상한.
-MAX_EVENT_DURATION = timedelta(hours=3)
-
-#: 3시간보다 짧게 정한 타입.
-_MAX_DURATION_BY_TYPE: dict[EventType, timedelta] = {
+#: eventType 별 지속시간 상한. **모든 종류를 한 줄씩 적는다.** `None` 은 재지 않는 종류다.
+#:
+#: 예전에는 기본값 3시간을 두고 그보다 짧은 종류만 따로 적었다. 그러면 어느 종류가 몇
+#: 시간인지 보려고 두 곳을 대조해야 하고, 3시간인 종류 하나를 바꾸려면 구조부터 고쳐야
+#: 하며, 새 종류가 생겨도 말없이 3시간을 받는다. 그래서 기본값을 두지 않는다.
+DURATION_LIMITS: dict[EventType, timedelta | None] = {
     EventType.PHOTO_MOMENT: timedelta(hours=1),  # 순간 기록이라 더 길면 활동 event 다
     EventType.MEETING: timedelta(hours=2),  # 더 길면 업무와 섞였을 가능성이 크다
-    EventType.EXERCISE: timedelta(hours=2),  # 운동 한 번의 일반 길이
+    EventType.EXERCISE: timedelta(hours=2),  # 운동 한 번의 일반 길이. 산책은 면제한다
+    EventType.CLASS: timedelta(hours=3),
+    EventType.WORK: timedelta(hours=3),
+    EventType.SOCIAL: timedelta(hours=3),
+    EventType.REST: timedelta(hours=3),
+    EventType.UNKNOWN: timedelta(hours=3),
+    EventType.CALENDAR_EVENT: None,  # 시작·종료가 일정에 명시돼 있다
+    EventType.MOVEMENT: None,  # 실제 이동 구간은 통째로 품는다
+    EventType.SLEEP: None,  # 수면은 직접 기록된 구간이다
+    EventType.WAKE_UP: None,  # 순간 event 다. `repair_durations` 가 시작=끝으로 맞춘다
+    EventType.MEAL: None,  # `meal_guard` 가 20~60분으로 직접 맞춘다
 }
 
-#: 지속시간이 근거에 직접 있어 상한을 적용하지 않는 event 종류.
-_EXEMPT_EVENT_TYPES = frozenset(
-    {
-        EventType.CALENDAR_EVENT,  # 시작·종료가 일정에 명시돼 있다
-        EventType.SLEEP,  # 수면은 직접 기록된 구간이다
-        EventType.MOVEMENT,  # 실제 이동 구간은 통째로 품는다
-        EventType.MEAL,  # meal_guard 가 20~60분으로 전담한다
-    }
-)
+_UNLISTED = set(EventType) - set(DURATION_LIMITS)
+if _UNLISTED:
+    # 새 eventType 이 말없이 어떤 상한을 받지 않게, 표에 없으면 import 시점에 멈춘다.
+    raise RuntimeError(
+        "DURATION_LIMITS 에 없는 eventType: "
+        + ", ".join(sorted(member.value for member in _UNLISTED))
+    )
+
+#: v1·v2 세트가 종류를 가리지 않고 재는 값(#61). 그 프롬프트는 종류별 상한을 모른다.
+LEGACY_MAX_EVENT_DURATION = timedelta(hours=3)
 
 _WARNING_ID_PREFIX = "warning-event-duration-"
 
@@ -83,9 +97,7 @@ class DurationFinding:
 def max_duration_for(event_type: EventType) -> timedelta | None:
     """타입의 상한. 상한을 재지 않는 타입이면 ``None``."""
 
-    if event_type in _EXEMPT_EVENT_TYPES:
-        return None
-    return _MAX_DURATION_BY_TYPE.get(event_type, MAX_EVENT_DURATION)
+    return DURATION_LIMITS[event_type]
 
 
 def verify_event_duration(
@@ -98,9 +110,10 @@ def verify_event_duration(
 
     `request` 가 없으면 일정의 길이를 알 수 없어 캘린더 면제를 적용하지 못한다.
 
-    `by_type` 이 거짓이면 #119 이전처럼 잰다. 타입을 가리지 않고 3시간이고 면제는
-    `_EXEMPT_EVENT_TYPES` 뿐이다. 타입별 상한은 v3 프롬프트가 정한 값이라, 그 지시를 받은
-    적 없는 세트가 규칙대로 만든 event 에 warning 을 붙이지 않기 위해서다.
+    `by_type` 이 거짓이면 #119 이전처럼 잰다. 재는 타입은 표와 같지만 상한은 타입을 가리지
+    않고 `LEGACY_MAX_EVENT_DURATION` 이고 나머지 면제는 없다. 타입별 상한은 v3 프롬프트가
+    정한 값이라, 그 지시를 받은 적 없는 세트가 규칙대로 만든 event 에 warning 을 붙이지
+    않기 위해서다.
     """
 
     draft.warnings = [
@@ -118,7 +131,7 @@ def verify_event_duration(
         if limit is None:
             continue
         if not by_type:
-            limit = MAX_EVENT_DURATION
+            limit = LEGACY_MAX_EVENT_DURATION
 
         duration = event.end_time - event.start_time
         if duration <= limit:

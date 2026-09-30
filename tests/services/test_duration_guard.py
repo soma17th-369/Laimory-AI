@@ -8,12 +8,19 @@
 함께 확인한다.
 """
 
-from datetime import timedelta
+import re
+from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from app.schemas import EventType, TimelineDraft, TimelineWarningSeverity
-from app.services.duration_guard import max_duration_for, verify_event_duration
+from app.services.duration_guard import (
+    DURATION_LIMITS,
+    LEGACY_MAX_EVENT_DURATION,
+    max_duration_for,
+    verify_event_duration,
+)
 from tests.fixtures.requests import (
     calendar_item,
     fixture_raw_id,
@@ -69,16 +76,30 @@ def _duration_warnings(draft: TimelineDraft) -> list:
     return [w for w in draft.warnings if w.warning_id.startswith("warning-event-duration-")]
 
 
-def test_exactly_three_hours_is_not_warned():
-    draft = _draft([_event(start="09:00:00", end="12:00:00")])
+# 상한 값은 `DURATION_LIMITS` 표 하나가 정한다. 이 파일은 값을 다시 적지 않는다. 경계는 표에서
+# 읽고, "상한을 넘긴 event" 가 필요한 곳은 어떤 상한보다도 긴 event 를 쓴다. 값을 바꿔도
+# 테스트를 고치지 않아야 하고, 같은 값을 말해야 하는 프롬프트와 문서가 따라왔는지만 본다.
 
-    verify_event_duration(draft)
+#: 어떤 상한보다도 긴 event 의 시작·종료.
+LONG_START = "01:00:00"
+LONG_END = "23:00:00"
+_LONG = timedelta(hours=22)
 
-    assert _duration_warnings(draft) == []
+
+def _long_event(**overrides) -> dict:
+    return _event(start=LONG_START, end=LONG_END, **overrides)
 
 
-def test_over_three_hours_is_warned():
-    draft = _draft([_event(start="09:00:00", end="12:01:00")])
+def test_long_fixture_exceeds_every_limit():
+    """아래 테스트들의 전제다. 상한을 22시간 이상으로 올리면 fixture 부터 고친다."""
+
+    limits = [limit for limit in DURATION_LIMITS.values() if limit is not None]
+
+    assert all(limit < _LONG for limit in [*limits, LEGACY_MAX_EVENT_DURATION])
+
+
+def test_warning_names_the_event_and_carries_its_evidence():
+    draft = _draft([_long_event()])
 
     verify_event_duration(draft)
 
@@ -91,7 +112,7 @@ def test_over_three_hours_is_warned():
 
 def test_guard_does_not_modify_event_times():
     # 자르거나 나누지 않는다. 분할 판단은 Repair 몫이다.
-    draft = _draft([_event(start="09:00:00", end="21:00:00")])
+    draft = _draft([_long_event()])
     before = (draft.events[0].start_time, draft.events[0].end_time)
 
     verify_event_duration(draft)
@@ -100,24 +121,8 @@ def test_guard_does_not_modify_event_times():
     assert len(draft.events) == 1
 
 
-@pytest.mark.parametrize(
-    "event_type", ["CALENDAR_EVENT", "SLEEP", "MOVEMENT", "MEAL"]
-)
-def test_exempt_event_types_are_not_warned(event_type):
-    """지속 구간이 근거에 직접 있는 종류는 상한을 적용하지 않는다.
-
-    `MEAL` 은 `meal_guard` 가 20~60분으로 이미 전담하므로 여기서 두 번 경고하지 않는다.
-    """
-
-    draft = _draft([_event(event_type=event_type, start="09:00:00", end="21:00:00")])
-
-    verify_event_duration(draft)
-
-    assert _duration_warnings(draft) == []
-
-
 def test_repeated_runs_do_not_accumulate():
-    draft = _draft([_event(start="09:00:00", end="21:00:00")])
+    draft = _draft([_long_event()])
 
     verify_event_duration(draft)
     verify_event_duration(draft)
@@ -126,12 +131,12 @@ def test_repeated_runs_do_not_accumulate():
 
 
 def test_warning_disappears_after_repair_shortens_event():
-    draft = _draft([_event(start="09:00:00", end="21:00:00")])
+    draft = _draft([_long_event()])
     verify_event_duration(draft)
     assert _duration_warnings(draft)
 
     # Repair 가 update_event 로 시간을 줄인 상황.
-    draft.events[0].end_time = draft.events[0].start_time.replace(hour=11)
+    draft.events[0].end_time = draft.events[0].start_time + timedelta(minutes=1)
     verify_event_duration(draft)
 
     assert _duration_warnings(draft) == []
@@ -140,63 +145,112 @@ def test_warning_disappears_after_repair_shortens_event():
 # --- 타입별 상한 (#119) ----------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("event_type", "hours"),
-    [
-        (EventType.PHOTO_MOMENT, 1),
-        (EventType.MEETING, 2),
-        (EventType.EXERCISE, 2),
-        (EventType.CLASS, 3),
-        (EventType.WORK, 3),
-        (EventType.SOCIAL, 3),
-        (EventType.REST, 3),
-        (EventType.UNKNOWN, 3),
-    ],
+_LIMITED = sorted(
+    (event_type for event_type, limit in DURATION_LIMITS.items() if limit is not None),
+    key=lambda event_type: event_type.value,
 )
-def test_each_type_has_the_limit_the_prompt_states(event_type, hours):
-    """상한은 Timeline v3 프롬프트와 `docs/ai-event-candidate.md` 표의 값이다."""
-
-    assert max_duration_for(event_type) == timedelta(hours=hours)
-
-
-@pytest.mark.parametrize(
-    ("event_type", "end", "warned"),
-    [
-        ("PHOTO_MOMENT", "10:00:00", False),
-        ("PHOTO_MOMENT", "10:01:00", True),
-        ("MEETING", "11:00:00", False),
-        ("MEETING", "11:01:00", True),
-        ("EXERCISE", "11:00:00", False),
-        ("EXERCISE", "11:01:00", True),
-    ],
+_UNLIMITED = sorted(
+    (event_type for event_type, limit in DURATION_LIMITS.items() if limit is None),
+    key=lambda event_type: event_type.value,
 )
-def test_shorter_limits_are_measured_at_their_own_boundary(event_type, end, warned):
-    draft = _draft([_event(event_type=event_type, start="09:00:00", end=end)])
 
-    findings = verify_event_duration(draft)
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
-    assert bool(findings) is warned
-    assert bool(_duration_warnings(draft)) is warned
+
+def _event_lasting(event_type: EventType, duration: timedelta) -> dict:
+    start = datetime(2026, 6, 20, 0, 0, 0)
+    end = start + duration
+    return _event(
+        event_type=event_type.value,
+        start=start.strftime("%H:%M:%S"),
+        end=end.strftime("%H:%M:%S"),
+    )
+
+
+def test_table_lists_every_event_type():
+    """기본값이 없다. 새 eventType 은 표에 적어야 하고, 빠뜨리면 import 에서 멈춘다."""
+
+    assert set(DURATION_LIMITS) == set(EventType)
+    assert all(max_duration_for(event_type) == DURATION_LIMITS[event_type] for event_type in EventType)
+
+
+@pytest.mark.parametrize("event_type", _LIMITED, ids=lambda t: t.value)
+def test_each_type_is_measured_at_its_own_limit(event_type):
+    limit = DURATION_LIMITS[event_type]
+
+    at_limit = _draft([_event_lasting(event_type, limit)])
+    over_limit = _draft([_event_lasting(event_type, limit + timedelta(minutes=1))])
+
+    assert verify_event_duration(at_limit) == []
+    (finding,) = verify_event_duration(over_limit)
+    assert finding.limit == limit
+    assert len(_duration_warnings(over_limit)) == 1
+
+
+@pytest.mark.parametrize("event_type", _UNLIMITED, ids=lambda t: t.value)
+def test_types_without_a_limit_are_never_measured(event_type):
+    """지속 구간이 근거에 직접 있거나 다른 guard 가 맡는 종류다.
+
+    `MEAL` 은 `meal_guard` 가 20~60분으로 이미 전담하므로 여기서 두 번 경고하지 않는다.
+    """
+
+    draft = _draft([_long_event(event_type=event_type.value)])
+
+    assert verify_event_duration(draft) == []
+    assert verify_event_duration(draft, by_type=False) == []
+
+
+def _hours_text(limit: timedelta) -> str:
+    hours = limit.total_seconds() / 3600
+    return f"{hours:.1f}".removesuffix(".0")
+
+
+@pytest.mark.parametrize("event_type", _LIMITED, ids=lambda t: t.value)
+def test_timeline_v3_prompt_states_the_same_limit(event_type):
+    """프롬프트가 다른 값을 지시하면 Timeline 이 규칙대로 만든 event 에 warning 이 붙는다."""
+
+    prompt = (
+        _REPO_ROOT / "app/agents/timeline/prompts/v3/timeline.md"
+    ).read_text(encoding="utf-8")
+    section = prompt.split(f"### `{event_type.value}` — ", 1)[1].split("\n### ", 1)[0]
+    (time_line,) = [line for line in section.splitlines() if line.startswith("- **시간**")]
+
+    assert re.findall(r"최대 ([\d.]+)시간", time_line) == [_hours_text(DURATION_LIMITS[event_type])]
+
+
+def test_document_table_states_the_same_limits():
+    """`docs/ai-event-candidate.md` 의 표가 코드와 같은 값을 말하는가."""
+
+    document = (_REPO_ROOT / "docs/ai-event-candidate.md").read_text(encoding="utf-8")
+    rows = dict(re.findall(r"^\| `(\w+)` \| [^|]+ \| ([^|]+) \|$", document, re.M))
+
+    for event_type in _LIMITED:
+        stated = re.findall(r"([\d.]+)시간 초과 warning", rows[event_type.value])
+        assert stated == [_hours_text(DURATION_LIMITS[event_type])], event_type.value
+    for event_type in _UNLIMITED:
+        assert "초과 warning" not in rows[event_type.value], event_type.value
 
 
 def test_finding_carries_type_duration_and_limit():
-    draft = _draft([_event(event_type="MEETING", start="09:00:00", end="12:30:00")])
+    limit = DURATION_LIMITS[EventType.MEETING]
+    duration = limit + timedelta(minutes=90)
+    draft = _draft([_event_lasting(EventType.MEETING, duration)])
 
     (finding,) = verify_event_duration(draft)
 
     assert finding.event is draft.events[0]
     assert finding.detail() == {
         "eventType": "MEETING",
-        "durationHours": "3.5",
-        "limitHours": "2",
+        "durationHours": _hours_text(duration),
+        "limitHours": _hours_text(limit),
     }
-    assert "MEETING 상한 2시간" in _duration_warnings(draft)[0].message
+    assert f"MEETING 상한 {_hours_text(limit)}시간" in _duration_warnings(draft)[0].message
 
 
 # --- 면제 (#119) ----------------------------------------------------------------
 
 
-def _calendar_request(start: str = "09:00:00", end: str = "23:00:00"):
+def _calendar_request(start: str = LONG_START, end: str = LONG_END):
     return make_request(
         calendars=[
             calendar_item(
@@ -212,14 +266,12 @@ def _calendar_request(start: str = "09:00:00", end: str = "23:00:00"):
 
 @pytest.mark.parametrize("event_type", ["WORK", "SOCIAL", "MEETING", "CLASS", "EXERCISE"])
 def test_event_that_follows_its_calendar_is_exempt(event_type):
-    """일정이 09:00~23:00 이면 그 시간을 따르는 event 는 길어도 일정대로다."""
+    """일정이 하루 종일이면 그 시간을 따르는 event 는 길어도 일정대로다."""
 
     draft = _draft(
         [
-            _event(
+            _long_event(
                 event_type=event_type,
-                start="09:00:00",
-                end="23:00:00",
                 refs=[("CALENDAR", CALENDAR_1), ("STAY", STAY_1)],
             )
         ]
@@ -230,17 +282,10 @@ def test_event_that_follows_its_calendar_is_exempt(event_type):
 
 
 def test_event_longer_than_its_calendar_is_not_exempt():
-    """1시간짜리 일정을 근거로 댄 8시간 event 는 일정대로가 아니다."""
+    """1시간짜리 일정을 근거로 댄 하루 종일 event 는 일정대로가 아니다."""
 
     draft = _draft(
-        [
-            _event(
-                event_type="WORK",
-                start="09:00:00",
-                end="17:00:00",
-                refs=[("CALENDAR", CALENDAR_1)],
-            )
-        ]
+        [_long_event(event_type="WORK", refs=[("CALENDAR", CALENDAR_1)])]
     )
 
     findings = verify_event_duration(
@@ -254,14 +299,7 @@ def test_calendar_exemption_needs_the_request():
     """일정의 길이를 모르면 면제할 근거가 없다."""
 
     draft = _draft(
-        [
-            _event(
-                event_type="WORK",
-                start="09:00:00",
-                end="23:00:00",
-                refs=[("CALENDAR", CALENDAR_1)],
-            )
-        ]
+        [_long_event(event_type="WORK", refs=[("CALENDAR", CALENDAR_1)])]
     )
 
     assert len(verify_event_duration(draft)) == 1
@@ -275,20 +313,13 @@ def test_walk_keeps_its_round_trip_span():
             movement_item(
                 1,
                 raw_id="movement-1",
-                start="2026-06-20T09:00:00",
-                end="2026-06-20T12:00:00",
+                start=f"2026-06-20T{LONG_START}",
+                end=f"2026-06-20T{LONG_END}",
             )
         ]
     )
     draft = _draft(
-        [
-            _event(
-                event_type="EXERCISE",
-                start="09:00:00",
-                end="12:00:00",
-                refs=[("MOVEMENT", MOVEMENT_1)],
-            )
-        ]
+        [_long_event(event_type="EXERCISE", refs=[("MOVEMENT", MOVEMENT_1)])]
     )
 
     assert verify_event_duration(draft, request) == []
@@ -301,22 +332,22 @@ def test_walk_keeps_its_round_trip_span():
 
 
 def _fragmented_stay_request(*, with_movement_between: bool = False):
-    """같은 장소의 STAY 가 세 시간 간격으로 두 조각 들어온 입력."""
+    """같은 장소의 STAY 가 하루의 처음과 끝에 몇 분짜리 조각으로 들어온 입력."""
 
     return make_request(
         stays=[
             stay_item(
                 1,
                 raw_id="stay-1",
-                start="2026-06-20T11:12:00",
-                end="2026-06-20T11:20:00",
+                start=f"2026-06-20T{LONG_START}",
+                end="2026-06-20T01:10:00",
                 place="오산운암3단지 주공아파트",
             ),
             stay_item(
                 2,
                 raw_id="stay-2",
-                start="2026-06-20T14:26:00",
-                end="2026-06-20T14:36:00",
+                start="2026-06-20T22:50:00",
+                end=f"2026-06-20T{LONG_END}",
                 place="오산운암3단지 주공아파트",
             ),
         ],
@@ -336,7 +367,7 @@ def _fragmented_stay_request(*, with_movement_between: bool = False):
 
 
 def _merged_stay_event(refs: list[tuple[str, str]]) -> dict:
-    return _event(event_type="UNKNOWN", start="11:12:00", end="14:36:00", refs=refs)
+    return _long_event(event_type="UNKNOWN", refs=refs)
 
 
 def test_stay_the_code_merges_is_exempt():
@@ -390,13 +421,13 @@ def test_single_stay_is_not_exempt():
             stay_item(
                 1,
                 raw_id="stay-1",
-                start="2026-06-20T09:00:00",
-                end="2026-06-20T18:00:00",
+                start=f"2026-06-20T{LONG_START}",
+                end=f"2026-06-20T{LONG_END}",
                 place="회사",
             )
         ]
     )
-    draft = _draft([_event(event_type="WORK", start="09:00:00", end="18:00:00")])
+    draft = _draft([_long_event(event_type="WORK")])
 
     assert len(verify_event_duration(draft, request)) == 1
 
@@ -416,48 +447,42 @@ def test_legacy_sets_have_no_merged_stay_exemption():
 # 타입별 상한은 v3 프롬프트가 정한 값이다. 그 지시를 받은 적 없는 세트에는 예전처럼 잰다.
 
 
-@pytest.mark.parametrize(
-    ("event_type", "end", "warned"),
-    [
-        ("PHOTO_MOMENT", "11:30:00", False),
-        ("MEETING", "12:00:00", False),
-        ("EXERCISE", "12:00:00", False),
-        ("MEETING", "12:01:00", True),
-        ("WORK", "12:01:00", True),
-    ],
-)
-def test_legacy_sets_are_measured_at_three_hours(event_type, end, warned):
-    draft = _draft([_event(event_type=event_type, start="09:00:00", end=end)])
+def test_legacy_limit_is_the_one_the_old_prompts_were_written_for():
+    """v1·v2 프롬프트는 "3시간 이내"라고 적는다. 운영 세트라 이 값은 바꾸지 않는다."""
 
-    findings = verify_event_duration(draft, by_type=False)
+    assert LEGACY_MAX_EVENT_DURATION == timedelta(hours=3)
 
-    assert bool(findings) is warned
+
+@pytest.mark.parametrize("event_type", _LIMITED, ids=lambda t: t.value)
+def test_legacy_sets_measure_every_type_at_the_same_limit(event_type):
+    at_limit = _draft([_event_lasting(event_type, LEGACY_MAX_EVENT_DURATION)])
+    over_limit = _draft(
+        [_event_lasting(event_type, LEGACY_MAX_EVENT_DURATION + timedelta(minutes=1))]
+    )
+
+    assert verify_event_duration(at_limit, by_type=False) == []
+    (finding,) = verify_event_duration(over_limit, by_type=False)
+    assert finding.limit == LEGACY_MAX_EVENT_DURATION
 
 
 def test_legacy_sets_keep_the_old_warning_sentence():
-    draft = _draft([_event(event_type="MEETING", start="09:00:00", end="13:00:00")])
+    draft = _draft([_long_event(event_type="MEETING")])
 
     verify_event_duration(draft, by_type=False)
 
-    assert "비캘린더 event 권장 상한 3시간" in _duration_warnings(draft)[0].message
+    limit = _hours_text(LEGACY_MAX_EVENT_DURATION)
+    assert f"비캘린더 event 권장 상한 {limit}시간" in _duration_warnings(draft)[0].message
 
 
 def test_legacy_sets_have_no_calendar_exemption():
     draft = _draft(
-        [
-            _event(
-                event_type="WORK",
-                start="09:00:00",
-                end="23:00:00",
-                refs=[("CALENDAR", CALENDAR_1)],
-            )
-        ]
+        [_long_event(event_type="WORK", refs=[("CALENDAR", CALENDAR_1)])]
     )
 
     assert len(verify_event_duration(draft, _calendar_request(), by_type=False)) == 1
 
 
 def test_exercise_without_movement_evidence_is_not_a_walk():
-    draft = _draft([_event(event_type="EXERCISE", start="09:00:00", end="12:00:00")])
+    draft = _draft([_long_event(event_type="EXERCISE")])
 
     assert len(verify_event_duration(draft)) == 1
