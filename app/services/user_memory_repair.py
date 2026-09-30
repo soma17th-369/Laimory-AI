@@ -1,16 +1,23 @@
 """User Memory 갱신본 확정 (#64).
 
-Agent 가 만든 문서가 크기·민감정보 규칙을 지켰는지 보고, 어겼으면 **위반 내용과 그
-문서를 함께 돌려주고 고치게 한다.** 코드가 문장을 자르지 않는다 — 무엇을 합치고 무엇을
-지울지는 전부 의미 판단이고, 잘린 문장은 뜻이 달라진다. 그걸 근거로 쓴 해석은 되돌릴
-방법이 없다. :mod:`app.services.duration_guard` 가 "자르거나 나누지 않는다" 고 한 것과
-같은 이유다. 줄이는 순서는 프롬프트 세트가 갖는다(#121).
+Agent 가 만든 문서가 크기·민감정보 규칙을 지켰는지 본다. 어겼으면 **저장 문서를 만들지
+않는다.** 규칙을 어긴 프로필을 저장하느니 기존 값을 그대로 두는 편이 낫다 — 갱신은 App
+Server 의 다음 배치가 다시 시도한다.
 
-재요청이 **직전 출력에서 이어 가는** 것이 중요하다. 상한에 닿은 프로필은 매일 상한
-근처에서 갱신되므로, 재요청이 줄어드는 쪽으로 모이지 않으면 실패가 매일 반복된다.
+코드가 문장을 자르지 않는다 — 무엇을 합치고 무엇을 지울지는 전부 의미 판단이고, 잘린
+문장은 뜻이 달라진다. 그걸 근거로 쓴 해석은 되돌릴 방법이 없다.
+:mod:`app.services.duration_guard` 가 "자르거나 나누지 않는다" 고 한 것과 같은 이유다.
 
-재시도까지 실패하면 **저장 문서를 만들지 않는다.** 규칙을 어긴 프로필을 저장하느니
-기존 값을 그대로 두는 편이 낫다 — 갱신은 매일 다시 시도된다.
+## 다시 요청하지 않는다 (#121)
+
+규칙을 어긴 갱신본을 같은 작업 안에서 다시 요청하지 않는다(:data:`MAX_REPAIR_ATTEMPTS`
+가 0 이다). 한 번 만들어 규칙 안이면 저장하고, 아니면 1304 로 끝낸다. 그래서 **1차
+출력이 상한 안에 드는 것**이 전부이고, 그 일은 갱신 요청의 ``[크기]`` 절이 한다 — 기존
+프로필이 목표를 넘었으면 새 정보를 얹기 전에 먼저 줄일 몫을 준다.
+
+재요청 경로는 남겨 두었다. ``max_attempts`` 를 올리면 위반 내용과 직전 출력을 함께
+돌려주고 고치게 한다. 지적만 붙여 처음부터 다시 만들게 하면 매번 같은 입력에서 출발해
+같은 크기의 문서가 다시 나온다.
 """
 
 from __future__ import annotations
@@ -26,12 +33,13 @@ from app.services.user_memory_limits import find_violations, serialized_chars
 
 logger = get_logger(__name__)
 
-#: 규칙 위반 시 다시 물어볼 횟수. 1차 + 재요청 2회 = 최대 3회 호출이다.
-MAX_REPAIR_ATTEMPTS = 2
+#: 규칙 위반 시 다시 물어볼 횟수. **0 이다 — 다시 요청하지 않는다**(#121). 갱신 한 건은
+#: LLM 호출 한 번이다. 예전 값은 2(최대 3회 호출)였다.
+MAX_REPAIR_ATTEMPTS = 0
 
 
 class UserMemoryLimitError(AppError):
-    """갱신본이 재요청 뒤에도 크기·민감정보 규칙을 통과하지 못했다."""
+    """갱신본이 크기·민감정보 규칙을 통과하지 못했다."""
 
     default_code = ErrorCode.USER_MEMORY_LIMIT_EXCEEDED
 
@@ -41,7 +49,8 @@ class UserMemoryOutcome:
     """확정된 갱신본과 거기까지 걸린 재요청 횟수."""
 
     memory: UserMemory
-    #: 규칙 위반으로 **다시 물어본** 횟수. 1차에 통과하면 0 이다.
+    #: 규칙 위반으로 **다시 물어본** 횟수. 1차에 통과하면 0 이다. 재요청을 하지 않는
+    #: 기본 설정에서는 언제나 0 이다.
     repair_attempts: int
 
 
@@ -69,21 +78,20 @@ def build_user_memory(
     updated_at: datetime,
     max_attempts: int = MAX_REPAIR_ATTEMPTS,
 ) -> UserMemoryOutcome:
-    """규칙을 통과하는 갱신본이 나올 때까지 요청하고 확정한다.
+    """갱신본을 만들고 규칙을 통과하면 확정한다.
 
-    필드별 길이와 ``customAttributes`` 개수는 그 아래
-    (``complete_structured`` 의 교정 재시도)에서 이미 걸러진다. 여기서 보는 것은
-    Pydantic 이 표현할 수 없는 두 가지 — **전체 크기**와 **민감정보**다.
+    필드별 길이는 그 아래(``complete_structured`` 의 교정 재시도)에서 이미 걸러진다.
+    여기서 보는 것은 Pydantic 이 표현할 수 없는 두 가지 — **전체 크기**와 **민감정보**다.
 
     Args:
         agent: :class:`~app.agents.user_memory.UserMemoryAgent` 또는 같은 형태의 더블.
         existing: 기존 프로필. 최초 생성이면 ``None``.
         digest: 프롬프트에 실을 하루 기록(:class:`~app.services.user_memory_limits.DailyTimelineDigest`).
         updated_at: 갱신 시각. 호출부가 정한다(테스트가 시간을 고정할 수 있게).
-        max_attempts: 위반 시 다시 물어볼 횟수.
+        max_attempts: 위반 시 다시 물어볼 횟수. 기본은 0 — 다시 요청하지 않는다.
 
     Raises:
-        UserMemoryLimitError: 재요청까지 소진하고도 규칙을 통과하지 못했다(1304).
+        UserMemoryLimitError: 규칙을 통과하지 못했다(1304).
     """
 
     violations: list[str] = []
@@ -100,6 +108,8 @@ def build_user_memory(
                 memory=finalize(memory, updated_at=updated_at),
                 repair_attempts=attempt,
             )
+        if attempt == max_attempts:
+            break
         previous = memory
         # 위반 문장에는 값이 들어 있지 않다(어느 필드가 어떤 규칙을 어겼는지만).
         # 그래도 개수만 남긴다 — 지적 문구까지 매 시도 로그에 쌓을 이유가 없다.
@@ -113,7 +123,9 @@ def build_user_memory(
             ),
         )
 
+    # 값은 싣지 않는다. 크기와 개수만으로 "상한을 넘었는가, 민감정보였는가" 를 가른다.
     raise UserMemoryLimitError(
-        "User Memory 갱신본이 재요청 뒤에도 규칙을 통과하지 못했습니다: "
-        f"attempts={max_attempts + 1}, violations={len(violations)}"
+        "User Memory 갱신본이 규칙을 통과하지 못했습니다: "
+        f"attempts={max_attempts + 1}, violations={len(violations)}, "
+        f"serializedChars={serialized_chars(memory)}"
     )

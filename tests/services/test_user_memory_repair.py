@@ -1,9 +1,10 @@
-"""User Memory 갱신본 확정 (#64).
+"""User Memory 갱신본 확정 (#64, #121).
 
 계약은 세 가지다.
 
-- 규칙을 어기면 **다시 묻는다**(코드가 문장을 자르지 않는다).
-- 재요청까지 실패하면 **저장 문서를 만들지 않는다**(1304).
+- 규칙을 어긴 갱신본은 **저장 문서가 되지 않는다**(1304). 코드가 문장을 자르지 않는다.
+- 기본은 **다시 요청하지 않는다**(#121). 갱신 한 건은 LLM 호출 한 번이다. 재요청 경로는
+  남아 있고 ``max_attempts`` 를 올리면 직전 출력을 돌려주고 고치게 한다.
 - ``schemaVersion``·``updatedAt`` 은 **서버가 정한다**(LLM 값을 쓰지 않는다).
 """
 
@@ -13,8 +14,9 @@ import pytest
 
 from app.core.error_codes import ErrorCode
 from app.schemas.user_memory import NARRATIVE_MAX_LENGTH, SCHEMA_VERSION, UserMemory
-from app.services.user_memory_limits import build_daily_timeline_digest
+from app.services.user_memory_limits import build_daily_timeline_digest, serialized_chars
 from app.services.user_memory_repair import (
+    MAX_REPAIR_ATTEMPTS,
     UserMemoryLimitError,
     build_user_memory,
     finalize,
@@ -70,10 +72,61 @@ def test_clean_output_passes_without_a_retry():
     assert outcome.memory.basic_profile == "30대 개발자입니다."
 
 
+# --- 기본: 다시 요청하지 않는다 (#121) -----------------------------------
+
+
+def test_default_is_no_retry():
+    assert MAX_REPAIR_ATTEMPTS == 0
+
+
+def test_oversized_output_fails_after_a_single_call():
+    """상한을 넘은 갱신본을 같은 작업 안에서 다시 요청하지 않는다.
+
+    두 번째 응답이 규칙 안이어도 묻지 않으므로 쓰이지 않는다. 저장 문서는 만들어지지
+    않고 기존 프로필이 그대로 남는다.
+    """
+
+    agent = _StubAgent([_oversized(), UserMemory(basic_profile="짧게 줄였습니다.")])
+
+    with pytest.raises(UserMemoryLimitError) as caught:
+        build_user_memory(agent, None, _digest(), updated_at=_NOW)
+
+    assert caught.value.code is ErrorCode.USER_MEMORY_LIMIT_EXCEEDED
+    assert len(agent.violations_seen) == 1
+    assert agent.previous_seen == [None]
+
+
+def test_sensitive_output_fails_after_a_single_call():
+    agent = _StubAgent([UserMemory(relationships="엄마 010-1234-5678")])
+
+    with pytest.raises(UserMemoryLimitError):
+        build_user_memory(agent, None, _digest(), updated_at=_NOW)
+
+    assert len(agent.violations_seen) == 1
+
+
+def test_failure_reports_the_size_without_the_content():
+    """재요청이 없으면 중간 로그도 없다. 실패 하나만 보고 상한 초과인지 알 수 있어야 한다."""
+
+    memory = _oversized()
+    agent = _StubAgent([memory])
+
+    with pytest.raises(UserMemoryLimitError) as caught:
+        build_user_memory(agent, None, _digest(), updated_at=_NOW)
+
+    message = str(caught.value)
+    assert f"serializedChars={serialized_chars(memory)}" in message
+    assert "attempts=1" in message
+    assert "가가" not in message
+
+
+# --- 재요청 경로 (max_attempts 를 올렸을 때) ------------------------------
+
+
 def test_violation_is_sent_back_and_the_second_answer_is_kept():
     agent = _StubAgent([_oversized(), UserMemory(basic_profile="짧게 줄였습니다.")])
 
-    outcome = build_user_memory(agent, None, _digest(), updated_at=_NOW)
+    outcome = build_user_memory(agent, None, _digest(), updated_at=_NOW, max_attempts=1)
 
     assert outcome.repair_attempts == 1
     # 1차는 지적 없이, 2차는 지적을 붙여 물었다.
@@ -92,7 +145,7 @@ def test_retry_hands_back_the_document_that_broke_the_rule():
     first, second = _oversized(), _oversized().model_copy(update={"routines": "가" * 400})
     agent = _StubAgent([first, second, UserMemory(basic_profile="줄였습니다.")])
 
-    outcome = build_user_memory(agent, None, _digest(), updated_at=_NOW)
+    outcome = build_user_memory(agent, None, _digest(), updated_at=_NOW, max_attempts=2)
 
     assert outcome.repair_attempts == 2
     # 1차에는 고칠 문서가 없고, 그 뒤로는 바로 앞 시도의 출력을 받는다.
