@@ -270,12 +270,16 @@ app/
     │                           #   무관하게 confidence 를 0.6 이하로 묶는다(#118)
     ├── narrative_guard.py      # 사용자 노출 description 길이 검사 (#61). 120자 초과를 LOW
     │                           #   warning 으로 남긴다. 문체·문장 수는 재지 않는다(의미 판단)
-    ├── duration_guard.py       # eventType 별 지속시간 상한 검사 (#61, #119). PHOTO_MOMENT 1시간,
-    │                           #   MEETING·EXERCISE 2시간, 나머지 3시간. 초과를 LOW warning 으로
-    │                           #   남기고 **자르거나 나누지 않는다** — 어디서 끊을지는 Repair 의
-    │                           #   판단이다. CALENDAR_EVENT·SLEEP·MOVEMENT·MEAL 은 제외(지속 구간이
-    │                           #   근거에 직접 있거나 meal_guard 담당). **캘린더 근거가 있고 event
-    │                           #   길이가 그 일정의 길이를 넘지 않으면 타입과 무관하게 면제**하고,
+    ├── duration_guard.py       # eventType 별 지속시간 상한 검사 (#61, #119). 상한의 정본은
+    │                           #   `DURATION_LIMITS` 표 하나다. **모든 eventType 을 한 줄씩 적고
+    │                           #   기본값을 두지 않는다** — 값을 바꿀 때 그 줄만 고치면 되고, 새
+    │                           #   종류는 표에 적지 않으면 import 에서 멈춘다. Timeline v3 프롬프트와
+    │                           #   `docs/ai-event-candidate.md` 표가 같은 값을 말하는지는 테스트가
+    │                           #   본다. 초과를 LOW warning 으로 남기고 **자르거나 나누지 않는다** —
+    │                           #   어디서 끊을지는 Repair 의 판단이다. 값이 `None` 인 종류는 재지
+    │                           #   않는다(지속 구간이 근거에 직접 있거나 다른 guard 담당).
+    │                           #   **캘린더 근거가 있고 event 길이가 그 일정의 길이를 넘지 않으면
+    │                           #   타입과 무관하게 면제**하고,
     │                           #   MOVEMENT 근거가 있는 EXERCISE(산책)도 면제한다. **코드가 하나로
     │                           #   합치는 체류(근거가 전부 한 묶음의 STAY)도 면제한다** — 나눠도
     │                           #   `merge_stay_events` 가 다음 확정에서 다시 합쳐 Repair 가 고칠 수 없다.
