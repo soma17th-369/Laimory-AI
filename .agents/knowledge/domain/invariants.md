@@ -29,9 +29,10 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - source 하나가 여러 event의 근거가 되는 것은 허용한다.
 - user memory는 근거가 아니라 해석·표현용 보조 context다. user memory만으로 사건 발생, 일정 참석, 장소, 이동 목적, 사람의 실명이나 정확한 관계를 확정하지 않고, 수집 원본과 충돌하면 원본이 이긴다. 이 경계는 prompt가 지키며 코드가 의미로 판정하지 않는다.
 - user memory는 rawId를 갖지 않으므로 `sourceRefs`에 넣지 않는다.
-- user memory는 해석·표현 계층(Timeline Agent, Question Agent)에만 주입한다. Event Agent와 Repair Agent는 받지 않는다. Event Agent 5종은 병렬로 돌고 Timeline이 결과를 병합하므로, 다섯이 같은 프로필을 읽으면 같은 근거 하나가 독립된 근거 다섯으로 세어진다.
+- user memory는 해석·표현 계층(Timeline Agent, Question Agent, v3 세트의 Repair Agent)에만 주입한다. Event Agent는 받지 않는다. Event Agent 5종은 병렬로 돌고 Timeline이 결과를 병합하므로, 다섯이 같은 프로필을 읽으면 같은 근거 하나가 독립된 근거 다섯으로 세어진다.
 - v3 Timeline은 User Memory 반영을 **근거 구성 뒤의 별도 단계**로 둔다(#118). event의 존재·시간·장소 후보·활동 종류는 근거만으로 정한 뒤, 확정된 event 안에서 무엇을 했는지를 프로필로 구체화한다. 이 단계는 event를 추가·삭제하거나 시간·장소를 바꾸거나 confidence를 올리지 않고, 구체화한 event는 `INFERRED`로 둔다. 프롬프트 안의 단계이며 LLM 호출은 하나다. v2는 그대로다.
-- 소비 Agent 2종은 공용 projection 하나를 쓴다. Agent별로 필드를 골라 쓰거나 다르게 직렬화하지 않는다. 갱신 Agent가 "기존 프로필"을 읽을 때도 같은 projection이다.
+- Repair는 v3 세트에서만 user memory를 받는다(#119). Timeline에서 한 번, Repair가 돌 때마다 한 번씩 싣고 쓰는 경계는 Timeline v3 4단계와 같다. 내용이 부족할 때만 싣는 분기는 두지 않는다 — 부족한지는 LLM이 판단해야 하고 그러려면 LLM 단계가 하나 더 필요하다. v1·v2의 Repair 프롬프트에는 사용 경계가 없어 주지 않는다.
+- 소비 Agent 3종은 공용 projection 하나를 쓴다. Agent별로 필드를 골라 쓰거나 다르게 직렬화하지 않는다. 갱신 Agent가 "기존 프로필"을 읽을 때도 같은 projection이다.
 
 ### Event Agent 출력
 
@@ -42,7 +43,7 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - v3 세트에서 Calendar는 일정의 사실 여부·실제 참석 여부를 판단하지 않고 입력된 일정 내용을 해석한다. 종일 일정은 description에도 하루 종일인 일정임을 드러낸다.
 - 알림에서 얻는 정보는 대화·결제·예약 셋이다(#116). 앱 정책(`app_dictionary.json`)은 Notion 「코드가 다루는 앱 목록」을 옮긴 것이고, 그 앱에서 **얻을 수 있는 정보만** 말한다. candidate 생성 여부·confidence 같은 사용 판단은 정책에도 코드에도 두지 않는다 — 키워드·정규식으로 알림을 먼저 분류하던 `timelineUseGuidance`·`messengerInterpretation`은 없앴다. 표 밖에서는 메신저가 정책 둘을 갖는다. 개인 메신저(카카오톡·Instagram·Discord)는 대화에 더해 알림톡의 예약·결제·배송 안내가 와서 셋을 모두 주고, 업무 메신저(Webex·Slack·Microsoft Teams)는 업무 대화와 회의 안내가 와서 대화·예약을 준다. 어느 정책에도 걸리지 않은 알림은 사전에 없는 앱이므로 prompt 가 내용만 보고 판단한다.
 - 정책 매칭은 입력 `appName` 하나만 본다(공백·대소문자 무시, 별칭, 패키지명). `title`·`text`까지 뒤지면 표에 없는 앱의 알림도 본문에 `카드`·`사용`·`일정` 같은 단어 하나만 있으면 결제·일정 앱으로 잡힌다(#116 이전 동작).
-- 대화를 주는 앱(메신저)의 알림은 같은 앱·같은 대화 상대(`title`) 단위로 묶어 `conversations`로 넘긴다. 코드는 묶고 건수·시각·최대 간격만 계산한다. 사전에 없는 앱의 알림은 `unclassified`에 묶지도 정책을 달지도 않고 시각순으로 싣는다 — 대화로 묶으면 코드가 "대화다"라고 먼저 정하는 셈이다. 어느 쪽이든 입력 알림을 버리지 않는다. 묶음의 메시지도 내용에 따라 결제·예약 근거가 된다. 대화 candidate를 하루 최대 3개로 제한하는 것은 지금 prompt만 지키며, Repair 단계 검사는 #119에서 한다.
+- 대화를 주는 앱(메신저)의 알림은 같은 앱·같은 대화 상대(`title`) 단위로 묶어 `conversations`로 넘긴다. 코드는 묶고 건수·시각·최대 간격만 계산한다. 사전에 없는 앱의 알림은 `unclassified`에 묶지도 정책을 달지도 않고 시각순으로 싣는다 — 대화로 묶으면 코드가 "대화다"라고 먼저 정하는 셈이다. 어느 쪽이든 입력 알림을 버리지 않는다. 묶음의 메시지도 내용에 따라 결제·예약 근거가 된다. 대화 candidate를 하루 최대 3개로 제한하는 것은 Notification prompt가 지키고, 최종 draft의 대화 event 개수는 확정 pass가 센다(#119).
 - 알림 입력에는 대화 참여자 목록과 단체방 이름이 없다. 그래서 묶음 단위는 방이 아니라 대화 상대다. 단체 대화방의 `title`은 대개 메시지를 보낸 사람이다.
 
 ### User Memory 갱신
@@ -64,8 +65,10 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - 접수 request의 window가 정본이며 완전히 밖인 candidate/event는 제외하고 경계에 걸친 구간은 clamp한다.
 - 수면 외 일반 event는 알려진 기상 경계 이전으로 확정하지 않는다. 경계를 알 수 없으면 시간을 지어내지 않는다.
 - MEAL duration은 20~60분 범위로 제한하는 전용 guard가 맡는다. 시점 근거(사진·결제 알림)가 없는 MEAL은 길이와 무관하게 confidence를 0.6 이하로 묶는다(#118). 캘린더만 근거인 식사도 같다.
-- 비캘린더 장시간 event는 3시간 초과를 LOW warning으로 드러내되 코드가 임의 분할·절단하지 않는다. Calendar, Sleep, Movement, Meal은 이 검사에서 제외한다. eventType별 상한(`docs/ai-event-candidate.md`)은 v3 프롬프트가 지키고 코드 검사는 #119 몫이다.
-- 최종 event는 24개를 넘지 않는다(#118). 초과는 MEDIUM warning으로 드러내고 코드가 자르지 않는다 — 무엇을 합칠지는 의미 판단이다.
+- eventType별 상한(`docs/ai-event-candidate.md`)을 넘는 event는 LOW warning으로 드러내되 코드가 임의 분할·절단하지 않는다(#119). 상한의 코드 정본은 `duration_guard.DURATION_LIMITS` 표 하나이고 모든 eventType을 한 줄씩 적는다. 기본값을 두지 않으므로 새 eventType은 표에 적어야 하고, 프롬프트·문서가 같은 값을 말하는지는 테스트가 본다. 값이 `None`인 종류(Calendar, Movement, Sleep, WakeUp, Meal)는 이 검사에서 제외한다. 캘린더 근거가 있고 event 길이가 그 일정의 길이를 넘지 않으면 타입과 무관하게 면제하고, MOVEMENT 근거가 있는 `EXERCISE`(산책)도 면제한다. 근거가 전부 한 묶음(이동 없이 같은 장소에서 이어진 STAY)의 체류인 event도 면제한다 — 확정 pass가 그런 event를 하나로 합치므로 나눠도 다시 합쳐져 Repair가 고칠 수 없다. v1·v2 세트에서는 예전처럼 일괄 3시간으로 재고 이 세 면제도 없다.
+- 하나의 candidate·event가 `MOVEMENT → 20분을 넘는 STAY → MOVEMENT`를 함께 품으면 위반이다(#119). 기준은 Location 파생 지표의 `SHORT_STAY_MAX` 하나이고, 역·터미널·공항에서의 환승·대기도 20분을 넘으면 예외가 없다. eventType을 가리지 않는다. 코드는 찾기만 하고 나누는 것은 Repair가 한다. 20분 이하 STAY를 낀 연속 이동은 그대로 둔다. v3 세트에서만 검사한다.
+- 최종 event는 10개를 넘지 않는다(#118). 초과는 MEDIUM warning으로 드러내고 코드가 자르지 않는다 — 무엇을 합칠지는 의미 판단이다. 10개는 Timeline·Repair v3 프롬프트가 지시하는 값이고, 개수 지시가 없는 v1·v2 세트는 예전 값 24개로 잰다.
+- 대화로 만든 event는 하루 최대 3개다(#119). 근거가 전부 알림이고 eventType이 `SOCIAL`·`WORK`·`MEETING`인 event를 센다. 위치·사진·캘린더 근거가 함께 있으면 실제 사건이라 세지 않는다. **메신저 정책이 있는 앱의 알림만 대화로 세고**, 사전에 없는 앱의 알림이 섞인 event는 세지도 지우지도 않는다 — 그 앱이 무엇인지 코드는 모른다. 3개를 넘으면 **알림이 많은 3개만 남기고 코드가 지운다.** 알림 수가 같으면 먼저 시작한 대화를 남긴다. 기준을 알림 수 하나로 둔 것은 Notification Agent가 candidate를 고르는 기준(대화 내용이 많을수록 중요)과 맞추기 위해서다. 그래서 알림이 적은 약속 대화가 지워지고 알림이 많은 공지방이 남을 수 있다. v3 세트에서만 적용한다.
 - Location-only event의 시간은 참조한 STAY/MOVEMENT 근거 밖을 주장하지 않도록 맞추되, 다른 source가 섞이면 그 source의 시간 의미를 존중한다.
 
 ### 보존·병합
@@ -75,7 +78,10 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - fragment만 근거로 남은 최종 event는 warning으로 드러낸다.
 - 이동 없이 이어진 같은 장소 STAY는 순수 STAY event만 병합한다. Calendar·Photo·Notification 등이 섞인 사건을 긴 체류에 흡수하지 않는다.
 - 같은 종류·장소이고 시간이 겹치는 중복 event는 병합할 수 있지만, 포함 관계나 서로 다른 사건의 부분 겹침을 무조건 잘라내지 않는다.
-- Photo source는 최종 event 하나에만 귀속돼야 하며 코드가 의미를 모르면 임의 event에 재배치하지 않는다.
+- Photo source는 최종 event **정확히 하나**에만 귀속되고 이것은 코드가 강제한다(#119). 발행되는 모든 확정본과 main agent가 돌려주는 draft가 이 상태이며 LLM 호출 여부와 무관하다. 여러 event에 걸린 사진은 사진 말고 다른 근거가 있는 event → 촬영 시각을 포함하는 event → 가장 짧은 event 순으로 하나만 남긴다. 사진을 빼서 근거가 하나도 남지 않는 event(사진만으로 만든 `PHOTO_MOMENT`)는 지운다. 어느 event에도 없는 사진은 촬영 시각을 포함하는(없으면 가장 가까운) event에 붙이고, event가 하나도 없으면 `PHOTO_MOMENT`를 만든다. 한 event에 사진 여러 장(N:1)은 허용한다. 코드가 고른 event가 의미까지 맞는다는 보장은 없어, Repair는 같은 계획 안에서 원래 event에서 빼고 옮길 event에 넣어 사진을 옮길 수 있다.
+- 확정 pass가 event를 지우거나 합치면 사라진 쪽의 전체 내용을 기록에 남긴다(#119). 기록은 Repair 입력으로만 쓰고 저장하지 않는다.
+- Repair가 event를 나눌 때 원래 event의 근거는 하나도 버리지 않는다(#119). 근거는 코드가 조각에 나눠 담고, 구간 근거를 담을 조각이 없는 나누기는 거절한다.
+- #119의 검사·Repair 입력·`split_event` 도구는 v3 세트에서만 돈다. v2는 운영 세트라 프롬프트가 설명하지 않는 warning·입력·도구를 코드가 먼저 주지 않는다. draft를 고치는 단계(사진 단일 귀속 포함)는 세트와 무관하게 같다.
 
 ### 장소·민감정보
 
@@ -91,7 +97,8 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - 최종 문장에 `듯해요` 같은 hedge와 분 단위 시각·걸음 수 같은 원본 수치를 쓰지 않는다. 모르는 내용은 빼고 confidence·inferenceLevel·uncertainty로 표현한다.
 - 이 문장 규칙은 Event Agent의 정확한 사실 보고에는 적용하지 않는다.
 - v3 Timeline의 description은 시간 표현 없이 어디서·무엇을 했는지를 쓴다(#118). 언제는 `startTime`·`endTime`이 담는다. v2는 그대로다.
-- 병합·문장 수정이 끝난 뒤 길이·duration·event 개수를 검사하고, 반복마다 stale warning을 제거해 다시 계산한다.
+- 병합·문장 수정이 끝난 뒤 길이·duration·event 개수·이동 사이 체류·대화 개수를 검사하고, 반복마다 stale warning을 제거해 다시 계산한다.
+- v3 Repair는 Timeline이 근거에서 가져온 활동·장소·사람 이름을 `업무`·`일정` 같은 넓은 말로 바꾸지 않는다(#119). 시간 표현 금지는 Timeline v3와 똑같이 `description`에 한한다.
 
 ### 질문
 
@@ -125,6 +132,7 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 
 - Timeline trigger window의 역전은 endpoint에서 거절되지 않는다.
 - 최종 문체의 1인칭·해요체·문장 수는 코드가 의미적으로 판정하지 않고 prompt와 live 품질 검증에 의존한다.
+- 이동 사이 장시간 체류와 지속시간 초과는 Repair가 고쳐야 해소된다. Repair가 실패하거나 제한 시간이 끝나면 warning과 함께 그대로 저장된다.
 - App Server DB constraint와 callback/result idempotency는 이 저장소에서 확인할 수 없다.
 - inbound 인증·인가가 없어 호출 주체 불변식은 코드로 강제되지 않는다.
 - user memory 소비 경로는 input API 응답까지 열려 있으나, App Server가 실제로 값을 채워 보내는지는 이 저장소에서 확인할 수 없다.

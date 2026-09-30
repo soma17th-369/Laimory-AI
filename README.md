@@ -73,7 +73,8 @@ app/
     ├── timeline_validator.py  # 결과 저장 전 source 소속·시간 검증
     ├── normalizer.py          # 수집 스냅샷 분리·정규화
     ├── draft_repair.py        # draft 확정 repair
-    ├── draft_edit.py          # event 수정·삭제 (Repair 계획의 결정론 적용)
+    ├── confirm_report.py      # 확정 pass 가 고친 것·지운 것·찾은 것의 기록 (#119). Repair 입력
+    ├── draft_edit.py          # event 수정·삭제·나누기 (Repair 계획의 결정론 적용)
     ├── validator.py           # 요청 시간 범위(window) 강제
     ├── source_lookup.py       # sourceRef → 입력 항목 역참조, sourceType 정정
     ├── sleep_guard.py         # 수면 경계 강제 (기상 이전 event 제거)
@@ -81,8 +82,11 @@ app/
     ├── calendar_guard.py      # 누락된 캘린더 일정 복원
     ├── calendar_location.py   # 캘린더와 STAY 장소 일치 보강
     ├── meal_guard.py          # MEAL 지속시간 강제 + 시점 근거 없는 식사 confidence 상한
-    ├── event_count_guard.py   # 최종 event 개수 상한(24) 검사 (#118). 자르지 않고 warning
-    ├── photo_guard.py         # 사진 단일 귀속 검사 (누락·중복 검출, 자동 해소는 안 함)
+    ├── duration_guard.py      # eventType 별 지속시간 상한 검사 (#119). 자르지 않고 warning
+    ├── event_count_guard.py   # 최종 event 개수 상한(v3 10, v1·v2 24) 검사 (#118). 자르지 않고 warning
+    ├── movement_stay_guard.py # 이동 사이에 낀 20분 초과 체류 검사 (#119). 찾기만 하고 나누지 않음
+    ├── conversation_guard.py  # 대화로 만든 event 개수(하루 3개) 제한 (#119). 알림이 많은 3개만 남김(v3)
+    ├── photo_guard.py         # 사진 단일 귀속 강제 (#119). 모든 사진이 정확히 한 event 에만 있게 만든다
     ├── location_metrics.py    # Location raw 파생 지표 계산 (속도·구간 공백·수집 공백)
     ├── location_guard.py      # Location 결과 검증 (상위 여정 누락·공백 표시·rawId 보존)
     ├── fragment_guard.py      # candidate·fragment 보존 검사
@@ -125,9 +129,16 @@ LLM 이 `done` 을 내거나 `settings.repair_max_iterations`(기본 3)에서 �
 파싱이 실패하면 마지막으로 확정된 초안을 그대로 돌려주고 warning 을 남깁니다.
 
 Repair Agent 는 초안을 직접 다시 쓰지 않고 **결정론 서비스와 상류 Agent 를 도구로 호출**합니다
-(`lookup_source`, `update_event`/`delete_event`, `enforce_sleep_boundary` 같은 서비스 재적용,
-`rerun_event_agent`/`rerun_timeline_agent`). 정렬·`clientEventId` 재부여·window 강제는 도구가
-아니며, 매 반복 끝의 `repair_draft` 가 항상 코드로 확정합니다.
+(`lookup_source`, `update_event`/`delete_event`/`split_event`, `enforce_sleep_boundary` 같은 서비스
+재적용, `rerun_event_agent`/`rerun_timeline_agent`). 정렬·`clientEventId` 재부여·window 강제·사진
+단일 귀속은 도구가 아니며, 매 반복 끝의 `repair_draft` 가 항상 코드로 확정합니다.
+
+확정 pass 는 고치는 것과 찾는 것을 나눕니다(#119). 무엇을 고칠지가 규칙으로 정해져 있으면 코드가
+고치고, 어디서 끊고 무엇을 남길지가 의미 판단이면 찾아서 Repair 에 넘깁니다. 이동 사이에 낀
+20분 초과 체류와 상한을 넘긴 event 를 나누는 것은 Repair 가 합니다. 대화로 만든 event 를 하루
+3개로 줄이는 것은 코드가 알림 수로 합니다.
+`PROMPT_VERSION=v3` 에서 Repair 는 코드가 고친 것과 찾은 것, event 별 근거, User Memory 를 함께
+받아 코드가 이미 본 것을 다시 검증하지 않고 내용과 문장을 다듬습니다.
 
 ---
 

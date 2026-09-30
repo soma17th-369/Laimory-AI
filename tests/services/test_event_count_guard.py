@@ -1,6 +1,6 @@
 """최종 event 개수 상한 검사 (#118).
 
-프롬프트는 하루를 최대 24개 event 로 구성하라고 지시한다. 지켰는지 재는 코드가 없으면
+프롬프트는 하루를 최대 10개 event 로 구성하라고 지시한다. 지켰는지 재는 코드가 없으면
 잘게 쪼개진 하루가 그대로 저장돼도 모른다.
 
 **재기만 한다.** 무엇을 합칠지는 의미 판단이라 코드가 고르지 않는다. 그래서 이 테스트는
@@ -9,7 +9,11 @@ event 가 잘리지 않는 것도 함께 확인한다.
 
 from app.schemas import TimelineDraft, TimelineWarningSeverity
 from app.services.draft_repair import repair_draft
-from app.services.event_count_guard import MAX_EVENT_COUNT, verify_event_count
+from app.services.event_count_guard import (
+    LEGACY_MAX_EVENT_COUNT,
+    MAX_EVENT_COUNT,
+    verify_event_count,
+)
 from tests.fixtures.requests import fixture_raw_id, make_request, photo_item
 
 DAY = "2026-06-20"
@@ -54,6 +58,12 @@ def _draft(count: int) -> TimelineDraft:
 
 def _count_warnings(draft: TimelineDraft) -> list:
     return [w for w in draft.warnings if w.warning_id.startswith("warning-event-count-")]
+
+
+def test_limit_is_ten():
+    """Timeline·Repair v3 프롬프트가 지시하는 값이다."""
+
+    assert MAX_EVENT_COUNT == 10
 
 
 def test_exactly_the_limit_is_not_warned():
@@ -113,3 +123,50 @@ def test_confirm_pass_runs_the_count_guard():
 
     assert len(draft.events) == count
     assert _count_warnings(draft)
+
+
+# --- 예전 세트 --------------------------------------------------------------------
+#
+# v1·v2 Timeline 프롬프트에는 개수 지시가 없다. 그 세트는 줄이기 전의 값으로 잰다.
+
+
+def test_legacy_sets_keep_the_old_limit():
+    assert LEGACY_MAX_EVENT_COUNT == 24
+
+    draft = _draft(LEGACY_MAX_EVENT_COUNT)
+    verify_event_count(draft, limit=LEGACY_MAX_EVENT_COUNT)
+    assert _count_warnings(draft) == []
+
+    draft = _draft(LEGACY_MAX_EVENT_COUNT + 1)
+    verify_event_count(draft, limit=LEGACY_MAX_EVENT_COUNT)
+    [warning] = _count_warnings(draft)
+    assert f"최대 {LEGACY_MAX_EVENT_COUNT}개" in warning.message
+
+
+def _confirm(count: int, *, extended: bool) -> TimelineDraft:
+    request = make_request(
+        photos=[
+            photo_item(
+                index,
+                taken=f"{DAY}T{8 + index // 6:02d}:{(index % 6) * 10:02d}:00",
+                raw_id=f"photo-{index}",
+            )
+            for index in range(count)
+        ]
+    )
+    draft = _draft(count)
+    repair_draft(draft, request, extended=extended)
+    return draft
+
+
+def test_confirm_pass_does_not_warn_legacy_sets_at_the_new_limit():
+    """운영 세트(v2)가 지시받은 적 없는 10개 기준으로 warning 을 받지 않는다."""
+
+    count = MAX_EVENT_COUNT + 1
+
+    assert _count_warnings(_confirm(count, extended=False)) == []
+    assert _count_warnings(_confirm(count, extended=True))
+
+
+def test_confirm_pass_warns_legacy_sets_at_the_old_limit():
+    assert _count_warnings(_confirm(LEGACY_MAX_EVENT_COUNT + 1, extended=False))
