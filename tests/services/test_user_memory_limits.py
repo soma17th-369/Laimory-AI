@@ -581,13 +581,14 @@ def test_total_cap_is_derived_from_the_daily_quota():
     assert MAX_EVENT_COUNT == MAX_DAILY_TIMELINE_COUNT * MAX_EVENTS_PER_TIMELINE
 
 
-def test_daily_quota_holds_a_full_day_the_timeline_can_produce():
-    """Timeline 은 하루에 event 를 24개까지 만든다(#118).
+def test_daily_quota_is_the_timeline_event_cap():
+    """하루 몫은 Timeline v3 가 하루를 구성하는 event 의 최대 개수와 같다(#119 에서 10개).
 
-    몫이 그보다 작으면 AI 가 만든 정상적인 하루가 여기서 잘린다.
+    두 값이 갈리면 한쪽만 바뀐 것이다. Timeline 의 상한을 바꿀 때 이 몫을 어떻게 할지도
+    함께 정해야 한다.
     """
 
-    assert MAX_EVENTS_PER_TIMELINE >= TIMELINE_MAX_EVENT_COUNT
+    assert MAX_EVENTS_PER_TIMELINE == TIMELINE_MAX_EVENT_COUNT == 10
 
 
 def test_a_full_request_never_exceeds_the_total_cap():

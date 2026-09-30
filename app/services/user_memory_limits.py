@@ -77,9 +77,10 @@ USER_MEMORY_TARGET_CHARS = 1_600
 #: (메모 있음, 최근순)이라 오래된 날이 통째로 밀려나고, event 가 하나도 안 남은 날은
 #: payload 에서 빠져 모델에게는 애초에 없던 날이 된다.
 #:
-#: 24 는 Timeline 이 하루에 만드는 event 의 최대 개수다(#118). 그보다 작으면 AI 가 만든
-#: 정상적인 하루가 여기서 잘린다. 넘는 것은 사용자가 손으로 더한 event 가 있는 날뿐이다.
-MAX_EVENTS_PER_TIMELINE = 24
+#: 10 은 Timeline v3 가 하루를 구성하는 event 의 최대 개수다(#119 에서 24 → 10). 하루 기록이
+#: 그만큼으로 구성되므로 갱신에 싣는 몫도 같은 값이다. 이보다 많은 날(v1·v2 세트가 만든
+#: 하루, 사용자가 손으로 event 를 더한 날)은 memo 있는 event 를 먼저, 그다음 최근 것을 남긴다.
+MAX_EVENTS_PER_TIMELINE = 10
 
 #: 요청 전체 event 상한. 날짜별 몫에서 파생되므로 따로 정하지 않는다.
 MAX_EVENT_COUNT = MAX_DAILY_TIMELINE_COUNT * MAX_EVENTS_PER_TIMELINE
