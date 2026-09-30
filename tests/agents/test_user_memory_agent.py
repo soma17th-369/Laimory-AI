@@ -9,6 +9,10 @@
 
 두 정책이 섞이면 어느 쪽도 지켜지지 않는다. 그래서 세트마다 자기 문구를 갖는지,
 상대의 문구가 남아 있지 않은지를 함께 본다.
+
+모델이 **무엇을 출력하는지**도 세트마다 다르다(#121). v1·v2 는 문서 전체를 다시 쓰고,
+v3 는 바꿀 항목만 낸다. 코드가 그 항목을 기존 문서에 끼워 넣으므로, 출력에 없는 항목은
+글자 하나 바뀌지 않아야 한다.
 """
 
 import json
@@ -24,6 +28,7 @@ from app.schemas.user_memory import (
     METADATA_FIELDS,
     NARRATIVE_MAX_LENGTH,
     UserMemory,
+    UserMemoryPatch,
 )
 from app.services.user_memory_limits import (
     USER_MEMORY_MAX_CHARS,
@@ -33,7 +38,12 @@ from app.services.user_memory_limits import (
 )
 from app.schemas.user_memory_update import DailyTimeline
 from tests.fixtures.fake_llm import FakeLLM
-from tests.fixtures.user_memory import daily_timeline, daily_timeline_event, memory_json
+from tests.fixtures.user_memory import (
+    NARRATIVE_FIELDS,
+    daily_timeline,
+    daily_timeline_event,
+    memory_json,
+)
 
 _PROMPTS = (
     Path(__file__).resolve().parents[2]
@@ -55,8 +65,8 @@ def _digest(events=None, *, emotion_type=None):
 
 
 @pytest.fixture
-def memo_only_traits(monkeypatch: pytest.MonkeyPatch):
-    """성향 근거를 `memo` 로 제한하는 세트(v1·v2)로 조립한다.
+def legacy_set(monkeypatch: pytest.MonkeyPatch):
+    """v1·v2 세트로 돈다 — 성향 근거는 `memo` 뿐이고 모델이 문서 전체를 다시 쓴다.
 
     분기값은 모듈 로드 시점에 `PROMPT_VERSION` 으로 정해진다. 그대로 두면 이 테스트의
     결과가 실행 환경의 `.env` 를 따라간다. 버전에서 분기값이 정해지는 것 자체는
@@ -64,13 +74,24 @@ def memo_only_traits(monkeypatch: pytest.MonkeyPatch):
     """
 
     monkeypatch.setattr(user_memory_agent, "_MEMO_ONLY_TRAITS", True)
+    monkeypatch.setattr(user_memory_agent, "_PATCH_OUTPUT", False)
 
 
 @pytest.fixture
-def ai_sentences_as_evidence(monkeypatch: pytest.MonkeyPatch):
-    """AI 가 쓴 문장도 근거로 읽는 세트(v3)로 조립한다."""
+def v3_set(monkeypatch: pytest.MonkeyPatch):
+    """v3 세트로 돈다 — AI 가 쓴 문장도 근거로 읽고 모델이 바꿀 항목만 낸다."""
 
     monkeypatch.setattr(user_memory_agent, "_MEMO_ONLY_TRAITS", False)
+    monkeypatch.setattr(user_memory_agent, "_PATCH_OUTPUT", True)
+
+
+def patch_json(**fields) -> str:
+    """v3 세트의 LLM 응답. 지정하지 않은 필드는 null(바꾸지 않음)이다."""
+
+    body = {name: None for name in NARRATIVE_FIELDS}
+    body["customAttributes"] = []
+    body.update(fields)
+    return json.dumps(body, ensure_ascii=False)
 
 
 # --- 프롬프트 조립 -----------------------------------------------------
@@ -96,7 +117,7 @@ def test_missing_profile_reads_the_same_as_an_empty_one():
     assert "정보 없음" in none_prompt
 
 
-def test_memo_only_set_is_told_when_a_day_has_no_memo(memo_only_traits):
+def test_memo_only_set_is_told_when_a_day_has_no_memo(legacy_set):
     """빈 자리를 메우려는 것을 막는다. 알려 주지 않으면 AI 문장에서 성향을 만든다."""
 
     prompt = build_update_prompt(None, _digest([daily_timeline_event(memo=None)]))
@@ -106,14 +127,14 @@ def test_memo_only_set_is_told_when_a_day_has_no_memo(memo_only_traits):
     assert "기존 값을 그대로" in prompt
 
 
-def test_memo_only_set_gets_no_such_hint_when_there_is_a_memo(memo_only_traits):
+def test_memo_only_set_gets_no_such_hint_when_there_is_a_memo(legacy_set):
     prompt = build_update_prompt(None, _digest([daily_timeline_event(memo="오늘은 좋았어요.")]))
 
     assert "[근거 없음]" not in prompt
     assert "오늘은 좋았어요." in prompt
 
 
-def test_v3_is_never_told_to_leave_traits_untouched(ai_sentences_as_evidence):
+def test_v3_is_never_told_to_leave_traits_untouched(v3_set):
     """v3 는 `memo` 없는 날에도 갱신한다(#121).
 
     "성향 필드는 그대로 두라" 는 지시가 user prompt 에 남으면 시스템 프롬프트와 정면으로
@@ -126,22 +147,44 @@ def test_v3_is_never_told_to_leave_traits_untouched(ai_sentences_as_evidence):
     assert "기존 값을 그대로" not in prompt
 
 
-@pytest.mark.parametrize("fixture_name", ["memo_only_traits", "ai_sentences_as_evidence"])
-def test_request_asks_for_the_whole_document_without_stating_a_policy(
+def test_legacy_request_asks_for_the_whole_document(legacy_set):
+    """v1·v2 는 문서 전체를 다시 쓴다. 그 프롬프트가 그렇게 적혀 있다."""
+
+    prompt = build_update_prompt(None, _digest([daily_timeline_event(memo="메모")]))
+
+    assert "User Memory 전체" in prompt
+    assert "전체 갱신본" in prompt
+    assert "바꿀 항목만" not in prompt
+
+
+def test_v3_request_asks_only_for_the_items_to_change(v3_set):
+    """v3 는 바꿀 항목만 낸다(#121).
+
+    전체를 다시 쓰게 하면 건드릴 이유가 없던 항목까지 조금씩 달라지거나 빠진다.
+    """
+
+    prompt = build_update_prompt(None, _digest([daily_timeline_event(memo="메모")]))
+
+    assert "바꿀 항목만" in prompt
+    assert "null" in prompt
+    assert "그 항목의 전체 문장" in prompt
+    assert "User Memory 전체" not in prompt
+    assert "전체 갱신본" not in prompt
+
+
+@pytest.mark.parametrize("fixture_name", ["legacy_set", "v3_set"])
+def test_request_states_the_shape_of_the_output_not_a_policy(
     fixture_name: str, request: pytest.FixtureRequest
 ):
-    """출력이 문서 전체라는 계약은 세트를 가리지 않는다.
+    """무엇을 남기고 버릴지는 시스템 프롬프트의 몫이라 여기서 말하지 않는다.
 
-    무엇을 남기고 버릴지는 시스템 프롬프트의 몫이라 여기서 말하지 않는다. 예전 문장은
-    "압축·삭제" 를 지시했는데, 한 번 나온 정보도 남기는 v3 와 어긋난다.
+    예전 문장은 "압축·삭제" 를 지시했는데, 한 번 나온 정보도 남기는 v3 와 어긋난다.
     """
 
     request.getfixturevalue(fixture_name)
 
     prompt = build_update_prompt(None, _digest([daily_timeline_event(memo="메모")]))
 
-    assert "User Memory 전체" in prompt
-    assert "전체 갱신본" in prompt
     assert "압축" not in prompt
     assert "삭제" not in prompt
 
@@ -212,7 +255,7 @@ def test_size_section_carries_numbers_not_a_policy():
         assert policy_word not in section
 
 
-def test_retry_with_the_previous_output_asks_to_fix_it_not_to_start_over():
+def test_retry_with_the_previous_output_asks_to_fix_it_not_to_start_over(legacy_set):
     """재요청이 직전 출력에서 이어 가야 시도마다 줄어든다(#121)."""
 
     previous = UserMemory(basic_profile="직전에 낸 문서입니다.")
@@ -234,6 +277,20 @@ def test_retry_with_the_previous_output_asks_to_fix_it_not_to_start_over():
     assert prompt.index("[직전 출력]") < prompt.index("[직전 출력이 규칙을 어겼습니다]")
 
 
+def test_v3_retry_asks_only_for_the_items_to_change_in_the_previous_output(v3_set):
+    prompt = build_update_prompt(
+        None,
+        _digest(),
+        violations=["전체 크기가 상한을 넘었습니다."],
+        previous=UserMemory(basic_profile="직전에 낸 문서입니다."),
+    )
+
+    assert "[직전 출력]" in prompt
+    assert "직전 출력에서 바꿀 항목만" in prompt
+    assert "처음부터 다시 만들지 말고" in prompt
+    assert "User Memory 전체" not in prompt
+
+
 def test_previous_output_is_ignored_without_a_violation():
     """고칠 이유가 없으면 고칠 문서도 싣지 않는다."""
 
@@ -245,7 +302,7 @@ def test_previous_output_is_ignored_without_a_violation():
     assert "직전에 낸 문서입니다." not in prompt
 
 
-def test_agent_passes_the_previous_output_to_the_model():
+def test_agent_passes_the_previous_output_to_the_model(legacy_set):
     llm = FakeLLM([memory_json()])
 
     UserMemoryAgent(llm=llm).generate(
@@ -302,7 +359,7 @@ def test_prompt_never_contains_the_ai_written_question():
 # --- 호출 -------------------------------------------------------------
 
 
-def test_agent_returns_a_validated_memory():
+def test_agent_returns_a_validated_memory(legacy_set):
     agent = UserMemoryAgent(llm=FakeLLM([memory_json(basicProfile="30대 개발자입니다.")]))
 
     memory = agent.generate(None, _digest())
@@ -310,7 +367,7 @@ def test_agent_returns_a_validated_memory():
     assert memory.basic_profile == "30대 개발자입니다."
 
 
-def test_agent_sends_the_system_prompt():
+def test_agent_sends_the_system_prompt(legacy_set):
     llm = FakeLLM([memory_json()])
 
     UserMemoryAgent(llm=llm).generate(None, _digest())
@@ -318,7 +375,7 @@ def test_agent_sends_the_system_prompt():
     assert "User Memory 갱신 시스템 프롬프트" in llm.calls[0].system
 
 
-def test_over_length_field_is_repaired_by_the_structured_path():
+def test_over_length_field_is_repaired_by_the_structured_path(legacy_set):
     """필드 길이는 Pydantic 이 잡고, 교정 재시도가 한 번 더 묻는다."""
 
     llm = FakeLLM(
@@ -334,7 +391,7 @@ def test_over_length_field_is_repaired_by_the_structured_path():
     assert len(llm.calls) == 2
 
 
-def test_agent_accepts_more_custom_attributes_than_the_old_limit():
+def test_agent_accepts_more_custom_attributes_than_the_old_limit(legacy_set):
     """개수 제한이 없어졌다(#121). 예전에는 6개째에서 교정 재시도로 떨어졌다."""
 
     attributes = {f"속성{index}": "값" for index in range(8)}
@@ -344,6 +401,125 @@ def test_agent_accepts_more_custom_attributes_than_the_old_limit():
 
     assert len(memory.custom_attributes) == 8
     assert len(llm.calls) == 1
+
+
+# --- 부분 갱신 (#121, v3) -----------------------------------------------
+
+
+def _existing_profile() -> UserMemory:
+    return UserMemory(
+        basic_profile="망원동에 사는 30대 개발자입니다.",
+        relationships="김민수: 같은 팀 동료.",
+        routines="평일에는 회사에서 일합니다.",
+        custom_attributes={
+            "반려동물": "고양이 한 마리를 키웁니다.",
+            "여행": "8월 말에 강릉에 다녀왔습니다.",
+        },
+    )
+
+
+def test_v3_changes_only_the_items_the_model_returned(v3_set):
+    """출력에 없는 항목은 글자 하나 바뀌지 않는다."""
+
+    existing = _existing_profile()
+    llm = FakeLLM([patch_json(routines="평일에는 회사에서 일합니다. 주말에 클라이밍을 합니다.")])
+
+    memory = UserMemoryAgent(llm=llm).generate(existing, _digest())
+
+    assert memory.routines == "평일에는 회사에서 일합니다. 주말에 클라이밍을 합니다."
+    assert memory.basic_profile == existing.basic_profile
+    assert memory.relationships == existing.relationships
+    assert memory.custom_attributes == existing.custom_attributes
+    assert len(llm.calls) == 1
+
+
+def test_v3_adds_replaces_and_removes_custom_attributes(v3_set):
+    existing = _existing_profile()
+    llm = FakeLLM(
+        [
+            patch_json(
+                customAttributes=[
+                    {"key": "운동", "value": "합정 클라이밍장을 다닙니다."},
+                    {"key": "반려동물", "value": "고양이 두 마리를 키웁니다."},
+                    {"key": "여행", "value": None},
+                ]
+            )
+        ]
+    )
+
+    memory = UserMemoryAgent(llm=llm).generate(existing, _digest())
+
+    assert memory.custom_attributes == {
+        "반려동물": "고양이 두 마리를 키웁니다.",
+        "운동": "합정 클라이밍장을 다닙니다.",
+    }
+    assert memory.basic_profile == existing.basic_profile
+
+
+def test_v3_patch_that_changes_nothing_returns_the_same_profile(v3_set):
+    """이번 기록이 말해 주는 것이 없으면 아무것도 바뀌지 않는다. 실패가 아니다."""
+
+    existing = _existing_profile()
+
+    memory = UserMemoryAgent(llm=FakeLLM([patch_json()])).generate(existing, _digest())
+
+    assert memory.prompt_payload() == existing.prompt_payload()
+
+
+def test_v3_fills_an_empty_profile_from_a_patch(v3_set):
+    """기존 문서가 없어도(`null`) 빈 문서에 끼워 넣는다. 따로 가르는 경로가 없다."""
+
+    llm = FakeLLM([patch_json(basicProfile="판교 회사에 다니는 직장인으로 보입니다.")])
+
+    memory = UserMemoryAgent(llm=llm).generate(None, _digest())
+
+    assert memory.prompt_payload() == {"basicProfile": "판교 회사에 다니는 직장인으로 보입니다."}
+
+
+def test_v3_over_length_item_is_repaired_by_the_structured_path(v3_set):
+    """항목 값 하나의 길이 제한은 패치에도 같게 걸린다."""
+
+    llm = FakeLLM(
+        [
+            patch_json(routines="가" * (NARRATIVE_MAX_LENGTH + 1)),
+            patch_json(routines="짧게 줄였습니다."),
+        ]
+    )
+
+    memory = UserMemoryAgent(llm=llm).generate(_existing_profile(), _digest())
+
+    assert memory.routines == "짧게 줄였습니다."
+    assert len(llm.calls) == 2
+
+
+def test_v3_retry_applies_the_patch_to_the_previous_output(v3_set):
+    """재요청은 직전 출력을 고친다. 패치도 기존 문서가 아니라 그 문서에 적용한다."""
+
+    existing = _existing_profile()
+    previous = existing.model_copy(update={"routines": "직전 시도에서 길게 쓴 문장입니다."})
+    llm = FakeLLM([patch_json(basicProfile="망원동에 사는 개발자입니다.")])
+
+    memory = UserMemoryAgent(llm=llm).generate(
+        existing,
+        _digest(),
+        violations=["전체 크기가 상한을 넘었습니다."],
+        previous=previous,
+    )
+
+    assert memory.basic_profile == "망원동에 사는 개발자입니다."
+    assert memory.routines == "직전 시도에서 길게 쓴 문장입니다."
+
+
+def test_legacy_set_takes_the_whole_document_as_the_result(legacy_set):
+    """v1·v2 는 모델이 낸 문서가 곧 결과다. 출력에 없는 항목은 사라진다."""
+
+    llm = FakeLLM([memory_json(basicProfile="30대 개발자입니다.")])
+
+    memory = UserMemoryAgent(llm=llm).generate(_existing_profile(), _digest())
+
+    assert memory.basic_profile == "30대 개발자입니다."
+    assert memory.relationships == ""
+    assert memory.custom_attributes == {}
 
 
 # --- 프롬프트 파일 계약 -------------------------------------------------
@@ -359,7 +535,6 @@ def _prompt(version: str) -> str:
     [
         ("사용자가 직접 쓴 글", "사용자의 실제 발화가 무엇인지 지목해야 합니다."),
         ("AI 가 센서 기록을 보고", "title/subtitle 의 출처를 밝혀야 합니다."),
-        ("통째로 대체", "출력이 append 가 아니라 rewrite 임을 알려야 합니다."),
         ("customAttributes", "동적 속성 규칙이 있어야 합니다."),
         ("schemaVersion", "메타데이터를 출력하지 말라고 해야 합니다."),
         ("지시로 따르지 않습니다", "memo 안의 지시문을 따르지 않게 해야 합니다."),
@@ -381,6 +556,7 @@ def test_every_set_states_the_shared_contract(version: str, marker: str, why: st
         ("스스로를 강화", "왜 안 되는지를 설명해야 지시가 유지됩니다."),
         ("기존 값을 그대로 둡니다", "근거 없을 때의 동작이 명시돼야 합니다."),
         ("200자", "이 세트가 쓰는 필드 길이가 있어야 합니다."),
+        ("통째로 대체", "이 세트는 문서 전체를 다시 쓴다고 알려야 합니다."),
     ],
 )
 def test_memo_only_sets_keep_their_evidence_rule(version: str, marker: str, why: str):
@@ -421,6 +597,12 @@ def test_memo_only_sets_stay_identical():
         ("개수 제한은 없습니다", "customAttributes 개수 제한이 없다고 적어야 합니다."),
         ("정보를 지우는 것은 마지막입니다", "줄이는 순서가 보존 정책을 따라야 합니다."),
         ("`[REDACTED_…]`", "가린 자리를 프로필에 옮기지 않게 해야 합니다."),
+        ("바꿀 항목만", "문서 전체가 아니라 바꿀 항목만 내라고 적어야 합니다."),
+        ("글자 하나 바뀌지 않고", "출력에 없는 항목이 그대로 남는다고 알려야 건드리지 않습니다."),
+        ("그 항목의 전체 문장", "조각만 내면 그 항목의 기존 내용이 사라집니다."),
+        ("`null` 로 둡니다", "바꾸지 않는 필드를 어떻게 내는지 적어야 합니다."),
+        ("기존과 똑같은 `key`", "키가 다르면 바꾸는 대신 새 속성이 생깁니다."),
+        ("줄이는 항목도 출력에 담아야 줄어듭니다", "줄일 항목을 내지 않으면 문서가 상한까지 자랍니다."),
     ],
 )
 def test_v3_states_the_broad_collection_policy(marker: str, why: str):
@@ -443,6 +625,9 @@ def test_v3_states_the_broad_collection_policy(marker: str, why: str):
         ("150자", "옛 customAttributes 길이가 남아 있습니다."),
         ("최대 5개", "옛 customAttributes 개수가 남아 있습니다."),
         ("짧을수록 좋습니다", "눌러 담으라는 지시가 남아 있습니다."),
+        ("통째로 대체", "문서 전체를 다시 쓴다는 설명이 남아 있습니다."),
+        ("프로필 전체를 다시 씁니다", "문서 전체를 다시 쓰라는 지시가 남아 있습니다."),
+        ("빈 문자열로 둡니다", "바꾸지 않는 필드를 빈 문자열로 내라는 지시가 남아 있습니다."),
     ],
 )
 def test_v3_drops_the_rules_the_new_policy_replaced(removed: str, why: str):
@@ -533,13 +718,26 @@ def test_v3_names_every_key_the_digest_carries():
         assert f"`{key}`" in text, f"user_memory v3 에 입력 키 `{key}` 설명이 없습니다."
 
 
-def test_v3_keeps_the_output_example_in_step_with_the_schema():
-    """출력 예시의 키가 스키마와 다르면 모델은 예시를 계약으로 알고 채운다."""
+def test_v3_output_example_is_a_valid_patch():
+    """출력 예시의 키가 스키마와 다르면 모델은 예시를 계약으로 알고 채운다.
+
+    v3 의 출력은 문서가 아니라 패치다. 예시가 패치로 검증되고, 바꾸지 않는 필드(null)·
+    바꾸는 필드·속성 추가·속성 삭제를 모두 보여 주는지 본다.
+    """
 
     block = re.search(r"```json\n(.*?)```", _prompt("v3"), re.S)
     assert block, "user_memory v3 프롬프트에 JSON 출력 예시가 없습니다."
+    example = json.loads(block.group(1))
 
     declared = {
-        field.alias or name for name, field in UserMemory.model_fields.items()
+        field.alias or name for name, field in UserMemoryPatch.model_fields.items()
     }
-    assert set(json.loads(block.group(1))) == declared - set(METADATA_FIELDS)
+    assert set(example) == declared
+    assert not set(example) & set(METADATA_FIELDS)
+
+    patch = UserMemoryPatch.model_validate(example)
+    values = [example[name] for name in NARRATIVE_FIELDS]
+    assert None in values, "바꾸지 않는 필드를 null 로 내는 예가 있어야 합니다."
+    assert any(isinstance(value, str) for value in values)
+    assert any(change.value for change in patch.custom_attributes)
+    assert any(change.value is None for change in patch.custom_attributes)

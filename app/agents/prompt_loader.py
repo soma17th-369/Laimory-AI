@@ -9,6 +9,9 @@ from app.core.config import settings
 #:
 #: v2 는 운영 세트다. 프롬프트가 설명하지 않는 warning·입력·도구를 코드가 먼저 주면 운영
 #: 결과가 달라진다. 새 세트는 이름을 여기 더하지 않는 한 새 계약으로 돈다.
+#:
+#: User Memory 갱신도 같은 기준으로 가른다(#121). 이 세트들은 문서 전체를 다시 출력하고
+#: 성향 근거를 memo 로 제한한다. 새 세트는 바꿀 항목만 출력한다.
 LEGACY_PROMPT_VERSIONS = frozenset({"v1", "v2"})
 
 

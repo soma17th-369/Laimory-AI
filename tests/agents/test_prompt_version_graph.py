@@ -11,6 +11,7 @@ v1·v2 는 `memo` 없는 날 성향 필드를 그대로 두라고 알리고, v3 
 """
 
 import importlib
+import json
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,12 @@ from app.schemas.user_memory_update import DailyTimeline
 from app.services.user_memory_limits import build_daily_timeline_digest
 from tests.fixtures.fake_llm import FakeLLM, result_json
 from tests.fixtures.requests import make_request, sleep_item, stay_item
-from tests.fixtures.user_memory import daily_timeline, daily_timeline_event
+from tests.fixtures.user_memory import (
+    NARRATIVE_FIELDS,
+    daily_timeline,
+    daily_timeline_event,
+    memory_json,
+)
 
 _AGENT_MODULES = {
     "location": "app.agents.events.location.agent",
@@ -164,6 +170,41 @@ def test_memo_only_versions_tell_the_model_a_day_has_no_memo(
 
     assert module._MEMO_ONLY_TRAITS is True
     assert "[근거 없음]" in prompt
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_legacy_versions_take_the_whole_document_from_the_model(
+    monkeypatch: pytest.MonkeyPatch, version: str
+) -> None:
+    """v1·v2 프롬프트는 문서 전체를 출력하라고 적혀 있다. 모델이 낸 문서가 곧 결과다."""
+
+    module = _reload_agents(monkeypatch, version)["user_memory"]
+    existing = module.UserMemory(relationships="김민수: 같은 팀 동료.")
+    llm = FakeLLM([memory_json(basicProfile="30대 개발자입니다.")])
+
+    memory = module.UserMemoryAgent(llm=llm).generate(existing, _digest_without_memo())
+
+    assert module._PATCH_OUTPUT is False
+    assert memory.basic_profile == "30대 개발자입니다."
+    assert memory.relationships == ""
+
+
+def test_v3_takes_only_the_items_to_change_and_keeps_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v3 는 바꿀 항목만 받아 기존 문서에 끼워 넣는다(#121)."""
+
+    module = _reload_agents(monkeypatch, "v3")["user_memory"]
+    existing = module.UserMemory(relationships="김민수: 같은 팀 동료.")
+    patch = {name: None for name in NARRATIVE_FIELDS}
+    patch.update(basicProfile="30대 개발자입니다.", customAttributes=[])
+    llm = FakeLLM([json.dumps(patch, ensure_ascii=False)])
+
+    memory = module.UserMemoryAgent(llm=llm).generate(existing, _digest_without_memo())
+
+    assert module._PATCH_OUTPUT is True
+    assert memory.basic_profile == "30대 개발자입니다."
+    assert memory.relationships == "김민수: 같은 팀 동료."
 
 
 def test_v3_does_not_tell_the_model_to_leave_traits_untouched(

@@ -1,7 +1,18 @@
-"""User Memory 갱신 Agent (#64).
+"""User Memory 갱신 Agent (#64, #121).
 
-기존 프로필과 확정된 하루 타임라인을 받아 **전체 갱신본 하나**를 만든다. append 가 아니라
-rewrite 다 — 출력이 기존 값을 통째로 대체한다.
+기존 프로필과 확정된 하루 타임라인을 받아 **갱신된 프로필 문서 하나**를 돌려준다.
+App Server 로 나가는 것은 언제나 문서 전체이고, 그것이 기존 값을 통째로 대체한다.
+
+## 모델이 무엇을 출력하는지는 세트마다 다르다
+
+- **v3** 는 **바꿀 항목만** 출력한다(:class:`~app.schemas.user_memory.UserMemoryPatch`).
+  코드가 그것을 기존 문서에 끼워 넣는다. 출력에 없는 항목은 글자 하나 바뀌지 않는다.
+- **v1·v2** 는 문서 전체를 다시 출력한다. 그 프롬프트가 그렇게 적혀 있고 v2 는 운영
+  세트다.
+
+전체를 다시 쓰게 하면 바뀐 것이 한 줄이어도 나머지 필드를 전부 다시 쓴다. 건드릴 이유가
+없던 내용이 조금씩 달라지거나 빠지고(실측에서 "사는 곳" 이 줄이는 과정에서 사라졌다),
+문서가 상한에 닿으면 다시 쓰는 양이 곧 상한이라 넘기기 쉽다.
 
 ## 이 Agent 가 타임라인 파이프라인의 Agent 가 아닌 이유
 
@@ -29,9 +40,9 @@ rewrite 다 — 출력이 기존 값을 통째로 대체한다.
 
 ## 무엇을 LLM 이 정하고 무엇을 코드가 정하는가
 
-- **LLM**: 무엇을 남기고 합치고 버릴지 (의미 판단)
-- **코드**: 얼마나 클 수 있는지, 무엇이 남으면 안 되는지, 몇 번까지 다시 물을지
-  (셀 수 있는 것)
+- **LLM**: 어느 항목을 바꾸고 그 항목에 무엇을 남기고 합치고 버릴지 (의미 판단)
+- **코드**: 바꾼 항목을 문서에 끼워 넣는 일, 얼마나 클 수 있는지, 무엇이 남으면 안
+  되는지 (셀 수 있는 것)
 
 ``schemaVersion`` 과 ``updatedAt`` 도 코드가 정한다. 계약 버전과 갱신 시각은 관측
 가능한 사실이지 모델의 판단이 아니다.
@@ -43,12 +54,11 @@ import json
 from collections.abc import Sequence
 
 from app.agents.parsing import SupportsComplete, default_llm, user_memory_to_text
-from app.agents.prompt_loader import load_prompt
-from app.core.config import settings
+from app.agents.prompt_loader import load_prompt, uses_legacy_contract
 from app.core.execution_context import ExecutionStage, execution_scope
 from app.core.logging import get_logger, log_fields
 from app.core.llm_stages import LLMStage
-from app.schemas.user_memory import UserMemory
+from app.schemas.user_memory import UserMemory, UserMemoryPatch
 from app.services.user_memory_limits import (
     USER_MEMORY_MAX_CHARS,
     USER_MEMORY_TARGET_CHARS,
@@ -70,7 +80,16 @@ _TEMPERATURE = 0.2
 #: 알린다. v3 는 AI 가 쓴 문장도 근거로 읽으므로 그 지시가 시스템 프롬프트와 정면으로
 #: 어긋난다. 지시를 통째로 지우지 않고 가른 것은 ``PROMPT_VERSION`` 을 v2 로 되돌렸을 때
 #: 그 세트의 근거 정책이 예전처럼 지켜져야 하기 때문이다.
-_MEMO_ONLY_TRAITS = settings.prompt_version in ("v1", "v2")
+#:
+#: 어느 세트가 예전 계약인지는 프롬프트 세트 전체가 같은 기준을 쓴다
+#: (:func:`~app.agents.prompt_loader.uses_legacy_contract`).
+_MEMO_ONLY_TRAITS = uses_legacy_contract()
+
+#: 모델이 문서 전체가 아니라 **바꿀 항목만** 출력하는 세트인가(#121).
+#:
+#: v3 부터 그렇다. v1·v2 프롬프트는 문서 전체를 출력하라고 적혀 있어 그대로 전체를 받는다.
+#: 두 분기값은 같은 기준에서 나오지만 하는 일이 달라 이름을 따로 둔다.
+_PATCH_OUTPUT = not uses_legacy_contract()
 
 
 def _size_section(existing: UserMemory | None) -> str | None:
@@ -156,11 +175,18 @@ def build_update_prompt(
         sections.append(f"[직전 출력이 규칙을 어겼습니다]\n{listed}")
         # 직전 출력에는 이번 기록이 이미 반영돼 있다. 다시 만들면 그 작업을 버리고
         # 같은 자리에서 출발한다.
-        sections.append(
-            "처음부터 다시 만들지 말고 **직전 출력을 고쳐** User Memory 전체를 "
-            "출력하세요. 지적된 규칙에 맞게 고치고, 바뀐 부분만이 아니라 문서 전체를 "
-            "출력합니다."
-        )
+        if _PATCH_OUTPUT:
+            sections.append(
+                "처음부터 다시 만들지 말고 **직전 출력에서 바꿀 항목만** 출력하세요. "
+                "지적된 규칙에 맞게 고칠 항목에는 그 항목의 전체 문장을 적고, 나머지는 "
+                "null 로 둡니다."
+            )
+        else:
+            sections.append(
+                "처음부터 다시 만들지 말고 **직전 출력을 고쳐** User Memory 전체를 "
+                "출력하세요. 지적된 규칙에 맞게 고치고, 바뀐 부분만이 아니라 문서 전체를 "
+                "출력합니다."
+            )
         return "\n\n".join(sections)
 
     if violations:
@@ -172,16 +198,25 @@ def build_update_prompt(
         )
 
     # 무엇을 남기고 버릴지는 여기서 말하지 않는다. 그것은 시스템 프롬프트의 정책이고
-    # 세트마다 다르다. 여기서 고정하는 것은 출력이 **문서 전체**라는 계약뿐이다.
-    sections.append(
-        "위 기록을 반영해 **User Memory 전체**를 다시 만드세요. "
-        "바뀐 부분만이 아니라 기존 정보와 새 정보를 합친 전체 갱신본 하나를 출력합니다."
-    )
+    # 세트마다 다르다. 여기서 고정하는 것은 **출력의 모양**뿐이다 — 바꿀 항목만인지
+    # 문서 전체인지.
+    if _PATCH_OUTPUT:
+        sections.append(
+            "위 기록을 반영해 기존 프로필에서 **바꿀 항목만** 출력하세요. "
+            "바꾸지 않는 항목은 null 로 두고, 바꾸는 항목에는 그 항목의 전체 문장을 "
+            "적습니다."
+        )
+    else:
+        sections.append(
+            "위 기록을 반영해 **User Memory 전체**를 다시 만드세요. "
+            "바뀐 부분만이 아니라 기존 정보와 새 정보를 합친 전체 갱신본 하나를 "
+            "출력합니다."
+        )
     return "\n\n".join(sections)
 
 
 class UserMemoryAgent:
-    """확정된 하루 타임라인으로 User Memory 전체 갱신본을 만든다."""
+    """확정된 하루 타임라인으로 갱신된 User Memory 문서를 만든다."""
 
     name = "user-memory"
 
@@ -202,13 +237,18 @@ class UserMemoryAgent:
         violations: Sequence[str] = (),
         previous: UserMemory | None = None,
     ) -> UserMemory:
-        """전체 갱신본을 만든다.
+        """갱신된 문서 전체를 돌려준다.
 
-        스키마 검증(필드와 ``customAttributes`` 값의 길이·모르는 최상위 필드)은
-        ``complete_structured`` 안의 교정 재시도가 맡는다. 크기 총량과 민감정보는
-        그 위에서 :mod:`app.services.user_memory_repair` 가 본다.
+        v3 세트에서는 모델이 바꿀 항목만 내고(:class:`UserMemoryPatch`) 여기서 기존
+        문서에 끼워 넣는다. v1·v2 세트에서는 모델이 낸 문서 전체를 그대로 돌려준다.
+        어느 쪽이든 **반환값은 문서 전체**라 호출부는 세트를 몰라도 된다.
 
-        ``previous`` 는 규칙을 어긴 직전 출력이다. 주어지면 그 문서를 고쳐서 낸다.
+        스키마 검증(항목 값의 길이·모르는 최상위 필드)은 ``complete_structured`` 안의
+        교정 재시도가 맡는다. 크기 총량과 민감정보는 그 위에서
+        :mod:`app.services.user_memory_repair` 가 **적용을 마친 문서**를 두고 본다.
+
+        ``previous`` 는 규칙을 어긴 직전 출력이다. 주어지면 그 문서를 고쳐서 낸다 —
+        패치도 기존 문서가 아니라 그 문서에 적용한다.
 
         실패는 삼키지 않고 그대로 올린다 — 코드 부여와 기록은 흡수하는 쪽의 몫이다.
         """
@@ -222,12 +262,23 @@ class UserMemoryAgent:
                 extra=log_fields(
                     hasExistingMemory=existing is not None,
                     repairHints=len(violations),
+                    patchOutput=_PATCH_OUTPUT,
                     **digest.stats,
                 ),
             )
-            return self.llm.complete_structured(
+            if not _PATCH_OUTPUT:
+                return self.llm.complete_structured(
+                    prompt,
+                    UserMemory,
+                    system=_SYSTEM_PROMPT,
+                    temperature=_TEMPERATURE,
+                )
+
+            patch = self.llm.complete_structured(
                 prompt,
-                UserMemory,
+                UserMemoryPatch,
                 system=_SYSTEM_PROMPT,
                 temperature=_TEMPERATURE,
             )
+            base = previous if violations and previous is not None else existing
+            return patch.apply_to(base)

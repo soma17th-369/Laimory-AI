@@ -143,11 +143,110 @@ class UserMemory(CamelModel):
         }
 
 
+class CustomAttributeChange(CamelModel):
+    """``customAttributes`` 항목 하나를 어떻게 바꿀지.
+
+    ``value`` 가 있으면 그 키를 그 값으로 두고(없던 키면 더하고 있던 키면 바꾼다),
+    ``None`` 이나 빈 문자열이면 그 키를 지운다.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    key: str = Field(min_length=1)
+    value: CustomAttributeText | None = None
+
+
+class UserMemoryPatch(CamelModel):
+    """기존 프로필에서 **바꿀 항목만** 담은 부분 갱신 (#121). LLM 출력 계약이다.
+
+    갱신할 때마다 모델이 문서 전체를 다시 쓰면, 건드릴 이유가 없던 항목까지 조금씩
+    달라지거나 빠진다. 그래서 모델에게는 바꿀 항목과 새 값만 받고 코드가 그것을 기존
+    문서에 끼워 넣는다(:meth:`apply_to`). 여기 없는 항목은 글자 하나 바뀌지 않는다.
+
+    ## 값의 뜻
+
+    고정 필드는 ``None`` 이 "바꾸지 않는다" 이고, 문자열이 "이 값으로 바꾼다" 다. 빈
+    문자열은 그 필드를 비운다. 새 값은 그 항목의 **전체 문장**이다 — 덧붙일 조각이
+    아니라 기존 내용과 합친 결과를 받는다. 코드는 문장을 이어 붙이지 않는다.
+
+    ``customAttributes`` 는 dict 가 아니라 (키, 값) 목록이다. dict 로 두면 "없는 키"
+    가 "바꾸지 않는다" 인지 "지운다" 인지 가를 수 없고, 자유형 object 라 provider 의
+    strict 스키마로도 표현되지 않는다.
+
+    ## 길이
+
+    항목 값 하나의 상한은 저장 문서와 같다(:data:`NARRATIVE_MAX_LENGTH`,
+    :data:`CUSTOM_ATTRIBUTE_MAX_LENGTH`). 같은 타입을 쓰므로 패치를 통과한 값은 적용한
+    뒤에도 문서 계약을 어기지 않는다. 문서 전체의 크기는 적용한 뒤에 따로 본다.
+
+    이것은 **AI 서버 안의 계약**이다. App Server 로 나가는 것은 언제나 적용을 마친 문서
+    전체이고(:class:`UserMemory`), 저장 형식은 달라지지 않는다.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    basic_profile: NarrativeText | None = Field(default=None, alias="basicProfile")
+    life_context: NarrativeText | None = Field(default=None, alias="lifeContext")
+    relationships: NarrativeText | None = None
+    personality: NarrativeText | None = None
+    values: NarrativeText | None = None
+    preferences: NarrativeText | None = None
+    routines: NarrativeText | None = None
+    current_focus: NarrativeText | None = Field(default=None, alias="currentFocus")
+    emotional_patterns: NarrativeText | None = Field(
+        default=None, alias="emotionalPatterns"
+    )
+    memory_style: NarrativeText | None = Field(default=None, alias="memoryStyle")
+
+    custom_attributes: list[CustomAttributeChange] = Field(
+        default_factory=list, alias="customAttributes"
+    )
+
+    def apply_to(self, memory: UserMemory | None) -> UserMemory:
+        """기존 문서에 이 패치를 끼워 넣은 새 문서를 돌려준다. 원본은 바꾸지 않는다.
+
+        ``memory`` 가 ``None`` 이면 빈 문서에 적용한다. 기존 문서가 없는 것과 비어
+        있는 것을 가를 이유가 없다 — 어느 쪽이든 채울 것만 채우면 된다.
+
+        같은 키가 목록에 두 번 나오면 뒤의 것이 이긴다. 없는 키를 지우라는 것은 아무
+        일도 하지 않는다.
+        """
+
+        base = memory if memory is not None else UserMemory()
+        update: dict[str, Any] = {
+            name: value
+            for name in _NARRATIVE_ATTRIBUTES
+            if (value := getattr(self, name)) is not None
+        }
+
+        attributes = dict(base.custom_attributes)
+        for change in self.custom_attributes:
+            if change.value:
+                attributes[change.key] = change.value
+            else:
+                attributes.pop(change.key, None)
+        update["custom_attributes"] = attributes
+
+        return base.model_copy(update=update)
+
+
+#: 고정 자연어 필드의 Python 속성 이름. :data:`NARRATIVE_FIELDS` 와 같은 순서다.
+_NARRATIVE_ATTRIBUTES: tuple[str, ...] = tuple(
+    name
+    for alias in NARRATIVE_FIELDS
+    for name, field in UserMemory.model_fields.items()
+    if (field.alias or name) == alias
+)
+
+
 def _assert_field_catalog_matches_model() -> None:
     """필드를 더하고 :data:`NARRATIVE_FIELDS` 갱신을 잊으면 import 시점에 터뜨린다.
 
     이 튜플이 모델과 갈리면 새 필드가 조용히 프롬프트에서 빠진다. 값은 들어와
     있는데 Agent 는 못 보는 상태라, 결과만 봐서는 원인을 찾기 어렵다.
+
+    패치도 같은 필드를 가져야 한다. 문서에만 필드를 더하면 그 필드는 **영영 갱신되지
+    않는다** — 패치로 바꿀 방법이 없기 때문이다.
     """
 
     declared = {
@@ -159,6 +258,17 @@ def _assert_field_catalog_matches_model() -> None:
             "UserMemory 필드와 projection 카탈로그가 다릅니다: "
             f"모델에만 있음={sorted(declared - catalog)}, "
             f"카탈로그에만 있음={sorted(catalog - declared)}."
+        )
+
+    patchable = {
+        field.alias or name for name, field in UserMemoryPatch.model_fields.items()
+    }
+    expected = set(NARRATIVE_FIELDS) | {"customAttributes"}
+    if patchable != expected:
+        raise RuntimeError(
+            "UserMemoryPatch 가 바꿀 수 있는 항목이 UserMemory 와 다릅니다: "
+            f"패치에만 있음={sorted(patchable - expected)}, "
+            f"문서에만 있음={sorted(expected - patchable)}."
         )
 
 

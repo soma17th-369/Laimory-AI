@@ -17,12 +17,14 @@ from pydantic import ValidationError
 
 from app.agents.parsing import user_memory_to_text
 from app.schemas import UserMemory
+from app.core.structured import to_strict_schema
 from app.schemas.user_memory import (
     CUSTOM_ATTRIBUTE_MAX_LENGTH,
     METADATA_FIELDS,
     NARRATIVE_FIELDS,
     NARRATIVE_MAX_LENGTH,
     SCHEMA_VERSION,
+    UserMemoryPatch,
 )
 
 
@@ -170,6 +172,158 @@ def test_projection_text_is_stable_json():
     # 한글을 이스케이프하면 같은 뜻에 토큰만 늘어난다.
     assert "\\u" not in text
     assert text == user_memory_to_text(memory)
+
+
+# --- 부분 갱신 (#121) ---------------------------------------------------
+#
+# 모델에게는 바꿀 항목만 받고 코드가 기존 문서에 끼워 넣는다. 여기서 지키는 것은
+# "패치에 없는 항목은 글자 하나 바뀌지 않는다" 하나다.
+
+
+def _patch(**overrides) -> UserMemoryPatch:
+    return UserMemoryPatch.model_validate(overrides)
+
+
+def _profile() -> UserMemory:
+    return _memory(
+        updatedAt="2026-09-27T21:00:00+09:00",
+        basicProfile="망원동에 사는 30대 개발자입니다.",
+        routines="평일에는 회사에서 일합니다.",
+        customAttributes={"반려동물": "고양이 한 마리", "여행": "8월 말 강릉"},
+    )
+
+
+def test_empty_patch_changes_nothing():
+    profile = _profile()
+
+    assert _patch().apply_to(profile) == profile
+
+
+def test_patch_replaces_only_the_fields_it_carries():
+    profile = _profile()
+
+    updated = _patch(routines="평일에는 회사에서 일하고 주말에 클라이밍을 합니다.").apply_to(profile)
+
+    assert updated.routines == "평일에는 회사에서 일하고 주말에 클라이밍을 합니다."
+    assert updated.basic_profile == profile.basic_profile
+    assert updated.custom_attributes == profile.custom_attributes
+    assert updated.updated_at == profile.updated_at
+
+
+def test_patch_does_not_mutate_the_original():
+    profile = _profile()
+    before = profile.model_dump()
+
+    _patch(
+        routines="바뀐 문장입니다.",
+        customAttributes=[{"key": "여행", "value": None}],
+    ).apply_to(profile)
+
+    assert profile.model_dump() == before
+
+
+def test_null_leaves_a_field_and_an_empty_string_clears_it():
+    """``None`` 은 "바꾸지 않는다" 이고 빈 문자열은 "비운다" 다. 둘을 섞으면 안 된다."""
+
+    profile = _profile()
+
+    untouched = _patch(basicProfile=None).apply_to(profile)
+    cleared = _patch(basicProfile="").apply_to(profile)
+
+    assert untouched.basic_profile == profile.basic_profile
+    assert cleared.basic_profile == ""
+
+
+def test_patch_adds_replaces_and_removes_custom_attributes():
+    updated = _patch(
+        customAttributes=[
+            {"key": "운동", "value": "합정 클라이밍장"},
+            {"key": "반려동물", "value": "고양이 두 마리"},
+            {"key": "여행", "value": None},
+        ]
+    ).apply_to(_profile())
+
+    assert updated.custom_attributes == {"반려동물": "고양이 두 마리", "운동": "합정 클라이밍장"}
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_removing_a_custom_attribute_takes_null_or_an_empty_value(value):
+    updated = _patch(customAttributes=[{"key": "여행", "value": value}]).apply_to(_profile())
+
+    assert "여행" not in updated.custom_attributes
+
+
+def test_removing_an_unknown_custom_attribute_is_a_no_op():
+    profile = _profile()
+
+    updated = _patch(customAttributes=[{"key": "없는 키", "value": None}]).apply_to(profile)
+
+    assert updated.custom_attributes == profile.custom_attributes
+
+
+def test_later_change_wins_when_a_key_appears_twice():
+    updated = _patch(
+        customAttributes=[
+            {"key": "운동", "value": "수영"},
+            {"key": "운동", "value": "클라이밍"},
+        ]
+    ).apply_to(_profile())
+
+    assert updated.custom_attributes["운동"] == "클라이밍"
+
+
+def test_patch_applies_to_a_missing_profile_as_to_an_empty_one():
+    """기존 문서가 없는 것과 비어 있는 것을 가를 이유가 없다."""
+
+    patch = _patch(basicProfile="판교 회사에 다니는 직장인으로 보입니다.")
+
+    assert patch.apply_to(None) == patch.apply_to(UserMemory())
+    assert patch.apply_to(None).prompt_payload() == {
+        "basicProfile": "판교 회사에 다니는 직장인으로 보입니다."
+    }
+
+
+def test_patch_value_over_the_item_limit_is_rejected():
+    """항목 값 하나의 길이 제한은 저장 문서와 같다. 패치를 통과한 값은 적용한 뒤에도
+    문서 계약을 어기지 않는다."""
+
+    with pytest.raises(ValidationError):
+        _patch(routines="가" * (NARRATIVE_MAX_LENGTH + 1))
+    with pytest.raises(ValidationError):
+        _patch(
+            customAttributes=[
+                {"key": "메모", "value": "가" * (CUSTOM_ATTRIBUTE_MAX_LENGTH + 1)}
+            ]
+        )
+
+
+def test_patch_rejects_unknown_fields_and_metadata():
+    """패치로 계약 버전이나 갱신 시각을 바꿀 수 없다. 그 값은 서버가 정한다."""
+
+    with pytest.raises(ValidationError):
+        _patch(favoriteColor="파랑")
+    with pytest.raises(ValidationError):
+        _patch(schemaVersion="9.9")
+    with pytest.raises(ValidationError):
+        _patch(customAttributes=[{"key": "", "value": "값"}])
+
+
+def test_patch_can_change_exactly_the_items_the_document_has():
+    """문서에만 필드를 더하면 그 필드는 영영 갱신되지 않는다."""
+
+    patchable = {
+        field.alias or name for name, field in UserMemoryPatch.model_fields.items()
+    }
+
+    assert patchable == set(NARRATIVE_FIELDS) | {"customAttributes"}
+
+
+def test_patch_schema_can_be_enforced_by_the_provider():
+    """문서 스키마는 ``customAttributes`` 가 자유형 dict 라 strict 로 표현되지 않는다.
+    패치는 (키, 값) 목록이라 provider 가 모양을 강제할 수 있다."""
+
+    assert to_strict_schema(UserMemory) is None
+    assert to_strict_schema(UserMemoryPatch) is not None
 
 
 # --- 관측 ---------------------------------------------------------------
