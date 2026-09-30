@@ -58,6 +58,7 @@ from app.schemas import (
     TimelineWarning,
     TimelineWarningSeverity,
 )
+from app.services.draft_repair import enforce_final_photo_assignment
 
 logger = get_logger(__name__)
 
@@ -478,6 +479,9 @@ async def run_main_agent(
             }
         )
         draft = final_state["draft"]
+        # 저장으로 넘어가기 전에 사진 단일 귀속을 한 번 더 강제한다(이슈 #119). 확정
+        # pass 가 이미 강제했으므로 보통은 아무것도 하지 않는다.
+        enforce_final_photo_assignment(draft, request)
         update_observation(
             langfuse_observation,
             output={

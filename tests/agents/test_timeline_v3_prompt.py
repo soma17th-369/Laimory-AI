@@ -22,6 +22,7 @@ import pytest
 
 from app.schemas import EventSourceType, EventType, InferenceLevel, TimelineWarningSeverity
 from app.schemas.user_memory import NARRATIVE_FIELDS
+from app.services.event_count_guard import MAX_EVENT_COUNT
 
 APP_ROOT = Path(__file__).resolve().parents[2] / "app"
 
@@ -222,8 +223,14 @@ def test_v3_prompts_do_not_handle_sleep() -> None:
 
 
 
-def test_timeline_v3_limits_events_to_twenty_four() -> None:
-    assert "24개를 넘지 않" in _timeline_v3()
+def test_timeline_v3_states_the_limit_the_code_measures() -> None:
+    """프롬프트가 지시하는 개수와 코드가 재는 개수가 같아야 한다."""
+
+    timeline = _timeline_v3()
+
+    assert f"최종 event는 {MAX_EVENT_COUNT}개를 넘지 않습니다" in timeline
+    assert f"`events`는 {MAX_EVENT_COUNT}개를 넘지 않습니다" in timeline
+    assert "24개" not in timeline
 
 
 def test_timeline_v3_keeps_time_expressions_out_of_descriptions() -> None:

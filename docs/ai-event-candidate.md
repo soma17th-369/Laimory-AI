@@ -54,29 +54,47 @@
   `UNKNOWN` 이며 무엇을 했는지는 title·description 이 말한다(#118). 새 타입을 만들지
   않는다 — App Server 는 이 13종만 받는다.
 
-## eventType 별 지속시간 (#118)
+## eventType 별 지속시간 (#118, #119)
 
 Timeline v3 프롬프트가 지시하는 상한이다. 캘린더 근거가 있으면 어느 타입이든 일정 시간을
 따르고, "최대"는 근거 구간 안에서 자르는 상한이지 근거 밖으로 늘리는 값이 아니다.
 
-| eventType | 지속시간 | 코드가 강제하는가 |
+| eventType | 지속시간 | 코드가 하는 일 |
 | --- | --- | --- |
-| `WAKE_UP` | 순간(시작=끝) | 예 (`draft_repair.repair_durations`) |
-| `SLEEP` | 수면 기록 구간 그대로 | 아니오 |
-| `MOVEMENT` | 첫 출발~최종 도착 그대로 | 부분 (`align_location_events` 가 이동을 통째로 품게 한다) |
-| `CALENDAR_EVENT` | 일정 시작~종료(window 안) | 아니오 |
-| `MEAL` | 20~60분 | 예 (`meal_guard`) |
-| `PHOTO_MOMENT` | 촬영 순간~마지막 촬영, 최대 1시간 | 아니오 |
-| `MEETING` | 일정 시간, 일정이 없으면 최대 2시간 | 아니오 |
-| `CLASS` | 일정 시간, 일정이 없으면 최대 3시간 | 아니오 |
-| `WORK` | 최대 3시간, 넘으면 오전·오후처럼 나눈다 | 3시간 초과 warning 만 (`duration_guard`) |
-| `EXERCISE` | 산책은 왕복 구간 그대로, 그 외 최대 2시간 | 3시간 초과 warning 만 |
-| `SOCIAL` | 최대 3시간 | 3시간 초과 warning 만 |
-| `REST` | 최대 3시간 | 3시간 초과 warning 만 |
-| `UNKNOWN` | 최대 3시간 | 3시간 초과 warning 만 |
+| `WAKE_UP` | 순간(시작=끝) | 강제 (`draft_repair.repair_durations`) |
+| `SLEEP` | 수면 기록 구간 그대로 | 재지 않는다 |
+| `MOVEMENT` | 첫 출발~최종 도착 그대로 | 이동을 통째로 품게 한다(`align_location_events`). 길이는 재지 않고 구조를 본다(아래) |
+| `CALENDAR_EVENT` | 일정 시작~종료(window 안) | 재지 않는다 |
+| `MEAL` | 20~60분 | 강제 (`meal_guard`) |
+| `PHOTO_MOMENT` | 촬영 순간~마지막 촬영, 최대 1시간 | 1시간 초과 warning (`duration_guard`) |
+| `MEETING` | 일정 시간, 일정이 없으면 최대 2시간 | 2시간 초과 warning |
+| `CLASS` | 일정 시간, 일정이 없으면 최대 3시간 | 3시간 초과 warning |
+| `WORK` | 일정 시간, 일정이 없으면 최대 3시간. 넘으면 오전·오후처럼 나눈다 | 3시간 초과 warning |
+| `EXERCISE` | 산책은 왕복 구간 그대로, 그 외 최대 2시간 | 2시간 초과 warning. 산책은 면제 |
+| `SOCIAL` | 일정 시간, 일정이 없으면 최대 3시간 | 3시간 초과 warning |
+| `REST` | 최대 3시간 | 3시간 초과 warning |
+| `UNKNOWN` | 최대 3시간 | 3시간 초과 warning |
 
-타입별 상한을 코드로 검사하는 것은 #119 의 몫이다. 그 전까지 `duration_guard` 는 비캘린더
-event 를 일괄 3시간으로 잰다.
+`duration_guard` 는 **재기만 하고 자르거나 나누지 않는다.** 어디서 끊을지는 의미 판단이라
+Repair 가 `update_event`·`split_event` 로 처리한다. 위 표와 아래 면제는 `PROMPT_VERSION=v3`
+에서 적용된다. v1·v2 세트에서는 예전처럼 비캘린더 event 를 일괄 3시간으로 잰다 — 타입별
+상한은 v3 프롬프트가 정한 값이라, 그 지시를 받은 적 없는 세트가 규칙대로 만든 event 에
+warning 을 붙이지 않는다. 면제는 셋이다(#119).
+
+- **캘린더 근거가 있고 event 길이가 그 일정의 길이를 넘지 않는 event.** 타입을 가리지
+  않는다. 일정이 09:00~23:00 이면 그 시간을 따르는 `WORK` 는 길어도 일정대로다. 1시간짜리
+  일정을 근거로 댄 8시간 event 는 일정대로가 아니므로 면제하지 않는다.
+- **MOVEMENT 근거가 있는 `EXERCISE`.** Location 이 왕복 도보 여정을 산책으로 표시한 것이다.
+- **코드가 하나로 합치는 체류.** 근거가 전부 한 묶음(이동 없이 같은 장소에서 이어진 STAY)의
+  체류인 event 다. 확정 pass 가 그런 event 를 하나로 합치므로(`merge_stay_events`) 나눠도
+  다음 확정에서 다시 합쳐진다. 고칠 수 없는 것을 Repair 에 알리지 않는다. 사진·알림·일정
+  근거가 섞인 event 는 합치는 대상이 아니라 면제하지 않는다.
+
+`MOVEMENT` 는 길이를 재지 않지만 구조는 본다. 하나의 event 가 `이동 → 20분을 넘는 체류 →
+이동` 을 함께 품으면 위반이다(`movement_stay_guard`). 20분은 Location 파생 지표의
+`shortStayRawIds` 와 같은 기준이고, **역·터미널·공항에서의 환승·대기도 20분을 넘으면 예외가
+없다.** 이 검사는 eventType 을 가리지 않으며, 찾기만 하고 나누는 것은 Repair 가 한다.
+이 검사도 v3 세트에서만 돈다.
 
 ## sourceRefs 구조
 

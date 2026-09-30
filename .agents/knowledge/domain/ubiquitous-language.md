@@ -39,9 +39,12 @@
 | Timeline draft | event, warning과 판단 metadata를 담는 편집 가능한 내부 결과. App Server 저장 request보다 넓다. |
 | Timeline event | 사용자가 읽는 하루의 사건 단위. source에 근거해야 하며 Repair 뒤 시간순 ID를 갖는다. |
 | `clientEventId` | 현재 draft 안에서만 쓰는 `event-NNN` 식별자. 병합·삭제 뒤 코드가 다시 부여하며 App Server result에는 보내지 않는다. |
-| Repair Agent | draft를 코드로 확정하고 남은 의미 문제를 LLM tool plan으로 제한 횟수 개선하는 Agent. |
+| Repair Agent | draft를 코드로 확정하고 남은 의미 문제를 LLM tool plan으로 제한 횟수 개선하는 Agent. v3 세트에서는 코드가 이미 본 것을 다시 검증하지 않고 내용과 문장을 다듬는다(#119). |
 | Confirm/확정 pass | `repair_draft`와 fragment 검사를 실행해 source·시간·정렬·ID 등 결정론 규칙을 재적용하는 단계. |
-| Guard | 특정 불변식을 검사·보정하거나 warning으로 드러내는 결정론 service. 모든 guard가 값을 자동 수정하는 것은 아니다. |
+| Guard | 특정 불변식을 검사·보정하거나 warning으로 드러내는 결정론 service. 모든 guard가 값을 자동 수정하는 것은 아니다. 무엇을 고칠지가 규칙으로 정해져 있으면 고치고, 의미 판단이 필요하면 찾기만 한다. |
+| 자동 검사 결과 (`ConfirmReport`) | 확정 pass 한 번이 고친 것(`corrected`), 지우거나 합친 것(`removed`), 새로 만든 것(`added`), 찾았지만 고치지 않은 것(`findings`)의 기록(#119). v3 Repair 프롬프트의 `[자동 검사 결과]` 절로 실린다. Warning과 다르다 — warning은 사람이 읽는 문장이고 이것은 event id·바뀐 값·경계를 담은 구조다. 저장하지 않는다. |
+| 대화 event | 근거가 전부 메신저 정책이 있는 앱의 알림이고 eventType이 `SOCIAL`·`WORK`·`MEETING`인 최종 event(#119). 하루 최대 3개이고, 넘으면 코드가 알림이 많은 3개만 남긴다. Notification Agent 입력의 대화 묶음(`conversations`)이나 출력의 대화 candidate와 다른 말이다 — 그것들이 Timeline을 지나 남은 결과다. |
+| 이동 사이 장시간 체류 | 하나의 candidate·event가 `MOVEMENT → 20분을 넘는 STAY → MOVEMENT`를 함께 품은 구조(#119). 20분 이하로 머문 짧은 체류(`shortStayRawIds`)와 같은 기준의 반대쪽이다. |
 | Question Agent | Repair가 확정한 모든 event에 사용자 회고 유도 질문을 하나씩 붙이는 Agent. |
 | 회고 유도 질문 | `TimelineEventDraft.question`/result event의 `question`. 사용자가 경험·감정·이유를 덧붙이도록 event에 중첩해 저장하는 질문. 예전의 내부 모호성 질문(`TimelineDraft.questions`)은 #118에서 제거됐다 — 읽어서 쓰는 곳이 없었고, 그 자리는 event `uncertainty`와 Timeline warning이 맡는다. |
 | `place` | 장소명. 파이프라인 전 구간이 이 한 이름을 쓴다 — 입력 `StayItem.place`/`GeoPlace.place`, draft event의 `place`, result event의 `place`. 예전 draft 필드명 `placeLabel`은 #72에서 통합됐고 back-compat alias로만 남는다. |
@@ -54,7 +57,7 @@
 | Warning | 복구 가능한 누락·충돌·품질 문제를 드러내는 내부 진단. task 실패와 동의어가 아니다. |
 | Confidence | event/candidate 확신도를 0~1로 표현한 값. 불확실성을 문장에 헤지하는 대신 metadata로 전달한다. |
 | Inference level | DIRECT, EVIDENCE_BASED, INFERRED, UNCERTAIN으로 판단 근거 수준을 표현한다. |
-| User Memory | 사용자를 압축한 프로필 v1.0. 사건 데이터가 아니라 해석·표현을 돕는 보조 context다. 소유는 App Server, 소비는 Timeline·Question Agent, 생성은 User Memory Agent다. |
+| User Memory | 사용자를 압축한 프로필 v1.0. 사건 데이터가 아니라 해석·표현을 돕는 보조 context다. 소유는 App Server, 소비는 Timeline·Question Agent와 v3 세트의 Repair Agent, 생성은 User Memory Agent다. |
 | User Memory 갱신 task | 확정된 하루 타임라인으로 프로필 전체를 다시 쓰는 비동기 작업. Timeline task와 별개이며 callback이 없다. |
 | Daily timeline | 갱신 입력의 하루치 확정 타임라인(`dailyTimelines[]`). `recordDate`와 `events`로 구성되며 수집 원본(source item)이 아니라 **이미 사용자에게 보인 결과**다. |
 | Daily timeline event | Daily timeline 안의 event 한 건. `title`·`subtitle`·`question`은 AI가 쓴 문장이고 `memo`만 사용자가 직접 쓴 글이다. |

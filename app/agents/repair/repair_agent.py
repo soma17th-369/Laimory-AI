@@ -31,10 +31,12 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agents.base import Agent
 from app.agents.events.base_event_agent import EventAgent
-from app.agents.parsing import SupportsComplete, default_llm
-from app.agents.prompt_loader import load_prompt
+from app.agents.parsing import SupportsComplete, default_llm, user_memory_to_text
+from app.agents.prompt_loader import load_prompt, uses_legacy_contract
 from app.agents.repair.tools import (
     RepairContext,
+    confirm_report_text,
+    event_evidence_text,
     execute_tool_calls,
     source_index_text,
     tool_catalog_text,
@@ -57,6 +59,7 @@ from app.schemas import (
     TimelineWarning,
     TimelineWarningSeverity,
 )
+from app.services.confirm_report import ConfirmReport
 from app.services.draft_repair import repair_draft
 from app.services.fragment_guard import verify_fragment_usage
 
@@ -82,23 +85,77 @@ def parse_repair_plan(text: str) -> RepairPlan:
     return RepairPlan.model_validate(payload)
 
 
+#: #119 의 Repair 계약을 쓰는 프롬프트 세트인가. 확정 pass 의 새 검사, 그 기록·event 근거·
+#: User Memory 입력, `split_event` 도구가 한 묶음이다.
+#:
+#: v1·v2 의 Repair 프롬프트는 이것들을 설명하지 않는다. 설명 없이 주면 이렇게 된다.
+#:
+#:   - User Memory: "사건 발생이나 장소를 확정하는 근거가 아니다"라는 사용 경계가 없어
+#:     모델이 프로필로 없던 일을 만들어 낼 수 있다.
+#:   - `split_event`: 실제 LLM 으로 돌렸더니 캘린더 일정대로인 event 와 사진 event 를 잘게
+#:     쪼개 event 가 7개에서 13개로 늘었다.
+#:   - 새 검사의 warning: 나눌 도구가 없는 v2 는 "나눠야 합니다"를 보고 Timeline 재실행을
+#:     두 번 불렀고, 위반은 그대로 남았다.
+#:
+#: v2 는 운영 세트라 프롬프트를 고치지 않으므로, 설명을 더하는 대신 주지 않는다.
+_EXTENDED_INPUT = not uses_legacy_contract()
+
+
 def build_repair_prompt(ctx: RepairContext, remaining: int) -> str:
-    """분석 요청(user prompt): 확정된 draft + 근거 원본 + 도구 + 지금까지의 실행 로그."""
+    """분석 요청(user prompt): 확정된 draft + 근거 원본 + 도구 + 지금까지의 실행 로그.
+
+    `ctx.extended` 가 참이면 확정 pass 의 기록, event 별 근거, User Memory 를 함께 싣는다.
+
+    프롬프트는 반복마다 **그 시점의 draft 로** 새로 만든다. 그래서 Repair 는 돌 때마다
+    직전 확정을 지난 결과를 보고, 코드가 찾은 것도 그 draft 로 다시 계산한 값을 본다.
+    """
 
     draft_text = json.dumps(
         ctx.draft.model_dump(by_alias=True, mode="json"),
         ensure_ascii=False,
         indent=2,
     )
+    if not ctx.extended:
+        return (
+            f"[draft]\n{draft_text}\n\n"
+            f"[근거 원본]\n{source_index_text(ctx.request)}\n\n"
+            f"[사용 가능한 도구]\n{tool_catalog_text(ctx)}\n\n"
+            f"[지금까지 실행한 도구]\n{tool_log_text(ctx)}\n\n"
+            f"[남은 반복 횟수] 이번 차례를 포함해 {remaining}번\n\n"
+            "이 draft 의 문제를 근거 원본과 대조해 찾고, 고칠 도구 호출 계획을 JSON 으로 내세요. "
+            "고칠 것이 없으면 done 을 true 로 하고 toolCalls 를 비웁니다."
+        )
+
     return (
         f"[draft]\n{draft_text}\n\n"
+        f"[자동 검사 결과]\n{confirm_report_text(ctx)}\n\n"
+        f"[event 근거]\n{event_evidence_text(ctx)}\n\n"
+        f"[user memory]\n{user_memory_to_text(ctx.request.user_memory)}\n\n"
         f"[근거 원본]\n{source_index_text(ctx.request)}\n\n"
         f"[사용 가능한 도구]\n{tool_catalog_text(ctx)}\n\n"
         f"[지금까지 실행한 도구]\n{tool_log_text(ctx)}\n\n"
         f"[남은 반복 횟수] 이번 차례를 포함해 {remaining}번\n\n"
-        "이 draft 의 문제를 근거 원본과 대조해 찾고, 고칠 도구 호출 계획을 JSON 으로 내세요. "
+        "코드가 고친 것과 찾은 것을 먼저 읽고, 어색해진 내용과 문장을 다듬고 남은 검사 "
+        "결과를 해소할 도구 호출 계획을 JSON 으로 내세요. "
         "고칠 것이 없으면 done 을 true 로 하고 toolCalls 를 비웁니다."
     )
+
+
+def _prompt_for_trace(prompt: str, ctx: RepairContext) -> str:
+    """관측에 남길 프롬프트. User Memory 본문을 비식별 요약으로 바꾼다(#65).
+
+    이 관측은 프롬프트를 문자열로 통째로 싣는다. 키로 걸러 내는 `redact_value` 는 문자열
+    안의 본문을 알아보지 못하므로 여기서 바꿔 끼운다.
+    """
+
+    memory = ctx.request.user_memory
+    if memory is None:
+        return prompt
+    body = user_memory_to_text(memory)
+    if body not in prompt:
+        return prompt
+    summary = json.dumps(memory.trace_summary(), ensure_ascii=False)
+    return prompt.replace(body, summary)
 
 
 def _dedupe_warnings(draft: TimelineDraft) -> None:
@@ -139,7 +196,16 @@ def _confirm(ctx: RepairContext) -> None:
     넘기면 이미 발행한 값이 뒤늦게 바뀐다.
     """
 
-    repair_draft(ctx.draft, ctx.request)
+    # 확정할 때마다 기록을 새로 만든다(이슈 #119). 코드가 찾은 것은 그 시점의 draft 로
+    # 다시 계산한 값이어야 한다 — 앞 회차의 것을 그대로 두면 Repair 가 이미 해소한 위반을
+    # 또 고치려 든다.
+    #
+    # 찾은 것은 **draft 의 event 에 대한 것만** 싣는다. Event Agent 의 candidate 가 같은
+    # 구조인지는 싣지 않는다 — Repair 는 candidate 를 고칠 수 없어 그 지적이 끝까지 남고,
+    # 실제 LLM 은 그것을 해소하려고 위반이 아닌 event(20분 이하 체류를 낀 이동)까지 나눴다.
+    report = ConfirmReport(sequence=len(ctx.reports) + 1)
+    repair_draft(ctx.draft, ctx.request, report=report, extended=ctx.extended)
+    ctx.reports.append(report)
     # 확정된 event 를 대상으로 본다. 병합·삭제로 구성이 바뀐 뒤라야 "이 event 의 근거가
     # 정말 fragment 뿐인가" 를 옳게 판정한다.
     verify_fragment_usage(ctx.draft, _fragment_raw_ids(ctx))
@@ -162,6 +228,7 @@ class RepairAgent(Agent):
         self,
         llm: SupportsComplete | None = None,
         max_iterations: int | None = None,
+        extended_input: bool | None = None,
     ) -> None:
         self._llm = llm
         self._max_iterations = (
@@ -169,6 +236,9 @@ class RepairAgent(Agent):
             if max_iterations is not None
             else settings.repair_max_iterations
         )
+        #: v3 세트의 입력과 도구를 쓰는가. 주지 않으면 프롬프트 세트를 따른다. 테스트가
+        #: 세트와 무관하게 두 모양을 모두 확인할 수 있게 한다.
+        self._extended_input = extended_input
 
     @property
     def llm(self) -> SupportsComplete:
@@ -211,6 +281,11 @@ class RepairAgent(Agent):
             event_agents=dict(event_agents or {}),
             timeline_agent=timeline_agent,
             on_confirm=on_confirm,
+            extended=(
+                _EXTENDED_INPUT
+                if self._extended_input is None
+                else self._extended_input
+            ),
         )
 
         # LLM 이 무엇을 하든, 코드 확정은 반드시 한 번은 지나간다.
@@ -304,7 +379,7 @@ class RepairAgent(Agent):
                         "iteration": iteration,
                         "remainingIterations": remaining,
                         "system": _SYSTEM_PROMPT,
-                        "prompt": prompt,
+                        "prompt": _prompt_for_trace(prompt, ctx),
                         "timeline": ctx.draft.model_dump(
                             by_alias=True,
                             mode="json",

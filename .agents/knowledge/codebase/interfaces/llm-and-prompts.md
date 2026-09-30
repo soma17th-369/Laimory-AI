@@ -67,6 +67,7 @@ UserMemory의 digest와 schema 상한은 버전을 가리지 않는다. 하루 �
 - prompt 누락을 조용히 v1로 fallback하지 않는다.
 - key, AWS credential, token, 원본 provider error를 외부 response·운영 이벤트에 싣지 않는다.
 - Timeline·Repair 최종 서술 규칙과 Event Agent 사실 보고 규칙을 섞지 않는다.
+- Repair가 보는 warning·입력·도구는 prompt 세트에 따라 갈린다(#119). v3는 확정 pass의 새 검사가 남긴 warning, 확정 pass의 기록·event별 근거·User Memory, `split_event`를 받고, v1·v2는 예전 그대로다. 갈리는 기준은 `prompt_loader.uses_legacy_contract` 하나이며(`v1`·`v2`가 예전 계약) 문자열 대소 비교를 쓰지 않는다. 세트가 설명하지 않는 warning·입력·도구를 주지 않는다. 새 세트를 더하면 이름을 `LEGACY_PROMPT_VERSIONS`에 넣지 않는 한 새 계약으로 돈다.
 - 모든 `LLMStage`는 티어 배치를 갖는다. 배치가 빠진 단계를 조용히 전역 모델로 흘려보내지 않는다.
 - `photo_describe`가 속한 티어의 모델은 vision을 지원해야 한다. 이미지 입력을 쓰는 유일한 단계다.
 - 티어 이름은 모델의 성질만 가리킨다. 단계 배치는 바뀌는 값이므로 이름에 용도를 담지 않는다.

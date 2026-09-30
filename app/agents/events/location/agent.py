@@ -25,7 +25,7 @@ from app.agents.parsing import (
     default_llm,
     items_to_text_without_prompt_excluded_keys,
 )
-from app.agents.prompt_loader import load_prompt
+from app.agents.prompt_loader import load_prompt, uses_legacy_contract
 from app.core.config import settings
 from app.core.llm_stages import LLMStage
 from app.schemas import AgentEventResult, TimelineDraftRequest
@@ -37,6 +37,10 @@ _SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
 #: review 단계는 v1 프롬프트 세트 전용이다. v2 세트에는 `review.md` 가 없다.
 _USE_REVIEW = settings.prompt_version == "v1"
 _REVIEW_PROMPT = load_prompt(__file__, "review.md") if _USE_REVIEW else None
+
+#: 이동 사이의 장시간 체류 검사(#119)를 돌리는가. 그 warning 을 읽고 event 를 나누는 것은
+#: v3 Repair 다. 나눌 도구가 없는 세트에 보이면 Timeline 재실행만 되풀이한다.
+_CHECK_LONG_STAY = not uses_legacy_contract()
 
 
 class _State(TypedDict, total=False):
@@ -79,7 +83,9 @@ class LocationEventAgent(EventAgent):
             )
         else:
             result = self._run_graph(infer_prompt)
-        return verify_location_result(result, request)
+        return verify_location_result(
+            result, request, check_long_stay=_CHECK_LONG_STAY
+        )
 
     def _run_graph(self, infer_prompt: str) -> AgentEventResult:
         llm = self.llm

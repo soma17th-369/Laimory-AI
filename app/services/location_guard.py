@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from app.core.logging import get_logger, log_fields
 from app.schemas import AgentEventResult, AgentWarning, TimelineDraftRequest
 from app.services.location_metrics import LocationMetrics, build_location_metrics
+from app.services.movement_stay_guard import find_movement_stay_violations
 from app.services.source_lookup import raw_id_of
 
 logger = get_logger(__name__)
@@ -45,9 +46,17 @@ class LocationFinding:
 
 
 def verify_location_result(
-    result: AgentEventResult, request: TimelineDraftRequest
+    result: AgentEventResult,
+    request: TimelineDraftRequest,
+    *,
+    check_long_stay: bool = True,
 ) -> AgentEventResult:
-    """Location 결과를 입력과 대조해 문제를 warning 으로 덧붙인다(같은 객체를 돌려준다)."""
+    """Location 결과를 입력과 대조해 문제를 warning 으로 덧붙인다(같은 객체를 돌려준다).
+
+    `check_long_stay` 는 이동 사이의 장시간 체류 검사(#119)를 돌릴지다. 이 warning 은
+    Timeline 을 거쳐 Repair 가 읽는데, 그것을 나눌 도구가 없는 프롬프트 세트에는 보이지
+    않는다. Location Agent 가 프롬프트 세트를 보고 정해 넘긴다.
+    """
 
     if not request.stays and not request.movements:
         return result
@@ -59,6 +68,7 @@ def verify_location_result(
         *_check_movement_mode_conflict(result, metrics),
         *_check_raw_id_coverage(result, request),
         *_check_short_stay_scatter(result, metrics),
+        *(_check_long_stay_absorbed(result, request) if check_long_stay else ()),
     ]
     if not findings:
         return result
@@ -251,6 +261,46 @@ def _check_short_stay_scatter(
             message=(
                 f"20분 이하로 머문 짧은 체류 {len(solo)}건이 각각 독립 후보가 됐습니다. "
                 "이동 중 위치 분절이라면 하나의 여정으로 묶여야 합니다."
+            ),
+        )
+    ]
+
+
+# --- 이동 사이 장시간 체류 -------------------------------------------------------
+
+
+def _check_long_stay_absorbed(
+    result: AgentEventResult, request: TimelineDraftRequest
+) -> list[LocationFinding]:
+    """20분을 넘는 체류가 앞뒤 이동과 하나의 candidate 로 합쳐졌는가 (#119).
+
+    `_check_short_stay_scatter` 의 반대쪽이다. 그쪽은 짧은 체류가 흩어진 것을 보고, 이쪽은
+    긴 체류가 이동에 빨려 들어간 것을 본다. 최종 draft 도 같은 함수로 다시 검사한다
+    (`movement_stay_guard.verify_movement_stay_boundary`).
+
+    문장은 사실만 말하고 "나눠야 한다"고 시키지 않는다. 이 warning 은 draft 에 실려 Repair
+    가 읽는데, Repair 는 candidate 를 고칠 수 없어 지시가 끝까지 남는다. 나눌 event 는
+    draft 를 검사한 결과가 따로 가리킨다.
+    """
+
+    absorbed = sum(
+        len(
+            find_movement_stay_violations(
+                (ref.raw_id for ref in candidate.source_refs), request
+            )
+        )
+        for candidate in result.candidates
+    )
+    if not absorbed:
+        return []
+
+    return [
+        LocationFinding(
+            code="LONG_STAY_ABSORBED",
+            severity="ERROR",
+            message=(
+                f"20분을 넘게 머문 체류 {absorbed}건이 앞뒤 이동과 하나의 후보로 "
+                "합쳐졌습니다. 최종 event 가 같은 구조인지는 확정 단계가 따로 검사합니다."
             ),
         )
     ]
