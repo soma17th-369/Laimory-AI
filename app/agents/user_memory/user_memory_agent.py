@@ -64,6 +64,7 @@ from app.services.user_memory_limits import (
     USER_MEMORY_MAX_CHARS,
     USER_MEMORY_TARGET_CHARS,
     DailyTimelineDigest,
+    drop_removals,
     serialized_chars,
     shrink_budget,
 )
@@ -101,9 +102,10 @@ def _size_section(existing: UserMemory | None) -> str | None:
     닿은 프로필의 갱신이 대부분 실패했다.
 
     여기서 주는 것은 **숫자와 순서**뿐이다(먼저 줄이고 나서 더한다). 무엇을 줄일지는
-    시스템 프롬프트의 정책이고 세트마다 다르다. 기존 프로필이 목표를 넘었으면 항목마다
-    몇 문장까지 쓸 수 있는지도 함께 준다 — 모델이 따르는 단위가 글자 수가 아니라 문장
-    수이기 때문이다(:func:`~app.services.user_memory_limits.shrink_budget`).
+    시스템 프롬프트의 정책이고 세트마다 다르다. 기존 프로필이 목표를 넘었으면 어느
+    항목을 몇 문장까지 줄일지도 함께 준다 — 모델이 따르는 단위가 글자 수가 아니라 문장
+    수이기 때문이다(:func:`~app.services.user_memory_limits.shrink_budget`). 줄일 몫은
+    넘은 만큼만이고, 몫을 받지 않은 항목은 적지 않는다.
     """
 
     if existing is None or not existing.prompt_payload():
@@ -121,7 +123,7 @@ def _size_section(existing: UserMemory | None) -> str | None:
         lines.append(
             f"기존 프로필이 이미 목표를 {size - USER_MEMORY_TARGET_CHARS}자 넘었습니다. "
             "새 정보를 더하기 전에 기존 내용을 아래 항목마다 적힌 문장 수 이내로 먼저 "
-            "줄이세요."
+            "줄이세요. 아래에 적히지 않은 항목은 줄이지 않습니다."
         )
         lines.extend(f"  - {line}" for line in budget)
     return "\n".join(lines)
@@ -252,6 +254,11 @@ class UserMemoryAgent:
         ``previous`` 는 규칙을 어긴 직전 출력이다. 주어지면 그 문서를 고쳐서 낸다 —
         변경 목록도 기존 문서가 아니라 그 문서에 적용한다.
 
+        **기존 내용을 지우기만 하는 변경은 적용하지 않는다**
+        (:func:`~app.services.user_memory_limits.drop_removals`). 달라졌으면 고쳐 쓰는
+        것이고, 이번 기록에 나오지 않았으면 그대로 두는 것이다. 기존 문서가 목표 크기를
+        넘어 줄여야 할 때만 지우는 변경을 적용한다.
+
         실패는 삼키지 않고 그대로 올린다 — 코드 부여와 기록은 흡수하는 쪽의 몫이다.
         """
 
@@ -283,4 +290,13 @@ class UserMemoryAgent:
                 temperature=_TEMPERATURE,
             )
             base = previous if violations and previous is not None else existing
+            # 기존 내용을 지우기만 하는 변경은 적용하지 않는다. 모델이 "이번 기록에
+            # 없다" 는 이유로 있던 항목을 지우는 것을 프롬프트만으로는 막지 못했다.
+            patch, dropped = drop_removals(patch, base)
+            if dropped:
+                # 어느 항목이었는지는 본문에 가까워 남기지 않는다. 개수만 남긴다.
+                logger.info(
+                    "기존 내용을 지우기만 하는 변경을 적용하지 않았습니다.",
+                    extra=log_fields(droppedRemovalCount=dropped),
+                )
             return patch.apply_to(base)

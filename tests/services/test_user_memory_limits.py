@@ -10,7 +10,7 @@
 
 import pytest
 
-from app.schemas.user_memory import NARRATIVE_MAX_LENGTH, UserMemory
+from app.schemas.user_memory import NARRATIVE_MAX_LENGTH, UserMemory, UserMemoryPatch
 from app.schemas.user_memory_update import DailyTimeline
 from app.services.event_count_guard import MAX_EVENT_COUNT as TIMELINE_MAX_EVENT_COUNT
 from app.services.user_memory_limits import (
@@ -23,11 +23,12 @@ from app.services.user_memory_limits import (
     USER_MEMORY_MAX_CHARS,
     USER_MEMORY_TARGET_CHARS,
     build_daily_timeline_digest,
+    drop_removals,
     find_violations,
     serialized_chars,
     shrink_budget,
 )
-from tests.fixtures.user_memory import daily_timeline, daily_timeline_event
+from tests.fixtures.user_memory import change, daily_timeline, daily_timeline_event
 
 
 def _entries(payload: list[dict]) -> list[DailyTimeline]:
@@ -394,8 +395,10 @@ def test_size_violation_says_how_much_in_sentences_per_item():
     violation = find_violations(memory)[0]
 
     assert str(USER_MEMORY_TARGET_CHARS) in violation
-    assert "`basicProfile`: 지금 4문장 → 2문장 이내" in violation
-    assert "`lifeContext`: 지금 1문장 → 1문장 이내" in violation
+    assert "`basicProfile`: 지금 4문장 → 1문장 이내" in violation
+    # 줄일 수 없는 항목(한 문장짜리)은 적지 않는다. 적힌 항목만 줄인다는 뜻이다.
+    assert "`lifeContext`" not in violation
+    assert "남긴 문장도 짧게 다시 쓰세요" in violation
     # 값은 어디에도 없다.
     assert "첫 문장" not in violation
     assert "가가" not in violation
@@ -415,26 +418,78 @@ def test_target_is_below_the_cap():
     assert USER_MEMORY_TARGET_CHARS == 1_600
 
 
-def test_budget_scales_sentences_by_the_size_ratio():
-    sentences = " ".join(f"문장 {index}번입니다." for index in range(10))
-    memory = UserMemory(basic_profile=sentences, life_context=sentences)
+def test_budget_shares_the_cut_in_proportion_to_sentence_counts():
+    """덜어 낼 문장은 항목의 문장 수에 비례해 나눈다."""
 
-    budget = shrink_budget(memory, target_chars=serialized_chars(memory) // 2)
+    ten = " ".join(f"문장 {index}번입니다." for index in range(10))
+    five = " ".join(f"문장 {index}번입니다." for index in range(5))
+    memory = UserMemory(basic_profile=ten, life_context=five)
 
-    assert budget[:2] == [
-        "`basicProfile`: 지금 10문장 → 5문장 이내",
-        "`lifeContext`: 지금 10문장 → 5문장 이내",
-    ]
+    budget = shrink_budget(memory, target_chars=serialized_chars(memory) * 3 // 5)
+
+    cuts = {
+        line.split("`")[1]: int(line.split("지금 ")[1].split("문장")[0])
+        - int(line.split("→ ")[1].split("문장")[0])
+        for line in budget
+    }
+    assert cuts["basicProfile"] == 2 * cuts["lifeContext"]
 
 
-def test_budget_cuts_at_least_one_sentence_from_a_multi_sentence_item():
-    """목표를 한 글자만 넘어도 두 문장 이상인 항목은 한 문장이 준다. 몫을 내림으로 정한다."""
+def test_budget_cuts_only_as_much_as_the_excess():
+    """목표를 조금 넘었으면 조금만 줄인다.
 
-    memory = UserMemory(basic_profile="하나입니다. 둘입니다.")
+    예전에는 항목마다 비율을 내림해, 일곱 자를 넘었을 뿐인데 두 문장 이상인 항목이 전부
+    한 문장씩 줄었다. 실제 모델이 그대로 따라 485자를 지웠다(사는 곳까지).
+    """
+
+    sentences = " ".join(f"문장 {index}번입니다." for index in range(6))
+    memory = UserMemory(
+        basic_profile=sentences,
+        life_context=sentences,
+        relationships=sentences,
+        custom_attributes={"운동": sentences, "여행": sentences},
+    )
+
+    budget = shrink_budget(memory, target_chars=serialized_chars(memory) - 7)
+
+    assert len(budget) == 1
+    assert budget[0].endswith("지금 6문장 → 5문장 이내")
+
+
+def test_budget_covers_the_excess():
+    """덜어 낸 문장의 글자 수가 넘은 글자 수에 닿아야 한다. 모자라면 다음 날도 넘는다."""
+
+    sentences = " ".join(f"문장 {index}번입니다." for index in range(8))
+    memory = UserMemory(
+        basic_profile=sentences, routines=sentences, custom_attributes={"운동": sentences}
+    )
+    size = serialized_chars(memory)
+    need = size // 3
+
+    budget = shrink_budget(memory, target_chars=size - need)
+
+    per_sentence = len(sentences) // 8
+    removed = sum(
+        int(line.split("지금 ")[1].split("문장")[0]) - int(line.split("→ ")[1].split("문장")[0])
+        for line in budget
+    )
+    assert removed * per_sentence >= need
+    assert (removed - 1) * per_sentence < need, "필요한 것보다 한 문장 넘게 줄이지 않습니다."
+
+
+def test_budget_breaks_ties_from_the_last_item():
+    """몫이 같으면 뒤 항목부터 줄인다. 앞에 놓인 고정 필드보다 속성이 먼저다."""
+
+    sentences = " ".join(f"문장 {index}번입니다." for index in range(4))
+    memory = UserMemory(
+        basic_profile=sentences,
+        relationships=sentences,
+        custom_attributes={"운동": sentences},
+    )
 
     budget = shrink_budget(memory, target_chars=serialized_chars(memory) - 1)
 
-    assert budget[0] == "`basicProfile`: 지금 2문장 → 1문장 이내"
+    assert budget == ["`customAttributes.운동`: 지금 4문장 → 3문장 이내"]
 
 
 def test_budget_never_asks_for_zero_sentences():
@@ -442,8 +497,10 @@ def test_budget_never_asks_for_zero_sentences():
 
     budget = shrink_budget(memory, target_chars=10)
 
-    assert "`basicProfile`: 지금 1문장 → 1문장 이내" in budget
     assert "`lifeContext`: 지금 2문장 → 1문장 이내" in budget
+    # 한 문장짜리 항목은 문장 수로 줄일 수 없어 적지 않는다.
+    assert not any(line.startswith("`basicProfile`") for line in budget)
+    assert budget[-1].startswith("문장 수를 맞춰도 목표를 넘습니다")
 
 
 def test_budget_names_custom_attributes_by_key_without_their_values():
@@ -610,3 +667,213 @@ def test_a_full_request_never_exceeds_the_total_cap():
 
     assert digest.stats["eventCount"] == MAX_EVENT_COUNT
     assert digest.stats["dailyTimelineCount"] == MAX_DAILY_TIMELINE_COUNT
+
+
+# --- 기존 내용은 지우지 않는다 (#121) -----------------------------------
+#
+# 달라졌으면 고쳐 쓰는 것이고, 이번 기록에 나오지 않았으면 그대로 두는 것이다. 코드가
+# 잡는 것은 "지우기만 하는" 변경이다 — 고쳐 쓰면서 내용을 빠뜨리는 것은 의미를 봐야
+# 알 수 있어 프롬프트가 맡는다.
+
+
+def _changes(*changes: dict) -> UserMemoryPatch:
+    return UserMemoryPatch.model_validate({"changes": list(changes)})
+
+
+def _small_profile() -> UserMemory:
+    return UserMemory(
+        basic_profile="판교 회사에서 일합니다. 망원동에 삽니다.",
+        routines="평일에는 회사에서 일합니다. 주말에 클라이밍을 합니다. 저녁에 산책합니다.",
+        custom_attributes={"악기": "기타를 배웁니다."},
+    )
+
+
+def _items(patch: UserMemoryPatch) -> list[str]:
+    return [item.item for item in patch.changes]
+
+
+@pytest.mark.parametrize("item", ["routines", "customAttributes.악기"])
+def test_removal_of_an_existing_item_is_dropped(item: str):
+    patch, dropped = drop_removals(_changes(change(item, "삭제")), _small_profile())
+
+    assert dropped == 1
+    assert patch.changes == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "평일에는 회사에서 일합니다.",
+        "평일에는 회사에서 일합니다. 저녁에 산책합니다.",
+        "저녁에 산책합니다. 평일에는 회사에서 일합니다.",
+    ],
+)
+def test_update_that_only_drops_sentences_is_dropped(text: str):
+    """기존 문장 가운데 일부만 남긴 것. 순서를 바꿔도 지운 것은 지운 것이다."""
+
+    patch, dropped = drop_removals(_changes(change("routines", "수정", text)), _small_profile())
+
+    assert dropped == 1
+    assert patch.changes == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 달라져서 바뀐 것 — 옛 내용이 새 내용으로 바뀌었다.
+        "재택으로 일합니다. 주말에 클라이밍을 합니다. 저녁에 산책합니다.",
+        # 합친 것 — 문장 수는 줄었지만 새 문장이 있다.
+        "평일에는 회사에서 일하고 주말에 클라이밍을 합니다.",
+        # 더한 것.
+        "평일에는 회사에서 일합니다. 주말에 클라이밍을 합니다. 저녁에 산책합니다. 아침에 러닝을 합니다.",
+        # 그대로 다시 낸 것 — 지우지 않는다(바뀌는 것도 없다).
+        "평일에는 회사에서 일합니다. 주말에 클라이밍을 합니다. 저녁에 산책합니다.",
+    ],
+)
+def test_update_that_changes_or_adds_is_kept(text: str):
+    patch, dropped = drop_removals(_changes(change("routines", "수정", text)), _small_profile())
+
+    assert dropped == 0
+    assert _items(patch) == ["routines"]
+
+
+def test_cancelled_plan_is_rewritten_not_removed():
+    """계획을 취소했으면 지우는 것이 아니라 달라진 내용을 적는다. 그 변경은 막지 않는다."""
+
+    memory = UserMemory(custom_attributes={"여행 계획": "10월에 강릉에 갈 계획입니다."})
+    rewritten = _changes(
+        change("customAttributes.여행 계획", "수정", "10월에 강릉에 가려던 계획을 취소했습니다.")
+    )
+
+    patch, dropped = drop_removals(rewritten, memory)
+
+    assert dropped == 0
+    assert patch.apply_to(memory).custom_attributes == {
+        "여행 계획": "10월에 강릉에 가려던 계획을 취소했습니다."
+    }
+
+
+def test_removal_of_something_that_is_not_there_is_not_counted():
+    """비어 있는 항목과 없는 속성은 지울 것이 없다. 적용해도 아무 일도 일어나지 않는다."""
+
+    patch, dropped = drop_removals(
+        _changes(change("lifeContext", "삭제"), change("customAttributes.없는 키", "삭제")),
+        _small_profile(),
+    )
+
+    assert dropped == 0
+    assert patch.apply_to(_small_profile()) == _small_profile()
+
+
+def test_add_is_never_a_removal():
+    patch, dropped = drop_removals(
+        _changes(change("routines", "추가", "평일에는 회사에서 일합니다.")), _small_profile()
+    )
+
+    assert dropped == 0
+    assert _items(patch) == ["routines"]
+
+
+def test_other_changes_in_the_same_list_survive():
+    patch, dropped = drop_removals(
+        _changes(
+            change("customAttributes.악기", "삭제"),
+            change("basicProfile", "수정", "강남 회사에서 일합니다. 망원동에 삽니다."),
+            change("lifeContext", "추가", "이직한 지 얼마 안 된 시기입니다."),
+        ),
+        _small_profile(),
+    )
+
+    assert dropped == 1
+    assert _items(patch) == ["basicProfile", "lifeContext"]
+
+
+@pytest.mark.parametrize("memory", [None, UserMemory()])
+def test_nothing_is_dropped_from_an_empty_profile(memory):
+    given = _changes(change("routines", "삭제"), change("basicProfile", "추가", "직장인입니다."))
+
+    patch, dropped = drop_removals(given, memory)
+
+    assert dropped == 0
+    assert patch is given
+
+
+def _over_target_profile() -> UserMemory:
+    sentences = " ".join(f"문장 {index}번입니다." for index in range(40))
+    return UserMemory(
+        basic_profile=sentences[:NARRATIVE_MAX_LENGTH],
+        life_context=sentences[:NARRATIVE_MAX_LENGTH],
+        relationships=sentences[:NARRATIVE_MAX_LENGTH],
+        personality=sentences[:NARRATIVE_MAX_LENGTH],
+        custom_attributes={"악기": "기타를 배웁니다."},
+    )
+
+
+def test_item_with_a_shrink_budget_may_be_shortened():
+    """목표를 넘은 문서는 줄여야 한다. 막으면 문서가 상한에 닿은 뒤로 갱신이 매번
+    1304 로 끝난다."""
+
+    memory = _over_target_profile()
+    assert serialized_chars(memory) > USER_MEMORY_TARGET_CHARS
+    assert any(line.startswith("`personality`") for line in shrink_budget(memory))
+    given = _changes(change("personality", "수정", "문장 0번입니다."))
+
+    patch, dropped = drop_removals(given, memory)
+
+    assert dropped == 0
+    assert patch is given
+
+
+def test_item_without_a_shrink_budget_is_kept_even_over_the_target():
+    """목표를 넘은 날에도 지울 수 있는 것은 줄일 몫을 받은 항목뿐이다."""
+
+    memory = _over_target_profile()
+    assert not any("악기" in line for line in shrink_budget(memory))
+
+    patch, dropped = drop_removals(
+        _changes(
+            change("customAttributes.악기", "삭제"),
+            change("personality", "수정", "문장 0번입니다."),
+        ),
+        memory,
+    )
+
+    assert dropped == 1
+    assert _items(patch) == ["personality"]
+
+
+def test_whole_field_is_never_removed():
+    """몫은 언제나 한 문장 이상이다. 고정 필드를 통째로 비우는 변경은 적용하지 않는다."""
+
+    patch, dropped = drop_removals(
+        _changes(change("personality", "삭제")), _over_target_profile()
+    )
+
+    assert dropped == 1
+    assert patch.changes == []
+
+
+def test_attribute_may_be_removed_only_when_the_budget_asks_for_fewer_attributes():
+    """한 문장짜리 속성이 많아 문장 수로는 줄일 수 없을 때만 속성을 통째로 지울 수 있다."""
+
+    memory = UserMemory(
+        custom_attributes={f"속성{index}": "가" * 40 + "입니다." for index in range(50)}
+    )
+    assert serialized_chars(memory) > USER_MEMORY_TARGET_CHARS
+    assert any("항목 수" in line for line in shrink_budget(memory))
+    given = _changes(change("customAttributes.속성3", "삭제"))
+
+    patch, dropped = drop_removals(given, memory)
+
+    assert dropped == 0
+    assert patch is given
+
+
+def test_removals_are_dropped_when_no_shrink_budget_is_given():
+    """지우기를 허용하는 조건이 `[크기]` 절이 몫을 주는 조건과 어긋나면, 프롬프트는
+    줄이라고 하는데 코드가 막거나 그 반대가 된다."""
+
+    memory = _small_profile()
+
+    assert shrink_budget(memory) == []
+    assert drop_removals(_changes(change("routines", "삭제")), memory)[1] == 1

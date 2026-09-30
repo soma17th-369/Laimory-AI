@@ -49,7 +49,13 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from app.schemas.user_memory import UserMemory
+from app.schemas.user_memory import (
+    CUSTOM_ATTRIBUTE_ITEM_PREFIX,
+    UserMemory,
+    UserMemoryChange,
+    UserMemoryChangeAction,
+    UserMemoryPatch,
+)
 from app.schemas.user_memory_update import (
     MAX_DAILY_TIMELINE_COUNT,
     DailyTimeline,
@@ -275,10 +281,16 @@ def serialized_chars(memory: UserMemory) -> int:
     )
 
 
+def _sentences(text: str) -> list[str]:
+    """문장 목록. 끝맺음 부호가 없는 글도 한 문장으로 센다."""
+
+    return [part.strip() for part in _SENTENCE_BOUNDARY.split(text.strip()) if part.strip()]
+
+
 def _sentence_count(text: str) -> int:
     """문장 수. 끝맺음 부호가 없는 글도 한 문장으로 센다."""
 
-    return len([part for part in _SENTENCE_BOUNDARY.split(text.strip()) if part])
+    return len(_sentences(text))
 
 
 def _prompt_items(memory: UserMemory) -> list[tuple[str, str]]:
@@ -292,54 +304,185 @@ def _prompt_items(memory: UserMemory) -> list[tuple[str, str]]:
         (name, value) for name, value in payload.items() if name != "customAttributes"
     ]
     items.extend(
-        (f"customAttributes.{key}", value)
+        (f"{CUSTOM_ATTRIBUTE_ITEM_PREFIX}{key}", value)
         for key, value in payload.get("customAttributes", {}).items()
     )
     return items
 
 
+def _only_removes(change: UserMemoryChange, current: str) -> bool:
+    """이 변경이 그 항목의 기존 내용을 **지우기만** 하는가.
+
+    ``삭제`` 는 언제나 그렇다. ``수정`` 은 새 문장이 기존 문장 가운데 일부를 뺀 것일
+    뿐이면 그렇다 — 남은 문장이 모두 기존에 있던 문장이고 수가 줄었을 때다. 문장을 고쳐
+    썼거나 새 문장이 하나라도 있으면 지우기만 한 것이 아니다(달라져서 바뀐 것이다).
+    ``추가`` 는 기존 내용 뒤에 덧붙이므로 지우지 않는다.
+    """
+
+    if not current:
+        return False
+    if change.action is UserMemoryChangeAction.REMOVE:
+        return True
+    if change.action is not UserMemoryChangeAction.UPDATE:
+        return False
+    before = _sentences(current)
+    after = _sentences(change.text or "")
+    return len(after) < len(before) and all(sentence in before for sentence in after)
+
+
+def drop_removals(
+    patch: UserMemoryPatch, memory: UserMemory | None
+) -> tuple[UserMemoryPatch, int]:
+    """기존 내용을 지우기만 하는 변경을 뺀다(#121). 뺀 개수를 함께 돌려준다.
+
+    **기존 내용은 지우지 않는다.** 달라졌으면 달라진 내용으로 고쳐 쓰는 것이고(``수정``),
+    이번 기록에 나오지 않았으면 그대로 두는 것이다. 프로필은 여러 날에 걸쳐 쌓은 것이라
+    하루의 기록에 다 나오지 않는다. 그런데 실제 모델은 "이번 기록에 기타 이야기가 없다"
+    는 이유로 있던 속성을 지웠다. 프롬프트가 금지해도 어기므로 코드가 적용하지 않는다.
+
+    예외는 크기다. 기존 문서가 목표 크기를 넘었으면 줄여야 하고, 막으면 문서가 상한에
+    닿은 뒤로 갱신이 매번 1304 로 끝난다. 그때도 **줄일 몫을 받은 항목만** 지울 수 있다
+    (:func:`_shrink_plan`). 몫을 받지 않은 항목을 지우는 변경은 목표를 넘은 날에도
+    적용하지 않는다. 속성을 통째로 지우는 것은 문장 수로는 모자라 속성 수의 몫까지
+    나갔을 때만이다.
+
+    코드가 잡는 것은 **지우기만 하는** 변경이다. 문장을 고쳐 쓰면서 내용을 빠뜨리는
+    것은 의미를 봐야 알 수 있어 잡지 못한다. 그쪽은 프롬프트가 맡는다.
+    """
+
+    base = memory if memory is not None else UserMemory()
+    plan = _shrink_plan(base, USER_MEMORY_TARGET_CHARS)
+    current = dict(_prompt_items(base))
+
+    kept = []
+    for change in patch.changes:
+        if _only_removes(change, current.get(change.item, "")) and not plan.allows(change):
+            continue
+        kept.append(change)
+    dropped = len(patch.changes) - len(kept)
+    if not dropped:
+        return patch, 0
+    return patch.model_copy(update={"changes": kept}), dropped
+
+
+@dataclass(frozen=True)
+class _ShrinkPlan:
+    """문서를 목표 크기에 맞추려고 어느 항목에서 몇 문장을 덜어 낼지."""
+
+    #: 항목 이름 → (지금 문장 수, 남길 문장 수). 줄일 몫을 받은 항목만 있다.
+    sentences: dict[str, tuple[int, int]]
+    #: 문장 수로는 모자랄 때 남길 속성 수. 그럴 필요가 없으면 ``None``.
+    attribute_keep: int | None = None
+    attribute_count: int = 0
+    #: 문장 수와 속성 수를 맞춰도 목표를 넘는다.
+    still_over: bool = False
+
+    def allows(self, change: UserMemoryChange) -> bool:
+        """이 (지우기만 하는) 변경이 줄일 몫 안의 것인가."""
+
+        if change.action is UserMemoryChangeAction.REMOVE:
+            # 통째로 지우는 것은 속성 수의 몫이 나갔을 때, 속성에만 허용한다.
+            return self.attribute_keep is not None and change.attribute_key is not None
+        return change.item in self.sentences
+
+
+def _shrink_plan(memory: UserMemory, target_chars: int) -> _ShrinkPlan:
+    """넘은 만큼만 덜어 내는 계획을 세운다. 목표 안이면 빈 계획이다.
+
+    덜어 낼 문장은 **항목의 문장 수에 비례해** 나눈다. 넘은 비율만큼 항목마다 덜고
+    (내림), 모자란 만큼은 몫의 소수 부분이 큰 항목부터 한 문장씩 더 던다. 어느 항목도
+    한 문장 아래로 내려가지 않는다.
+
+    예전에는 항목마다 (목표 ÷ 현재 크기)를 곱해 **내림**했다. 그러면 목표를 일곱 자
+    넘었을 뿐인데 두 문장 이상인 항목이 전부 한 문장씩 줄었고, 실제 모델이 그대로 따라
+    485자를 지웠다(사는 곳까지). 덜어 내는 양이 넘은 양과 같아야 한다.
+
+    **어느 문장을 남길지는 정하지 않는다.** 그것은 의미 판단이고 프롬프트 세트의
+    정책이다. 여기서 정하는 것은 항목마다 몇 문장인지뿐이다.
+    """
+
+    size = serialized_chars(memory)
+    if size <= target_chars:
+        return _ShrinkPlan(sentences={})
+
+    items = _prompt_items(memory)
+    counts = [_sentence_count(value) for _, value in items]
+    # 한 문장을 덜 때 줄어드는 글자 수의 어림값.
+    per_sentence = [len(value) // count for (_, value), count in zip(items, counts)]
+    need = size - target_chars
+
+    ideal = [count * need / size for count in counts]
+    removed = [min(int(share), count - 1) for share, count in zip(ideal, counts)]
+    saved = sum(cut * chars for cut, chars in zip(removed, per_sentence))
+
+    # 모자란 만큼은 몫의 소수 부분이 큰 항목부터. 같으면 문장이 많은 항목부터, 그것도
+    # 같으면 뒤 항목부터다 — 항목 순서가 고정 필드 다음에 속성이라 속성이 먼저 준다.
+    order = sorted(
+        range(len(items)),
+        key=lambda index: (ideal[index] - int(ideal[index]), counts[index], index),
+        reverse=True,
+    )
+    while saved < need:
+        progressed = False
+        for index in order:
+            if removed[index] >= counts[index] - 1:
+                continue
+            removed[index] += 1
+            saved += per_sentence[index]
+            progressed = True
+            if saved >= need:
+                break
+        if not progressed:
+            break
+
+    sentences = {
+        name: (count, count - cut)
+        for (name, _), count, cut in zip(items, counts, removed)
+        if cut
+    }
+    if saved >= need:
+        return _ShrinkPlan(sentences=sentences)
+
+    # 한 문장짜리 항목은 문장 수로 줄일 수 없다. 개수 제한이 없는 속성이 그런 자리다.
+    attribute_count = len(memory.prompt_payload().get("customAttributes", {}))
+    keep = attribute_count * target_chars // (size - saved)
+    return _ShrinkPlan(
+        sentences=sentences,
+        attribute_keep=keep if 0 < keep < attribute_count else None,
+        attribute_count=attribute_count,
+        still_over=True,
+    )
+
+
 def shrink_budget(
     memory: UserMemory, *, target_chars: int = USER_MEMORY_TARGET_CHARS
 ) -> list[str]:
-    """문서를 목표 크기에 맞추려면 항목마다 몇 문장까지 쓸 수 있는지(#121).
+    """문서를 목표 크기에 맞추려면 어느 항목을 몇 문장까지 줄여야 하는지(#121).
 
     목표 안이면 빈 목록이다. 돌려주는 줄에는 항목 이름과 숫자만 있고 값은 없다.
+    **줄일 몫을 받은 항목만 적는다** — 적히지 않은 항목은 줄이지 않는다는 뜻이다.
 
     **글자 수가 아니라 문장 수로 말한다.** 모델은 글자 수를 세지 못한다. 상한을 넘은
     같은 문서를 두고 지시 형태만 바꿔 실측했을 때, "전체 N자 줄여라" 는 1% 가, 항목별
     글자 수는 5% 가, 항목별 문장 수는 14% 가 줄었다. 앞의 둘로는 재요청을 다 써도
     상한 아래로 내려오지 못했다.
 
-    몫은 지금 문장 수에 (목표 ÷ 현재 크기)를 곱해 내림한 값이고 1보다 작아지지 않는다.
-    내림이라 두 문장 이상인 항목은 적어도 한 문장이 준다. **무엇을 줄일지는 정하지
-    않는다** — 어느 문장을 남길지는 의미 판단이고 프롬프트 세트의 정책이다.
-
-    한 문장짜리 항목은 문장 수로 줄일 수 없다. 그런 항목이 많아 문장 수를 맞춰도 목표를
-    넘으면 ``customAttributes`` 항목 수의 몫을 함께 준다. 개수 제한이 없는 자리라 문서가
-    커지는 쪽은 대개 여기다.
+    몫은 넘은 만큼만이다(:func:`_shrink_plan`). 한 문장짜리 항목은 문장 수로 줄일 수
+    없어, 문장 수를 맞춰도 목표를 넘으면 ``customAttributes`` 항목 수의 몫을 함께 준다.
     """
 
-    size = serialized_chars(memory)
-    if size <= target_chars:
-        return []
-
-    lines: list[str] = []
-    estimated = size
-    for name, value in _prompt_items(memory):
-        count = _sentence_count(value)
-        allowed = max(1, count * target_chars // size)
-        estimated -= len(value) * (count - allowed) // count
-        lines.append(f"`{name}`: 지금 {count}문장 → {allowed}문장 이내")
-
-    if estimated > target_chars:
-        attribute_count = len(memory.prompt_payload().get("customAttributes", {}))
-        keep = attribute_count * target_chars // estimated
-        if 0 < keep < attribute_count:
-            lines.append(
-                f"`customAttributes` 항목 수: 지금 {attribute_count}개 → {keep}개 이내"
-            )
+    plan = _shrink_plan(memory, target_chars)
+    lines = [
+        f"`{name}`: 지금 {count}문장 → {allowed}문장 이내"
+        for name, (count, allowed) in plan.sentences.items()
+    ]
+    if plan.attribute_keep is not None:
+        lines.append(
+            f"`customAttributes` 항목 수: 지금 {plan.attribute_count}개 → "
+            f"{plan.attribute_keep}개 이내"
+        )
+    if plan.still_over:
         lines.append("문장 수를 맞춰도 목표를 넘습니다. 남긴 문장도 짧게 다시 쓰세요.")
-
     return lines
 
 

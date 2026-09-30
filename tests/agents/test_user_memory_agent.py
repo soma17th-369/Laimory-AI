@@ -446,14 +446,13 @@ def test_v3_changes_only_the_items_the_model_returned(v3_set):
     assert len(llm.calls) == 1
 
 
-def test_v3_adds_replaces_and_removes_custom_attributes(v3_set):
+def test_v3_adds_and_replaces_custom_attributes(v3_set):
     existing = _existing_profile()
     llm = FakeLLM(
         [
             changes_json(
                 change("customAttributes.운동", "추가", "합정 클라이밍장을 다닙니다."),
                 change("customAttributes.반려동물", "수정", "고양이 두 마리를 키웁니다."),
-                change("customAttributes.여행", "삭제"),
             )
         ]
     )
@@ -462,9 +461,102 @@ def test_v3_adds_replaces_and_removes_custom_attributes(v3_set):
 
     assert memory.custom_attributes == {
         "반려동물": "고양이 두 마리를 키웁니다.",
+        "여행": "8월 말에 강릉에 다녀왔습니다.",
         "운동": "합정 클라이밍장을 다닙니다.",
     }
     assert memory.basic_profile == existing.basic_profile
+
+
+# --- 기존 내용은 지우지 않는다 (#121) -----------------------------------
+#
+# 달라졌으면 고쳐 쓰는 것이고, 이번 기록에 나오지 않았으면 그대로 두는 것이다. 실제 모델은
+# "이번 기록에 기타 이야기가 없다" 는 이유로 있던 속성을 지웠다. 프롬프트가 금지해도
+# 어기므로 코드가 적용하지 않는다.
+
+
+def test_v3_does_not_apply_a_removal(v3_set):
+    existing = _existing_profile()
+    llm = FakeLLM(
+        [
+            changes_json(
+                change("customAttributes.여행", "삭제"),
+                change("relationships", "삭제"),
+                change("routines", "수정", "평일에는 회사에서 일합니다. 주말에 클라이밍을 합니다."),
+            )
+        ]
+    )
+
+    memory = UserMemoryAgent(llm=llm).generate(existing, _digest())
+
+    assert memory.custom_attributes == existing.custom_attributes
+    assert memory.relationships == existing.relationships
+    # 같은 목록의 다른 변경은 그대로 적용한다.
+    assert memory.routines == "평일에는 회사에서 일합니다. 주말에 클라이밍을 합니다."
+    assert len(llm.calls) == 1
+
+
+def test_v3_does_not_apply_an_update_that_only_drops_sentences(v3_set):
+    """`수정` 으로 기존 문장 몇 개를 빼기만 한 것도 지우는 것이다."""
+
+    existing = UserMemory(
+        routines="평일에는 회사에서 일합니다. 주말에 클라이밍을 합니다. 저녁에 산책합니다."
+    )
+    llm = FakeLLM([changes_json(change("routines", "수정", "평일에는 회사에서 일합니다."))])
+
+    memory = UserMemoryAgent(llm=llm).generate(existing, _digest())
+
+    assert memory.routines == existing.routines
+
+
+def test_v3_applies_an_update_that_rewrites_what_changed(v3_set):
+    """달라져서 바뀌는 것은 막지 않는다. 옛 직장이 새 직장으로 바뀌는 것이 그렇다."""
+
+    existing = UserMemory(basic_profile="판교 회사에서 일합니다. 망원동에 삽니다.")
+    llm = FakeLLM(
+        [changes_json(change("basicProfile", "수정", "강남 회사에서 일합니다. 망원동에 삽니다."))]
+    )
+
+    memory = UserMemoryAgent(llm=llm).generate(existing, _digest())
+
+    assert memory.basic_profile == "강남 회사에서 일합니다. 망원동에 삽니다."
+
+
+def test_v3_shortens_an_item_the_size_budget_names(v3_set):
+    """기존 문서가 목표 크기를 넘었을 때는 줄여야 한다. 그때도 막으면 문서가 상한에 닿은
+    뒤로 갱신이 매번 1304 로 끝난다. 다만 줄일 몫을 받은 항목만이다."""
+
+    existing = _profile_over_the_target().model_copy(
+        update={"custom_attributes": {"여행": "8월 말에 강릉에 다녀왔습니다."}}
+    )
+    assert serialized_chars(existing) > USER_MEMORY_TARGET_CHARS
+    llm = FakeLLM(
+        [
+            changes_json(
+                change("customAttributes.여행", "삭제"),
+                change("personality", "수정", "문장 0번입니다."),
+            )
+        ]
+    )
+
+    memory = UserMemoryAgent(llm=llm).generate(existing, _digest())
+
+    assert memory.personality == "문장 0번입니다."
+    # 몫을 받지 않은 속성은 목표를 넘은 날에도 그대로다.
+    assert memory.custom_attributes == {"여행": "8월 말에 강릉에 다녀왔습니다."}
+
+
+def test_v3_logs_how_many_removals_it_dropped_without_naming_them(v3_set, caplog):
+    existing = _existing_profile()
+    llm = FakeLLM([changes_json(change("customAttributes.여행", "삭제"))])
+
+    with caplog.at_level("INFO"):
+        UserMemoryAgent(llm=llm).generate(existing, _digest())
+
+    records = [r for r in caplog.records if "지우기만 하는 변경" in r.getMessage()]
+    assert len(records) == 1
+    dumped = json.dumps(records[0].__dict__, ensure_ascii=False, default=str)
+    assert "droppedRemovalCount" in dumped
+    assert "여행" not in dumped and "강릉" not in dumped
 
 
 def test_v3_empty_change_list_returns_the_same_profile(v3_set):
@@ -778,13 +870,18 @@ def test_v3_output_example_is_a_valid_change_list():
         label, _, fact = item["reason"].partition(": ")
         assert label in _COMPARED and label != "이미 있음", "이유는 `견준 결과: 사실` 입니다."
         assert fact.strip()
-    assert {change.action for change in patch.changes} == set(UserMemoryChangeAction)
+    # 예시는 `삭제` 를 보여 주지 않는다. 지우는 것은 크기 때문에 줄일 때뿐이고, 예시에
+    # 있으면 모델이 평소에도 지운다. 취소된 계획은 지우지 않고 고쳐 쓰는 것으로 보여 준다.
+    assert {change.action for change in patch.changes} == {
+        UserMemoryChangeAction.ADD,
+        UserMemoryChangeAction.UPDATE,
+    }
+    assert all(item["text"] for item in example["changes"])
+    assert any("취소" in item["text"] for item in example["changes"])
     assert any(change.attribute_key is None for change in patch.changes)
     assert any(change.attribute_key for change in patch.changes)
     for item in example["changes"]:
         assert item["item"] not in METADATA_FIELDS
-        if item["action"] == UserMemoryChangeAction.REMOVE.value:
-            assert item["text"] is None, "삭제의 `text` 는 null 로 보여 줘야 합니다."
 
     items = [item["item"] for item in example["changes"]]
     assert len(items) == len(set(items)), "한 항목은 변경 목록에 한 번만 나옵니다."
@@ -1033,8 +1130,12 @@ def test_v3_tells_how_to_write_the_reason():
         ("그날 한 일을 하나씩 옮겨 적지 않습니다", "프로필이 타임라인의 요약이 됩니다."),
         ("속성 하나에는 그 키의 주제만 적습니다", "있던 속성에 상관없는 내용을 몰아 적습니다."),
         ("기존 프로필에 **없는 항목**", "내용이 있는 항목에 `추가` 를 쓰면 새 문장만 담깁니다."),
-        ("지우는 것은 이번 기록이 그 내용이 틀렸다고 말할 때뿐입니다", "이번 기록에 없다는 이유로 속성을 지웁니다."),
+        ("**기존 내용은 지우지 않습니다.**", "이번 기록에 없다는 이유로 속성을 지웁니다."),
         ("`이번 기록에 없음` 은 지울 이유가 아닙니다", "이번 기록에 없다는 이유로 속성을 지웁니다."),
+        ("**`[크기]` 가 속성 수를 줄이라고 했을 때만, 속성에만 씁니다.**", "`삭제` 를 평소에도 씁니다."),
+        ("**적히지 않은 항목은 크기 때문에 줄이지 않습니다**", "몫을 받지 않은 항목까지 줄입니다."),
+        ("달라진 내용으로 고쳐 씁니다", "취소된 계획이나 그만둔 일을 지웁니다."),
+        ("기존 내용을 지우기만 하는 변경은 `삭제` 든 `수정` 이든 적용되지 않습니다", "코드가 하는 일과 프롬프트가 달라집니다."),
     ],
 )
 def test_v3_states_the_rules_the_live_runs_needed(marker: str, why: str):
