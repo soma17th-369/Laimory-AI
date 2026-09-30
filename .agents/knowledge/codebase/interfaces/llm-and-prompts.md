@@ -50,9 +50,11 @@ prompt 세트에는 현재 Timeline, Repair, Question, UserMemory, Calendar, Not
 
 UserMemory Agent(#64)는 Timeline pipeline 밖이지만 `PROMPT_VERSION`이 전역이라 버전마다 `prompt.md`를 갖는다. v1과 v2는 **같은 내용**이며 테스트가 동일성을 강제한다. v3는 #121에서 갈라졌다 — AI가 쓴 `title`·`subtitle`도 근거로 읽고, 폭넓게 모으고, 한 번 나온 정보도 남기고, 하루 감정을 반영한다. 갱신 요청에 붙는 `[근거 없음]` 지시(`memo` 없는 날 성향 필드를 그대로 두라는 것)는 코드에 있어 버전으로 가른다(`_MEMO_ONLY_TRAITS`). v1·v2에서만 붙고, `PROMPT_VERSION`을 되돌리면 지시도 함께 돌아온다.
 
-UserMemory 갱신 요청(user prompt)은 `[existing user memory]`, `[dailyTimelines]`, `[크기]`, (v1·v2만) `[근거 없음]`, 재요청이면 `[직전 출력]`과 `[직전 출력이 규칙을 어겼습니다]` 순서로 조립한다. `[크기]`는 기존 프로필의 크기·목표(1,600자)·상한(2,000자)을 알리고, 기존 프로필이 목표를 넘었으면 항목별 문장 수 몫을 함께 준다. 재요청은 직전 출력을 고치게 하며 "다시 만드세요" 지시를 함께 싣지 않는다. 이 조립은 버전을 가리지 않는다.
+**모델 출력의 모양도 세트로 갈린다**(#121, `_PATCH_OUTPUT`). v3는 구조화 출력 스키마가 `UserMemoryPatch`다 — 바꿀 항목과 새 값만 받고 Agent가 기존 문서에 끼워 넣는다. v1·v2는 `UserMemory` 문서 전체를 받는다. 어느 쪽이든 Agent의 반환값은 문서 전체라 호출부는 세트를 모른다. 두 분기값(`_MEMO_ONLY_TRAITS`, `_PATCH_OUTPUT`)은 #119가 둔 기준 `uses_legacy_contract()` 하나에서 나온다. `UserMemory`는 `customAttributes`가 자유형 dict라 provider의 strict 스키마로 표현되지 않아 JSON 모드로 받지만, 패치는 (키, 값) 목록이라 strict로 강제된다.
 
-UserMemory의 digest와 schema 상한은 버전을 가리지 않는다. 하루 감정(`emotion`)과 끝 시각(`endHour`)은 v1·v2 입력에도 실리며, 그 세트의 prompt는 두 키를 설명하지 않는다. v3 prompt가 말하는 상한(필드·값 500자, 전체 2,000자)과 목표(1,600자), 감정 다섯 값, 입력 키, 출력 예시의 키는 코드와 같아야 하고 `tests/agents/test_user_memory_agent.py`가 고정한다. 크기 위반 지적은 줄이는 순서를 말하지 않고 prompt의 「크기」 절을 가리키므로 **모든 세트가 그 절을 가져야 한다.**
+UserMemory 갱신 요청(user prompt)은 `[existing user memory]`, `[dailyTimelines]`, `[크기]`, (v1·v2만) `[근거 없음]`, 그리고 출력의 모양을 말하는 마지막 문장(v3는 "바꿀 항목만", v1·v2는 "User Memory 전체") 순서로 조립한다. `[크기]`는 기존 프로필의 크기·목표(1,600자)·상한(2,000자)을 알리고, 기존 프로필이 목표를 넘었으면 항목별 문장 수 몫을 함께 준다. 이 조립은 버전을 가리지 않는다. **갱신 한 건은 LLM 호출 한 번이다** — 규칙을 어긴 갱신본을 다시 요청하지 않는다(#121). 재요청 경로(`[직전 출력]`과 `[직전 출력이 규칙을 어겼습니다]`를 붙여 직전 출력을 고치게 하는 것)는 코드에 남아 있고 기본은 꺼져 있다. 스키마 검증 실패 시의 구조화 출력 교정 재시도는 모든 Agent가 쓰는 별개의 장치이고 그대로다.
+
+UserMemory의 digest와 schema 상한은 버전을 가리지 않는다. 하루 감정(`emotion`)과 끝 시각(`endHour`)은 v1·v2 입력에도 실리며, 그 세트의 prompt는 두 키를 설명하지 않는다. v3 prompt가 말하는 상한(필드·값 500자, 전체 2,000자)과 목표(1,600자), 감정 다섯 값, 입력 키는 코드와 같아야 하고, 출력 예시는 `UserMemoryPatch`로 검증돼야 하며 `tests/agents/test_user_memory_agent.py`가 고정한다. 크기 위반 지적은 줄이는 순서를 말하지 않고 prompt의 「크기」 절을 가리키므로 **모든 세트가 그 절을 가져야 한다.**
 
 활성 prompt의 큰 의미 변경 전에는 같은 디렉터리에 version suffix 동결본을 둘 수 있다. loader는 활성 코드가 요청하는 정확한 filename만 읽으므로 동결본은 실행에 영향을 주지 않는다.
 

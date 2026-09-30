@@ -58,12 +58,14 @@
 | Confidence | event/candidate 확신도를 0~1로 표현한 값. 불확실성을 문장에 헤지하는 대신 metadata로 전달한다. |
 | Inference level | DIRECT, EVIDENCE_BASED, INFERRED, UNCERTAIN으로 판단 근거 수준을 표현한다. |
 | User Memory | 사용자를 압축한 프로필 v1.0. 사건 데이터가 아니라 해석·표현을 돕는 보조 context다. 소유는 App Server, 소비는 Timeline·Question Agent와 v3 세트의 Repair Agent, 생성은 User Memory Agent다. |
-| User Memory 갱신 task | 확정된 하루 타임라인으로 프로필 전체를 다시 쓰는 비동기 작업. Timeline task와 별개이며 callback이 없다. |
+| User Memory 갱신 task | 확정된 하루 타임라인으로 프로필을 갱신하는 비동기 작업. Timeline task와 별개이며 callback이 없다. |
 | Daily timeline | 갱신 입력의 하루치 확정 타임라인(`dailyTimelines[]`). `recordDate`와 `events`로 구성되며 수집 원본(source item)이 아니라 **이미 사용자에게 보인 결과**다. |
 | Daily timeline event | Daily timeline 안의 event 한 건. `title`·`subtitle`·`question`은 AI가 쓴 문장이고 `memo`만 사용자가 직접 쓴 글이다. |
 | `memo` | 사용자가 event에 직접 남긴 글. 비어 있을 수 있다. v1·v2 갱신에서는 성향 계열 필드의 **유일한** 근거이고, v3 갱신에서는 AI가 쓴 문장보다 앞서는 근거다(#121). |
 | 하루 감정 (`emotionType`) | 사용자가 하루를 저장하며 고른 감정. **Daily timeline에 하나**이며 event별 감정은 없다. `eventType`(활동의 종류)과 다른 값이다. `memo`와 함께 갱신 입력에서 사용자가 직접 남긴 둘뿐인 신호이고, digest에서는 `emotion` 키로 실린다. |
-| 갱신본(rewrite) | 기존 프로필을 통째로 대체하는 새 User Memory 전체 문서. append가 아니다. |
+| 갱신본 | 갱신을 마친 User Memory **문서 전체**. App Server로 나가는 것은 언제나 이것이고 기존 프로필을 통째로 대체한다. |
+| 부분 갱신 (`UserMemoryPatch`) | v3 세트에서 모델이 내는 출력. 바꿀 항목과 그 새 값만 담는다. AI 서버 안의 계약이며 코드가 기존 문서에 끼워 넣어 갱신본을 만든다. 저장·전송 형식이 아니다. |
+| 항목 | 부분 갱신에서 바꾸는 단위. 고정 필드 하나 또는 `customAttributes`의 속성 하나다. 문장 단위가 아니다. |
 | App Server | source, Timeline 결과 persistence, User Memory, task 상태를 소유하는 외부 서버. AI 서버의 제품 데이터 경계다. |
 | TaskToken | 한 task의 App Server 서버간 인증 token holder. 값 자체가 아니라 최신 값과 갱신 횟수 개념을 구분한다. |
 | Callback | 결과 body 전달이 아니라 SUCCESS/FAILED terminal 상태 통보다. 결과는 그 전에 result API로 저장한다. **Timeline에만 있다** — User Memory 갱신은 결과 저장 한 번이 통보를 겸한다. |
