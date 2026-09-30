@@ -93,7 +93,7 @@ AI 서버가 밖으로 내보내는 실패는 **정수 하나로 식별**합니�
 | 1301 | `TIMELINE_STORAGE_VALIDATION_FAILED` | 저장 전 자체검증에서 계약 위반이 나왔습니다. | | |
 | 1302 | *(예약)* | AI 서버가 staging DB에 직접 붙던 시절의 `DATABASE_ERROR`입니다. **사용하지 않습니다.** | | |
 | 1303 | `TIMELINE_RESULT_SUBMIT_FAILED` | 결과 저장 API 호출이 재시도까지 실패했습니다(5xx/timeout). | | |
-| 1304 | `USER_MEMORY_LIMIT_EXCEEDED` | User Memory 갱신본이 재요청 뒤에도 크기·민감정보 검증을 통과하지 못했습니다. | | |
+| 1304 | `USER_MEMORY_LIMIT_EXCEEDED` | User Memory 갱신본이 크기·민감정보 검증을 통과하지 못했습니다. 다시 요청하지 않고 기존 값을 그대로 둡니다. | | |
 | 1305 | `USER_MEMORY_SUBMIT_FAILED` | User Memory 결과 저장 호출이 재시도까지 실패했습니다(5xx/timeout). | | |
 
 1210·1304는 **User Memory만** 실패한 것입니다. 하루 기록 저장(`DailyRecord`의
