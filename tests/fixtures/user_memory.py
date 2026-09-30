@@ -95,3 +95,15 @@ def memory_json(**fields: Any) -> str:
     """갱신 Agent 가 돌려줄 LLM 응답(JSON 문자열)."""
 
     return json.dumps(memory_body(**fields), ensure_ascii=False)
+
+
+def change(item: str, action: str = "수정", text: str | None = None) -> dict[str, Any]:
+    """변경 한 건(#121). ``item`` 은 고정 필드 이름이거나 ``customAttributes.<키>`` 다."""
+
+    return {"item": item, "action": action, "text": text}
+
+
+def changes_json(*changes: dict[str, Any]) -> str:
+    """v3 세트의 갱신 Agent 가 돌려줄 LLM 응답 — 변경 목록(JSON 문자열)."""
+
+    return json.dumps({"changes": list(changes)}, ensure_ascii=False)

@@ -431,7 +431,15 @@ def test_repair_v3_reads_user_memory_fields_as_the_writer_defines_them() -> None
     """필드의 뜻은 프로필을 쓰는 쪽(User Memory Agent)이 정본이다."""
 
     writer = _read("agents/user_memory/prompts/v3/prompt.md")
-    definitions = dict(re.findall(r"^\| `(\w+)` \| ([^|]+?) \| [^|]+ \|$", writer, re.M))
+    # 쓰는 쪽은 항목마다 절 하나를 갖고 그 첫 줄이 정의다(`- **담는 것**: …`).
+    # `customAttributes` 는 고정 필드가 아니라 읽는 쪽이 따로 설명한다.
+    definitions = {
+        name: definition
+        for name, definition in re.findall(
+            r"^### `(\w+)` — .+\n\n- \*\*담는 것\*\*: (.+)$", writer, re.M
+        )
+        if name != "customAttributes"
+    }
     section = _between(_repair_v3(), "#### User Memory 반영", "### 4단계.")
 
     assert set(definitions) == set(NARRATIVE_FIELDS)

@@ -11,7 +11,6 @@ v1·v2 는 `memo` 없는 날 성향 필드를 그대로 두라고 알리고, v3 
 """
 
 import importlib
-import json
 from pathlib import Path
 
 import pytest
@@ -22,7 +21,8 @@ from app.services.user_memory_limits import build_daily_timeline_digest
 from tests.fixtures.fake_llm import FakeLLM, result_json
 from tests.fixtures.requests import make_request, sleep_item, stay_item
 from tests.fixtures.user_memory import (
-    NARRATIVE_FIELDS,
+    change,
+    changes_json,
     daily_timeline,
     daily_timeline_event,
     memory_json,
@@ -196,9 +196,7 @@ def test_v3_takes_only_the_items_to_change_and_keeps_the_rest(
 
     module = _reload_agents(monkeypatch, "v3")["user_memory"]
     existing = module.UserMemory(relationships="김민수: 같은 팀 동료.")
-    patch = {name: None for name in NARRATIVE_FIELDS}
-    patch.update(basicProfile="30대 개발자입니다.", customAttributes=[])
-    llm = FakeLLM([json.dumps(patch, ensure_ascii=False)])
+    llm = FakeLLM([changes_json(change("basicProfile", "추가", "30대 개발자입니다."))])
 
     memory = module.UserMemoryAgent(llm=llm).generate(existing, _digest_without_memo())
 

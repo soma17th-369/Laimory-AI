@@ -24,8 +24,11 @@ from app.schemas.user_memory import (
     NARRATIVE_FIELDS,
     NARRATIVE_MAX_LENGTH,
     SCHEMA_VERSION,
+    UserMemoryChange,
+    UserMemoryChangeAction,
     UserMemoryPatch,
 )
+from tests.fixtures.user_memory import change
 
 
 def _memory(**overrides) -> UserMemory:
@@ -174,14 +177,14 @@ def test_projection_text_is_stable_json():
     assert text == user_memory_to_text(memory)
 
 
-# --- 부분 갱신 (#121) ---------------------------------------------------
+# --- 변경 목록 (#121) ---------------------------------------------------
 #
-# 모델에게는 바꿀 항목만 받고 코드가 기존 문서에 끼워 넣는다. 여기서 지키는 것은
-# "패치에 없는 항목은 글자 하나 바뀌지 않는다" 하나다.
+# 모델에게는 "어느 항목을 추가·수정·삭제할지" 만 받고 코드가 기존 문서에 끼워 넣는다.
+# 여기서 지키는 것은 "목록에 없는 항목은 글자 하나 바뀌지 않는다" 하나다.
 
 
-def _patch(**overrides) -> UserMemoryPatch:
-    return UserMemoryPatch.model_validate(overrides)
+def _patch(*changes: dict) -> UserMemoryPatch:
+    return UserMemoryPatch.model_validate({"changes": list(changes)})
 
 
 def _profile() -> UserMemory:
@@ -193,16 +196,21 @@ def _profile() -> UserMemory:
     )
 
 
-def test_empty_patch_changes_nothing():
+def test_empty_change_list_changes_nothing():
+    """바꿀 것이 없으면 빈 목록이다. 실패가 아니다."""
+
     profile = _profile()
 
     assert _patch().apply_to(profile) == profile
+    assert UserMemoryPatch.model_validate({}).apply_to(profile) == profile
 
 
-def test_patch_replaces_only_the_fields_it_carries():
+def test_change_replaces_only_the_item_it_names():
     profile = _profile()
 
-    updated = _patch(routines="평일에는 회사에서 일하고 주말에 클라이밍을 합니다.").apply_to(profile)
+    updated = _patch(
+        change("routines", "수정", "평일에는 회사에서 일하고 주말에 클라이밍을 합니다.")
+    ).apply_to(profile)
 
     assert updated.routines == "평일에는 회사에서 일하고 주말에 클라이밍을 합니다."
     assert updated.basic_profile == profile.basic_profile
@@ -210,72 +218,94 @@ def test_patch_replaces_only_the_fields_it_carries():
     assert updated.updated_at == profile.updated_at
 
 
-def test_patch_does_not_mutate_the_original():
+def test_change_list_does_not_mutate_the_original():
     profile = _profile()
     before = profile.model_dump()
 
     _patch(
-        routines="바뀐 문장입니다.",
-        customAttributes=[{"key": "여행", "value": None}],
+        change("routines", "수정", "바뀐 문장입니다."),
+        change("customAttributes.여행", "삭제"),
     ).apply_to(profile)
 
     assert profile.model_dump() == before
 
 
-def test_null_leaves_a_field_and_an_empty_string_clears_it():
-    """``None`` 은 "바꾸지 않는다" 이고 빈 문자열은 "비운다" 다. 둘을 섞으면 안 된다."""
+def test_update_replaces_the_item_with_the_text():
+    """`수정` 은 바꿔 끼운다. 합치는 것은 의미 판단이라 모델의 몫이다."""
 
-    profile = _profile()
+    updated = _patch(change("routines", "수정", "주말에 클라이밍을 합니다.")).apply_to(
+        _profile()
+    )
 
-    untouched = _patch(basicProfile=None).apply_to(profile)
-    cleared = _patch(basicProfile="").apply_to(profile)
-
-    assert untouched.basic_profile == profile.basic_profile
-    assert cleared.basic_profile == ""
+    assert updated.routines == "주말에 클라이밍을 합니다."
 
 
-def test_patch_adds_replaces_and_removes_custom_attributes():
+@pytest.mark.parametrize("action", ["추가", "수정"])
+def test_empty_item_is_filled_by_either_action(action: str):
+    """비어 있던 항목인지 있던 항목인지를 모델이 잘못 짚어도 변경을 버리지 않는다."""
+
+    filled = _patch(change("lifeContext", action, "마감을 앞둔 시기입니다.")).apply_to(
+        _profile()
+    )
+
+    assert filled.life_context == "마감을 앞둔 시기입니다."
+
+
+def test_remove_clears_a_fixed_field():
+    updated = _patch(change("basicProfile", "삭제")).apply_to(_profile())
+
+    assert updated.basic_profile == ""
+    assert "basicProfile" not in updated.prompt_payload()
+
+
+def test_changes_add_replace_and_remove_custom_attributes():
     updated = _patch(
-        customAttributes=[
-            {"key": "운동", "value": "합정 클라이밍장"},
-            {"key": "반려동물", "value": "고양이 두 마리"},
-            {"key": "여행", "value": None},
-        ]
+        change("customAttributes.운동", "추가", "합정 클라이밍장"),
+        change("customAttributes.반려동물", "수정", "고양이 두 마리"),
+        change("customAttributes.여행", "삭제"),
     ).apply_to(_profile())
 
-    assert updated.custom_attributes == {"반려동물": "고양이 두 마리", "운동": "합정 클라이밍장"}
+    assert updated.custom_attributes == {
+        "반려동물": "고양이 두 마리",
+        "운동": "합정 클라이밍장",
+    }
 
 
-@pytest.mark.parametrize("value", [None, ""])
-def test_removing_a_custom_attribute_takes_null_or_an_empty_value(value):
-    updated = _patch(customAttributes=[{"key": "여행", "value": value}]).apply_to(_profile())
+def test_custom_attribute_key_is_everything_after_the_prefix():
+    """키에는 공백이 있을 수 있다(`자주 가는 카페`)."""
 
-    assert "여행" not in updated.custom_attributes
+    parsed = UserMemoryChange.model_validate(
+        change("customAttributes.자주 가는 카페", "추가", "망원동 카페")
+    )
+
+    assert parsed.attribute_key == "자주 가는 카페"
+    assert UserMemoryChange.model_validate(change("routines", "삭제")).attribute_key is None
 
 
 def test_removing_an_unknown_custom_attribute_is_a_no_op():
     profile = _profile()
 
-    updated = _patch(customAttributes=[{"key": "없는 키", "value": None}]).apply_to(profile)
+    updated = _patch(change("customAttributes.없는 키", "삭제")).apply_to(profile)
 
     assert updated.custom_attributes == profile.custom_attributes
 
 
-def test_later_change_wins_when_a_key_appears_twice():
+def test_later_change_wins_when_an_item_appears_twice():
     updated = _patch(
-        customAttributes=[
-            {"key": "운동", "value": "수영"},
-            {"key": "운동", "value": "클라이밍"},
-        ]
+        change("customAttributes.운동", "추가", "수영"),
+        change("customAttributes.운동", "수정", "클라이밍"),
+        change("routines", "수정", "첫 문장입니다."),
+        change("routines", "수정", "둘째 문장입니다."),
     ).apply_to(_profile())
 
     assert updated.custom_attributes["운동"] == "클라이밍"
+    assert updated.routines == "둘째 문장입니다."
 
 
-def test_patch_applies_to_a_missing_profile_as_to_an_empty_one():
+def test_change_list_applies_to_a_missing_profile_as_to_an_empty_one():
     """기존 문서가 없는 것과 비어 있는 것을 가를 이유가 없다."""
 
-    patch = _patch(basicProfile="판교 회사에 다니는 직장인으로 보입니다.")
+    patch = _patch(change("basicProfile", "추가", "판교 회사에 다니는 직장인으로 보입니다."))
 
     assert patch.apply_to(None) == patch.apply_to(UserMemory())
     assert patch.apply_to(None).prompt_payload() == {
@@ -283,47 +313,145 @@ def test_patch_applies_to_a_missing_profile_as_to_an_empty_one():
     }
 
 
-def test_patch_value_over_the_item_limit_is_rejected():
-    """항목 값 하나의 길이 제한은 저장 문서와 같다. 패치를 통과한 값은 적용한 뒤에도
+def test_text_over_the_item_limit_is_rejected():
+    """항목 값 하나의 길이 제한은 저장 문서와 같다. 변경을 통과한 값은 적용한 뒤에도
     문서 계약을 어기지 않는다."""
 
     with pytest.raises(ValidationError):
-        _patch(routines="가" * (NARRATIVE_MAX_LENGTH + 1))
+        _patch(change("routines", "수정", "가" * (NARRATIVE_MAX_LENGTH + 1)))
     with pytest.raises(ValidationError):
         _patch(
-            customAttributes=[
-                {"key": "메모", "value": "가" * (CUSTOM_ATTRIBUTE_MAX_LENGTH + 1)}
-            ]
+            change("customAttributes.메모", "추가", "가" * (CUSTOM_ATTRIBUTE_MAX_LENGTH + 1))
         )
 
+    at_limit = _patch(change("routines", "수정", "가" * NARRATIVE_MAX_LENGTH))
+    assert len(at_limit.apply_to(None).routines) == NARRATIVE_MAX_LENGTH
 
-def test_patch_rejects_unknown_fields_and_metadata():
-    """패치로 계약 버전이나 갱신 시각을 바꿀 수 없다. 그 값은 서버가 정한다."""
+
+def test_length_error_names_the_limit_without_quoting_the_text():
+    """오류 문장은 교정 재시도 프롬프트와 로그에 실린다. 값을 옮겨 적지 않는다."""
+
+    with pytest.raises(ValidationError) as exc:
+        _patch(change("routines", "수정", "가나다라" * 200))
+
+    message = exc.value.errors(include_input=False)[0]["msg"]
+    assert f"{NARRATIVE_MAX_LENGTH}자" in message
+    assert "가나다라" not in message
+
+
+@pytest.mark.parametrize("action", ["추가", "수정"])
+@pytest.mark.parametrize("text", [None, "", "   "])
+def test_add_and_update_need_a_text(action: str, text):
+    """비우려면 `삭제` 를 쓴다. 빈 문장으로 채우는 변경은 뜻이 없다."""
 
     with pytest.raises(ValidationError):
-        _patch(favoriteColor="파랑")
-    with pytest.raises(ValidationError):
-        _patch(schemaVersion="9.9")
-    with pytest.raises(ValidationError):
-        _patch(customAttributes=[{"key": "", "value": "값"}])
+        _patch(change("routines", action, text))
 
 
-def test_patch_can_change_exactly_the_items_the_document_has():
+def test_remove_ignores_whatever_text_it_carries():
+    updated = _patch(change("customAttributes.여행", "삭제", "지울 속성입니다.")).apply_to(
+        _profile()
+    )
+
+    assert "여행" not in updated.custom_attributes
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        "favoriteColor",
+        "schemaVersion",
+        "updatedAt",
+        "customAttributes",
+        "customAttributes.",
+        "customAttributes.  ",
+    ],
+)
+def test_change_cannot_name_an_item_the_document_does_not_have(item: str):
+    """변경 목록으로 계약 버전이나 갱신 시각을 바꿀 수 없다. 그 값은 서버가 정한다."""
+
+    with pytest.raises(ValidationError):
+        _patch(change(item, "수정", "값"))
+
+
+def test_unknown_action_and_unknown_keys_are_rejected():
+    with pytest.raises(ValidationError):
+        _patch(change("routines", "교체", "값"))
+    with pytest.raises(ValidationError):
+        _patch({**change("routines", "수정", "값"), "note": "메모"})
+    with pytest.raises(ValidationError):
+        UserMemoryPatch.model_validate({"changes": [], "routines": "값"})
+
+
+def test_every_fixed_field_can_be_changed():
     """문서에만 필드를 더하면 그 필드는 영영 갱신되지 않는다."""
 
-    patchable = {
-        field.alias or name for name, field in UserMemoryPatch.model_fields.items()
+    patch = _patch(*(change(name, "추가", f"{name} 값") for name in NARRATIVE_FIELDS))
+
+    assert patch.apply_to(None).prompt_payload() == {
+        name: f"{name} 값" for name in NARRATIVE_FIELDS
     }
 
-    assert patchable == set(NARRATIVE_FIELDS) | {"customAttributes"}
+
+def test_actions_are_the_three_the_prompt_names():
+    assert [action.value for action in UserMemoryChangeAction] == ["추가", "수정", "삭제"]
 
 
-def test_patch_schema_can_be_enforced_by_the_provider():
+def test_change_list_schema_can_be_enforced_by_the_provider():
     """문서 스키마는 ``customAttributes`` 가 자유형 dict 라 strict 로 표현되지 않는다.
-    패치는 (키, 값) 목록이라 provider 가 모양을 강제할 수 있다."""
+    변경 목록은 (항목, 동작, 문장) 의 목록이라 provider 가 모양을 강제할 수 있다."""
 
     assert to_strict_schema(UserMemory) is None
     assert to_strict_schema(UserMemoryPatch) is not None
+
+
+def test_change_list_schema_carries_no_design_notes_to_the_provider():
+    """클래스 docstring 은 JSON schema 의 description 으로 provider 에 나간다.
+
+    설계 이유를 docstring 에 길게 적으면 그것이 매 요청에 실린다.
+    """
+
+    schema = json.dumps(to_strict_schema(UserMemoryPatch), ensure_ascii=False)
+
+    assert len(schema) < 1_500
+    assert "#121" not in schema
+    assert "실측" not in schema
+
+
+def test_reason_comes_before_text_in_the_schema():
+    """선언 순서가 곧 모델이 쓰는 순서다. 이유가 문장보다 먼저 와야 그것을 보고 쓴다."""
+
+    schema = to_strict_schema(UserMemoryPatch)
+
+    assert list(schema["properties"]) == ["changes"]
+    assert list(schema["$defs"]["UserMemoryChange"]["properties"]) == [
+        "item",
+        "action",
+        "reason",
+        "text",
+    ]
+
+
+@pytest.mark.parametrize("reason", ["반복: 클라이밍을 이번 주말에도 함", "", "아무 말"])
+def test_reason_is_never_read(reason: str):
+    """`reason` 은 모델의 판단 과정이다. 코드는 읽지 않고, 비어 있어도 거절하지 않는다."""
+
+    body = {**change("routines", "수정", "주말에 클라이밍을 합니다."), "reason": reason}
+
+    updated = _patch(body).apply_to(_profile())
+
+    assert updated.routines == "주말에 클라이밍을 합니다."
+    assert reason == "" or reason not in json.dumps(
+        updated.model_dump(by_alias=True), ensure_ascii=False
+    )
+
+
+def test_change_without_a_reason_is_still_a_change():
+    """이유가 빠졌다고 변경을 버리지 않는다. 생각을 적는 자리가 비었을 뿐이다."""
+
+    parsed = UserMemoryChange.model_validate(change("routines", "삭제"))
+
+    assert parsed.reason == ""
 
 
 # --- 관측 ---------------------------------------------------------------
