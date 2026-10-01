@@ -26,6 +26,7 @@ from app.schemas.user_memory import (
     SCHEMA_VERSION,
     UserMemoryChange,
     UserMemoryChangeAction,
+    UserMemoryChangeProblem,
     UserMemoryPatch,
 )
 from tests.fixtures.user_memory import change
@@ -375,39 +376,47 @@ def test_change_list_applies_to_a_missing_profile_as_to_an_empty_one():
     }
 
 
-def test_text_over_the_item_limit_is_rejected():
-    """항목 값 하나의 길이 제한은 저장 문서와 같다. 변경을 통과한 값은 적용한 뒤에도
-    문서 계약을 어기지 않는다."""
+# 변경 한 건의 잘못은 목록 전체를 거절하지 않는다. 그 변경만 적용되지 않고 그 항목은
+# 기존 내용 그대로 남는다. 검증 오류로 두면 변경 하나 때문에 목록 전체를 다시 요청하고,
+# 그래도 어기면 그날의 갱신을 통째로 잃는다.
 
-    with pytest.raises(ValidationError):
-        _patch(change("routines", "수정", "가" * (NARRATIVE_MAX_LENGTH + 1)))
-    with pytest.raises(ValidationError):
-        _patch(
-            change("customAttributes.메모", "추가", "가" * (CUSTOM_ATTRIBUTE_MAX_LENGTH + 1))
-        )
+
+def test_text_over_the_item_limit_is_not_applied():
+    """항목 값 하나의 길이 제한은 저장 문서와 같다. 넘긴 변경은 빠지고 기존 내용이 남는다."""
+
+    profile = _profile()
+    patch = _patch(
+        change("routines", "수정", "가" * (NARRATIVE_MAX_LENGTH + 1)),
+        change("customAttributes.메모", "추가", "가" * (CUSTOM_ATTRIBUTE_MAX_LENGTH + 1)),
+        change("lifeContext", "추가", "마감을 앞둔 시기입니다."),
+    )
+
+    assert [item.problem for item in patch.changes] == [
+        UserMemoryChangeProblem.TOO_LONG,
+        UserMemoryChangeProblem.TOO_LONG,
+        None,
+    ]
+    updated = patch.apply_to(profile)
+    assert updated.routines == profile.routines
+    assert "메모" not in updated.custom_attributes
+    # 같은 목록의 다른 변경은 적용된다.
+    assert updated.life_context == "마감을 앞둔 시기입니다."
 
     at_limit = _patch(change("routines", "수정", "가" * NARRATIVE_MAX_LENGTH))
+    assert at_limit.changes[0].problem is None
     assert len(at_limit.apply_to(None).routines) == NARRATIVE_MAX_LENGTH
-
-
-def test_length_error_names_the_limit_without_quoting_the_text():
-    """오류 문장은 교정 재시도 프롬프트와 로그에 실린다. 값을 옮겨 적지 않는다."""
-
-    with pytest.raises(ValidationError) as exc:
-        _patch(change("routines", "수정", "가나다라" * 200))
-
-    message = exc.value.errors(include_input=False)[0]["msg"]
-    assert f"{NARRATIVE_MAX_LENGTH}자" in message
-    assert "가나다라" not in message
 
 
 @pytest.mark.parametrize("action", ["추가", "수정"])
 @pytest.mark.parametrize("text", [None, "", "   "])
-def test_add_and_update_need_a_text(action: str, text):
-    """비우려면 `삭제` 를 쓴다. 빈 문장으로 채우는 변경은 뜻이 없다."""
+def test_add_and_update_without_a_text_are_not_applied(action: str, text):
+    """빈 문장으로 채우는 변경은 뜻이 없다. 그 항목을 비우지도 않는다."""
 
-    with pytest.raises(ValidationError):
-        _patch(change("routines", action, text))
+    profile = _profile()
+    patch = _patch(change("routines", action, text))
+
+    assert patch.changes[0].problem is UserMemoryChangeProblem.EMPTY_TEXT
+    assert patch.apply_to(profile) == profile
 
 
 def test_remove_ignores_whatever_text_it_carries():
@@ -430,10 +439,35 @@ def test_remove_ignores_whatever_text_it_carries():
     ],
 )
 def test_change_cannot_name_an_item_the_document_does_not_have(item: str):
-    """변경 목록으로 계약 버전이나 갱신 시각을 바꿀 수 없다. 그 값은 서버가 정한다."""
+    """변경 목록으로 계약 버전이나 갱신 시각을 바꿀 수 없다. 그 값은 서버가 정한다.
 
-    with pytest.raises(ValidationError):
-        _patch(change(item, "수정", "값"))
+    없는 항목을 가리킨 변경은 적용되지 않는다. 문서에 모르는 필드가 생기지도 않는다.
+    """
+
+    profile = _profile()
+    patch = _patch(change(item, "수정", "값"), change("lifeContext", "추가", "새 문장입니다."))
+
+    assert patch.changes[0].problem is UserMemoryChangeProblem.UNKNOWN_ITEM
+    updated = patch.apply_to(profile)
+    assert updated.schema_version == profile.schema_version
+    assert updated.updated_at == profile.updated_at
+    assert updated.custom_attributes == profile.custom_attributes
+    assert updated.life_context == "새 문장입니다."
+
+
+def test_applied_document_keeps_the_contract_whatever_the_changes_are():
+    """적용할 수 없는 변경이 섞여 있어도 돌려주는 문서는 문서 계약을 지킨다."""
+
+    updated = _patch(
+        change("", "수정", "값"),
+        change("hobbies", "추가", "값"),
+        change("routines", "수정", "가" * 600),
+        change("customAttributes.메모", "수정", "나" * 600),
+        change("basicProfile", "수정", "직장인입니다."),
+    ).apply_to(_profile())
+
+    assert UserMemory.model_validate(updated.model_dump(by_alias=True)) == updated
+    assert updated.basic_profile == "직장인입니다."
 
 
 def test_unknown_action_and_unknown_keys_are_rejected():

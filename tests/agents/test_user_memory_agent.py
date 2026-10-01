@@ -40,6 +40,7 @@ from app.services.user_memory_limits import (
     USER_MEMORY_MAX_CHARS,
     USER_MEMORY_TARGET_CHARS,
     build_daily_timeline_digest,
+    find_violations,
     serialized_chars,
 )
 from app.schemas.user_memory_update import DailyTimeline
@@ -545,20 +546,6 @@ def test_v3_shortens_an_item_the_size_budget_names(v3_set):
     assert memory.custom_attributes == {"여행": "8월 말에 강릉에 다녀왔습니다."}
 
 
-def test_v3_logs_how_many_removals_it_dropped_without_naming_them(v3_set, caplog):
-    existing = _existing_profile()
-    llm = FakeLLM([changes_json(change("customAttributes.여행", "삭제"))])
-
-    with caplog.at_level("INFO"):
-        UserMemoryAgent(llm=llm).generate(existing, _digest())
-
-    records = [r for r in caplog.records if "지우기만 하는 변경" in r.getMessage()]
-    assert len(records) == 1
-    dumped = json.dumps(records[0].__dict__, ensure_ascii=False, default=str)
-    assert "droppedRemovalCount" in dumped
-    assert "여행" not in dumped and "강릉" not in dumped
-
-
 def test_v3_empty_change_list_returns_the_same_profile(v3_set):
     """이번 기록이 말해 주는 것이 없으면 아무것도 바뀌지 않는다. 실패가 아니다."""
 
@@ -581,36 +568,139 @@ def test_v3_fills_an_empty_profile_from_a_change_list(v3_set):
     assert memory.prompt_payload() == {"basicProfile": "판교 회사에 다니는 직장인으로 보입니다."}
 
 
-def test_v3_over_length_item_is_repaired_by_the_structured_path(v3_set):
-    """항목 값 하나의 길이 제한은 변경 한 건의 `text` 에 같게 걸린다."""
+# --- 어긴 변경만 뺀다 (#121) --------------------------------------------
+#
+# 변경 하나가 규칙을 어겼다고 그날의 갱신을 통째로 버리지 않는다. 그 변경만 빠지고 그
+# 항목은 기존 내용 그대로 남는다. 다시 요청하지도 않는다.
 
+
+def test_v3_drops_only_the_change_that_is_too_long(v3_set):
+    existing = _existing_profile()
     llm = FakeLLM(
         [
-            changes_json(change("routines", "수정", "가" * (NARRATIVE_MAX_LENGTH + 1))),
-            changes_json(change("routines", "수정", "짧게 줄였습니다.")),
+            changes_json(
+                change("routines", "수정", "가" * (NARRATIVE_MAX_LENGTH + 1)),
+                change("relationships", "수정", "김민수: 같은 팀 동료. 이수진: 대학 동기."),
+            )
         ]
     )
 
-    memory = UserMemoryAgent(llm=llm).generate(_existing_profile(), _digest())
+    memory = UserMemoryAgent(llm=llm).generate(existing, _digest())
 
-    assert memory.routines == "짧게 줄였습니다."
-    assert len(llm.calls) == 2
+    assert memory.routines == existing.routines
+    assert memory.relationships == "김민수: 같은 팀 동료. 이수진: 대학 동기."
+    assert len(llm.calls) == 1, "길이를 넘겼다고 다시 요청하지 않습니다."
 
 
-def test_v3_change_to_an_unknown_item_is_repaired_by_the_structured_path(v3_set):
-    """없는 항목을 가리킨 변경을 조용히 버리지 않는다. 버리면 모델이 하려던 갱신이 사라진다."""
-
+def test_v3_drops_only_the_change_to_an_unknown_item(v3_set):
+    existing = _existing_profile()
     llm = FakeLLM(
         [
-            changes_json(change("hobbies", "추가", "클라이밍을 합니다.")),
-            changes_json(change("customAttributes.취미", "추가", "클라이밍을 합니다.")),
+            changes_json(
+                change("hobbies", "추가", "클라이밍을 합니다."),
+                change("customAttributes.취미", "추가", "클라이밍을 합니다."),
+            )
         ]
     )
 
-    memory = UserMemoryAgent(llm=llm).generate(_existing_profile(), _digest())
+    memory = UserMemoryAgent(llm=llm).generate(existing, _digest())
 
     assert memory.custom_attributes["취미"] == "클라이밍을 합니다."
-    assert len(llm.calls) == 2
+    assert memory.prompt_payload().keys() == {
+        "basicProfile",
+        "relationships",
+        "routines",
+        "customAttributes",
+    }
+    assert len(llm.calls) == 1
+
+
+def test_v3_drops_only_the_change_that_carries_a_sensitive_value(v3_set):
+    """예전에는 민감한 값이 하나라도 남으면 갱신 전체를 1304 로 버렸다."""
+
+    existing = _existing_profile()
+    llm = FakeLLM(
+        [
+            changes_json(
+                change("relationships", "수정", "김민수: 같은 팀 동료. 연락처는 010-1234-5678."),
+                change("routines", "수정", "평일에는 회사에서 일합니다. 주말에 클라이밍을 합니다."),
+            )
+        ]
+    )
+
+    memory = UserMemoryAgent(llm=llm).generate(existing, _digest())
+
+    assert memory.relationships == existing.relationships
+    assert memory.routines == "평일에는 회사에서 일합니다. 주말에 클라이밍을 합니다."
+    assert find_violations(memory) == []
+
+
+def test_v3_drops_the_changes_that_would_push_the_profile_over_the_cap(v3_set):
+    """예전에는 적용한 문서가 상한을 넘으면 갱신 전체를 1304 로 버렸다.
+
+    키우는 변경은 목록에 적힌 순서대로 자리가 남는 데까지 적용한다.
+    """
+
+    existing = UserMemory(
+        basic_profile="가" * 460,
+        life_context="나" * 460,
+        relationships="다" * 460,
+        personality="라" * 460,
+    )
+    assert USER_MEMORY_MAX_CHARS - 100 < serialized_chars(existing) < USER_MEMORY_MAX_CHARS
+    llm = FakeLLM(
+        [
+            changes_json(
+                change("values", "추가", "마" * 30),
+                change("preferences", "추가", "바" * 400),
+                change("routines", "추가", "사" * 20),
+            )
+        ]
+    )
+
+    memory = UserMemoryAgent(llm=llm).generate(existing, _digest())
+
+    assert serialized_chars(memory) <= USER_MEMORY_MAX_CHARS
+    assert memory.values == "마" * 30
+    assert memory.preferences == ""
+    # 큰 변경이 빠진 뒤에도 뒤의 작은 변경은 자리가 남으면 들어간다.
+    assert memory.routines == "사" * 20
+    assert find_violations(memory) == []
+
+
+def test_v3_logs_the_dropped_changes_by_reason_without_naming_them(v3_set, caplog):
+    existing = _existing_profile()
+    llm = FakeLLM(
+        [
+            changes_json(
+                change("routines", "수정", "가" * (NARRATIVE_MAX_LENGTH + 1)),
+                change("hobbies", "추가", "클라이밍을 합니다."),
+                change("customAttributes.여행", "삭제"),
+                change("relationships", "수정", "김민수: 같은 팀 동료. 이수진: 대학 동기."),
+            )
+        ]
+    )
+
+    with caplog.at_level("INFO"):
+        UserMemoryAgent(llm=llm).generate(existing, _digest())
+
+    records = [r for r in caplog.records if "적용하지 않았습니다" in r.getMessage()]
+    assert len(records) == 1
+    fields = records[0].fields
+    assert fields["changeCount"] == 4
+    assert fields["droppedChangeCount"] == 3
+    assert fields["droppedChanges"] == {"tooLong": 1, "unknownItem": 1, "removal": 1}
+    dumped = json.dumps(records[0].__dict__, ensure_ascii=False, default=str)
+    assert "여행" not in dumped and "hobbies" not in dumped and "가가" not in dumped
+
+
+def test_v3_logs_nothing_when_every_change_is_applied(v3_set, caplog):
+    llm = FakeLLM([changes_json(change("lifeContext", "추가", "마감을 앞둔 시기입니다."))])
+
+    with caplog.at_level("INFO"):
+        UserMemoryAgent(llm=llm).generate(_existing_profile(), _digest())
+
+    assert not [r for r in caplog.records if "적용하지 않았습니다" in r.getMessage()]
 
 
 def test_v3_retry_applies_the_change_list_to_the_previous_output(v3_set):

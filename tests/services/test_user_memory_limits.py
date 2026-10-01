@@ -22,6 +22,7 @@ from app.services.user_memory_limits import (
     TEXT_MAX_CHARS,
     USER_MEMORY_MAX_CHARS,
     USER_MEMORY_TARGET_CHARS,
+    apply_changes,
     build_daily_timeline_digest,
     drop_removals,
     find_violations,
@@ -877,3 +878,145 @@ def test_removals_are_dropped_when_no_shrink_budget_is_given():
 
     assert shrink_budget(memory) == []
     assert drop_removals(_changes(change("routines", "삭제")), memory)[1] == 1
+
+
+# --- 어긴 변경만 뺀다 (#121) --------------------------------------------
+#
+# 변경 하나가 규칙을 어겼다고 그날의 갱신을 통째로 버리지 않는다. 그 변경만 빠지고 그
+# 항목은 기존 내용 그대로 남는다.
+
+
+def test_apply_changes_applies_everything_when_nothing_is_wrong():
+    memory, dropped = apply_changes(
+        _changes(
+            change("lifeContext", "추가", "마감을 앞둔 시기입니다."),
+            change("basicProfile", "수정", "강남 회사에서 일합니다. 망원동에 삽니다."),
+        ),
+        _small_profile(),
+    )
+
+    assert dropped == {}
+    assert memory.life_context == "마감을 앞둔 시기입니다."
+    assert memory.basic_profile == "강남 회사에서 일합니다. 망원동에 삽니다."
+
+
+def test_apply_changes_counts_what_it_drops_by_reason():
+    profile = _small_profile()
+
+    memory, dropped = apply_changes(
+        _changes(
+            change("hobbies", "추가", "클라이밍을 합니다."),
+            change("lifeContext", "추가", "   "),
+            change("routines", "수정", "가" * (NARRATIVE_MAX_LENGTH + 1)),
+            change("relationships", "추가", "김민수: 010-1234-5678"),
+            change("customAttributes.악기", "삭제"),
+            change("values", "추가", "약속을 지키려 합니다."),
+        ),
+        profile,
+    )
+
+    assert dropped == {
+        "unknownItem": 1,
+        "emptyText": 1,
+        "tooLong": 1,
+        "sensitive": 1,
+        "removal": 1,
+    }
+    assert memory.values == "약속을 지키려 합니다."
+    assert memory.routines == profile.routines
+    assert memory.relationships == ""
+    assert memory.custom_attributes == profile.custom_attributes
+    assert find_violations(memory) == []
+
+
+def test_apply_changes_never_returns_a_document_over_the_cap():
+    """기존 문서가 상한 안이면 돌려주는 문서도 상한 안이다. 1304 로 갈 일이 없다."""
+
+    profile = UserMemory(
+        basic_profile="가" * 460,
+        life_context="나" * 460,
+        relationships="다" * 460,
+        personality="라" * 460,
+    )
+
+    memory, dropped = apply_changes(
+        _changes(
+            change("values", "추가", "마" * 300),
+            change("preferences", "추가", "바" * 300),
+            change("routines", "추가", "사" * 300),
+        ),
+        profile,
+    )
+
+    assert serialized_chars(memory) <= USER_MEMORY_MAX_CHARS
+    assert dropped == {"overCap": 3}
+    assert memory == profile
+    assert find_violations(memory) == []
+
+
+def test_changes_that_shrink_are_applied_before_changes_that_grow():
+    """줄이는 변경이 먼저 자리를 만든다. 목록에서 뒤에 적혀 있어도 그렇다."""
+
+    profile = UserMemory(
+        basic_profile="가" * 460,
+        life_context="나" * 460,
+        relationships="다" * 460,
+        personality="문장 하나입니다. " * 28,
+    )
+    assert serialized_chars(profile) > USER_MEMORY_TARGET_CHARS
+    assert any(line.startswith("`personality`") for line in shrink_budget(profile))
+
+    memory, dropped = apply_changes(
+        _changes(
+            change("values", "추가", "마" * 300),
+            change("personality", "수정", "문장 하나입니다."),
+        ),
+        profile,
+    )
+
+    assert dropped == {}
+    assert memory.values == "마" * 300
+    assert memory.personality == "문장 하나입니다."
+    assert serialized_chars(memory) <= USER_MEMORY_MAX_CHARS
+
+
+def test_growing_changes_fill_the_room_in_list_order():
+    profile = UserMemory(
+        basic_profile="가" * 460,
+        life_context="나" * 460,
+        relationships="다" * 460,
+        personality="라" * 460,
+    )
+
+    memory, dropped = apply_changes(
+        _changes(
+            change("values", "추가", "마" * 30),
+            change("preferences", "추가", "바" * 400),
+            change("routines", "추가", "사" * 20),
+        ),
+        profile,
+    )
+
+    assert dropped == {"overCap": 1}
+    assert (memory.values, memory.preferences, memory.routines) == ("마" * 30, "", "사" * 20)
+
+
+@pytest.mark.parametrize("memory", [None, UserMemory()])
+def test_apply_changes_fills_an_empty_profile(memory):
+    filled, dropped = apply_changes(
+        _changes(change("basicProfile", "추가", "판교 회사에 다니는 직장인으로 보입니다.")), memory
+    )
+
+    assert dropped == {}
+    assert filled.prompt_payload() == {"basicProfile": "판교 회사에 다니는 직장인으로 보입니다."}
+
+
+def test_apply_changes_does_not_mutate_the_inputs():
+    profile = _small_profile()
+    before = profile.model_dump()
+    patch = _changes(change("routines", "삭제"), change("values", "추가", "값입니다."))
+
+    apply_changes(patch, profile)
+
+    assert profile.model_dump() == before
+    assert _items(patch) == ["routines", "values"]

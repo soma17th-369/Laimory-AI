@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -363,6 +364,73 @@ def drop_removals(
     if not dropped:
         return patch, 0
     return patch.model_copy(update={"changes": kept}), dropped
+
+
+def apply_changes(
+    patch: UserMemoryPatch, memory: UserMemory | None
+) -> tuple[UserMemory, dict[str, int]]:
+    """변경 목록을 기존 문서에 적용하되 **규칙을 어긴 변경만 뺀다**(#121).
+
+    돌려주는 것은 적용을 마친 문서와, 뺀 변경의 개수(이유별)다. 뺀 변경의 항목은 기존
+    내용 그대로 남는다.
+
+    예전에는 변경 하나가 규칙을 어기면 갱신 전체를 버렸다 — 항목 길이를 넘으면 목록
+    전체를 다시 요청했고, 적용한 문서가 상한을 넘거나 민감정보가 있으면 1304 로 끝나
+    그날 알게 된 것을 모두 잃었다. 항목 단위로 바꾸는 구조에서는 어긴 변경만 빼면 된다.
+
+    빼는 이유는 다섯이다.
+
+    - ``unknownItem``·``emptyText``·``tooLong``: 변경 자체를 적용할 수 없다
+      (:attr:`~app.schemas.user_memory.UserMemoryChange.problem`).
+    - ``sensitive``: 문장에 전화번호·카드번호 같은 값이 그대로 있다.
+    - ``removal``: 기존 내용을 지우기만 한다(:func:`drop_removals`).
+    - ``overCap``: 적용하면 문서가 전체 상한을 넘는다.
+
+    **전체 상한은 문서를 키우지 않는 변경부터 적용해 지킨다.** 줄이는 변경이 먼저
+    자리를 만들고, 키우는 변경은 목록에 적힌 순서대로 자리가 남는 데까지 들어간다.
+    기존 문서가 상한 안이면 돌려주는 문서도 언제나 상한 안이다.
+
+    이유의 이름과 개수만 돌려준다. 어느 항목이 왜 빠졌는지는 본문에 가까워 남기지 않는다.
+    """
+
+    base = memory if memory is not None else UserMemory()
+    dropped: Counter[str] = Counter()
+
+    candidates: list[UserMemoryChange] = []
+    for change in patch.changes:
+        if change.problem is not None:
+            dropped[change.problem.value] += 1
+        elif _has_sensitive_value(change.text or ""):
+            dropped["sensitive"] += 1
+        else:
+            candidates.append(change)
+
+    screened, removals = drop_removals(
+        patch.model_copy(update={"changes": candidates}), base
+    )
+    if removals:
+        dropped["removal"] = removals
+
+    working = base
+    growing: list[UserMemoryChange] = []
+    for change in screened.changes:
+        after = UserMemoryPatch(changes=[change]).apply_to(working)
+        if serialized_chars(after) <= serialized_chars(working):
+            working = after
+        else:
+            growing.append(change)
+    for change in growing:
+        after = UserMemoryPatch(changes=[change]).apply_to(working)
+        if serialized_chars(after) > USER_MEMORY_MAX_CHARS:
+            dropped["overCap"] += 1
+            continue
+        working = after
+
+    return working, dict(dropped)
+
+
+def _has_sensitive_value(text: str) -> bool:
+    return any(pattern.search(text) for _, pattern in SENSITIVE_PATTERNS)
 
 
 @dataclass(frozen=True)

@@ -32,7 +32,7 @@ import json
 from enum import Enum
 from typing import Annotated, Any, Literal
 
-from pydantic import ConfigDict, Field, StringConstraints, model_validator
+from pydantic import ConfigDict, Field, StringConstraints
 
 from app.schemas.common import CamelModel
 
@@ -169,6 +169,14 @@ class UserMemoryChangeAction(str, Enum):
     REMOVE = "삭제"
 
 
+class UserMemoryChangeProblem(str, Enum):
+    """변경 한 건을 적용할 수 없는 이유. 로그에 개수를 가르는 이름으로 쓴다."""
+
+    UNKNOWN_ITEM = "unknownItem"
+    EMPTY_TEXT = "emptyText"
+    TOO_LONG = "tooLong"
+
+
 # ``text`` 는 덧붙일 조각이 아니라 기존 내용과 합친 결과다. 겹치는 말을 합치고 충돌하는
 # 말을 바꾸는 것은 의미 판단이라 코드가 하지 않는다. ``수정`` 은 그 항목을 ``text`` 로
 # 바꿔 끼운다.
@@ -179,8 +187,13 @@ class UserMemoryChangeAction(str, Enum):
 # 내용 뒤에 덧붙인다**(:func:`_added_text`). 동작 이름을 잘못 고른 것이 기존 내용을
 # 지우는 쪽으로 해석되지 않게 하려는 것이고, 코드가 문장을 이어 붙이는 자리는 여기뿐이다.
 #
-# 길이 제한은 항목 값 하나에 걸리고 저장 문서와 같은 값이다. 그래서 변경을 통과한 값은
-# 적용한 뒤에도 문서 계약을 어기지 않는다.
+# 길이 제한은 항목 값 하나에 걸리고 저장 문서와 같은 값이다.
+#
+# **변경 한 건의 잘못이 목록 전체를 거절하지 않는다.** 없는 항목을 가리키거나, 문장이
+# 비었거나, 길이 제한을 넘은 변경은 검증 오류가 아니라 "적용할 수 없는 변경" 이다
+# (``problem``). 적용할 때 그 변경만 빠지고 그 항목은 기존 내용 그대로 남는다. 검증
+# 오류로 두면 변경 하나 때문에 목록 전체를 다시 요청하고, 그래도 어기면 그날의 갱신을
+# 통째로 잃는다.
 #
 # ``reason`` 은 모델이 ``text`` 를 쓰기 **전에** 적는 판단 과정이다. 추론이 꺼진 모델은
 # 출력 말고는 생각할 자리가 없다. 이유 없이 변경만 받았을 때 실측에서 (1) 알게 된 것 하나를
@@ -200,7 +213,7 @@ class UserMemoryChange(CamelModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     #: 선언 순서가 곧 모델이 쓰는 순서다. 이유가 문장보다 먼저 와야 그것을 보고 쓴다.
-    item: str = Field(min_length=1)
+    item: str = ""
     action: UserMemoryChangeAction
     reason: str = ""
     text: str | None = None
@@ -213,34 +226,28 @@ class UserMemoryChange(CamelModel):
             return self.item[len(CUSTOM_ATTRIBUTE_ITEM_PREFIX) :]
         return None
 
-    @model_validator(mode="after")
-    def validate_change(self) -> "UserMemoryChange":
-        """가리키는 항목이 있는지, 넣을 문장이 있고 길이 안인지 본다.
+    @property
+    def problem(self) -> UserMemoryChangeProblem | None:
+        """이 변경을 적용할 수 없는 이유. 적용할 수 있으면 ``None``.
 
-        오류 문장은 교정 재시도 프롬프트에 그대로 실린다. 항목 이름과 숫자만 적고
-        ``text`` 는 인용하지 않는다.
+        가리키는 항목이 있는지, 넣을 문장이 있고 길이 안인지 본다. ``삭제`` 는 문장을
+        보지 않는다.
         """
 
         key = self.attribute_key
         if key is None and self.item not in NARRATIVE_FIELDS:
-            raise ValueError(
-                "item 은 고정 필드 이름이거나 "
-                f"`{CUSTOM_ATTRIBUTE_ITEM_PREFIX}<키>` 여야 합니다."
-            )
+            return UserMemoryChangeProblem.UNKNOWN_ITEM
         if key is not None and not key.strip():
-            raise ValueError("customAttributes 의 키가 비어 있습니다.")
-
+            return UserMemoryChangeProblem.UNKNOWN_ITEM
         if self.action is UserMemoryChangeAction.REMOVE:
-            return self
+            return None
 
         text = (self.text or "").strip()
         if not text:
-            raise ValueError("추가·수정에는 비어 있지 않은 text 가 필요합니다.")
+            return UserMemoryChangeProblem.EMPTY_TEXT
         if len(text) > self.max_length:
-            raise ValueError(
-                f"항목 하나의 text 는 {self.max_length}자 이하여야 합니다({len(text)}자)."
-            )
-        return self
+            return UserMemoryChangeProblem.TOO_LONG
+        return None
 
     @property
     def max_length(self) -> int:
@@ -298,6 +305,9 @@ class UserMemoryPatch(CamelModel):
         변경은 목록 순서대로 적용한다. 같은 항목이 두 번 나오면 뒤의 것이 앞의 결과
         위에 적용된다. 없는 속성을 지우라는 것은 아무 일도 하지 않는다.
 
+        **적용할 수 없는 변경(``problem``)은 건너뛴다.** 그 항목은 기존 내용 그대로다.
+        그래서 돌려주는 문서는 언제나 문서 계약(항목 이름, 항목 값의 길이)을 지킨다.
+
         ``수정`` 은 그 항목을 ``text`` 로 바꿔 끼우고, ``삭제`` 는 고정 필드를 비우고
         속성은 키째로 지운다. ``추가`` 는 비어 있던 항목을 채우며, 내용이 있던 항목에
         오면 기존 내용 뒤에 덧붙인다(:func:`_added_text`).
@@ -310,6 +320,8 @@ class UserMemoryPatch(CamelModel):
         attributes = dict(base.custom_attributes)
 
         for change in self.changes:
+            if change.problem is not None:
+                continue
             key = change.attribute_key
             target = fields if key is None else attributes
             name = change.item if key is None else key

@@ -64,7 +64,7 @@ from app.services.user_memory_limits import (
     USER_MEMORY_MAX_CHARS,
     USER_MEMORY_TARGET_CHARS,
     DailyTimelineDigest,
-    drop_removals,
+    apply_changes,
     serialized_chars,
     shrink_budget,
 )
@@ -247,17 +247,20 @@ class UserMemoryAgent:
         문서에 끼워 넣는다. v1·v2 세트에서는 모델이 낸 문서 전체를 그대로 돌려준다.
         어느 쪽이든 **반환값은 문서 전체**라 호출부는 세트를 몰라도 된다.
 
-        스키마 검증(항목 값의 길이·모르는 최상위 필드)은 ``complete_structured`` 안의
-        교정 재시도가 맡는다. 크기 총량과 민감정보는 그 위에서
-        :mod:`app.services.user_memory_repair` 가 **적용을 마친 문서**를 두고 본다.
+        출력의 모양(JSON 인지, 모르는 키가 없는지)은 ``complete_structured`` 안의 교정
+        재시도가 맡는다.
+
+        v3 세트에서는 **규칙을 어긴 변경만 뺀다**
+        (:func:`~app.services.user_memory_limits.apply_changes`). 없는 항목을 가리키거나,
+        항목 길이를 넘거나, 민감한 값이 있거나, 기존 내용을 지우기만 하거나, 적용하면
+        문서가 전체 상한을 넘는 변경이다. 그 항목은 기존 내용 그대로 남고 나머지 변경은
+        적용된다. 다시 요청하지 않는다.
+
+        v1·v2 세트는 문서 전체를 받으므로 항목을 가려 뺄 수 없다. 항목 길이는 교정
+        재시도가, 크기 총량과 민감정보는 :mod:`app.services.user_memory_repair` 가 본다.
 
         ``previous`` 는 규칙을 어긴 직전 출력이다. 주어지면 그 문서를 고쳐서 낸다 —
         변경 목록도 기존 문서가 아니라 그 문서에 적용한다.
-
-        **기존 내용을 지우기만 하는 변경은 적용하지 않는다**
-        (:func:`~app.services.user_memory_limits.drop_removals`). 달라졌으면 고쳐 쓰는
-        것이고, 이번 기록에 나오지 않았으면 그대로 두는 것이다. 기존 문서가 목표 크기를
-        넘어 줄여야 할 때만 지우는 변경을 적용한다.
 
         실패는 삼키지 않고 그대로 올린다 — 코드 부여와 기록은 흡수하는 쪽의 몫이다.
         """
@@ -290,13 +293,17 @@ class UserMemoryAgent:
                 temperature=_TEMPERATURE,
             )
             base = previous if violations and previous is not None else existing
-            # 기존 내용을 지우기만 하는 변경은 적용하지 않는다. 모델이 "이번 기록에
-            # 없다" 는 이유로 있던 항목을 지우는 것을 프롬프트만으로는 막지 못했다.
-            patch, dropped = drop_removals(patch, base)
+            # 규칙을 어긴 변경은 그것만 뺀다. 그 항목은 기존 내용 그대로 남고 나머지
+            # 변경은 적용된다 — 변경 하나 때문에 그날의 갱신을 통째로 버리지 않는다.
+            memory, dropped = apply_changes(patch, base)
             if dropped:
-                # 어느 항목이었는지는 본문에 가까워 남기지 않는다. 개수만 남긴다.
+                # 어느 항목이었는지는 본문에 가까워 남기지 않는다. 이유와 개수만 남긴다.
                 logger.info(
-                    "기존 내용을 지우기만 하는 변경을 적용하지 않았습니다.",
-                    extra=log_fields(droppedRemovalCount=dropped),
+                    "규칙을 어긴 User Memory 변경을 적용하지 않았습니다.",
+                    extra=log_fields(
+                        changeCount=len(patch.changes),
+                        droppedChangeCount=sum(dropped.values()),
+                        droppedChanges=dropped,
+                    ),
                 )
-            return patch.apply_to(base)
+            return memory
