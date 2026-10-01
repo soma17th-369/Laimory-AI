@@ -10,7 +10,12 @@
 
 import pytest
 
-from app.schemas.user_memory import NARRATIVE_MAX_LENGTH, UserMemory, UserMemoryPatch
+from app.schemas.user_memory import (
+    NARRATIVE_FIELDS,
+    NARRATIVE_MAX_LENGTH,
+    UserMemory,
+    UserMemoryPatch,
+)
 from app.schemas.user_memory_update import DailyTimeline
 from app.services.event_count_guard import MAX_EVENT_COUNT as TIMELINE_MAX_EVENT_COUNT
 from app.services.user_memory_limits import (
@@ -31,7 +36,12 @@ from app.services.user_memory_limits import (
     serialized_chars,
     shrink_budget,
 )
-from tests.fixtures.user_memory import change, daily_timeline, daily_timeline_event
+from tests.fixtures.user_memory import (
+    change,
+    daily_timeline,
+    daily_timeline_event,
+    profile_with_room,
+)
 
 
 def _entries(payload: list[dict]) -> list[DailyTimeline]:
@@ -332,7 +342,11 @@ def test_clean_memory_has_no_violations():
 
 
 def _oversized_memory() -> UserMemory:
-    """필드는 저마다 상한 안인데 합치면 전체 상한을 넘는 문서."""
+    """필드는 저마다 상한 안인데 합치면 전체 상한을 넘는 문서.
+
+    열 필드가 모두 제한까지 차면 값은 꼭 전체 상한만큼이고, 직렬화에 드는 키와 따옴표만큼
+    넘는다.
+    """
 
     return UserMemory(
         **{
@@ -343,15 +357,26 @@ def _oversized_memory() -> UserMemory:
                 "relationships",
                 "personality",
                 "values",
+                "preferences",
+                "routines",
+                "current_focus",
+                "emotional_patterns",
+                "memory_style",
             )
         }
     )
 
 
-def test_total_cap_is_2000_chars():
-    """값이 바뀌면 프롬프트·문서가 말하는 숫자도 함께 바뀌어야 한다(#121)."""
+def test_total_cap_is_the_sum_of_the_field_limits():
+    """전체 상한은 고정 필드 열 개가 저마다 길이 제한까지 쓸 수 있는 크기다(#121).
 
-    assert USER_MEMORY_MAX_CHARS == 2_000
+    전체가 그보다 작으면 필드별 상한이 말하는 만큼을 쓸 수 없어 두 제한이 어긋난다.
+    2,000자였을 때 항목 하나가 실제로 쓸 수 있는 것은 평균 180자였다.
+    값이 바뀌면 프롬프트·문서가 말하는 숫자도 함께 바뀌어야 한다.
+    """
+
+    assert USER_MEMORY_MAX_CHARS == len(NARRATIVE_FIELDS) * NARRATIVE_MAX_LENGTH
+    assert USER_MEMORY_MAX_CHARS == 5_000
 
 
 def test_oversized_memory_is_reported_without_being_cut():
@@ -374,10 +399,14 @@ def test_no_budget_when_the_document_fits_the_target():
 
 
 def test_target_is_below_the_cap():
-    """모델이 겨냥하는 값이 상한과 같으면 넘치는 몫을 받아 낼 자리가 없다."""
+    """모델이 겨냥하는 값이 상한과 같으면 넘치는 몫을 받아 낼 자리가 없다.
+
+    둘의 차이는 항목 하나의 몫이다. 새 정보가 항목 하나를 통째로 채워도 들어갈 자리다.
+    """
 
     assert USER_MEMORY_TARGET_CHARS < USER_MEMORY_MAX_CHARS
-    assert USER_MEMORY_TARGET_CHARS == 1_600
+    assert USER_MEMORY_MAX_CHARS - USER_MEMORY_TARGET_CHARS == NARRATIVE_MAX_LENGTH
+    assert USER_MEMORY_TARGET_CHARS == 4_500
 
 
 def test_budget_shares_the_cut_in_proportion_to_sentence_counts():
@@ -510,7 +539,7 @@ def test_many_small_custom_attributes_are_bounded_by_the_total_cap():
     """개수 제한이 없어졌으므로 끝을 막는 것은 전체 상한 하나다(#121)."""
 
     memory = UserMemory(
-        custom_attributes={f"속성{index}": "가" * 40 for index in range(60)}
+        custom_attributes={f"속성{index}": "가" * 40 for index in range(120)}
     )
 
     violations = find_violations(memory)
@@ -638,6 +667,21 @@ def test_a_full_request_never_exceeds_the_total_cap():
 # 알 수 있어 프롬프트가 맡는다.
 
 
+#: 고정 필드의 Python 속성 이름.
+_ATTRIBUTE_NAMES = (
+    "basic_profile",
+    "life_context",
+    "relationships",
+    "personality",
+    "values",
+    "preferences",
+    "routines",
+    "current_focus",
+    "emotional_patterns",
+    "memory_style",
+)
+
+
 def _changes(*changes: dict) -> UserMemoryPatch:
     return UserMemoryPatch.model_validate({"changes": list(changes)})
 
@@ -761,14 +805,16 @@ def test_nothing_is_dropped_from_an_empty_profile(memory):
 
 
 def _over_target_profile() -> UserMemory:
-    sentences = " ".join(f"문장 {index}번입니다." for index in range(40))
-    return UserMemory(
-        basic_profile=sentences[:NARRATIVE_MAX_LENGTH],
-        life_context=sentences[:NARRATIVE_MAX_LENGTH],
-        relationships=sentences[:NARRATIVE_MAX_LENGTH],
-        personality=sentences[:NARRATIVE_MAX_LENGTH],
+    """목표는 넘고 상한은 넘지 않는 문서. 고정 필드마다 문장이 여럿이라 줄일 몫이 나간다."""
+
+    sentences = " ".join(f"문장 {index}번입니다." for index in range(43))
+    assert len(sentences) <= NARRATIVE_MAX_LENGTH
+    memory = UserMemory(
+        **{name: sentences for name in _ATTRIBUTE_NAMES},
         custom_attributes={"악기": "기타를 배웁니다."},
     )
+    assert USER_MEMORY_TARGET_CHARS < serialized_chars(memory) <= USER_MEMORY_MAX_CHARS
+    return memory
 
 
 def test_item_with_a_shrink_budget_may_be_shortened():
@@ -819,7 +865,7 @@ def test_attribute_may_be_removed_only_when_the_budget_asks_for_fewer_attributes
     """한 문장짜리 속성이 많아 문장 수로는 줄일 수 없을 때만 속성을 통째로 지울 수 있다."""
 
     memory = UserMemory(
-        custom_attributes={f"속성{index}": "가" * 40 + "입니다." for index in range(50)}
+        custom_attributes={f"속성{index}": "가" * 40 + "입니다." for index in range(100)}
     )
     assert serialized_chars(memory) > USER_MEMORY_TARGET_CHARS
     assert any("항목 수" in line for line in shrink_budget(memory))
@@ -893,12 +939,7 @@ def test_apply_changes_counts_what_it_drops_by_reason():
 def test_apply_changes_never_returns_a_document_over_the_cap():
     """기존 문서가 상한 안이면 돌려주는 문서도 상한 안이다. 1304 로 갈 일이 없다."""
 
-    profile = UserMemory(
-        basic_profile="가" * 460,
-        life_context="나" * 460,
-        relationships="다" * 460,
-        personality="라" * 460,
-    )
+    profile = profile_with_room(100)
 
     memory, dropped = apply_changes(
         _changes(
@@ -918,12 +959,8 @@ def test_apply_changes_never_returns_a_document_over_the_cap():
 def test_changes_that_shrink_are_applied_before_changes_that_grow():
     """줄이는 변경이 먼저 자리를 만든다. 목록에서 뒤에 적혀 있어도 그렇다."""
 
-    profile = UserMemory(
-        basic_profile="가" * 460,
-        life_context="나" * 460,
-        relationships="다" * 460,
-        personality="문장 하나입니다. " * 28,
-    )
+    # 그대로 더하면 상한을 넘고, `personality` 를 먼저 줄이면 들어가는 크기다.
+    profile = profile_with_room(250, personality="문장 하나입니다. " * 28)
     assert serialized_chars(profile) > USER_MEMORY_TARGET_CHARS
     assert any(line.startswith("`personality`") for line in shrink_budget(profile))
 
@@ -942,12 +979,7 @@ def test_changes_that_shrink_are_applied_before_changes_that_grow():
 
 
 def test_growing_changes_fill_the_room_in_list_order():
-    profile = UserMemory(
-        basic_profile="가" * 460,
-        life_context="나" * 460,
-        relationships="다" * 460,
-        personality="라" * 460,
-    )
+    profile = profile_with_room(100)
 
     memory, dropped = apply_changes(
         _changes(

@@ -52,6 +52,7 @@ from tests.fixtures.user_memory import (
     daily_timeline,
     daily_timeline_event,
     memory_json,
+    profile_with_room,
 )
 
 _PROMPTS = (
@@ -199,13 +200,19 @@ def test_request_states_the_shape_of_the_output_not_a_policy(
 
 
 def _profile_over_the_target() -> UserMemory:
-    sentences = " ".join(f"문장 {index}번입니다." for index in range(40))
-    return UserMemory(
-        basic_profile=sentences[:NARRATIVE_MAX_LENGTH],
-        life_context=sentences[:NARRATIVE_MAX_LENGTH],
-        relationships=sentences[:NARRATIVE_MAX_LENGTH],
-        personality=sentences[:NARRATIVE_MAX_LENGTH],
+    """목표는 넘고 상한은 넘지 않는 문서. 고정 필드마다 문장이 여럿이라 줄일 몫이 나간다."""
+
+    sentences = " ".join(f"문장 {index}번입니다." for index in range(43))
+    assert len(sentences) <= NARRATIVE_MAX_LENGTH
+    memory = UserMemory(
+        **{
+            name: sentences
+            for name, field in UserMemory.model_fields.items()
+            if (field.alias or name) in NARRATIVE_FIELDS
+        }
     )
+    assert USER_MEMORY_TARGET_CHARS < serialized_chars(memory) <= USER_MEMORY_MAX_CHARS
+    return memory
 
 
 def test_prompt_tells_the_size_of_the_existing_profile():
@@ -602,12 +609,7 @@ def test_v3_drops_the_changes_that_would_push_the_profile_over_the_cap(v3_set):
     키우는 변경은 목록에 적힌 순서대로 자리가 남는 데까지 적용한다.
     """
 
-    existing = UserMemory(
-        basic_profile="가" * 460,
-        life_context="나" * 460,
-        relationships="다" * 460,
-        personality="라" * 460,
-    )
+    existing = profile_with_room(90)
     assert USER_MEMORY_MAX_CHARS - 100 < serialized_chars(existing) < USER_MEMORY_MAX_CHARS
     llm = FakeLLM(
         [
@@ -1322,7 +1324,7 @@ _POLITE_COUNTEREXAMPLES = {"`망원동에 살고 있는 직장인입니다.`"}
 def test_v3_writes_the_profile_in_terse_noun_ending_style():
     """프로필 문장은 음슴체로 짧게 쓴다. 같은 글자 수에 더 많은 정보를 담는다.
 
-    전체 상한이 2,000자라 문장이 길면 담을 수 있는 정보가 줄어든다. 프롬프트의 지시문은
+    전체 상한이 있어 문장이 길면 담을 수 있는 정보가 줄어든다. 프롬프트의 지시문은
     그대로 `~합니다` 이고, 바뀌는 것은 모델이 프로필에 적는 문장이다.
     """
 

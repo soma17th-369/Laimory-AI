@@ -42,7 +42,10 @@ def _digest():
 
 
 def _oversized() -> UserMemory:
-    """필드는 저마다 상한 안인데 합치면 전체 상한(2,000자)을 넘는 문서."""
+    """필드는 저마다 상한 안인데 합치면 전체 상한을 넘는 문서.
+
+    열 필드가 모두 제한까지 차면 직렬화에 드는 키와 따옴표만큼 넘는다.
+    """
 
     return UserMemory(
         **{
@@ -53,6 +56,11 @@ def _oversized() -> UserMemory:
                 "relationships",
                 "personality",
                 "values",
+                "preferences",
+                "routines",
+                "current_focus",
+                "emotional_patterns",
+                "memory_style",
             )
         }
     )
