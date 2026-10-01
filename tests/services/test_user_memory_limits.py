@@ -366,47 +366,6 @@ def test_oversized_memory_is_reported_without_being_cut():
     assert len(memory.basic_profile) == NARRATIVE_MAX_LENGTH
 
 
-def test_size_violation_leaves_the_order_of_cuts_to_the_prompt():
-    """무엇부터 줄일지는 갱신 정책이고 정책은 프롬프트 세트가 갖는다(#121).
-
-    순서를 코드에 박아 두면 재요청 때 시스템 프롬프트와 다른 말을 한다. 예전 문장은
-    "오래된 단기 관심사 제거" 를 앞에 뒀는데, v3 는 정보를 지우는 것이 마지막이다.
-    """
-
-    violation = find_violations(_oversized_memory())[0]
-
-    assert "「크기」" in violation
-    for policy_word in ("제거", "병합", "중복", "관심사", "오래된"):
-        assert policy_word not in violation
-
-
-def test_size_violation_says_how_much_in_sentences_per_item():
-    """얼마나 줄일지는 코드가 말한다. 모델이 스스로 세지 못하는 값이다(#121).
-
-    단위는 문장 수다. 같은 문서로 실측했을 때 전체 글자 수 지시는 1%, 항목별 글자 수는
-    5%, 항목별 문장 수는 14% 가 줄었고 앞의 둘로는 상한 아래로 내려오지 못했다.
-    """
-
-    memory = UserMemory(
-        basic_profile="첫 문장입니다. 둘째 문장입니다. 셋째 문장입니다. " + "가" * 450,
-        life_context="나" * NARRATIVE_MAX_LENGTH,
-        relationships="다" * NARRATIVE_MAX_LENGTH,
-        personality="라" * NARRATIVE_MAX_LENGTH,
-        values="마" * NARRATIVE_MAX_LENGTH,
-    )
-
-    violation = find_violations(memory)[0]
-
-    assert str(USER_MEMORY_TARGET_CHARS) in violation
-    assert "`basicProfile`: 지금 4문장 → 1문장 이내" in violation
-    # 줄일 수 없는 항목(한 문장짜리)은 적지 않는다. 적힌 항목만 줄인다는 뜻이다.
-    assert "`lifeContext`" not in violation
-    assert "남긴 문장도 짧게 다시 쓰세요" in violation
-    # 값은 어디에도 없다.
-    assert "첫 문장" not in violation
-    assert "가가" not in violation
-
-
 # --- 줄일 몫 (#121) -----------------------------------------------------
 
 

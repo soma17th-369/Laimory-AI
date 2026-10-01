@@ -295,68 +295,6 @@ def test_size_section_carries_numbers_not_a_policy():
         assert policy_word not in section
 
 
-def test_retry_with_the_previous_output_asks_to_fix_it_not_to_start_over(legacy_set):
-    """재요청이 직전 출력에서 이어 가야 시도마다 줄어든다(#121)."""
-
-    previous = UserMemory(basic_profile="직전에 낸 문서입니다.")
-
-    prompt = build_update_prompt(
-        None,
-        _digest(),
-        violations=["전체 크기가 상한을 넘었습니다."],
-        previous=previous,
-    )
-
-    assert "[직전 출력]" in prompt
-    assert "직전에 낸 문서입니다." in prompt
-    assert "직전 출력을 고쳐" in prompt
-    assert "처음부터 다시 만들지 말고" in prompt
-    assert "User Memory 전체" in prompt
-    # 두 지시가 함께 나가면 모델은 뒤에 온 쪽을 따른다.
-    assert "다시 만드세요" not in prompt
-    assert prompt.index("[직전 출력]") < prompt.index("[직전 출력이 규칙을 어겼습니다]")
-
-
-def test_v3_retry_asks_only_for_the_items_to_change_in_the_previous_output(v3_set):
-    prompt = build_update_prompt(
-        None,
-        _digest(),
-        violations=["전체 크기가 상한을 넘었습니다."],
-        previous=UserMemory(basic_profile="직전에 낸 문서입니다."),
-    )
-
-    assert "[직전 출력]" in prompt
-    assert "직전 출력에서 바꿀 항목만" in prompt
-    assert "`changes`" in prompt
-    assert "나머지 항목은 적지 않습니다" in prompt
-    assert "처음부터 다시 만들지 말고" in prompt
-    assert "User Memory 전체" not in prompt
-
-
-def test_previous_output_is_ignored_without_a_violation():
-    """고칠 이유가 없으면 고칠 문서도 싣지 않는다."""
-
-    prompt = build_update_prompt(
-        None, _digest(), previous=UserMemory(basic_profile="직전에 낸 문서입니다.")
-    )
-
-    assert "[직전 출력]" not in prompt
-    assert "직전에 낸 문서입니다." not in prompt
-
-
-def test_agent_passes_the_previous_output_to_the_model(legacy_set):
-    llm = FakeLLM([memory_json()])
-
-    UserMemoryAgent(llm=llm).generate(
-        None,
-        _digest(),
-        violations=["전체 크기가 상한을 넘었습니다."],
-        previous=UserMemory(basic_profile="직전에 낸 문서입니다."),
-    )
-
-    assert "직전에 낸 문서입니다." in llm.calls[0].prompt
-
-
 def test_prompt_carries_the_emotion_the_user_picked():
     prompt = build_update_prompt(None, _digest(emotion_type="VERY_UNHAPPY"))
 
@@ -367,17 +305,6 @@ def test_prompt_has_no_emotion_key_when_none_was_picked():
     prompt = build_update_prompt(None, _digest(emotion_type=None))
 
     assert '"emotion"' not in prompt
-
-
-def test_violations_are_sent_back_without_quoting_values():
-    prompt = build_update_prompt(
-        None,
-        _digest(),
-        violations=["`personality` 에 PHONE 형태의 값이 그대로 남아 있습니다."],
-    )
-
-    assert "직전 출력이 규칙을 어겼습니다" in prompt
-    assert "PHONE" in prompt
 
 
 def test_prompt_never_contains_the_minute_of_an_event():
@@ -737,24 +664,6 @@ def test_v3_logs_nothing_when_every_change_is_applied(v3_set, caplog):
     assert not [r for r in caplog.records if "적용하지 않았습니다" in r.getMessage()]
 
 
-def test_v3_retry_applies_the_change_list_to_the_previous_output(v3_set):
-    """재요청은 직전 출력을 고친다. 변경 목록도 기존 문서가 아니라 그 문서에 적용한다."""
-
-    existing = _existing_profile()
-    previous = existing.model_copy(update={"routines": "직전 시도에서 길게 쓴 문장입니다."})
-    llm = FakeLLM([changes_json(change("basicProfile", "수정", "망원동에 사는 개발자입니다."))])
-
-    memory = UserMemoryAgent(llm=llm).generate(
-        existing,
-        _digest(),
-        violations=["전체 크기가 상한을 넘었습니다."],
-        previous=previous,
-    )
-
-    assert memory.basic_profile == "망원동에 사는 개발자입니다."
-    assert memory.routines == "직전 시도에서 길게 쓴 문장입니다."
-
-
 def test_legacy_set_takes_the_whole_document_as_the_result(legacy_set):
     """v1·v2 는 모델이 낸 문서가 곧 결과다. 출력에 없는 항목은 사라진다."""
 
@@ -920,7 +829,6 @@ def test_v3_has_the_size_section_the_violation_message_points_to():
         ("먼저 줄여 자리를 만듭니다", "상한에 닿은 프로필에 새 정보를 얹는 순서가 있어야 합니다."),
         ("그 수 이내로 씁니다", "코드가 주는 문장 수 몫을 따르라고 적어야 합니다."),
         ("끝까지 남기는 것", "줄일 때 지키는 사실이 있어야 합니다."),
-        ("직전 출력을 고칩니다", "재요청에서 처음부터 다시 만들지 않게 해야 합니다."),
     ],
 )
 def test_v3_tells_how_to_stay_under_the_cap(marker: str, why: str):

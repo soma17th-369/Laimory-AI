@@ -583,37 +583,26 @@ def shrink_budget(
 def find_violations(memory: UserMemory) -> list[str]:
     """갱신본이 어긴 규칙을 사람이 읽을 한 줄씩으로 돌려준다(빈 목록이면 통과).
 
-    이 문장은 **재요청 프롬프트와 로그에 그대로 실린다.** 그래서 어느 필드가 어떤
-    규칙을 어겼는지까지만 적고 값은 인용하지 않는다 — 민감정보를 지적하면서 그 값을
-    같이 남기면 막으려던 것이 로그로 새어 나간다.
+    어느 필드가 어떤 규칙을 어겼는지까지만 적고 값은 인용하지 않는다 — 민감정보를
+    지적하면서 그 값을 같이 남기면 막으려던 것이 로그로 새어 나간다.
 
     필드별 길이는 Pydantic 이 이미 막았으므로 여기서는 전체 크기와 민감정보만 본다.
 
-    **무엇부터 줄일지는 여기 적지 않는다**(#121). 그것은 갱신 정책이고 정책은 프롬프트
-    세트가 갖는다 — 무엇을 남기는지가 버전마다 다른데 줄이는 순서를 코드에 박아 두면
-    재요청 때 시스템 프롬프트와 다른 말을 하게 된다.
-
-    **얼마나 줄일지는 적는다.** 그것은 셀 수 있는 값이고 모델이 스스로 세지 못하는
-    값이다. 항목마다 문장 수로 준다(:func:`shrink_budget`).
+    이 문장은 모델에게 가지 않는다. 규칙을 어긴 갱신본을 다시 요청하지 않기 때문이다
+    (#121). v3 세트는 어긴 변경만 빼므로(:func:`apply_changes`) 여기서 걸리는 것은 문서
+    전체를 받는 v1·v2 세트의 갱신본과, 받은 문서가 이미 규칙을 어긴 경우다.
     """
 
     violations: list[str] = []
 
     size = serialized_chars(memory)
     if size > USER_MEMORY_MAX_CHARS:
-        budget = "\n".join(f"  - {line}" for line in shrink_budget(memory))
         violations.append(
-            f"전체 크기가 {size}자로 상한 {USER_MEMORY_MAX_CHARS}자를 넘었습니다. "
-            f"목표 크기 {USER_MEMORY_TARGET_CHARS}자에 맞도록 아래 항목마다 적힌 "
-            "문장 수 이내로 다시 쓰세요. 무엇부터 줄일지는 시스템 프롬프트의 「크기」 "
-            f"절을 따릅니다.\n{budget}"
+            f"전체 크기가 {size}자로 상한 {USER_MEMORY_MAX_CHARS}자를 넘었습니다."
         )
 
     for field, label in _sensitive_hits(memory):
-        violations.append(
-            f"`{field}` 에 {label} 형태의 값이 그대로 남아 있습니다. "
-            "구체적인 값 대신 해석에 필요한 의미만 남기세요."
-        )
+        violations.append(f"`{field}` 에 {label} 형태의 값이 그대로 남아 있습니다.")
 
     return violations
 

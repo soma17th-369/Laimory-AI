@@ -41,8 +41,8 @@ class _StubAgent:
         self._delay_sec = delay_sec
         self.calls: list[tuple] = []
 
-    def generate(self, existing, digest, *, violations=(), previous=None):
-        self.calls.append((existing, digest, list(violations)))
+    def generate(self, existing, digest):
+        self.calls.append((existing, digest))
         if self._delay_sec:
             time.sleep(self._delay_sec)
         if isinstance(self._result, Exception):
@@ -290,7 +290,7 @@ def test_success_closes_the_task_with_one_operational_event(caplog):
     assert event["status"] == TaskStatus.SUCCESS.value
     assert event["resultSent"] is True
     assert event["schemaVersion"] == "1.0"
-    assert event["repairAttempts"] == 0
+    assert "repairAttempts" not in event, "재요청이 없어져 남길 횟수가 없습니다."
     assert event["durationMs"] >= 0
     assert "errorCode" not in event
 

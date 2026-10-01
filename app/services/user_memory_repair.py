@@ -10,14 +10,15 @@ Server 의 다음 배치가 다시 시도한다.
 
 ## 다시 요청하지 않는다 (#121)
 
-규칙을 어긴 갱신본을 같은 작업 안에서 다시 요청하지 않는다(:data:`MAX_REPAIR_ATTEMPTS`
-가 0 이다). 한 번 만들어 규칙 안이면 저장하고, 아니면 1304 로 끝낸다. 그래서 **1차
-출력이 상한 안에 드는 것**이 전부이고, 그 일은 갱신 요청의 ``[크기]`` 절이 한다 — 기존
-프로필이 목표를 넘었으면 새 정보를 얹기 전에 먼저 줄일 몫을 준다.
+갱신 한 건은 LLM 호출 한 번이다. 한 번 만들어 규칙 안이면 저장하고, 아니면 1304 로
+끝낸다. 예전에는 규칙을 어긴 갱신본을 지적과 함께 두 번까지 다시 요청했다.
 
-재요청 경로는 남겨 두었다. ``max_attempts`` 를 올리면 위반 내용과 직전 출력을 함께
-돌려주고 고치게 한다. 지적만 붙여 처음부터 다시 만들게 하면 매번 같은 입력에서 출발해
-같은 크기의 문서가 다시 나온다.
+v3 세트는 여기까지 오기 전에 **규칙을 어긴 변경만 뺀다**
+(:func:`~app.services.user_memory_limits.apply_changes`). 그래서 v3 세트가 여기서
+걸리는 것은 받은 문서가 이미 규칙을 어긴 경우뿐이다. 문서 전체를 받는 v1·v2 세트는
+항목을 가려 뺄 수 없어 지금처럼 여기서 걸린다.
+
+모듈 이름의 repair 는 재요청이 있던 때의 이름이다. 지금 하는 일은 확정뿐이다.
 """
 
 from __future__ import annotations
@@ -27,15 +28,8 @@ from datetime import datetime
 
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import AppError
-from app.core.logging import get_logger, log_fields
 from app.schemas.user_memory import NARRATIVE_FIELDS, SCHEMA_VERSION, UserMemory
 from app.services.user_memory_limits import find_violations, serialized_chars
-
-logger = get_logger(__name__)
-
-#: 규칙 위반 시 다시 물어볼 횟수. **0 이다 — 다시 요청하지 않는다**(#121). 갱신 한 건은
-#: LLM 호출 한 번이다. 예전 값은 2(최대 3회 호출)였다.
-MAX_REPAIR_ATTEMPTS = 0
 
 
 class UserMemoryLimitError(AppError):
@@ -49,9 +43,6 @@ class UserMemoryOutcome:
     """확정된 갱신본과, 그것이 기존 문서에서 얼마나 달라졌는지."""
 
     memory: UserMemory
-    #: 규칙 위반으로 **다시 물어본** 횟수. 1차에 통과하면 0 이다. 재요청을 하지 않는
-    #: 기본 설정에서는 언제나 0 이다.
-    repair_attempts: int
     #: 기존 문서와 값이 달라진 고정 필드의 수. 0 이면 이번 기록이 고정 필드를 바꾸지
     #: 않은 것이다.
     changed_field_count: int = 0
@@ -104,11 +95,9 @@ def build_user_memory(
     digest,
     *,
     updated_at: datetime,
-    max_attempts: int = MAX_REPAIR_ATTEMPTS,
 ) -> UserMemoryOutcome:
-    """갱신본을 만들고 규칙을 통과하면 확정한다.
+    """갱신본을 한 번 만들고 규칙을 통과하면 확정한다.
 
-    필드별 길이는 그 아래(``complete_structured`` 의 교정 재시도)에서 이미 걸러진다.
     여기서 보는 것은 Pydantic 이 표현할 수 없는 두 가지 — **전체 크기**와 **민감정보**다.
 
     Args:
@@ -116,47 +105,23 @@ def build_user_memory(
         existing: 기존 프로필. 최초 생성이면 ``None``.
         digest: 프롬프트에 실을 하루 기록(:class:`~app.services.user_memory_limits.DailyTimelineDigest`).
         updated_at: 갱신 시각. 호출부가 정한다(테스트가 시간을 고정할 수 있게).
-        max_attempts: 위반 시 다시 물어볼 횟수. 기본은 0 — 다시 요청하지 않는다.
 
     Raises:
         UserMemoryLimitError: 규칙을 통과하지 못했다(1304).
     """
 
-    violations: list[str] = []
-    # 규칙을 어긴 직전 출력. 재요청은 이것을 **고치게** 한다(#121). 지적만 붙여 처음부터
-    # 다시 만들게 하면 매번 같은 입력에서 출발해 같은 크기의 문서가 다시 나온다.
-    previous: UserMemory | None = None
-    for attempt in range(max_attempts + 1):
-        memory = agent.generate(
-            existing, digest, violations=violations, previous=previous
-        )
-        violations = find_violations(memory)
-        if not violations:
-            changed_fields, changed_attributes = count_changes(existing, memory)
-            return UserMemoryOutcome(
-                memory=finalize(memory, updated_at=updated_at),
-                repair_attempts=attempt,
-                changed_field_count=changed_fields,
-                changed_attribute_count=changed_attributes,
-            )
-        if attempt == max_attempts:
-            break
-        previous = memory
-        # 위반 문장에는 값이 들어 있지 않다(어느 필드가 어떤 규칙을 어겼는지만).
-        # 그래도 개수만 남긴다 — 지적 문구까지 매 시도 로그에 쌓을 이유가 없다.
-        logger.info(
-            "User Memory 갱신본이 규칙을 어겨 다시 요청합니다.",
-            extra=log_fields(
-                attempt=attempt + 1,
-                maxAttempts=max_attempts + 1,
-                violationCount=len(violations),
-                serializedChars=serialized_chars(memory),
-            ),
+    memory = agent.generate(existing, digest)
+    violations = find_violations(memory)
+    if violations:
+        # 값은 싣지 않는다. 크기와 개수만으로 "상한을 넘었는가, 민감정보였는가" 를 가른다.
+        raise UserMemoryLimitError(
+            "User Memory 갱신본이 규칙을 통과하지 못했습니다: "
+            f"violations={len(violations)}, serializedChars={serialized_chars(memory)}"
         )
 
-    # 값은 싣지 않는다. 크기와 개수만으로 "상한을 넘었는가, 민감정보였는가" 를 가른다.
-    raise UserMemoryLimitError(
-        "User Memory 갱신본이 규칙을 통과하지 못했습니다: "
-        f"attempts={max_attempts + 1}, violations={len(violations)}, "
-        f"serializedChars={serialized_chars(memory)}"
+    changed_fields, changed_attributes = count_changes(existing, memory)
+    return UserMemoryOutcome(
+        memory=finalize(memory, updated_at=updated_at),
+        changed_field_count=changed_fields,
+        changed_attribute_count=changed_attributes,
     )

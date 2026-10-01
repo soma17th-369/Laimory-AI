@@ -203,7 +203,6 @@ _ALLOWED_FIELDS: dict[OperationalEvent, frozenset[str]] = {
             "droppedDailyTimelineCount",
             "droppedEventCount",
             # 결과의 모양. 본문이 아니라 크기와 개수다.
-            "repairAttempts",
             # 기존 문서에서 달라진 고정 필드·속성의 수(#121). 둘 다 0 이면 이번 기록이
             # 프로필을 바꾸지 않은 것이다. 어느 항목인지는 싣지 않는다.
             "changedFieldCount",
