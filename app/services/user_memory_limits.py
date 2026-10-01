@@ -47,7 +47,6 @@ Question·Repair(v3) 프롬프트와 갱신 요청 자신이 문서 전체를 �
 from __future__ import annotations
 
 import json
-import re
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any
@@ -115,9 +114,6 @@ TEXT_MAX_CHARS = 255
 #: 하루 감정 값의 상한. App Server 가 이 값을 담는 컬럼 길이와 같다. 값은 enum 이름
 #: (``HAPPY`` 등)이라 넘을 일이 없지만, 넘겨받은 값을 그대로 믿지 않는다.
 EMOTION_MAX_CHARS = 32
-
-#: 문장의 끝. 마침표·물음표·느낌표 뒤에 공백이 오는 자리에서 가른다.
-_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
 
 
 @dataclass(frozen=True)
@@ -293,16 +289,19 @@ def serialized_chars(memory: UserMemory) -> int:
     )
 
 
-def _sentences(text: str) -> list[str]:
-    """문장 목록. 끝맺음 부호가 없는 글도 한 문장으로 센다."""
-
-    return [part.strip() for part in _SENTENCE_BOUNDARY.split(text.strip()) if part.strip()]
+#: 어절 끝에 붙는 구두점. 어절끼리 같은지 견줄 때 뗀다.
+_TRAILING_PUNCTUATION = ".,!?"
 
 
-def _sentence_count(text: str) -> int:
-    """문장 수. 끝맺음 부호가 없는 글도 한 문장으로 센다."""
+def _words(text: str) -> list[str]:
+    """어절 목록. 끝에 붙은 구두점은 뗀다.
 
-    return len(_sentences(text))
+    글을 견주는 단위다. 문장으로 나누지 않는 이유는 문장의 경계를 마침표로 알 수밖에
+    없고, 그 마침표를 찍는 것이 모델이라 빠질 수 있기 때문이다.
+    """
+
+    words = (word.rstrip(_TRAILING_PUNCTUATION) for word in text.split())
+    return [word for word in words if word]
 
 
 def _prompt_items(memory: UserMemory) -> list[tuple[str, str]]:
@@ -325,10 +324,14 @@ def _prompt_items(memory: UserMemory) -> list[tuple[str, str]]:
 def _only_removes(change: UserMemoryChange, current: str) -> bool:
     """이 변경이 그 항목의 기존 내용을 **지우기만** 하는가.
 
-    ``삭제`` 는 언제나 그렇다. ``수정`` 은 새 문장이 기존 문장 가운데 일부를 뺀 것일
-    뿐이면 그렇다 — 남은 문장이 모두 기존에 있던 문장이고 수가 줄었을 때다. 문장을 고쳐
-    썼거나 새 문장이 하나라도 있으면 지우기만 한 것이 아니다(달라져서 바뀐 것이다).
+    ``삭제`` 는 언제나 그렇다. ``수정`` 은 새 글이 기존 글에서 어절을 빼기만 한 것이면
+    그렇다 — 새 글에 새 어절이 하나도 없고 어절 수가 줄었을 때다. 순서를 바꿔도 지운 것은
+    지운 것이다. 어절을 하나라도 고쳐 썼거나 새 어절이 있으면 지우기만 한 것이 아니다
+    (달라져서 바뀐 것이다).
     ``추가`` 는 기존 내용 뒤에 덧붙이므로 지우지 않는다.
+
+    추론이 확인돼 표지를 떼는 것(``동료로 보임`` → ``동료``)은 어절이 달라지므로 지우기로
+    보지 않는다.
     """
 
     if not current:
@@ -337,9 +340,9 @@ def _only_removes(change: UserMemoryChange, current: str) -> bool:
         return True
     if change.action is not UserMemoryChangeAction.UPDATE:
         return False
-    before = _sentences(current)
-    after = _sentences(change.text or "")
-    return len(after) < len(before) and all(sentence in before for sentence in after)
+    before = Counter(_words(current))
+    after = Counter(_words(change.text or ""))
+    return after.total() < before.total() and not after - before
 
 
 def drop_removals(
@@ -355,10 +358,10 @@ def drop_removals(
     예외는 크기다. 기존 문서가 목표 크기를 넘었으면 줄여야 하고, 막으면 문서가 상한에
     닿은 뒤로 갱신이 매번 1304 로 끝난다. 그때도 **줄일 몫을 받은 항목만** 지울 수 있다
     (:func:`_shrink_plan`). 몫을 받지 않은 항목을 지우는 변경은 목표를 넘은 날에도
-    적용하지 않는다. 속성을 통째로 지우는 것은 문장 수로는 모자라 속성 수의 몫까지
+    적용하지 않는다. 속성을 통째로 지우는 것은 항목을 줄여도 모자라 속성 수의 몫까지
     나갔을 때만이다.
 
-    코드가 잡는 것은 **지우기만 하는** 변경이다. 문장을 고쳐 쓰면서 내용을 빠뜨리는
+    코드가 잡는 것은 **지우기만 하는** 변경이다. 글을 고쳐 쓰면서 내용을 빠뜨리는
     것은 의미를 봐야 알 수 있어 잡지 못한다. 그쪽은 프롬프트가 맡는다.
     """
 
@@ -468,16 +471,24 @@ def items_near_limit(memory: UserMemory) -> list[str]:
     return lines
 
 
+#: 줄일 몫을 받은 항목에서 덜어 달라고 하는 양. 항목 길이를 이 수로 나눈 만큼이다.
+#:
+#: 1/4 은 우리가 고른 값이다. ``~합니다`` 로 적힌 문장을 음슴체로 바꿔 쓰면 줄어드는
+#: 양이 그쯤이라(``평일에는 아침에 출근해 저녁까지 회사에서 일합니다.`` 27자 →
+#: ``평일 아침 출근, 저녁까지 회사 근무.`` 20자), 내용을 버리지 않고 낼 수 있는 몫으로 봤다.
+SHRINK_DIVISOR = 4
+
+
 @dataclass(frozen=True)
 class _ShrinkPlan:
-    """문서를 목표 크기에 맞추려고 어느 항목에서 몇 문장을 덜어 낼지."""
+    """문서를 목표 크기에 맞추려고 어느 항목을 몇 자까지 줄일지."""
 
-    #: 항목 이름 → (지금 문장 수, 남길 문장 수). 줄일 몫을 받은 항목만 있다.
-    sentences: dict[str, tuple[int, int]]
-    #: 문장 수로는 모자랄 때 남길 속성 수. 그럴 필요가 없으면 ``None``.
+    #: 항목 이름 → (지금 글자 수, 줄인 뒤 글자 수). 줄일 몫을 받은 항목만 있다.
+    chars: dict[str, tuple[int, int]]
+    #: 항목을 줄여도 모자랄 때 남길 속성 수. 그럴 필요가 없으면 ``None``.
     attribute_keep: int | None = None
     attribute_count: int = 0
-    #: 문장 수와 속성 수를 맞춰도 목표를 넘는다.
+    #: 적힌 만큼 줄이고 속성 수를 맞춰도 목표를 넘는다.
     still_over: bool = False
 
     def allows(self, change: UserMemoryChange) -> bool:
@@ -486,71 +497,62 @@ class _ShrinkPlan:
         if change.action is UserMemoryChangeAction.REMOVE:
             # 통째로 지우는 것은 속성 수의 몫이 나갔을 때, 속성에만 허용한다.
             return self.attribute_keep is not None and change.attribute_key is not None
-        return change.item in self.sentences
+        return change.item in self.chars
 
 
 def _shrink_plan(memory: UserMemory, target_chars: int) -> _ShrinkPlan:
-    """넘은 만큼만 덜어 내는 계획을 세운다. 목표 안이면 빈 계획이다.
+    """목표를 넘은 문서에서 줄일 항목을 고른다. 목표 안이면 빈 계획이다.
 
-    덜어 낼 문장은 **항목의 문장 수에 비례해** 나눈다. 넘은 비율만큼 항목마다 덜고
-    (내림), 모자란 만큼은 몫의 소수 부분이 큰 항목부터 한 문장씩 더 던다. 어느 항목도
-    한 문장 아래로 내려가지 않는다.
+    **가장 긴 항목부터** 고른다. 고른 항목마다 길이의 1/4 을 덜게 하고
+    (:data:`SHRINK_DIVISOR`), 덜어 낸 합이 넘은 양에 닿으면 멈춘다. 줄일 여지가 큰 것이
+    긴 항목이고, 짧은 항목까지 조금씩 건드리면 바꿀 이유가 없던 항목이 다시 쓰인다.
 
-    예전에는 항목마다 (목표 ÷ 현재 크기)를 곱해 **내림**했다. 그러면 목표를 일곱 자
-    넘었을 뿐인데 두 문장 이상인 항목이 전부 한 문장씩 줄었고, 실제 모델이 그대로 따라
-    485자를 지웠다(사는 곳까지). 덜어 내는 양이 넘은 양과 같아야 한다.
+    **넘은 양이 작아도 고른 항목의 몫은 1/4 이다.** "일곱 자만 줄여라" 는 모델이 따를 수
+    없는 지시이고, 겨우 맞추면 다음 날 다시 넘는다. 그래서 줄어드는 양은 넘은 양보다 클 수
+    있다 — 다만 고른 항목 안에서만이다.
 
-    **어느 문장을 남길지는 정하지 않는다.** 그것은 의미 판단이고 프롬프트 세트의
-    정책이다. 여기서 정하는 것은 항목마다 몇 문장인지뿐이다.
+    몫은 **글자 수**로 준다. 예전에는 문장 수로 줬는데, 그러면 모델이 다듬지 않고 문장
+    하나를 통째로 버렸다(실측: 줄인 항목마다 마지막 문장이 사라졌다). 문장을 세려면
+    마침표에 기대야 한다는 문제도 있었다.
+
+    **무엇을 남길지는 정하지 않는다.** 그것은 의미 판단이고 프롬프트 세트의 정책이다.
     """
 
     size = serialized_chars(memory)
     if size <= target_chars:
-        return _ShrinkPlan(sentences={})
+        return _ShrinkPlan(chars={})
 
     items = _prompt_items(memory)
-    counts = [_sentence_count(value) for _, value in items]
-    # 한 문장을 덜 때 줄어드는 글자 수의 어림값.
-    per_sentence = [len(value) // count for (_, value), count in zip(items, counts)]
     need = size - target_chars
 
-    ideal = [count * need / size for count in counts]
-    removed = [min(int(share), count - 1) for share, count in zip(ideal, counts)]
-    saved = sum(cut * chars for cut, chars in zip(removed, per_sentence))
-
-    # 모자란 만큼은 몫의 소수 부분이 큰 항목부터. 같으면 문장이 많은 항목부터, 그것도
-    # 같으면 뒤 항목부터다 — 항목 순서가 고정 필드 다음에 속성이라 속성이 먼저 준다.
+    # 긴 항목부터. 길이가 같으면 뒤 항목부터다 — 항목 순서가 고정 필드 다음에 속성이라
+    # 속성이 먼저 준다.
     order = sorted(
-        range(len(items)),
-        key=lambda index: (ideal[index] - int(ideal[index]), counts[index], index),
-        reverse=True,
+        range(len(items)), key=lambda index: (len(items[index][1]), index), reverse=True
     )
-    while saved < need:
-        progressed = False
-        for index in order:
-            if removed[index] >= counts[index] - 1:
-                continue
-            removed[index] += 1
-            saved += per_sentence[index]
-            progressed = True
-            if saved >= need:
-                break
-        if not progressed:
+    cuts: dict[str, int] = {}
+    saved = 0
+    for index in order:
+        if saved >= need:
             break
+        name, value = items[index]
+        cut = len(value) // SHRINK_DIVISOR
+        if cut <= 0:
+            continue
+        cuts[name] = cut
+        saved += cut
 
-    sentences = {
-        name: (count, count - cut)
-        for (name, _), count, cut in zip(items, counts, removed)
-        if cut
+    chars = {
+        name: (len(value), len(value) - cuts[name]) for name, value in items if name in cuts
     }
     if saved >= need:
-        return _ShrinkPlan(sentences=sentences)
+        return _ShrinkPlan(chars=chars)
 
-    # 한 문장짜리 항목은 문장 수로 줄일 수 없다. 개수 제한이 없는 속성이 그런 자리다.
+    # 모든 항목을 줄여도 모자란다. 개수 제한이 없는 속성이 그런 자리다.
     attribute_count = len(memory.prompt_payload().get("customAttributes", {}))
     keep = attribute_count * target_chars // (size - saved)
     return _ShrinkPlan(
-        sentences=sentences,
+        chars=chars,
         attribute_keep=keep if 0 < keep < attribute_count else None,
         attribute_count=attribute_count,
         still_over=True,
@@ -560,24 +562,19 @@ def _shrink_plan(memory: UserMemory, target_chars: int) -> _ShrinkPlan:
 def shrink_budget(
     memory: UserMemory, *, target_chars: int = USER_MEMORY_TARGET_CHARS
 ) -> list[str]:
-    """문서를 목표 크기에 맞추려면 어느 항목을 몇 문장까지 줄여야 하는지(#121).
+    """문서를 목표 크기에 맞추려면 어느 항목을 몇 자까지 줄여야 하는지(#121).
 
     목표 안이면 빈 목록이다. 돌려주는 줄에는 항목 이름과 숫자만 있고 값은 없다.
     **줄일 몫을 받은 항목만 적는다** — 적히지 않은 항목은 줄이지 않는다는 뜻이다.
 
-    **글자 수가 아니라 문장 수로 말한다.** 모델은 글자 수를 세지 못한다. 상한을 넘은
-    같은 문서를 두고 지시 형태만 바꿔 실측했을 때, "전체 N자 줄여라" 는 1% 가, 항목별
-    글자 수는 5% 가, 항목별 문장 수는 14% 가 줄었다. 앞의 둘로는 재요청을 다 써도
-    상한 아래로 내려오지 못했다.
-
-    몫은 넘은 만큼만이다(:func:`_shrink_plan`). 한 문장짜리 항목은 문장 수로 줄일 수
-    없어, 문장 수를 맞춰도 목표를 넘으면 ``customAttributes`` 항목 수의 몫을 함께 준다.
+    어느 항목을 고르는지는 :func:`_shrink_plan` 이 정한다. 모든 항목을 줄여도 목표를
+    넘으면 ``customAttributes`` 항목 수의 몫을 함께 준다.
     """
 
     plan = _shrink_plan(memory, target_chars)
     lines = [
-        f"`{name}`: 지금 {count}문장 → {allowed}문장 이내"
-        for name, (count, allowed) in plan.sentences.items()
+        f"`{name}`: 지금 {now}자 → {allowed}자 이내"
+        for name, (now, allowed) in plan.chars.items()
     ]
     if plan.attribute_keep is not None:
         lines.append(
@@ -585,7 +582,7 @@ def shrink_budget(
             f"{plan.attribute_keep}개 이내"
         )
     if plan.still_over:
-        lines.append("문장 수를 맞춰도 목표를 넘습니다. 남긴 문장도 짧게 다시 쓰세요.")
+        lines.append("적힌 만큼 줄여도 목표를 넘습니다. 더 짧게 다시 쓰세요.")
     return lines
 
 

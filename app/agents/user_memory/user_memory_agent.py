@@ -103,9 +103,9 @@ def _size_section(existing: UserMemory | None) -> str | None:
 
     여기서 주는 것은 **숫자와 순서**뿐이다(먼저 줄이고 나서 더한다). 무엇을 줄일지는
     시스템 프롬프트의 정책이고 세트마다 다르다. 기존 프로필이 목표를 넘었으면 어느
-    항목을 몇 문장까지 줄일지도 함께 준다 — 모델이 따르는 단위가 글자 수가 아니라 문장
-    수이기 때문이다(:func:`~app.services.user_memory_limits.shrink_budget`). 줄일 몫은
-    넘은 만큼만이고, 몫을 받지 않은 항목은 적지 않는다.
+    항목을 몇 자까지 줄일지도 함께 준다
+    (:func:`~app.services.user_memory_limits.shrink_budget`). 가장 긴 항목부터 고르고,
+    몫을 받지 않은 항목은 적지 않는다.
     """
 
     if existing is None or not existing.prompt_payload():
@@ -122,8 +122,8 @@ def _size_section(existing: UserMemory | None) -> str | None:
     if budget:
         lines.append(
             f"기존 프로필이 이미 목표를 {size - USER_MEMORY_TARGET_CHARS}자 넘었습니다. "
-            "새 정보를 더하기 전에 기존 내용을 아래 항목마다 적힌 문장 수 이내로 먼저 "
-            "줄이세요. 아래에 적히지 않은 항목은 줄이지 않습니다."
+            "새 정보를 더하기 전에 아래 항목을 적힌 글자 수 이내로 먼저 줄이세요. 내용을 "
+            "버리지 말고 짧게 다시 써서 줄입니다. 아래에 적히지 않은 항목은 줄이지 않습니다."
         )
         lines.extend(f"  - {line}" for line in budget)
 

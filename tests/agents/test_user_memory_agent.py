@@ -203,13 +203,16 @@ def _profile_over_the_target() -> UserMemory:
     """목표는 넘고 상한은 넘지 않는 문서. 고정 필드마다 문장이 여럿이라 줄일 몫이 나간다."""
 
     sentences = " ".join(f"문장 {index}번입니다." for index in range(43))
-    assert len(sentences) <= NARRATIVE_MAX_LENGTH
+    longest = " ".join(f"문장 {index}번입니다." for index in range(45))
+    assert len(sentences) < len(longest) <= NARRATIVE_MAX_LENGTH
     memory = UserMemory(
         **{
             name: sentences
             for name, field in UserMemory.model_fields.items()
             if (field.alias or name) in NARRATIVE_FIELDS
         }
+        # 가장 긴 항목이 먼저 줄일 몫을 받는다.
+        | {"personality": longest}
     )
     assert USER_MEMORY_TARGET_CHARS < serialized_chars(memory) <= USER_MEMORY_MAX_CHARS
     return memory
@@ -237,14 +240,14 @@ def test_small_profile_gets_no_shrink_budget():
     prompt = build_update_prompt(UserMemory(basic_profile="30대 개발자입니다."), _digest())
 
     assert "먼저 줄이세요" not in prompt
-    assert "문장 →" not in prompt
+    assert "자 → " not in prompt
 
 
-def test_profile_over_the_target_gets_a_sentence_budget_before_new_information():
+def test_profile_over_the_target_is_told_which_items_to_shorten_first():
     """상한에 닿은 프로필은 매일 이 경로를 지난다.
 
-    먼저 줄이고 나서 얹어야 1차 출력이 상한 안에 든다. 몫은 문장 수로 준다 — 모델이
-    따르는 단위가 그것이다.
+    먼저 줄이고 나서 얹어야 새 정보가 들어갈 자리가 생긴다. 어느 항목을 몇 자까지
+    줄일지를 알려 주고, 문장을 버리지 말고 짧게 다시 쓰라고 한다.
     """
 
     existing = _profile_over_the_target()
@@ -254,8 +257,11 @@ def test_profile_over_the_target_gets_a_sentence_budget_before_new_information()
     assert serialized_chars(existing) > USER_MEMORY_TARGET_CHARS
     assert "기존 프로필이 이미 목표를" in prompt
     assert "먼저 줄이세요" in prompt
-    assert "  - `basicProfile`: 지금 " in prompt
-    assert "  - `personality`: 지금 " in prompt
+    assert "내용을 버리지 말고 짧게 다시 써서 줄입니다" in prompt
+    # 가장 긴 항목이 줄일 몫을 받는다.
+    assert re.search(r"^  - `personality`: 지금 \d+자 → \d+자 이내$", prompt, re.M)
+    section = prompt[prompt.index("[크기]") :]
+    assert "문장 수" not in section and "문장 →" not in section
 
 
 def test_v3_is_told_which_items_are_near_the_length_limit(v3_set):
@@ -829,7 +835,8 @@ def test_v3_has_the_size_section_the_violation_message_points_to():
     [
         ("크기는 남기는 규칙보다 앞섭니다", "보존과 상한이 부딪칠 때 무엇이 이기는지 적어야 합니다."),
         ("먼저 줄여 자리를 만듭니다", "상한에 닿은 프로필에 새 정보를 얹는 순서가 있어야 합니다."),
-        ("그 수 이내로 씁니다", "코드가 주는 문장 수 몫을 따르라고 적어야 합니다."),
+        ("그 글자 수 이내로 **짧게 다시 씁니다.**", "코드가 주는 몫을 따르라고 적어야 합니다."),
+        ("문장을 버려서 줄이지 않습니다", "몫을 맞추려고 문장을 통째로 버립니다."),
         ("끝까지 남기는 것", "줄일 때 지키는 사실이 있어야 합니다."),
     ],
 )
@@ -1186,7 +1193,7 @@ def test_v3_tells_how_to_write_the_reason():
         "이유를 적을 수 없는 변경은 목록에 넣지 않습니다",
         "이유를 지어내지 않습니다",
         "그 `item` 의 **담는 것**에 맞아야 합니다",
-        "그 항목에 문장 수를 주었을 때만",
+        "그 항목에 줄일 글자 수를 주었을 때만",
         "`text` 에 옮겨 적지 않습니다",
     ):
         assert marker in section, f"「reason 쓰는 법」에 '{marker}' 가 없습니다."
@@ -1318,7 +1325,11 @@ def test_v3_final_check_points_at_the_mistakes_without_restating_the_rules():
 # --- v3: 프로필 문장의 말투 (#121) --------------------------------------------
 
 #: 프롬프트가 "이렇게 쓰지 않는다" 로 보여 주는 예전 말투의 문장. 그 밖의 예시는 음슴체다.
-_POLITE_COUNTEREXAMPLES = {"`망원동에 살고 있는 직장인입니다.`"}
+_POLITE_COUNTEREXAMPLES = {
+    "`망원동에 살고 있는 직장인입니다.`",
+    # 줄이기 전의 글. 이것을 음슴체로 줄여 쓰는 예다.
+    "`평일에는 아침에 출근해 저녁까지 회사에서 일합니다. 주말 오전에는 합정 클라이밍장에서 클라이밍을 합니다.`",
+}
 
 
 def test_v3_writes_the_profile_in_terse_noun_ending_style():
@@ -1340,19 +1351,17 @@ def test_v3_writes_the_profile_in_terse_noun_ending_style():
     assert "추론은 `~로 보임` 으로 적습니다" in writing
 
 
-def test_v3_ends_every_profile_sentence_with_a_period():
-    """줄일 몫을 문장 수로 주므로(`shrink_budget`) 문장이 마침표로 끝나야 셀 수 있다.
+def test_v3_does_not_ask_the_model_to_mark_sentence_boundaries():
+    """코드는 문장을 세지 않는다. 그래서 모델에게 마침표를 찍으라고 하지 않는다.
 
-    음슴체는 마침표를 빼먹기 쉽다. 마침표가 없으면 항목 전체가 한 문장으로 세어져
-    줄일 몫도, 지우기만 하는 변경의 판정도 어긋난다.
+    예전에는 줄일 몫을 문장 수로 주고 지우기만 한 변경을 문장으로 견줬다. 그러면 모델이
+    마침표를 빠뜨릴 때마다 둘 다 어긋났다. 지금은 몫을 글자 수로 주고 어절로 견준다.
     """
 
     text = _prompt("v3")
 
-    assert "문장마다 마침표로 끝냅니다" in text
-    example = json.loads(re.findall(r"```json\n(.*?)```", text, re.S)[0])
-    for item in example["changes"]:
-        assert item["text"].endswith("."), "출력 예시의 문장이 마침표로 끝나지 않습니다."
+    assert "마침표" not in text
+    assert "문장 수" not in text
 
 
 def test_v3_examples_are_written_the_way_the_profile_is_written():
