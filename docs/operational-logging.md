@@ -52,7 +52,7 @@ laimory-ai 컨테이너 stdout (한 줄 JSON)
 | `server.started` | lifespan 시작 | `appEnv`, `logFormat`, `instanceId` |
 | `server.stopped` | lifespan 종료 | `appEnv`, `uptimeMs`, `instanceId` |
 | `timeline.task.completed` | 202 로 접수한 백그라운드 작업이 끝날 때(작업당 1건) | `taskId`, `status`, `durationMs`, `callbackSent`, `errorCode`, `failureStage`, `timedOut` |
-| `usermemory.task.completed` | User Memory 갱신 작업이 끝날 때(작업당 1건) | `taskId`, `status`, `durationMs`, `resultSent`, `errorCode`, `hasExistingMemory`, `dailyTimelineCount`, `eventCount`, `memoCount`, `emotionCount`, `droppedDailyTimelineCount`, `droppedEventCount`, `repairAttempts`, `changedFieldCount`, `changedAttributeCount`, `schemaVersion`, `filledFieldCount`, `customAttributeCount`, `serializedChars` |
+| `usermemory.task.completed` | User Memory 갱신 작업이 끝날 때(작업당 1건) | `taskId`, `status`, `durationMs`, `resultSent`, `errorCode`, `hasExistingMemory`, `dailyTimelineCount`, `eventCount`, `memoCount`, `emotionCount`, `droppedDailyTimelineCount`, `droppedEventCount`, `changedFieldCount`, `changedAttributeCount`, `schemaVersion`, `filledFieldCount`, `customAttributeCount`, `serializedChars` |
 | `dependency.request.completed` | App Server 논리 호출 하나가 끝날 때 | `dependency`, `operation`, `httpStatus`, `attempts`, `durationMs`, `errorCode`, `taskId`, `tokenRefreshCount` |
 | `dependency.request.retry` | 그 호출의 재시도 한 번 | `dependency`, `operation`, `attempt`, `maxAttempts`, `reason`, `httpStatus`, `delayMs`, `taskId` |
 | `app.degraded` | 무언가를 잃었지만 처리는 계속됐을 때 | `component`, `agentName`, `errorCode`, `errorType`, `errorMessage`, `errorStackTrace`, `taskId`, `durationMs`, `droppedCount`, `provider`, `model`, `providerVersion`, `stopReason`, `contentBlockKinds`, `tokenUsage` |
