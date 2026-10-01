@@ -745,8 +745,8 @@ def test_memo_only_sets_stay_identical():
         ("`~로 보입니다`", "추론과 확인된 사실을 구분해 적게 해야 합니다."),
         ("반복되는지는 남기는 조건이 아닙니다", "한 번 나온 정보를 남기는 규칙이 있어야 합니다."),
         ("반복으로 고쳐 씁니다", "다시 나온 정보를 반복으로 올리는 규칙이 있어야 합니다."),
-        ("겹치면 합칩니다", "병합 규칙이 있어야 합니다."),
-        ("새로운 내용은 더합니다", "추가 규칙이 있어야 합니다."),
+        ("겹치면 합치고", "병합 규칙이 있어야 합니다."),
+        ("새로운 내용은 더하고", "추가 규칙이 있어야 합니다."),
         ("충돌하면 새 정보로 바꿉니다", "충돌 규칙이 있어야 합니다."),
         ("개수 제한은 없습니다", "customAttributes 개수 제한이 없다고 적어야 합니다."),
         ("정보를 지우는 것은 마지막입니다", "줄이는 순서가 보존 정책을 따라야 합니다."),
@@ -922,7 +922,7 @@ def test_v3_output_example_is_a_valid_change_list():
 def test_v3_defines_the_three_actions_the_schema_accepts():
     """프롬프트가 말하는 동작과 스키마가 받는 동작이 같아야 한다."""
 
-    section = _between(_prompt("v3"), "### `action` 세 가지", "### 한 번 나온 정보도 남깁니다")
+    section = _between(_prompt("v3"), "### `action` 세 가지", "### `reason` 쓰는 법")
 
     assert re.findall(r"^- `(.+?)`: ", section, re.M) == [
         action.value for action in UserMemoryChangeAction
@@ -944,19 +944,17 @@ def test_v3_names_custom_attribute_items_the_way_the_schema_parses_them():
 
 # --- v3: 읽는 순서 (#121) -------------------------------------------------
 
-#: 위에서 아래로 읽는 순서. 작업 단계의 순서와 같다.
+#: 위에서 아래로 읽는 순서. 작업 단계의 순서와 같다. 항목의 절은 그것을 쓰는 2단계
+#: 안에 있고, 「크기」는 변경을 정하고 문장을 쓴 뒤 내기 전에 맞춘다.
 _V3_HEADINGS = (
-    "## Laimory 공통 제품 비전",
-    "## 당신의 역할",
-    "## 입력 데이터의 의미",
-    "## 전체 작업 흐름",
+    "## 할 일",
+    "## 입력",
+    "## 작업 순서",
     "## 1단계. 기록 읽기",
     "## 2단계. 항목별 추론",
-    "## 항목별 규칙",
     "## 3단계. 변경 결정",
     "## 4단계. 문장 작성",
     "## 크기",
-    "## 남기면 안 되는 것",
     "## 5단계. 최종 검증",
     "## 출력 형식",
 )
@@ -986,9 +984,9 @@ def _between(text: str, start: str, end: str) -> str:
 
 
 def _item_sections() -> dict[str, str]:
-    """「항목별 규칙」의 `### \\`항목\\` — …` 절을 항목 이름으로 묶는다."""
+    """2단계의 `### \\`항목\\` — …` 절을 항목 이름으로 묶는다."""
 
-    rules = _between(_prompt("v3"), "## 항목별 규칙", "## 3단계. 변경 결정")
+    rules = _between(_prompt("v3"), "## 2단계. 항목별 추론", "## 3단계. 변경 결정")
     parts = re.split(r"^### ", rules, flags=re.M)[1:]
     sections = {}
     for part in parts:
@@ -1005,19 +1003,40 @@ def test_v3_reads_top_to_bottom_in_working_order():
     assert tuple(re.findall(r"^## .*$", _prompt("v3"), re.M)) == _V3_HEADINGS
 
 
+def test_v3_opens_with_the_task_not_with_a_vision_or_a_role():
+    """첫 절은 해야 할 일이다. 제품 비전이나 "당신은 … Agent 입니다" 로 시작하지 않는다."""
+
+    text = _prompt("v3")
+    task = _between(text, "## 할 일", "## 입력")
+
+    for removed in ("공통 제품 비전", "당신의 역할", "당신은", "Agent 입니다"):
+        assert removed not in text, f"user_memory v3 프롬프트에 '{removed}' 가 남아 있습니다."
+    first = task.split("\n\n")[1]
+    assert "하루 타임라인을 읽고" in first and "**변경 목록**으로 냅니다" in first
+    # 변경 한 건의 네 값을 스키마의 선언 순서대로 적는다. 선언 순서가 곧 모델이 쓰는
+    # 순서이고, 이유(reason)가 문장(text)보다 먼저 온다.
+    declared = [
+        field.alias or name for name, field in UserMemoryChange.model_fields.items()
+    ]
+    assert re.findall(r"^- `(\w+)`: ", task, re.M) == declared
+    assert "`text` 보다 먼저 적습니다" in task
+
+
 def test_v3_states_the_flow_and_which_section_wins():
-    flow = _between(_prompt("v3"), "## 전체 작업 흐름", "## 1단계. 기록 읽기")
+    flow = _between(_prompt("v3"), "## 작업 순서", "## 1단계. 기록 읽기")
 
     steps = re.findall(r"^\d\. \*\*(.+?)\*\*", flow, re.M)
     assert steps == ["기록 읽기", "항목별 추론", "변경 결정", "문장 작성", "최종 검증"]
     assert "> " + " → ".join(steps) in flow
+    # 단계의 이름이 그 단계의 절 제목과 같다.
+    for number, step in enumerate(steps, start=1):
+        assert f"## {number}단계. {step}" in _V3_HEADINGS
     # 단계마다 출력의 어느 자리를 채우는지 적는다.
     for number, field in (("3", "`reason`"), ("4", "`text`")):
         line = re.search(rf"^{number}\. .+$", flow, re.M).group(0)
         assert field in line, f"{number}단계가 채우는 출력 {field} 이 적혀 있지 않습니다."
-    assert "앞 단계가 정한 것 위에 뒤 단계가 쌓입니다" in flow
     # 기본 규칙과 항목의 절이 다르게 적으면 그 절이 이긴다(성향의 충돌, memoryStyle 의 근거).
-    assert "그 절이 기본값과 다르게 적으면 그 항목에서는 그 절을 따릅니다" in flow
+    assert "항목별 절이 다르게 적으면 그 항목에서는 그 절을 따릅니다" in flow
 
 
 def test_v3_has_one_rule_section_per_item_in_field_order():
@@ -1069,19 +1088,23 @@ def test_v3_item_example_and_bad_sentence_say_what_and_why(item: str):
 def test_v3_explains_the_boundaries_between_confusable_items():
     """정의를 나열하는 것만으로는 어느 항목인지 갈리지 않는 짝들."""
 
-    rules = _between(_prompt("v3"), "## 항목별 규칙", "## 3단계. 변경 결정")
+    text = _prompt("v3")
+    rules = _between(text, "## 2단계. 항목별 추론", "## 3단계. 변경 결정")
     boundaries = rules[rules.index("### 헷갈리는 경계") :]
 
     for pair in (
         "**`basicProfile` 과 `lifeContext`**",
         "**`basicProfile` 과 `routines`**",
         "**`lifeContext` 와 `currentFocus`**",
+        "**`routines` 와 `currentFocus`**",
         "**`routines` 와 `preferences`**",
         "**`personality` 와 `values`**",
+        "**`relationships` 와 `customAttributes`**",
         "**고정 필드와 `customAttributes`**",
     ):
         assert pair in boundaries, f"{pair} 의 경계가 없습니다."
-    assert "가장 맞는 항목 한 곳에 적습니다" in boundaries
+    # 경계가 있는 이유. 알게 된 것 하나는 한 항목에만 놓는다.
+    assert "**알게 된 것 하나는 항목 한 곳에만** 놓습니다" in rules
 
 
 def test_v3_memory_style_is_read_from_the_memo_alone():
@@ -1105,13 +1128,15 @@ def test_v3_keeps_names_as_the_record_spells_them():
     assert "기록에 나온 장소 이름 그대로" in sections["basicProfile"]
     assert "기록에 나온 그대로" in sections["relationships"]
     assert "기록에 나온 그대로" in sections["currentFocus"]
+    writing = _between(_prompt("v3"), "## 4단계. 문장 작성", "## 크기")
+    assert "사람·장소·프로젝트의 이름은 **기록에 나온 그대로** 적습니다" in writing
 
 
 def test_v3_comparison_table_maps_every_case_to_an_action():
     """3단계의 표가 견준 결과마다 무엇을 하는지와 어느 동작인지를 말한다."""
 
     step = _between(_prompt("v3"), "## 3단계. 변경 결정", "## 4단계. 문장 작성")
-    table = _between(step, "### 견준 결과 다섯 가지", "- **변경 목록에 넣는 항목은")
+    table = step[: step.index("- 한 항목에 대해 알게 된 것이 여럿이면")]
     # 첫 줄은 표의 머리다. 구분선(`|---|`)은 이 정규식에 걸리지 않는다.
     rows = re.findall(r"^\| ([^|]+) \| ([^|]+) \| ([^|]+) \| ([^|]+) \|$", table, re.M)[1:]
 
@@ -1129,43 +1154,47 @@ def test_v3_comparison_table_maps_every_case_to_an_action():
 def test_v3_tells_how_to_write_the_reason():
     """이유는 `견준 결과: 이번 기록의 사실` 이다. 코드는 읽지 않으므로 프롬프트가 전부다."""
 
-    section = _between(_prompt("v3"), "### `reason` 쓰는 법", "기본 규칙은 다음과 같습니다.")
+    section = _between(_prompt("v3"), "### `reason` 쓰는 법", "## 4단계. 문장 작성")
 
     assert "`견준 결과: 이번 기록의 사실`" in section
     examples = re.findall(r"^- `(.+?): .+`$", section, re.M)
     assert examples, "이유의 예가 없습니다."
     assert set(examples) <= (set(_COMPARED) - {"이미 있음"}) | {"크기"}
     for marker in (
-        "`reason` 의 사실은 그 `item` 의 담는 것에 맞아야 합니다",
-        "같은 사실을 이유로 두 항목을 바꾸지 않습니다",
+        "이유를 적을 수 없는 변경은 목록에 넣지 않습니다",
         "이유를 지어내지 않습니다",
+        "그 `item` 의 **담는 것**에 맞아야 합니다",
         "그 항목에 문장 수를 주었을 때만",
-        "`reason` 을 `text` 에 옮겨 적지 않습니다",
+        "`text` 에 옮겨 적지 않습니다",
     ):
         assert marker in section, f"「reason 쓰는 법」에 '{marker}' 가 없습니다."
-
-    output = _between(_prompt("v3"), "## 출력 형식", "```json")
-    assert output.index("- `reason`: ") < output.index("- `text`: ")
-    assert "`text` 보다 먼저 적습니다" in output
 
 
 @pytest.mark.parametrize(
     ("marker", "why"),
     [
-        ("**이번 기록에서 나온 것만** 셉니다", "기존 프로필을 옮겨 세면 바꿀 것이 없는 항목을 다시 냅니다."),
+        ("기존 프로필에 있는 문장은 이번에 알게 된 것이 아닙니다", "기존 프로필을 옮겨 세면 바꿀 것이 없는 항목을 다시 냅니다."),
+        ("이번 기록이 그것을 다시 확인해 준 것도 여기입니다", "다시 확인된 것을 `충돌` 로 적어 항목을 고쳐 씁니다."),
         ("같은 사실을 항목만 바꿔 두 번 적지 않습니다", "알게 된 것 하나가 여러 항목에 되풀이됩니다."),
-        ("알게 된 것이 가리키지 않은 항목은 건드리지 않습니다", "변경마다 근거가 하나씩 있어야 합니다."),
         ("이유를 적을 수 없는 변경은 목록에 넣지 않습니다", "이유 없는 변경이 같은 문장을 다시 냅니다."),
         ("`한 번` 과 `한 번` 이 만나면 반복입니다", "이미 적혀 있다고 넘기면 반복으로 올라가지 않습니다."),
         ("**하루의 예외는 충돌이 아닙니다.** 본가에 다녀온 하루", "본가에 다녀온 하루가 사는 곳을 바꿉니다."),
+        ("사용자가 사는 곳은 그대로임", "본가가 사는 곳으로 적힙니다."),
+        ("맞지 않게 된 **그 문장**뿐입니다", "충돌을 이유로 같은 항목의 다른 문장까지 바꿉니다."),
         ("옛 정보는 적혀 있는 모든 항목에서 고칩니다", "이직한 뒤에도 옛 직장이 다른 항목에 남습니다."),
         ("그날 한 일을 하나씩 옮겨 적지 않습니다", "프로필이 타임라인의 요약이 됩니다."),
+        ("그날의 일과는 한 번 있던 일로도 적지 않습니다", "출근·식사·이동이 한 번 있던 일로 쌓입니다."),
+        ("**그날의 업무 내용, 식사, 이동은 하루만 봤으면 적지 않습니다.**", "`routines` 가 그날그날의 기록이 됩니다."),
+        ("`~하기도 합니다`, `~하는 날도 있습니다`", "한 번 있던 일을 습관처럼 적습니다."),
+        ("남기고 싶은 항목은 적지 않는 것이 남기는 방법입니다", "남기려고 같은 문장을 다시 냅니다."),
+        ("**날짜를 적지 않습니다**", "문장이 날짜가 붙은 일지가 됩니다."),
         ("속성 하나에는 그 키의 주제만 적습니다", "있던 속성에 상관없는 내용을 몰아 적습니다."),
         ("기존 프로필에 **없는 항목**", "내용이 있는 항목에 `추가` 를 쓰면 새 문장만 담깁니다."),
         ("**기존 내용은 지우지 않습니다.**", "이번 기록에 없다는 이유로 속성을 지웁니다."),
-        ("`이번 기록에 없음` 은 지울 이유가 아닙니다", "이번 기록에 없다는 이유로 속성을 지웁니다."),
+        ("`이번 기록에 없음` 은 이유가 아닙니다", "이번 기록에 없다는 이유로 속성을 지웁니다."),
         ("**`[크기]` 가 속성 수를 줄이라고 했을 때만, 속성에만 씁니다.**", "`삭제` 를 평소에도 씁니다."),
-        ("**적히지 않은 항목은 크기 때문에 줄이지 않습니다**", "몫을 받지 않은 항목까지 줄입니다."),
+        ("**적히지 않은 항목은 크기 때문에 줄이지 않습니다.**", "몫을 받지 않은 항목까지 줄입니다."),
+        ("**지금보다 길게 쓰지 않습니다**", "제한에 가까운 항목을 넘겨 써서 그 변경이 빠집니다."),
         ("달라진 내용으로 고쳐 씁니다", "취소된 계획이나 그만둔 일을 지웁니다."),
         ("기존 내용을 지우기만 하는 변경은 `삭제` 든 `수정` 이든 적용되지 않습니다", "코드가 하는 일과 프롬프트가 달라집니다."),
     ],
@@ -1176,12 +1205,51 @@ def test_v3_states_the_rules_the_live_runs_needed(marker: str, why: str):
     assert marker in _prompt("v3"), f"user_memory v3 프롬프트에 '{marker}' 가 없습니다. {why}"
 
 
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "글자 하나 바뀌지 않고",
+        "기존 프로필을 쓰지 않습니다",
+        "말투와 표현은 AI 의 것",
+        "그날 한 일을 하나씩 옮겨 적지 않습니다",
+        "적극적으로 추론합니다",
+        "반복되는지는 남기는 조건이 아닙니다",
+        "하루의 예외는 충돌이 아닙니다",
+        "옛 정보는 적혀 있는 모든 항목에서 고칩니다",
+        "**기존 내용은 지우지 않습니다.**",
+        "뜻이 그대로면 바꾸지 않습니다",
+        "이유를 지어내지 않습니다",
+        "기존 표현 그대로",
+        "날짜를 적지 않습니다",
+        "기록에 나온 그대로",
+        "크기는 남기는 규칙보다 앞섭니다",
+        "줄이는 항목도 변경 목록에 담아야 줄어듭니다",
+        "끝까지 남기는 것",
+        "실패가 아닙니다",
+    ],
+)
+def test_v3_states_each_step_rule_in_one_place(rule: str):
+    """단계의 규칙은 그것을 쓰는 단계 한 곳에만 적는다.
+
+    실제 모델이 규칙을 어길 때마다 그 문장을 다른 절에도 덧붙였더니 7천 자이던 프롬프트가
+    2만 7천 자가 됐다. 같은 규칙을 여러 절에 적으면 고칠 때 한 곳만 고치게 된다.
+    항목의 절은 따로 센다 — 그 항목에서 달라지는 것을 그 자리에 적는 곳이라, 단계의
+    규칙이 그 항목에서 어떻게 되는지를 다시 말할 수 있다.
+    """
+
+    text = _prompt("v3")
+    items = text[text.index("### `basicProfile`") : text.index("### 헷갈리는 경계")]
+    steps = text.replace(items, "")
+
+    assert steps.count(rule) == 1, f"`{rule}` 가 단계의 절에 {steps.count(rule)}번 나옵니다."
+
+
 def test_v3_uses_custom_attributes_only_for_what_no_fixed_field_holds():
     """속성은 열 필드 어느 것에도 맞지 않는 정보의 자리다.
 
-    이 규칙이 한 곳에만 약하게 적혀 있고 다른 절이 "다녀온 곳은 속성" 이라고 말했을 때,
-    실제 모델은 부모님이 사는 곳을 `relationships` 와 속성 양쪽에 적었다. 프롬프트의
-    어느 자리에서 읽어도 같은 말이어야 한다.
+    실제 모델은 부모님이 사는 곳을 `relationships` 와 속성 양쪽에 적었다. 속성을 만들기
+    전에 열 필드에 먼저 대 보게 하고, 어느 필드가 무엇을 담는지를 그 자리에서 알려 준다.
+    항목의 절과 「헷갈리는 경계」가 같은 말을 한다.
     """
 
     text = _prompt("v3")
@@ -1190,10 +1258,13 @@ def test_v3_uses_custom_attributes_only_for_what_no_fixed_field_holds():
     assert "어느 것의 정의에도 맞지 않는" in section
     assert "- **먼저 열 필드에 대 봅니다**: " in section
     assert "필드에 적은 것을 속성에 한 번 더 적지 않습니다" in section
+    assert "사람과 그 사람이 사는 곳은 `relationships`" in section
     # 정의의 예시가 고정 필드의 몫을 가리키면 그 규칙과 어긋난다.
     definition = re.search(r"^- \*\*담는 것\*\*: (.+)$", section, re.M).group(1)
     for overlapping in ("자주 가는 곳", "즐겨 먹는 것", "취미"):
         assert overlapping not in definition, f"`{overlapping}` 은 고정 필드가 담습니다."
+    key = re.search(r"^- \*\*키\*\*: (.+)$", section, re.M).group(1)
+    assert "자주 가는" not in key, "키의 예시가 `routines` 의 몫을 가리킵니다."
     # 피할 문장은 실제로 나온 잘못이다.
     assert "고정 필드(`relationships`)에 들어갈 정보를 속성으로 적음" in section
 
@@ -1201,19 +1272,22 @@ def test_v3_uses_custom_attributes_only_for_what_no_fixed_field_holds():
     assert "열 필드 어디에도 맞지 않는 경험만 `customAttributes` 에 적습니다" in text
     assert "어디에도 맞지 않을 때만 속성을 만듭니다" in text
     check = _between(text, "## 5단계. 최종 검증", "## 출력 형식")
-    assert "필드에 적은 것이 속성에 또 적혀 있지 않습니다" in check
+    assert "두 항목에(필드와 속성에) 같이 적힌 정보" in check
 
 
-def test_v3_final_check_covers_the_change_list_contract():
+def test_v3_final_check_points_at_the_mistakes_without_restating_the_rules():
+    """최종 검증은 걸러 낼 잘못을 짚는다. 규칙을 다시 풀어 적지 않는다."""
+
     check = _between(_prompt("v3"), "## 5단계. 최종 검증", "## 출력 형식")
 
     for marker in (
-        "바꾸는 항목만",
-        "한 항목은 변경 목록에 한 번만",
-        "그 항목의 전체 문장",
-        "남겨야 할 기존 문장",
-        "`삭제` 의 `text` 는 `null`",
-        "같은 정보가 두 항목에",
-        "`[REDACTED_…]`",
+        "`reason` 의 사실이 이번 기록에 없거나",
+        "남겨야 할 기존 문장이 `text` 에서 빠진 변경",
+        "기존과 글자가 같은 `text` 를 다시 낸 변경",
+        "변경 목록에 두 번 나오는 항목",
+        "그날 한 일을 옮겨 적은 문장",
+        "기존과 글자가 다른 키",
+        "500자를 넘는 `text`",
     ):
         assert marker in check, f"최종 검증에 '{marker}' 가 없습니다."
+    assert len(re.findall(r"^- ", check, re.M)) <= 8, "최종 검증이 규칙을 다시 적고 있습니다."
