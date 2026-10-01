@@ -944,10 +944,12 @@ def test_v3_names_custom_attribute_items_the_way_the_schema_parses_them():
 
 # --- v3: 읽는 순서 (#121) -------------------------------------------------
 
-#: 위에서 아래로 읽는 순서. 작업 단계의 순서와 같다. 항목의 절은 그것을 쓰는 2단계
-#: 안에 있고, 「크기」는 변경을 정하고 문장을 쓴 뒤 내기 전에 맞춘다.
+#: 위에서 아래로 읽는 순서. 누구로서 일하는지와 무엇을 내는지를 먼저 말하고, 그 뒤는
+#: 작업 단계의 순서와 같다. 항목의 절은 그것을 쓰는 2단계 안에 있고, 「크기」는 변경을
+#: 정하고 문장을 쓴 뒤 내기 전에 맞춘다.
 _V3_HEADINGS = (
-    "## 할 일",
+    "## 역할",
+    "## 내는 것",
     "## 입력",
     "## 작업 순서",
     "## 1단계. 기록 읽기",
@@ -1003,23 +1005,41 @@ def test_v3_reads_top_to_bottom_in_working_order():
     assert tuple(re.findall(r"^## .*$", _prompt("v3"), re.M)) == _V3_HEADINGS
 
 
-def test_v3_opens_with_the_task_not_with_a_vision_or_a_role():
-    """첫 절은 해야 할 일이다. 제품 비전이나 "당신은 … Agent 입니다" 로 시작하지 않는다."""
+def test_v3_opens_with_who_the_model_is_not_with_a_product_vision():
+    """첫 절은 어떤 사람으로서 일하는지(페르소나)다.
+
+    제품 비전을 풀어 놓고 그 안의 역할을 말하는 식으로 시작하지 않고, 해야 할 일을
+    딱딱하게 나열하지도 않는다. 누구로서 기록을 읽는지와 그 사람이 일하는 태도를 말한다.
+    """
 
     text = _prompt("v3")
-    task = _between(text, "## 할 일", "## 입력")
+    role = _between(text, "## 역할", "## 내는 것")
 
-    for removed in ("공통 제품 비전", "당신의 역할", "당신은", "Agent 입니다"):
+    for removed in ("공통 제품 비전", "당신의 역할", "Agent 입니다", "## 할 일"):
         assert removed not in text, f"user_memory v3 프롬프트에 '{removed}' 가 남아 있습니다."
-    first = task.split("\n\n")[1]
-    assert "하루 타임라인을 읽고" in first and "**변경 목록**으로 냅니다" in first
+    first = role.split("\n\n")[1]
+    assert first.startswith("당신은 "), "역할 절은 누구로서 일하는지로 시작합니다."
+    assert "하루 타임라인을 읽을 때마다" in first and "프로필(User Memory)" in first
+    # 태도는 짧은 문장 몇 개다. 규칙은 단계에 적고 여기서 다시 풀어 적지 않는다.
+    traits = re.findall(r"^- \*\*(.+?)\*\* ", role, re.M)
+    assert 4 <= len(traits) <= 6, "역할 절의 태도는 네 개에서 여섯 개입니다."
+    assert all(len(line) < 160 for line in re.findall(r"^- .+$", role, re.M))
+
+
+def test_v3_states_what_to_emit_right_after_the_role():
+    """역할 다음에 무엇을 내는지 — 문서가 아니라 변경 목록 — 를 말한다."""
+
+    out = _between(_prompt("v3"), "## 내는 것", "## 입력")
+
+    first = out.split("\n\n")[1]
+    assert "프로필을 다시 쓰지 않습니다" in first and "**변경 목록**으로 냅니다" in first
     # 변경 한 건의 네 값을 스키마의 선언 순서대로 적는다. 선언 순서가 곧 모델이 쓰는
     # 순서이고, 이유(reason)가 문장(text)보다 먼저 온다.
     declared = [
         field.alias or name for name, field in UserMemoryChange.model_fields.items()
     ]
-    assert re.findall(r"^- `(\w+)`: ", task, re.M) == declared
-    assert "`text` 보다 먼저 적습니다" in task
+    assert re.findall(r"^- `(\w+)`: ", out, re.M) == declared
+    assert "`text` 보다 먼저 적습니다" in out
 
 
 def test_v3_states_the_flow_and_which_section_wins():
