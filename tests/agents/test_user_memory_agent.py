@@ -742,7 +742,7 @@ def test_memo_only_sets_stay_identical():
         ("사는 곳, 나이, 성별, 직업, 신분", "이슈가 꼽은 수집 대상이 있어야 합니다."),
         ("만나거나 대화하는 사람", "이슈가 꼽은 수집 대상이 있어야 합니다."),
         ("적극적으로 추론합니다", "추론을 하라고 적어야 합니다."),
-        ("`~로 보입니다`", "추론과 확인된 사실을 구분해 적게 해야 합니다."),
+        ("`~로 보임`", "추론과 확인된 사실을 구분해 적게 해야 합니다."),
         ("반복되는지는 남기는 조건이 아닙니다", "한 번 나온 정보를 남기는 규칙이 있어야 합니다."),
         ("반복으로 고쳐 씁니다", "다시 나온 정보를 반복으로 올리는 규칙이 있어야 합니다."),
         ("겹치면 합치고", "병합 규칙이 있어야 합니다."),
@@ -1205,7 +1205,7 @@ def test_v3_tells_how_to_write_the_reason():
         ("그날 한 일을 하나씩 옮겨 적지 않습니다", "프로필이 타임라인의 요약이 됩니다."),
         ("그날의 일과는 한 번 있던 일로도 적지 않습니다", "출근·식사·이동이 한 번 있던 일로 쌓입니다."),
         ("**그날의 업무 내용, 식사, 이동은 하루만 봤으면 적지 않습니다.**", "`routines` 가 그날그날의 기록이 됩니다."),
-        ("`~하기도 합니다`, `~하는 날도 있습니다`", "한 번 있던 일을 습관처럼 적습니다."),
+        ("`~하기도 함`, `~하는 날도 있음`", "한 번 있던 일을 습관처럼 적습니다."),
         ("남기고 싶은 항목은 적지 않는 것이 남기는 방법입니다", "남기려고 같은 문장을 다시 냅니다."),
         ("**날짜를 적지 않습니다**", "문장이 날짜가 붙은 일지가 됩니다."),
         ("속성 하나에는 그 키의 주제만 적습니다", "있던 속성에 상관없는 내용을 몰아 적습니다."),
@@ -1311,3 +1311,91 @@ def test_v3_final_check_points_at_the_mistakes_without_restating_the_rules():
     ):
         assert marker in check, f"최종 검증에 '{marker}' 가 없습니다."
     assert len(re.findall(r"^- ", check, re.M)) <= 8, "최종 검증이 규칙을 다시 적고 있습니다."
+
+
+# --- v3: 프로필 문장의 말투 (#121) --------------------------------------------
+
+#: 프롬프트가 "이렇게 쓰지 않는다" 로 보여 주는 예전 말투의 문장. 그 밖의 예시는 음슴체다.
+_POLITE_COUNTEREXAMPLES = {"`망원동에 살고 있는 직장인입니다.`"}
+
+
+def test_v3_writes_the_profile_in_terse_noun_ending_style():
+    """프로필 문장은 음슴체로 짧게 쓴다. 같은 글자 수에 더 많은 정보를 담는다.
+
+    전체 상한이 2,000자라 문장이 길면 담을 수 있는 정보가 줄어든다. 프롬프트의 지시문은
+    그대로 `~합니다` 이고, 바뀌는 것은 모델이 프로필에 적는 문장이다.
+    """
+
+    text = _prompt("v3")
+    writing = _between(text, "## 4단계. 문장 작성", "## 크기")
+
+    assert "**음슴체로 짧게 씁니다.**" in writing
+    assert "`~함`, `~임`, `~음`" in writing
+    assert "`~입니다`, `~합니다` 를 쓰지 않습니다" in writing
+    assert "뜻이 흐려질 만큼 줄이지는 않습니다" in writing
+    # 확인된 정도를 가르는 표지도 음슴체다.
+    assert "`9월 말 클라이밍 한 번 함.`" in writing
+    assert "추론은 `~로 보임` 으로 적습니다" in writing
+
+
+def test_v3_ends_every_profile_sentence_with_a_period():
+    """줄일 몫을 문장 수로 주므로(`shrink_budget`) 문장이 마침표로 끝나야 셀 수 있다.
+
+    음슴체는 마침표를 빼먹기 쉽다. 마침표가 없으면 항목 전체가 한 문장으로 세어져
+    줄일 몫도, 지우기만 하는 변경의 판정도 어긋난다.
+    """
+
+    text = _prompt("v3")
+
+    assert "문장마다 마침표로 끝냅니다" in text
+    example = json.loads(re.findall(r"```json\n(.*?)```", text, re.S)[0])
+    for item in example["changes"]:
+        assert item["text"].endswith("."), "출력 예시의 문장이 마침표로 끝나지 않습니다."
+
+
+def test_v3_examples_are_written_the_way_the_profile_is_written():
+    """예시가 예전 말투면 모델은 예시를 따라 쓴다."""
+
+    text = _prompt("v3")
+
+    polite = set(re.findall(r"`[^`\n]*니다\.`", text))
+    assert polite <= _POLITE_COUNTEREXAMPLES, f"예전 말투의 예시가 남아 있습니다: {polite}"
+    example = json.loads(re.findall(r"```json\n(.*?)```", text, re.S)[0])
+    for item in example["changes"]:
+        assert "니다" not in item["text"], "출력 예시가 예전 말투입니다."
+    for section in _item_sections().values():
+        written = re.search(r"^- \*\*예시\*\*: .+ → (.+)$", section, re.M).group(1)
+        assert "니다" not in written, f"항목의 예시가 예전 말투입니다: {written}"
+
+
+def test_v3_keeps_existing_sentences_written_in_the_old_style():
+    """v1·v2 가 만든 프로필은 `~합니다` 로 적혀 있다. 말투만 바꾸려고 고쳐 쓰지 않는다.
+
+    고쳐 쓰면 바꿀 이유가 없는 항목이 변경 목록에 들어오고, 옮기다 빠뜨릴 기회가 생긴다.
+    """
+
+    text = _prompt("v3")
+
+    assert "예전 말투의 문장이 섞여 있을 수 있고 뜻은 같습니다" in text
+    assert "예전 말투의 문장도 말투만 바꾸려고 고쳐 쓰지 않습니다" in text
+    # 예전 표지로 적힌 추론이 확인됐을 때도 `합침` 으로 다룬다.
+    assert "`~로 보임`(예전 문장은 `~로 보입니다`)" in text
+
+
+@pytest.mark.parametrize(
+    "rel",
+    ["timeline/prompts/v3/timeline.md", "repair/prompts/v3/prompt.md"],
+)
+def test_v3_readers_know_both_styles_of_the_profile(rel: str):
+    """프로필을 읽는 쪽이 표지를 두 말투 모두로 알아본다.
+
+    쓰는 쪽만 음슴체로 바꾸면 읽는 쪽은 `한 번 함` 을 습관이 아니라는 표지로 읽지 못한다.
+    v1·v2 가 만든 프로필은 여전히 `~합니다` 라 예전 표지도 함께 적는다. 읽는 쪽은 사용자가
+    보는 문장을 쓰므로 프로필의 말투를 옮기지 않게 한다.
+    """
+
+    reader = (_PROMPTS.parent.parent / rel).read_text(encoding="utf-8")
+
+    assert "`한 번 함`(예전 문장은 `한 번 했습니다`)" in reader
+    assert "`~로 보임`(`~로 보입니다`)" in reader
+    assert "그 말투를 결과 문장에 옮기지 않습니다" in reader
