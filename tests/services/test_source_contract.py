@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from app.core.error_codes import ErrorCode
 from app.schemas import ItemType, TimelineInputResponse
+from app.schemas.user_memory import CUSTOM_ATTRIBUTE_MAX_LENGTH, NARRATIVE_MAX_LENGTH
 from app.services.source_contract import (
     SourceBatchError,
     ensure_source_contract,
@@ -159,10 +160,12 @@ def test_missing_or_null_user_memory_keeps_previous_behavior(body):
     [
         pytest.param({"favoriteColor": "파랑"}, id="unknown-field"),
         pytest.param({"schemaVersion": "2.0"}, id="unsupported-version"),
-        pytest.param({"basicProfile": "가" * 201}, id="over-length"),
         pytest.param(
-            {"customAttributes": {f"k{i}": "v" for i in range(6)}},
-            id="too-many-custom-attributes",
+            {"basicProfile": "가" * (NARRATIVE_MAX_LENGTH + 1)}, id="over-length"
+        ),
+        pytest.param(
+            {"customAttributes": {"k": "가" * (CUSTOM_ATTRIBUTE_MAX_LENGTH + 1)}},
+            id="over-length-custom-attribute",
         ),
     ],
 )
@@ -173,3 +176,23 @@ def test_contract_violation_is_raised_for_the_caller_to_absorb(user_memory):
 
     with pytest.raises(ValidationError):
         response.parse_user_memory()
+
+
+def test_profile_written_by_the_v3_update_is_readable_here():
+    """갱신이 쓰는 것을 입력 조회가 읽지 못하면 그 프로필은 쓰이지 못한다(#121).
+
+    쓰는 쪽과 읽는 쪽이 같은 스키마 선언을 쓰므로 상한이 함께 움직인다. 예전 상한
+    (200자·5개)을 넘는 문서가 여기서 계약 위반(1106)으로 흡수되지 않아야 한다.
+    """
+
+    response = _input_response(
+        userMemory={
+            "basicProfile": "가" * NARRATIVE_MAX_LENGTH,
+            "customAttributes": {f"k{i}": "v" for i in range(12)},
+        }
+    )
+
+    memory = response.parse_user_memory()
+
+    assert len(memory.basic_profile) == NARRATIVE_MAX_LENGTH
+    assert len(memory.custom_attributes) == 12

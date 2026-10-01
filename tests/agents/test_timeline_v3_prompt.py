@@ -296,7 +296,15 @@ def test_timeline_v3_reads_user_memory_fields_as_the_writer_defines_them() -> No
     같은 문장을 서로 다른 뜻으로 쓰고 읽는다."""
 
     writer = _read("agents/user_memory/prompts/v3/prompt.md")
-    definitions = dict(re.findall(r"^\| `(\w+)` \| ([^|]+?) \| [^|]+ \|$", writer, re.M))
+    # 쓰는 쪽은 항목마다 절 하나를 갖고 그 첫 줄이 정의다(`- **담는 것**: …`).
+    # `customAttributes` 는 고정 필드가 아니라 읽는 쪽이 따로 설명한다.
+    definitions = {
+        name: definition
+        for name, definition in re.findall(
+            r"^### `(\w+)` — .+\n\n- \*\*담는 것\*\*: (.+)$", writer, re.M
+        )
+        if name != "customAttributes"
+    }
     section = _between(_timeline_v3(), "### user memory가 말하는 것", "## 전체 작업 흐름")
 
     assert set(definitions) == set(NARRATIVE_FIELDS)

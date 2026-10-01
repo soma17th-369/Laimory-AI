@@ -22,7 +22,7 @@
     {
       "recordDate": "2026-08-04",
       "recordTimeZone": "Asia/Seoul",
-      "emotionType": null,
+      "emotionType": "HAPPY",
       "events": [
         {
           "eventType": "WAKE_UP",

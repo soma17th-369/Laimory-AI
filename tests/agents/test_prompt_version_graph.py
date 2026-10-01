@@ -1,24 +1,38 @@
-"""프롬프트 버전에 따른 Agent 실행 구조 계약 (#56).
+"""프롬프트 버전에 따른 Agent 실행 구조 계약 (#56, #121).
 
 Location 과 Sleep/Activity 는 v1 에서 **infer → review** 2단계였다. v2 부터는 review 를
 두지 않고 `infer` 한 번으로 끝낸다. 분기 기준은 `settings.prompt_version` 이며, 이는
 `PROMPT_VERSION=v1` 롤백이 프롬프트뿐 아니라 **실행 구조까지** 되돌리게 하기 위한 것이다.
 
 이 계약이 조용히 깨지면 v1 으로 되돌려도 v1 동작이 아니게 되므로 호출 수로 못 박는다.
+
+User Memory 는 실행 구조가 아니라 **갱신 요청에 붙는 지시**가 버전으로 갈린다(#121).
+v1·v2 는 `memo` 없는 날 성향 필드를 그대로 두라고 알리고, v3 는 알리지 않는다.
 """
 
 import importlib
+from pathlib import Path
 
 import pytest
 
 from app.core import config
+from app.schemas.user_memory_update import DailyTimeline
+from app.services.user_memory_limits import build_daily_timeline_digest
 from tests.fixtures.fake_llm import FakeLLM, result_json
 from tests.fixtures.requests import make_request, sleep_item, stay_item
+from tests.fixtures.user_memory import (
+    change,
+    changes_json,
+    daily_timeline,
+    daily_timeline_event,
+    memory_json,
+)
 
 _AGENT_MODULES = {
     "location": "app.agents.events.location.agent",
     "sleep_activity": "app.agents.events.sleep_activity.agent",
     "photo_describer": "app.agents.events.photo.describer",
+    "user_memory": "app.agents.user_memory.user_memory_agent",
 }
 
 
@@ -137,3 +151,85 @@ def test_photo_fallback_is_prompt_based_in_every_version(
     assert not hasattr(describer, "_USE_LLM_METADATA_DESCRIBER")
     fallback = describer.VisionPhotoDescriber(llm=FakeLLM([result_json()])).fallback
     assert isinstance(fallback, describer.LLMPhotoDescriber)
+
+
+def _digest_without_memo():
+    payload = daily_timeline(events=[daily_timeline_event(memo=None)])
+    return build_daily_timeline_digest([DailyTimeline.model_validate(payload)])
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_memo_only_versions_tell_the_model_a_day_has_no_memo(
+    monkeypatch: pytest.MonkeyPatch, version: str
+) -> None:
+    """v1·v2 는 성향 근거가 `memo` 뿐이다(#64). v2 로 되돌리면 이 지시도 돌아와야 한다."""
+
+    module = _reload_agents(monkeypatch, version)["user_memory"]
+
+    prompt = module.build_update_prompt(None, _digest_without_memo())
+
+    assert module._MEMO_ONLY_TRAITS is True
+    assert "[근거 없음]" in prompt
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_legacy_versions_take_the_whole_document_from_the_model(
+    monkeypatch: pytest.MonkeyPatch, version: str
+) -> None:
+    """v1·v2 프롬프트는 문서 전체를 출력하라고 적혀 있다. 모델이 낸 문서가 곧 결과다."""
+
+    module = _reload_agents(monkeypatch, version)["user_memory"]
+    existing = module.UserMemory(relationships="김민수: 같은 팀 동료.")
+    llm = FakeLLM([memory_json(basicProfile="30대 개발자입니다.")])
+
+    memory = module.UserMemoryAgent(llm=llm).generate(existing, _digest_without_memo())
+
+    assert module._PATCH_OUTPUT is False
+    assert memory.basic_profile == "30대 개발자입니다."
+    assert memory.relationships == ""
+
+
+def test_v3_takes_only_the_items_to_change_and_keeps_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v3 는 바꿀 항목만 받아 기존 문서에 끼워 넣는다(#121)."""
+
+    module = _reload_agents(monkeypatch, "v3")["user_memory"]
+    existing = module.UserMemory(relationships="김민수: 같은 팀 동료.")
+    llm = FakeLLM([changes_json(change("basicProfile", "추가", "30대 개발자입니다."))])
+
+    memory = module.UserMemoryAgent(llm=llm).generate(existing, _digest_without_memo())
+
+    assert module._PATCH_OUTPUT is True
+    assert memory.basic_profile == "30대 개발자입니다."
+    assert memory.relationships == "김민수: 같은 팀 동료."
+
+
+def test_v3_does_not_tell_the_model_to_leave_traits_untouched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v3 는 AI 가 쓴 문장도 근거로 읽는다(#121). 그 지시는 시스템 프롬프트와 어긋난다."""
+
+    module = _reload_agents(monkeypatch, "v3")["user_memory"]
+
+    prompt = module.build_update_prompt(None, _digest_without_memo())
+
+    assert module._MEMO_ONLY_TRAITS is False
+    assert "[근거 없음]" not in prompt
+
+
+@pytest.mark.parametrize("version", ["v1", "v2", "v3"])
+def test_user_memory_agent_loads_the_prompt_of_its_version(
+    monkeypatch: pytest.MonkeyPatch, version: str
+) -> None:
+    """분기값과 시스템 프롬프트가 같은 버전을 봐야 한다.
+
+    둘이 갈리면 v3 프롬프트에 "성향 필드는 그대로" 지시가 붙거나 그 반대가 된다.
+    """
+
+    module = _reload_agents(monkeypatch, version)["user_memory"]
+    expected = (
+        Path(module.__file__).resolve().parent / "prompts" / version / "prompt.md"
+    ).read_text(encoding="utf-8")
+
+    assert module._SYSTEM_PROMPT == expected

@@ -197,10 +197,16 @@ _ALLOWED_FIELDS: dict[OperationalEvent, frozenset[str]] = {
             "dailyTimelineCount",
             "eventCount",
             "memoCount",
+            # 사용자가 감정을 고른 날의 수(#121). memoCount 와 함께 "사용자가 직접
+            # 남긴 것이 있었는가" 를 말한다.
+            "emotionCount",
             "droppedDailyTimelineCount",
             "droppedEventCount",
             # 결과의 모양. 본문이 아니라 크기와 개수다.
-            "repairAttempts",
+            # 기존 문서에서 달라진 고정 필드·속성의 수(#121). 둘 다 0 이면 이번 기록이
+            # 프로필을 바꾸지 않은 것이다. 어느 항목인지는 싣지 않는다.
+            "changedFieldCount",
+            "changedAttributeCount",
             "schemaVersion",
             "filledFieldCount",
             "customAttributeCount",

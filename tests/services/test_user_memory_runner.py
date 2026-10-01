@@ -41,8 +41,8 @@ class _StubAgent:
         self._delay_sec = delay_sec
         self.calls: list[tuple] = []
 
-    def generate(self, existing, digest, *, violations=()):
-        self.calls.append((existing, digest, list(violations)))
+    def generate(self, existing, digest):
+        self.calls.append((existing, digest))
         if self._delay_sec:
             time.sleep(self._delay_sec)
         if isinstance(self._result, Exception):
@@ -133,7 +133,7 @@ def test_existing_memory_is_handed_to_the_agent():
 
 
 def test_a_day_without_memo_still_succeeds():
-    """성향 필드가 안 바뀌는 것이 정상이다. 실패가 아니다."""
+    """메모가 없는 것은 실패가 아니다. 무엇을 갱신할지는 프롬프트 세트가 정한다."""
 
     client = FakeAppServerClient()
     agent = _StubAgent()
@@ -146,6 +146,18 @@ def test_a_day_without_memo_still_succeeds():
 
     assert status is TaskStatus.SUCCESS
     assert agent.calls[0][1].has_memo is False
+
+
+def test_picked_emotion_reaches_the_agent():
+    """접수한 하루 감정이 digest 를 거쳐 Agent 까지 간다(#121)."""
+
+    client = FakeAppServerClient()
+    agent = _StubAgent()
+
+    _run(client, agent, dailyTimelines=[daily_timeline(emotion_type="UNHAPPY")])
+
+    digest = agent.calls[0][1]
+    assert digest.daily_timelines[0]["emotion"] == "UNHAPPY"
 
 
 # --- 기존 프로필 계약 위반 (흡수) --------------------------------------
@@ -278,9 +290,36 @@ def test_success_closes_the_task_with_one_operational_event(caplog):
     assert event["status"] == TaskStatus.SUCCESS.value
     assert event["resultSent"] is True
     assert event["schemaVersion"] == "1.0"
-    assert event["repairAttempts"] == 0
+    assert "repairAttempts" not in event, "재요청이 없어져 남길 횟수가 없습니다."
     assert event["durationMs"] >= 0
     assert "errorCode" not in event
+
+
+def test_event_reports_how_much_of_the_profile_changed(caplog):
+    """무엇이 바뀌었는지는 본문이라 남기지 않는다. 몇 항목이 바뀌었는지만 남긴다(#121).
+
+    둘 다 0 이면 이번 기록이 프로필을 바꾸지 않은 것이다.
+    """
+
+    existing = memory_body(
+        basicProfile="망원동에 사는 개발자입니다.",
+        customAttributes={"반려동물": "고양이"},
+    )
+    updated = UserMemory(
+        basic_profile="망원동에 사는 개발자입니다.",
+        routines="비밀 루틴 문장",
+        custom_attributes={"반려동물": "고양이", "비밀 키": "비밀 값"},
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        _run(FakeAppServerClient(), _StubAgent(updated), userMemory=existing)
+
+    event = _events(caplog)[-1]
+    assert event["changedFieldCount"] == 1
+    assert event["changedAttributeCount"] == 1
+    serialized = str(event)
+    for body in ("비밀 루틴 문장", "비밀 키", "비밀 값"):
+        assert body not in serialized
 
 
 def test_failed_result_call_is_visible_in_the_event(caplog):
@@ -312,6 +351,25 @@ def test_event_reports_the_accepted_batch_size(caplog):
     event = _events(caplog)[-1]
     assert event["dailyTimelineCount"] == MAX_DAILY_TIMELINE_COUNT
     assert event["droppedDailyTimelineCount"] == 0
+
+
+def test_event_reports_how_many_days_carried_an_emotion(caplog):
+    """사용자가 직접 남긴 것이 있었는지를 결과만 보고 알 수 있어야 한다(#121).
+
+    남기는 것은 **개수**다. 어떤 감정을 골랐는지는 싣지 않는다.
+    """
+
+    daily_timelines = [
+        daily_timeline(record_date="2026-08-03", emotion_type="VERY_UNHAPPY"),
+        daily_timeline(record_date="2026-08-04", emotion_type=None),
+    ]
+
+    with caplog.at_level(logging.DEBUG):
+        _run(FakeAppServerClient(), dailyTimelines=daily_timelines)
+
+    event = _events(caplog)[-1]
+    assert event["emotionCount"] == 1
+    assert "VERY_UNHAPPY" not in str(event)
 
 
 def test_event_never_carries_timeline_or_memory_content(caplog):

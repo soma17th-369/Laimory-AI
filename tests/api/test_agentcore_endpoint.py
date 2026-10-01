@@ -79,7 +79,7 @@ def fake_user_memory_agent(monkeypatch):
     """실제 LLM 을 부르지 않고 고정 갱신본을 돌려준다."""
 
     class _Agent:
-        def generate(self, existing, digest, *, violations=()):
+        def generate(self, existing, digest):
             return UserMemory(basic_profile="30대 개발자입니다.")
 
     monkeypatch.setattr(user_memory_runner, "UserMemoryAgent", lambda: _Agent())
@@ -277,7 +277,7 @@ def test_user_memory_invocation_marks_runtime_busy(app_server, monkeypatch):
     busy_during_run: list[bool] = []
 
     class _Agent:
-        def generate(self, existing, digest, *, violations=()):
+        def generate(self, existing, digest):
             busy_during_run.append(inflight.is_busy())
             return UserMemory(basic_profile="30대 개발자입니다.")
 
