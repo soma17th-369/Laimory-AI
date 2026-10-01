@@ -52,6 +52,8 @@ from typing import Any
 
 from app.schemas.user_memory import (
     CUSTOM_ATTRIBUTE_ITEM_PREFIX,
+    CUSTOM_ATTRIBUTE_MAX_LENGTH,
+    NARRATIVE_MAX_LENGTH,
     UserMemory,
     UserMemoryChange,
     UserMemoryChangeAction,
@@ -431,6 +433,30 @@ def apply_changes(
 
 def _has_sensitive_value(text: str) -> bool:
     return any(pattern.search(text) for _, pattern in SENSITIVE_PATTERNS)
+
+
+#: 항목 값이 길이 제한에 이만큼 가까우면 갱신 요청에서 알린다.
+ITEM_LIMIT_MARGIN = 100
+
+
+def items_near_limit(memory: UserMemory) -> list[str]:
+    """길이 제한에 가까운 항목을 ``\\`이름\\`: 지금 N자`` 로 돌려준다. 값은 싣지 않는다.
+
+    길이 제한을 넘긴 변경은 다시 요청하지 않고 뺀다(:func:`apply_changes`). 그러면 모델은
+    넘겼다는 것을 알 길이 없어, 제한에 닿은 항목은 매번 넘겨 써서 매번 빠진다 — 그 항목만
+    조용히 멈춘다. 그래서 닿기 전에 크기를 알려 준다. 모델은 글자 수를 세지 못한다.
+    """
+
+    lines: list[str] = []
+    for name, value in _prompt_items(memory):
+        limit = (
+            CUSTOM_ATTRIBUTE_MAX_LENGTH
+            if name.startswith(CUSTOM_ATTRIBUTE_ITEM_PREFIX)
+            else NARRATIVE_MAX_LENGTH
+        )
+        if len(value) > limit - ITEM_LIMIT_MARGIN:
+            lines.append(f"`{name}`: 지금 {len(value)}자")
+    return lines
 
 
 @dataclass(frozen=True)

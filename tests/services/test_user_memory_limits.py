@@ -21,11 +21,13 @@ from app.services.user_memory_limits import (
     MEMO_MAX_CHARS,
     TEXT_MAX_CHARS,
     USER_MEMORY_MAX_CHARS,
+    ITEM_LIMIT_MARGIN,
     USER_MEMORY_TARGET_CHARS,
     apply_changes,
     build_daily_timeline_digest,
     drop_removals,
     find_violations,
+    items_near_limit,
     serialized_chars,
     shrink_budget,
 )
@@ -1020,3 +1022,29 @@ def test_apply_changes_does_not_mutate_the_inputs():
 
     assert profile.model_dump() == before
     assert _items(patch) == ["routines", "values"]
+
+
+# --- 길이 제한에 가까운 항목 (#121) --------------------------------------
+
+
+def test_items_near_the_limit_are_named_with_their_size_only():
+    """길이를 넘긴 변경은 다시 요청하지 않고 뺀다. 넘겼다는 것을 모델이 알 길이 없으므로
+    닿기 전에 크기를 알려 준다. 값은 싣지 않는다."""
+
+    memory = UserMemory(
+        relationships="가" * (NARRATIVE_MAX_LENGTH - ITEM_LIMIT_MARGIN + 1),
+        routines="나" * (NARRATIVE_MAX_LENGTH - ITEM_LIMIT_MARGIN),
+        custom_attributes={"동네": "다" * NARRATIVE_MAX_LENGTH, "악기": "기타를 배웁니다."},
+    )
+
+    lines = items_near_limit(memory)
+
+    assert lines == [
+        f"`relationships`: 지금 {NARRATIVE_MAX_LENGTH - ITEM_LIMIT_MARGIN + 1}자",
+        f"`customAttributes.동네`: 지금 {NARRATIVE_MAX_LENGTH}자",
+    ]
+    assert all("가가" not in line and "다다" not in line for line in lines)
+
+
+def test_no_item_is_near_the_limit_in_a_small_profile():
+    assert items_near_limit(_small_profile()) == []

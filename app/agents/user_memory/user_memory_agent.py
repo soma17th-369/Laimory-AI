@@ -59,12 +59,13 @@ from app.agents.prompt_loader import load_prompt, uses_legacy_contract
 from app.core.execution_context import ExecutionStage, execution_scope
 from app.core.logging import get_logger, log_fields
 from app.core.llm_stages import LLMStage
-from app.schemas.user_memory import UserMemory, UserMemoryPatch
+from app.schemas.user_memory import NARRATIVE_MAX_LENGTH, UserMemory, UserMemoryPatch
 from app.services.user_memory_limits import (
     USER_MEMORY_MAX_CHARS,
     USER_MEMORY_TARGET_CHARS,
     DailyTimelineDigest,
     apply_changes,
+    items_near_limit,
     serialized_chars,
     shrink_budget,
 )
@@ -126,6 +127,16 @@ def _size_section(existing: UserMemory | None) -> str | None:
             "줄이세요. 아래에 적히지 않은 항목은 줄이지 않습니다."
         )
         lines.extend(f"  - {line}" for line in budget)
+
+    # 변경 목록을 받는 세트는 길이 제한을 넘긴 변경을 다시 요청하지 않고 뺀다. 넘겼다는
+    # 것을 모델이 알 길이 없으므로, 제한에 가까운 항목은 미리 크기를 알린다.
+    near_limit = items_near_limit(existing) if _PATCH_OUTPUT else []
+    if near_limit:
+        lines.append(
+            f"아래 항목은 길이 제한({NARRATIVE_MAX_LENGTH}자)에 가깝습니다. 제한을 넘긴 "
+            "변경은 적용되지 않습니다."
+        )
+        lines.extend(f"  - {line}" for line in near_limit)
     return "\n".join(lines)
 
 

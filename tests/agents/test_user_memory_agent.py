@@ -251,6 +251,40 @@ def test_profile_over_the_target_gets_a_sentence_budget_before_new_information()
     assert "  - `personality`: 지금 " in prompt
 
 
+def test_v3_is_told_which_items_are_near_the_length_limit(v3_set):
+    """v3 는 길이를 넘긴 변경을 다시 요청하지 않고 뺀다. 그러면 제한에 닿은 항목은 매번
+    넘겨 써서 매번 빠진다. 닿기 전에 크기를 알려 준다."""
+
+    existing = UserMemory(
+        relationships="가" * (NARRATIVE_MAX_LENGTH - 20),
+        routines="평일에는 회사에서 일합니다.",
+    )
+
+    prompt = build_update_prompt(existing, _digest())
+    section = prompt.split("[크기]")[1].split("\n\n")[0]
+
+    assert f"길이 제한({NARRATIVE_MAX_LENGTH}자)에 가깝습니다" in section
+    assert "제한을 넘긴 변경은 적용되지 않습니다" in section
+    assert f"  - `relationships`: 지금 {NARRATIVE_MAX_LENGTH - 20}자" in section
+    assert "`routines`" not in section
+    assert "가가" not in section
+
+
+def test_v3_gets_no_length_hint_when_no_item_is_near_the_limit(v3_set):
+    prompt = build_update_prompt(UserMemory(routines="평일에는 회사에서 일합니다."), _digest())
+
+    assert "길이 제한" not in prompt
+
+
+def test_legacy_set_gets_no_length_hint(legacy_set):
+    """v1·v2 는 문서 전체를 받고 항목 길이는 교정 재시도가 본다. 그 프롬프트가 설명하지
+    않는 입력을 코드가 먼저 주지 않는다."""
+
+    existing = UserMemory(relationships="가" * (NARRATIVE_MAX_LENGTH - 20))
+
+    assert "길이 제한" not in build_update_prompt(existing, _digest())
+
+
 def test_size_section_carries_numbers_not_a_policy():
     """무엇을 줄일지는 시스템 프롬프트의 정책이고 세트마다 다르다."""
 
