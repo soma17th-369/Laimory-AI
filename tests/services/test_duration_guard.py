@@ -207,7 +207,11 @@ def _hours_text(limit: timedelta) -> str:
 
 @pytest.mark.parametrize("event_type", _LIMITED, ids=lambda t: t.value)
 def test_timeline_v3_prompt_states_the_same_limit(event_type):
-    """프롬프트가 다른 값을 지시하면 Timeline 이 규칙대로 만든 event 에 warning 이 붙는다."""
+    """프롬프트가 다른 값을 말하면 Timeline 이 다시 보는 길이와 코드가 짚는 길이가 갈린다.
+
+    값은 자르는 상한이 아니라 검토 기준이다(#134). 프롬프트가 "최대" 라고 적으면 Timeline 이
+    그 길이에 맞춰 나눈다.
+    """
 
     prompt = (
         _REPO_ROOT / "app/agents/timeline/prompts/v3/timeline.md"
@@ -215,7 +219,10 @@ def test_timeline_v3_prompt_states_the_same_limit(event_type):
     section = prompt.split(f"### `{event_type.value}` — ", 1)[1].split("\n### ", 1)[0]
     (time_line,) = [line for line in section.splitlines() if line.startswith("- **시간**")]
 
-    assert re.findall(r"최대 ([\d.]+)시간", time_line) == [_hours_text(DURATION_LIMITS[event_type])]
+    assert re.findall(r"검토 기준 ([\d.]+)시간", time_line) == [
+        _hours_text(DURATION_LIMITS[event_type])
+    ]
+    assert "최대" not in time_line
 
 
 def test_document_table_states_the_same_limits():
@@ -225,10 +232,10 @@ def test_document_table_states_the_same_limits():
     rows = dict(re.findall(r"^\| `(\w+)` \| [^|]+ \| ([^|]+) \|$", document, re.M))
 
     for event_type in _LIMITED:
-        stated = re.findall(r"([\d.]+)시간 초과 warning", rows[event_type.value])
+        stated = re.findall(r"검토 기준 ([\d.]+)시간", rows[event_type.value])
         assert stated == [_hours_text(DURATION_LIMITS[event_type])], event_type.value
     for event_type in _UNLIMITED:
-        assert "초과 warning" not in rows[event_type.value], event_type.value
+        assert "검토 기준" not in rows[event_type.value], event_type.value
 
 
 def test_finding_carries_type_duration_and_limit():
@@ -244,7 +251,20 @@ def test_finding_carries_type_duration_and_limit():
         "durationHours": _hours_text(duration),
         "limitHours": _hours_text(limit),
     }
-    assert f"MEETING 상한 {_hours_text(limit)}시간" in _duration_warnings(draft)[0].message
+    assert f"MEETING 검토 기준 {_hours_text(limit)}시간" in _duration_warnings(draft)[0].message
+
+
+def test_v3_warning_asks_to_review_not_to_split():
+    """#119 문장은 "나눠야 합니다" 였고, Repair 는 경계 없는 체류를 고르게 쪼갰다(#134)."""
+
+    draft = _draft([_long_event()])
+
+    verify_event_duration(draft)
+
+    message = _duration_warnings(draft)[0].message
+    assert "나눠야" not in message
+    assert "묻혀 있는지 확인하세요" in message
+    assert "길다는 이유만으로 나누지 않습니다" in message
 
 
 # --- 면제 (#119) ----------------------------------------------------------------
@@ -471,7 +491,10 @@ def test_legacy_sets_keep_the_old_warning_sentence():
     verify_event_duration(draft, by_type=False)
 
     limit = _hours_text(LEGACY_MAX_EVENT_DURATION)
-    assert f"비캘린더 event 권장 상한 {limit}시간" in _duration_warnings(draft)[0].message
+    message = _duration_warnings(draft)[0].message
+    assert f"비캘린더 event 권장 상한 {limit}시간" in message
+    # v1·v2 는 운영 세트다. #134 의 문장 변경이 새어 들면 안 된다.
+    assert message.endswith("하나의 활동이 계속됐다는 근거가 없으면 나눠야 합니다.")
 
 
 def test_legacy_sets_have_no_calendar_exemption():

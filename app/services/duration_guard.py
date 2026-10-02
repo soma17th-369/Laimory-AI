@@ -1,16 +1,19 @@
-"""eventType 별 지속시간 상한을 검사한다 (#61, #119).
+"""eventType 별 지속시간 검토 기준을 잰다 (#61, #119, #134).
 
-프롬프트는 event 를 타입마다 정해진 길이 이내로 만들라고 지시한다. 하지만 그 지시를
-지켰는지 재는 코드가 없으면, 하루가 8~12시간짜리 event 하나로 뭉개져도 결과를 볼 때까지
-알 수 없다. 이 guard 는 그 초과를 드러내는 결정론적 안전망이다.
+긴 event 는 그 안에 식사·회의 같은 다른 사건이 묻혀 있을 수 있다. 이 guard 는 기준을
+넘은 event 를 짚어 Repair 가 먼저 다시 보게 하는 결정론적 신호다.
 
-상한은 #118 이 Timeline v3 프롬프트와 `docs/ai-event-candidate.md` 에 정한 값이다. 코드의
-정본은 `DURATION_LIMITS` 표 하나이고 **모든 eventType 을 한 줄씩 적는다.** 값을 바꿀 때는
-그 줄만 고치면 되고, 프롬프트·문서가 같은 값을 말하는지는 테스트가 본다.
+**상한이 아니라 검토 기준이다(#134).** 넘었다는 것은 나누라는 뜻이 아니다. 연속 체류는
+길이와 무관하게 하나이고, 나누는 것은 다른 사건이 근거와 함께 묻혀 있을 때뿐이다. #119
+에서는 넘으면 나누라고 알렸고, 실제 LLM 은 경계가 없는 9.5시간 체류를 같은 문장의 조각
+다섯 개로 고르게 나눴다. 그래서 warning 은 묻힌 사건을 확인하라고만 말한다.
 
-**재기만 하고 자르거나 나누지 않는다.** 긴 event 를 어디서 끊을지는 의미 판단이라
-코드가 정할 수 없다. 분할은 Repair 가 `OVEREXTENDED_EVENT` 로 잡아
-`update_event`·`split_event` 로 처리한다.
+값은 Timeline v3 프롬프트와 `docs/ai-event-candidate.md` 가 말하는 값이다. 코드의 정본은
+`DURATION_LIMITS` 표 하나이고 **모든 eventType 을 한 줄씩 적는다.** 값을 바꿀 때는 그 줄만
+고치면 되고, 프롬프트·문서가 같은 값을 말하는지는 테스트가 본다.
+
+**재기만 하고 자르거나 나누지 않는다.** 묻힌 사건이 있는지, 있으면 어디서 끊을지는 의미
+판단이라 코드가 정할 수 없다. Repair 가 `OVEREXTENDED_EVENT` 로 잡아 판단한다.
 
 면제는 네 가지다.
 
@@ -43,20 +46,24 @@ from app.services.source_lookup import raw_id_of
 from app.services.stay_merge import mergeable_stay_groups
 from app.services.validator import parse_datetime, resolve_timezone
 
-#: eventType 별 지속시간 상한. **모든 종류를 한 줄씩 적는다.** `None` 은 재지 않는 종류다.
+#: eventType 별 지속시간 검토 기준. **모든 종류를 한 줄씩 적는다.** `None` 은 재지 않는 종류다.
 #:
 #: 예전에는 기본값 3시간을 두고 그보다 짧은 종류만 따로 적었다. 그러면 어느 종류가 몇
 #: 시간인지 보려고 두 곳을 대조해야 하고, 3시간인 종류 하나를 바꾸려면 구조부터 고쳐야
 #: 하며, 새 종류가 생겨도 말없이 3시간을 받는다. 그래서 기본값을 두지 않는다.
+#:
+#: 넘어도 나누지 않고 기준 아래여도 근거가 있으면 Repair 가 묻힌 사건을 분리하므로, 값이
+#: 정하는 것은 "코드가 이 event 를 먼저 보라고 짚어 주는가" 하나다(#134). 통상 길이를
+#: 넘는 회의·운동, 수업·만남, 그리고 하루의 절반을 넘는 근무·체류를 짚게 골랐다.
 DURATION_LIMITS: dict[EventType, timedelta | None] = {
     EventType.PHOTO_MOMENT: timedelta(hours=1),  # 순간 기록이라 더 길면 활동 event 다
-    EventType.MEETING: timedelta(hours=2),  # 더 길면 업무와 섞였을 가능성이 크다
-    EventType.EXERCISE: timedelta(hours=2),  # 운동 한 번의 일반 길이. 산책은 면제한다
-    EventType.CLASS: timedelta(hours=3),
-    EventType.WORK: timedelta(hours=3),
-    EventType.SOCIAL: timedelta(hours=3),
-    EventType.REST: timedelta(hours=3),
-    EventType.UNKNOWN: timedelta(hours=3),
+    EventType.MEETING: timedelta(hours=4),  # 더 길면 업무와 섞였을 가능성이 크다
+    EventType.EXERCISE: timedelta(hours=4),  # 운동 한 번의 일반 길이를 넘는다. 산책은 면제한다
+    EventType.CLASS: timedelta(hours=8),
+    EventType.SOCIAL: timedelta(hours=8),
+    EventType.WORK: timedelta(hours=12),
+    EventType.REST: timedelta(hours=12),
+    EventType.UNKNOWN: timedelta(hours=12),
     EventType.CALENDAR_EVENT: None,  # 시작·종료가 일정에 명시돼 있다
     EventType.MOVEMENT: None,  # 실제 이동 구간은 통째로 품는다
     EventType.SLEEP: None,  # 수면은 직접 기록된 구간이다
@@ -144,21 +151,39 @@ def verify_event_duration(
             continue
 
         findings.append(DurationFinding(event=event, limit=limit, duration=duration))
-        subject = f"{event.event_type.value} 상한" if by_type else "비캘린더 event 권장 상한"
         draft.warnings.append(
             TimelineWarning(
                 warning_id=f"{_WARNING_ID_PREFIX}{len(findings):03d}",
                 severity=TimelineWarningSeverity.LOW,
-                message=(
-                    f"'{event.title}' event 가 {_hours(duration)}시간으로 "
-                    f"{subject} {_hours(limit)}시간을 "
-                    "넘었습니다. 하나의 활동이 계속됐다는 근거가 없으면 나눠야 합니다."
-                ),
+                message=_message(event, duration, limit, by_type=by_type),
                 source_refs=list(event.source_refs),
             )
         )
 
     return findings
+
+
+def _message(
+    event: TimelineEventDraft, duration: timedelta, limit: timedelta, *, by_type: bool
+) -> str:
+    """warning 문장. v1·v2 세트는 #119 이전 문장을 그대로 받는다.
+
+    v3 문장은 나누라고 말하지 않는다(#134). 그 세트의 Repair 는 묻힌 사건이 있을 때만
+    나누고, "나눠야 합니다" 를 보면 경계 없는 체류를 고르게 쪼갰다.
+    """
+
+    if not by_type:
+        return (
+            f"'{event.title}' event 가 {_hours(duration)}시간으로 "
+            f"비캘린더 event 권장 상한 {_hours(limit)}시간을 "
+            "넘었습니다. 하나의 활동이 계속됐다는 근거가 없으면 나눠야 합니다."
+        )
+    return (
+        f"'{event.title}' event 가 {_hours(duration)}시간으로 "
+        f"{event.event_type.value} 검토 기준 {_hours(limit)}시간을 넘었습니다. "
+        "그 안에 식사·회의 같은 다른 사건이 묻혀 있는지 확인하세요. "
+        "길다는 이유만으로 나누지 않습니다."
+    )
 
 
 def _is_walk(event: TimelineEventDraft) -> bool:
