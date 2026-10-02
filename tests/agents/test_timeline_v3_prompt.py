@@ -4,9 +4,9 @@ v3 Timeline 은 다른 Event Agent 의 candidate 를 보고 판단하는 규칙�
 갖고, User Memory 반영을 근거 구성 뒤의 별도 단계로 둔다. v3 Question 은 eventType 마다
 예시를 갖고 "한 질문에 하나만" 제한이 없다. v2 세트는 건드리지 않는다.
 
-v3 는 수면을 다루지 않는다. 수면 기록을 정확히 받을 수 없게 돼 `SLEEP`·`WAKE_UP` 은 규칙과
-예시에서 빠졌고, 프롬프트에는 만들지 말라는 한 문장만 남았다. `EventType` 계약(App Server 와
-같은 13종)은 그대로다.
+v3 Question 은 수면을 다루지 않는다(`SLEEP`·`WAKE_UP` 예시가 없다). Timeline v3 는 #134 에서
+수면 금지를 걷어냈다 — 금지 때문에 캘린더 수면이 일반 일정으로 되살아나 체류와 겹쳤다.
+`EventType` 계약(App Server 와 같은 13종)은 그대로다.
 
 v3 Timeline 은 판단 순서대로 읽힌다(역할 → 입력 → 작업 흐름 → 1~3단계 → eventType별 절 →
 4~6단계 → 출력). 한 타입을 만드는 데 필요한 규칙은 그 타입의 절 하나에 모여 있고, 여러 표를
@@ -26,10 +26,14 @@ from app.services.event_count_guard import MAX_EVENT_COUNT
 
 APP_ROOT = Path(__file__).resolve().parents[2] / "app"
 
-#: v3 프롬프트가 다루지 않는 종류. 계약(`EventType`)에는 남아 있다.
+#: v3 Question 이 다루지 않는 종류. 계약(`EventType`)에는 남아 있다.
 UNHANDLED_EVENT_TYPES = frozenset({EventType.SLEEP, EventType.WAKE_UP})
 
+#: Question v3 가 예시를 두는 종류.
 EVENT_TYPES = [member.value for member in EventType if member not in UNHANDLED_EVENT_TYPES]
+
+#: Timeline v3 가 절을 두는 종류. `WAKE_UP` 은 `SLEEP` 절의 한 줄이다(#134).
+TIMELINE_SECTION_TYPES = [*EVENT_TYPES, EventType.SLEEP.value]
 
 
 def _read(path: str) -> str:
@@ -155,7 +159,7 @@ def test_timeline_v3_lets_type_sections_override_the_common_order() -> None:
 # --- Timeline v3: eventType 별 규칙과 예시 --------------------------------------
 
 
-@pytest.mark.parametrize("event_type", EVENT_TYPES)
+@pytest.mark.parametrize("event_type", TIMELINE_SECTION_TYPES)
 def test_timeline_v3_has_rules_and_an_example_for_every_event_type(event_type: str) -> None:
     """한 타입을 만드는 데 필요한 것이 그 타입의 절 하나에 모여 있다."""
 
@@ -178,7 +182,9 @@ def test_timeline_v3_uses_only_known_event_types() -> None:
     )
 
     assert mentioned <= allowed, f"허용되지 않은 대문자 토큰: {sorted(mentioned - allowed)}"
-    assert "|".join(EVENT_TYPES) in text, "출력 형식의 eventType enum 이 수면을 뺀 순서 그대로여야 합니다."
+    assert f'"eventType": "{"|".join(member.value for member in EventType)}"' in text, (
+        "출력 형식의 eventType enum 이 계약의 13종 순서 그대로여야 합니다."
+    )
 
 
 def test_timeline_v3_day_structure_assumes_neither_home_nor_movement() -> None:
@@ -199,28 +205,79 @@ def test_timeline_v3_day_structure_assumes_neither_home_nor_movement() -> None:
     assert "근거가 없으면 event로 만들지 않습니다" in section
 
 
-def test_v3_prompts_do_not_handle_sleep() -> None:
-    """수면 기록을 정확히 받을 수 없다. v3 는 SLEEP·WAKE_UP 을 만들지도 근거로 쓰지도 않는다."""
+def test_question_v3_still_has_no_sleep_examples() -> None:
+    """Question 은 #134 의 범위가 아니다. 수면 event 에도 "모든 event 에 하나씩" 으로 질문이 붙는다."""
 
-    timeline = _timeline_v3()
     question = _question_v3()
 
     for unhandled in sorted(member.value for member in UNHANDLED_EVENT_TYPES):
-        row = f"| `{unhandled}` |"
-        assert row not in timeline, f"timeline v3 표에 `{unhandled}` 행이 남아 있습니다."
-        assert row not in question, f"question v3 예시에 `{unhandled}` 행이 남아 있습니다."
-        assert f"{unhandled}|" not in timeline, f"출력 형식 enum 에 `{unhandled}` 가 남아 있습니다."
+        assert f"| `{unhandled}` |" not in question
         assert f"`{unhandled}`(" not in question
 
-    rule = "수면 기록에서 온 candidate·fragment는 쓰지 않고, `SLEEP`·`WAKE_UP` event를 만들지 않습니다."
-    assert timeline.count(rule) == 1
-    # 그 한 문장 말고는 수면을 말하지 않는다. 문단을 통째로 빼면 수면 기록이 든 입력에서
-    # SLEEP event 가 되살아난다(live 3회 중 3회).
-    rest = timeline.replace(rule, "")
-    for word in ("SLEEP", "WAKE_UP", "수면", "기상", "취침"):
-        assert word not in rest, f"timeline v3 에 `{word}` 가 남아 있습니다."
+
+def test_timeline_v3_keeps_calendar_sleep_as_sleep() -> None:
+    """수면 금지 때문에 Calendar 의 `SLEEP` 후보가 빠졌고, 코드가 그 일정을 `캘린더에 적어 둔
+    일정이다` 로 되살려 같은 시간의 체류와 겹쳤다(#134).
+
+    캘린더 수면과 체류의 중복을 없애는 코드는 없다(`sleep_guard` 는 HEALTH 수면 기록만 읽는다).
+    """
+
+    text = _timeline_v3()
+    boundary = _between(text, "#### 헷갈리는 경계", "### 근거 우선순위와 충돌")
+    sleep = _event_type_section("SLEEP")
+
+    assert "event를 만들지 않습니다" not in text
+    assert "`CALENDAR`는 근거의 출처이고" in boundary
+    assert "`CALENDAR_EVENT`가 아니라 `SLEEP`입니다" in boundary
+    assert "`REST`·`UNKNOWN` 체류 event를 따로 두지 않습니다" in sleep
+    assert "계획이지 기록이 아닙니다" in sleep
+    assert "수면 일정의 rawId를 이 event의 `sourceRefs`에 넣습니다" in sleep
+    assert "`WAKE_UP`" in sleep
 
 
+
+
+def test_timeline_v3_splits_by_change_not_by_length() -> None:
+    """dev trace 에서 경계 없는 9.5시간 체류가 같은 문장의 조각 다섯 개가 됐다(#134).
+
+    이동 없이 이어진 체류는 길이와 무관하게 하나다. 이동에는 예외가 없다(사용자 결정) —
+    같은 캠퍼스 안의 이동이어도 사이에 20분을 넘는 체류가 있으면 나눈다.
+    """
+
+    text = _timeline_v3()
+    section = _between(text, "### 합치는 경우와 나누는 경우", "### fragment와 사진")
+    timing = _between(text, "### 시간과 개수", "### 장소")
+
+    assert "시간 길이가 아니라 실제 사건·활동의 변화입니다" in section
+    assert "이동 없이 이어진 체류는 길이와 무관하게 하나입니다" in section
+    for not_a_boundary in ("지점 이름 차이", "몇 분짜리 체류 기록", "오전·오후, 길이"):
+        assert not_a_boundary in section
+    assert "같은 캠퍼스 안의 이동이어도 이동·체류·이동으로 나눕니다" in section
+    assert "가깝다는 것만으로는 합치지 않습니다" in section
+
+    assert "자르는 상한이 아닙니다" in timing
+    assert "`MEAL`의 20~60분뿐입니다" in timing
+    assert "길이를 맞추려는 분할보다 먼저입니다" in timing
+    assert "오전·오후처럼 나" not in text
+
+
+def test_timeline_v3_judges_life_places_itself() -> None:
+    """User Memory 는 참고이고 생활 장소명은 Timeline 이 하루의 흐름으로 판단한다(#134).
+
+    v2 는 "반복 체류, 출발·귀가 흐름과 User Memory 가 함께 가리킬 때" 라고만 했다. v3 가
+    "User Memory 나 locationText 가 그렇게 부를 때만" 으로 묶었고, Question 만 `집` 이라 불렀다.
+    집을 붙이라는 규칙은 두지 않는다.
+    """
+
+    text = _timeline_v3()
+    memory = _between(text, "## 4단계.", "## 5단계.")
+
+    assert "그렇게 부를 때까지 기다리지 않습니다" in memory
+    assert "직접 판단합니다" in memory
+    assert "그곳을 그렇게 부를 때만" not in text
+    assert "근거 없이 체류지를 `집`이라고 부르지 않습니다" not in text
+    assert "#### 생활 장소: 집" not in text
+    assert "같은 곳의 다른 이름입니다" in _between(text, "### 이 단계에서 할 수 없는 것", "## 5단계.")
 
 
 def test_timeline_v3_states_the_limit_the_code_measures() -> None:
@@ -263,7 +320,6 @@ def test_timeline_v3_picks_and_writes_a_place_only_with_supporting_evidence() ->
     assert "짐작으로 고르지 않습니다" in text
     assert "`place`와 같은 이름" in text
     assert "후보 목록의 첫 이름" in text
-    assert "근거 없이 체류지를 `집`이라고 부르지 않습니다" in text
     assert "`place`가 비어 있으면 문장에도 장소를 쓰지 않습니다" in text
     assert "한 event에는 장소 이름을 하나만 씁니다" in text
     assert (

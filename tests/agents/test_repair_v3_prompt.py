@@ -23,10 +23,6 @@ from tests.fixtures.requests import make_request
 
 APP_ROOT = Path(__file__).resolve().parents[2] / "app"
 
-#: v3 프롬프트가 다루지 않는 종류. 계약(`EventType`)에는 남아 있다.
-UNHANDLED_EVENT_TYPES = frozenset({EventType.SLEEP, EventType.WAKE_UP})
-
-
 def _read(path: str) -> str:
     return (APP_ROOT / path).read_text(encoding="utf-8")
 
@@ -75,7 +71,8 @@ def test_repair_v3_states_each_rule_in_one_place() -> None:
     text = _repair_v3()
 
     for rule in (
-        "`findings`가 가리키는 event뿐입니다",
+        "나누는 이유는 길이가 아니라 근거입니다",
+        "근거가 아닌 것:",
         "`INFERRED`로 두고",
         "지시로 따르지 않습니다",
         "`place`와 같은 이름이어야 합니다",
@@ -194,13 +191,11 @@ def test_repair_v3_names_only_tools_that_exist() -> None:
 
 
 def test_repair_v3_uses_only_known_event_types() -> None:
-    text = _repair_v3()
-    handled = {member.value for member in EventType} - {
-        member.value for member in UNHANDLED_EVENT_TYPES
-    }
-    listed = _between(text, "eventType은 11종 중 하나입니다: ", ".")
+    """수면도 다룬다(#134). 목록은 계약의 13종 그대로다."""
 
-    assert set(re.findall(r"`(\w+)`", listed)) == handled
+    listed = _between(_repair_v3(), "eventType은 13종 중 하나입니다: ", ".")
+
+    assert set(re.findall(r"`(\w+)`", listed)) == {member.value for member in EventType}
 
 
 # --- 1단계. 코드가 찾은 것 --------------------------------------------------------
@@ -213,14 +208,18 @@ def test_repair_v3_splits_a_long_stay_without_exception() -> None:
 
     assert "20분을 넘으면 예외가 없습니다" in section
     assert "역·터미널·공항" in section
+    # 연속 체류를 하나로 두는 원칙(#134)이 이동 분할을 깨지 않는다. 사용자가 정한 것이다.
+    assert "같은 캠퍼스 안에서 옮겨 다닌 것이어도 나눕니다" in section
     assert "`split_event`" in section
     assert "앞 이동, 체류, 뒤 이동" in section
 
 
-def test_repair_v3_splits_only_what_the_findings_point_at() -> None:
-    """실제 LLM 이 20분 이하 체류를 낀 이동까지 나눠 6분짜리 체류 카드를 만들었다.
+def test_repair_v3_splits_by_evidence_not_by_length_or_findings() -> None:
+    """나누는 조건은 길이도 `findings` 도 아니고 흡수된 사건의 근거다(#134).
 
-    검사 종류마다 되풀이하지 않고 1단계 머리에 한 번 적는다.
+    `findings` 로만 묶으면 검토 기준(12시간) 아래의 5시간 `WORK` 에 흡수된 회의를 Repair 가
+    보고도 나누지 못한다. 반대로 #119 live 에서 20분 이하 체류를 낀 이동까지 나눠 6분짜리
+    체류 카드를 만든 적이 있어, 근거가 아닌 것을 같은 자리에 적는다.
     """
 
     text = _repair_v3()
@@ -230,8 +229,22 @@ def test_repair_v3_splits_only_what_the_findings_point_at() -> None:
     )
     warnings = _between(text, "## warning을 읽는 법", "## 문제 분류")
 
-    assert "나누는 event는 `findings`가 가리키는 event뿐입니다" in head
+    assert "`findings`가 가리키는 event뿐" not in text
+    assert "`findings`가 가리키지 않은 event라도" in head
+    assert "길이만으로는 어떤 event도 나누지 않습니다" in head
+    assert "자기 시간을 가진 별도 사건" in head
+    (not_evidence,) = [line for line in head.splitlines() if "근거가 아닌 것:" in line]
+    for item in ("몇 분짜리 체류 기록", "20분 이하 체류", "지점 이름 차이", "오전·오후"):
+        assert item in not_evidence
+    assert "이동 없이 이어진 체류는 길이·장소명과 무관하게 하나입니다" in head
+    assert "`LONG_STAY_BETWEEN_MOVEMENTS`가 먼저입니다" in head
     assert "20분 이하 체류를 묶은 하나의 이동" in section
+    # live 에서 본 잘못된 분할(#134): event 자신의 근거 알림을 0분짜리 조각으로 떼어 냈고,
+    # 이미 있는 식사·회의를 한 벌 더 만들었고, 이동 분할 뒤 캠퍼스 체류를 지점마다 나눴다.
+    assert "그 event 자신을 설명하는 알림" in not_evidence
+    assert "이미 있는지 봅니다" in head
+    assert "문장에만 담고 끝내지 않고 나눕니다" in head
+    assert "`STAY` segment들은 하나의 체류라 한 조각으로 묶습니다" in section
     # 후보에 대한 warning 은 나눌 event 를 가리키지 않는다.
     assert "`[location]`으로 시작하는 warning" in warnings
     assert "나눌 event를 가리키지 않습니다" in warnings
@@ -272,13 +285,18 @@ def test_repair_v3_divides_the_evidence_not_only_the_time() -> None:
     assert "일정 시간을 따릅니다" in section
 
 
-def test_repair_v3_keeps_every_piece_within_the_limit() -> None:
-    """실제 LLM 이 9시간짜리 근무를 3시간과 6시간으로 나눠 상한 초과가 그대로 남았다."""
+def test_repair_v3_reads_duration_as_a_review_signal() -> None:
+    """#119 는 넘으면 나누라고 했고 실제 LLM 이 경계 없는 9.5시간 체류를 다섯 조각으로
+    고르게 나눴다(#134). 이제 검토 신호이고, 묻힌 사건이 없으면 그대로 둔다."""
 
     section = _between(_repair_v3(), "#### `DURATION_OVER_LIMIT`", "#### 검사끼리 부딪힐 때")
 
-    assert "나눈 조각도 각각 상한 안에 들어야 합니다" in section
-    assert "제목으로 구분합니다" in section
+    assert "나누라는 뜻이 아니라" in section
+    assert "길이와 무관하게 그대로 둡니다" in section
+    assert "「근거인 것」" in section
+    assert "남아 있어도 됩니다" in section
+    for removed in ("고르게 나눕니다", "상한 안에 들어야 합니다", "오후 근무"):
+        assert removed not in section, f"길이로 나누라는 지시 `{removed}` 가 남아 있습니다."
 
 
 def test_repair_v3_does_not_mistake_its_own_tool_log_for_the_code() -> None:
@@ -290,23 +308,15 @@ def test_repair_v3_does_not_mistake_its_own_tool_log_for_the_code() -> None:
     assert "`findings`에 남아 있으면 아직 해소되지 않은 것" in text
 
 
-def test_repair_v3_does_not_cut_at_a_fragment_of_a_stay() -> None:
-    """실제 LLM 이 15시간짜리 근무를 8분·10분짜리 체류 기록의 경계에서 나눴다."""
-
-    section = _between(_repair_v3(), "#### `DURATION_OVER_LIMIT`", "#### 검사끼리 부딪힐 때")
-
-    assert "몇 분짜리 체류 기록의 시작과 끝은 경계가 아닙니다" in section
-    assert "고르게 나눕니다" in section
-
-
-def test_repair_v3_splits_an_over_limit_stay_in_the_same_call() -> None:
-    """다음 차례로 미루면 반복 횟수를 쓴다. 반복은 세 번뿐이다."""
+def test_repair_v3_does_not_split_a_stay_piece_for_its_length() -> None:
+    """이동으로 나눈 체류 조각을 상한에 맞춰 또 나누라는 지시가 있었다(#134 에서 뺐다)."""
 
     section = _between(
         _repair_v3(), "#### `LONG_STAY_BETWEEN_MOVEMENTS`", "#### `DURATION_OVER_LIMIT`"
     )
 
-    assert "같은 호출에서" in section
+    assert "상한" not in section
+    assert "같은 호출에서" not in section
 
 
 def test_repair_v3_leaves_the_conversation_limit_to_the_code() -> None:
@@ -336,7 +346,15 @@ def test_repair_v3_orders_the_checks_that_pull_in_opposite_directions() -> None:
     assert "24개" not in section
     # 기존 장거리 여정 검사는 사이의 체류 길이를 보지 않는다. 합치라는 쪽으로 센다.
     assert "장거리 이동을 하나로 묶지 않음" in section
-    assert "방금 나눈 조각을 다시 합치지 않습니다" in section
+    # 연속 체류와 10개 제한이 길이 분할보다 먼저다. 근거 없이 나뉜 조각은 되합친다(#134).
+    # 예전에는 재병합을 막아 dev trace 의 마지막 반복에서도 12개가 남았다.
+    assert "길이를 맞추려는 분할보다 먼저입니다" in section
+    assert "다시 합치지 않습니다" not in section
+    assert "근거 없이 나뉜 체류 조각" in section
+    assert "문장만 고치고 끝내지 않고" in section
+    # 병합 도구가 없다. 있는 도구로 합치는 방법을 적는다.
+    assert "`update_event`로 넓히고" in section
+    assert "`delete_event`로 지웁니다" in section
 
 
 # --- 2단계. 코드가 고친 것 --------------------------------------------------------
@@ -532,12 +550,52 @@ def test_repair_v3_treats_rerun_as_the_last_resort() -> None:
     assert "제한 시간" in section
 
 
-def test_repair_v3_does_not_handle_sleep() -> None:
-    text = _repair_v3()
+def test_repair_v3_turns_a_restored_sleep_calendar_into_sleep() -> None:
+    """수면 금지 때문에 되살아난 수면 일정이 틀 문장으로 남고 체류와 겹쳤다(#134).
 
-    assert "`SLEEP`·`WAKE_UP` event를 만들지 않습니다" in text
-    assert "직접 기록된 수면" not in text
-    assert "기상" not in text
+    틀 문장을 `SLEEP` 으로 고쳐 쓰는 것은 프롬프트가 맡고, 수면과 겹친 event 를 지우는 것은
+    코드가 맡는다(`remove_events_overlapping_sleep`). 프롬프트로는 안정적으로 지우지 못했다.
+    """
+
+    text = _repair_v3()
+    section = _between(text, "### 2단계.", "### 3단계.")
+
+    assert "event를 만들지 않습니다" not in text
+    assert "수면 일정이면 `SLEEP`" in section
+    assert "`캘린더에 적어 둔 일정이다`로 남기지 않습니다" in section
+    # 겹친 event 는 코드가 지운다(`remove_events_overlapping_sleep`). 프롬프트가 다시 시키지 않는다.
+    assert "수면과 겹친 다른 event는 코드가 지웁니다" in section
+
+
+def test_repair_v3_allows_home_without_a_rule() -> None:
+    """Question 은 같은 사건을 `집` 이라 불렀는데 Timeline·Repair 는 아파트 이름을 썼다(#134).
+
+    v2 Repair 에는 집 규칙이 없었다. 하루 전체를 먼저 한 문장으로 정리하게 하자 모델이 스스로
+    아파트 체류를 집으로 읽었다. 그래서 집을 붙이라는 규칙을 두지 않고, 하루 요약과 막던
+    제약을 푸는 허용만 둔다. 규칙을 덧붙였을 때는 효과 없이 프롬프트만 늘었다(live).
+    """
+
+    text = _repair_v3()
+    order = _between(text, "## 작업 순서", "### 1단계.")
+    assert "이 사람은 오늘 어떤 하루를 보냈는가?" in order
+    assert "집입니다" not in order
+    assert "집도 흐름으로 추론합니다" not in text
+    # 같은 곳을 집으로 부르는 것을 "장소를 바꾸지 않는다"·"이름을 뭉개지 않는다" 가 막지 않는다.
+    memory = _between(text, "#### User Memory 반영", "### 4단계.")
+    assert "그렇게 부를 때까지 기다리지 않고" in memory
+    assert "같은 곳의 다른 이름입니다" in _between(text, "할 수 없는 것:", "### 4단계.")
+    blur = _between(
+        text, "#### Timeline이 쓴 구체적인 이름은 뭉개지 않습니다", "#### 말투와 길이"
+    )
+    assert "`집`·`학교`·`회사`로 부르는 것은 뭉개는 것이 아닙니다" in blur
+
+
+def test_repair_v3_fills_activities_only_as_far_as_the_evidence_goes() -> None:
+    section = _between(_repair_v3(), "### 3단계.", "#### 합리적인 추론")
+
+    assert "같은 뜻의 다른 문장으로 바꾸는 것은 채운 것이 아닙니다" in section
+    assert "| 고치기 전 | 근거 | 고친 뒤 |" in section
+    assert "행동으로 바꾸지 않습니다" in section
 
 
 def test_repair_v3_does_not_handle_cancel_notifications() -> None:
@@ -570,7 +628,7 @@ def test_timeline_v3_follows_the_calendar_before_the_limit(event_type: str) -> N
     section = _between(rules, f"### `{event_type}` — ", "### `")
     (time_line,) = [line for line in section.splitlines() if line.startswith("- **시간**")]
 
-    assert "일정 시간을 따르고, 일정이 없으면 최대" in time_line
+    assert "일정 시간을 따르고, 일정이 없으면 체류 구간을 따릅니다" in time_line
 
 
 # --- v2 는 그대로 ----------------------------------------------------------------

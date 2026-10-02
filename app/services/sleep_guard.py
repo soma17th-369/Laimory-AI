@@ -28,6 +28,7 @@ from datetime import datetime, timedelta, tzinfo
 
 from app.core.logging import get_logger
 from app.schemas import (
+    EventSourceType,
     EventType,
     HealthMetric,
     TimelineDraft,
@@ -197,3 +198,72 @@ def enforce_sleep_boundary(draft: TimelineDraft, request: TimelineDraftRequest) 
         len(removed),
         len(clamped),
     )
+
+
+#: 지우는 event 에서 수면 event 로 옮겨 담는 근거. 사진은 사용자가 고른 입력이라 사라지면 안
+#: 되고, 캘린더는 어느 event 도 참조하지 않으면 다음 확정에서 `calendar_guard` 가 되살린다 —
+#: 되살린 event 가 수면과 겹쳐 또 지워지기를 되풀이하다 마지막 확정에서 일정이 빠진다.
+_KEPT_SOURCE_TYPES = frozenset({EventSourceType.PHOTO, EventSourceType.CALENDAR})
+
+
+def remove_events_overlapping_sleep(
+    draft: TimelineDraft, request: TimelineDraftRequest
+) -> None:
+    """`SLEEP` event 와 시간이 겹치는 다른 event 를 모두 지운다(in-place, #134).
+
+    `enforce_sleep_boundary` 는 HEALTH 수면 기록만 읽는다. 캘린더 수면으로 만든 `SLEEP` 은
+    그 경계 밖이라, 밤사이 체류가 수면보다 길면 Timeline 이 체류 전체를 `REST` 로 남기고
+    그 안에 `SLEEP` 을 얹었다. 프롬프트로는 안정적으로 막지 못했다(live).
+
+    **자르지 않고 지운다.** 수면과 조금이라도 겹치면 그 event 는 수면이 설명하는 시간의
+    일부로 보고 통째로 없앤다. 수면 기록 자체가 실제로 들어올 일이 드물어 이 단순한 쪽을
+    골랐다. `SLEEP` 끼리, 그리고 수면이 끝난 순간인 `WAKE_UP` 은 지우지 않는다. 지운
+    event 의 사진·캘린더 근거는 겹친 수면 event 로 옮긴다.
+    """
+
+    sleeps = [event for event in draft.events if event.event_type is EventType.SLEEP]
+    if not sleeps:
+        return
+
+    kept = []
+    removed: list[str] = []
+    for event in draft.events:
+        if event.event_type in (EventType.SLEEP, EventType.WAKE_UP):
+            kept.append(event)
+            continue
+        host = next(
+            (
+                sleep
+                for sleep in sleeps
+                if event.start_time < sleep.end_time and sleep.start_time < event.end_time
+            ),
+            None,
+        )
+        if host is None:
+            kept.append(event)
+            continue
+        held = {(ref.source_type, ref.raw_id) for ref in host.source_refs}
+        host.source_refs.extend(
+            ref
+            for ref in event.source_refs
+            if ref.source_type in _KEPT_SOURCE_TYPES
+            and (ref.source_type, ref.raw_id) not in held
+        )
+        removed.append(event.title)
+
+    if not removed:
+        return
+
+    draft.events = kept
+    renumber_events(draft)
+    draft.warnings.append(
+        TimelineWarning(
+            warning_id=f"warning-sleep-overlap-{len(draft.warnings) + 1:03d}",
+            severity=TimelineWarningSeverity.LOW,
+            message=(
+                f"수면과 시간이 겹치는 event {len(removed)}건을 지웠습니다: "
+                f"{_examples(removed)}"
+            ),
+        )
+    )
+    logger.debug("수면과 겹친 event 제거: %d건", len(removed))

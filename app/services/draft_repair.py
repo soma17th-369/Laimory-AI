@@ -91,7 +91,10 @@ from app.services.narrative_guard import verify_narrative_length
 from app.services.notification_guard import verify_notification_draft
 from app.services.photo_guard import enforce_photo_assignment, verify_photo_assignment
 from app.services.place_resolver import resolve_places
-from app.services.sleep_guard import enforce_sleep_boundary
+from app.services.sleep_guard import (
+    enforce_sleep_boundary,
+    remove_events_overlapping_sleep,
+)
 from app.services.source_lookup import normalize_source_types, raw_id_of
 from app.services.source_integrity import filter_draft_sources
 from app.services.stay_merge import mergeable_stay_groups
@@ -586,9 +589,16 @@ _CORRECTION_STEPS: tuple[
 #:
 #: 대화 event 하루 3개는 Notification v3 가 정한 규칙이다(#116). 그 지시를 받은 적 없는
 #: 세트가 만든 event 를 같은 규칙으로 지우면 운영 결과가 달라진다.
+#:
+#: 수면과 겹친 event 제거(#134)도 v3 가 수면 event 를 다루기 시작하면서 생긴 규칙이다.
+#: v1·v2 는 수면을 그 세트대로 다루므로 건드리지 않는다. 사진 단일 귀속 뒤에 돌지만,
+#: 지우는 event 의 사진·캘린더 근거는 수면 event 로 옮기므로 사진이 빠지지 않는다.
 _EXTENDED_CORRECTION_STEPS: tuple[
     tuple[str, Callable[[TimelineDraft, TimelineDraftRequest], object]], ...
-] = (("대화 개수 제한", enforce_conversation_limit),)
+] = (
+    ("수면과 겹친 event 제거", remove_events_overlapping_sleep),
+    ("대화 개수 제한", enforce_conversation_limit),
+)
 
 
 def _inspect(

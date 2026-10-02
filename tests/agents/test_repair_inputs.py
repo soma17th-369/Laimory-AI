@@ -220,10 +220,9 @@ def test_findings_are_recomputed_on_every_iteration():
 
     first, second = (_report(call.prompt) for call in llm.calls)
     assert [item["kind"] for item in first["findings"]] == ["LONG_STAY_BETWEEN_MOVEMENTS"]
-    # 나눈 체류 조각은 9시간짜리 근무다. 이번에는 그것이 상한을 넘겼다고 알린다.
-    assert [(item["kind"], item["title"]) for item in second["findings"]] == [
-        ("DURATION_OVER_LIMIT", "회사에서 근무")
-    ]
+    # 나눈 체류 조각은 9시간짜리 근무다. 이동이라는 경계로 나눈 뒤라 찾은 것이 없고, 9시간은
+    # `WORK` 의 검토 기준 아래라 길이도 짚지 않는다(#134).
+    assert "findings" not in second
     assert [event.title for event in result.events] == [
         "회사로 출근",
         "회사에서 근무",
