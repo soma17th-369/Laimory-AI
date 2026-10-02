@@ -616,6 +616,16 @@ app/
 #   기록이 든 입력에서 SLEEP event 가 되살아난다. **프롬프트만 그렇다** — `EventType` 13종
 #   계약, SleepActivity Agent, sleep_guard 는 그대로라 수면 기록이 입력에 들어오면 코드는
 #   여전히 그 경계를 강제한다.
+# Notification v3(#135): **알림이 무엇인지를 앱이 아니라 내용으로 가린다.** 대화·결제·예약은
+#   정책의 `provides` 가 말하는 "자주 오는 정보"이지 배제 목록이 아니다 — 채용 결과·합격 통보·
+#   과제·신청 완료처럼 셋에 들지 않는 개인 소식도 하루의 사건이고, 문자·카카오톡으로 왔다고
+#   대화가 아니다. 셋으로 한정했을 때 채용 결과 문자는 5회 모두 fragment 가 됐다.
+#   **문자·메신저·사전에 없는 앱의 알림은 사용자가 직접 눌러야 수집된다**(누르지 않아도 되는
+#   것은 결제·예약 앱뿐). 문자는 `notifications` 에 실리므로 수집 맥락은 목록이 아니라 앱
+#   종류로 말한다. 누른 알림은 "확인했다" 까지 쓰고, 답장·신청·결과는 본문이 말할 때만 쓴다.
+#   대화 3개 한도는 대화에만 적용하고, 소식 candidate 는 `SOCIAL`·`WORK` 를 쓰지 않는다
+#   (`conversation_guard` 가 메신저 근거의 그 타입을 대화로 센다). 60분 이상 벌어진 소식을
+#   묶으면 긴 구간 대신 가장 중요한 알림의 시각 한 점을 쓴다. payload·정책 사전은 그대로다.
 # User Memory 계약(#65): 입력 조회 응답의 선택 필드 `userMemory` 는 사용자 압축 프로필
 #   v1.0 이다. 전달 경로는 입력 조회 → CollectedSnapshot → normalize → TimelineDraftRequest
 #   → user_memory_to_text 하나뿐이고, **Timeline·Question·Repair Agent 가 같은 문자열을
