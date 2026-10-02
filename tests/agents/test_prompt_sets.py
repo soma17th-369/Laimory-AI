@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from app.agents.events.notification.agent import build_notification_payload
+from app.agents.events.notification.app_dictionary import load_app_dictionary
 from app.schemas import AiEventCandidate, NotificationItem
 from app.services.location_metrics import MovementMetric, MovementMode
 from tests.fixtures.requests import fixture_raw_id
@@ -368,15 +369,62 @@ def test_v3_location_names_every_movement_metric_key() -> None:
         assert f"`{key}`" in text, f"location v3 에 derivedMetrics 키 `{key}` 설명이 없습니다."
 
 
-# --- v3 Notification 대화·결제·예약 (#116) ---------------------------------
+# --- v3 Notification 내용 기반 해석 (#116, #135) ----------------------------
 
 
-def test_v3_notification_fixes_information_to_three_kinds() -> None:
+def test_v3_notification_does_not_limit_information_to_three_kinds() -> None:
+    """대화·결제·예약은 자주 오는 정보일 뿐 배제 목록이 아니다 (#135).
+
+    "세 가지뿐", "셋 중 어느 것도 아니면 하루 사건이 아니다" 가 있을 때 채용 결과 문자는
+    5회 모두 fragment 가 됐다. 세 종류는 정책의 `provides` 값을 설명하는 데만 남는다.
+    """
+
     text = _event_prompt("notification")
 
-    assert "**대화·결제·예약**" in text
+    for removed in ("세 가지뿐", "셋 중 어느 것도", "하루 사건이 아닙니다"):
+        assert removed not in text, f"notification v3 에 배제 규칙 `{removed}` 가 남아 있습니다."
+    assert "그 밖의 내용도 하루의 일이 될 수 있습니다" in text
     for kind in ("`CONVERSATION`", "`PAYMENT`", "`RESERVATION`"):
         assert kind in text, f"notification v3 에 {kind} 설명이 없습니다."
+
+
+def test_v3_notification_reads_content_before_app() -> None:
+    """메신저·문자로 왔다고 대화가 아니다. 내용이 무엇인지를 앱보다 먼저 본다 (#135)."""
+
+    text = _event_prompt("notification")
+
+    assert "문자·메신저로 왔다고 대화가 아닙니다" in text
+    assert "그것을 받고 확인한 것 자체가 하루의 일입니다" in text, (
+        "개인에게 온 소식은 답장·결제가 없어도 사건이 될 수 있다고 적어야 합니다."
+    )
+    assert "알림에 없는 결과(합격·불합격)" in text, "알림에 없는 결과를 만들지 않는다고 적어야 합니다."
+
+
+def test_v3_notification_states_which_apps_are_tapped() -> None:
+    """수집 맥락은 목록이 아니라 앱 종류로 갈린다 (#135).
+
+    문자는 결제·예약 앱과 같은 `notifications` 에 실리지만 사용자가 직접 눌러야 수집된다.
+    목록 단위로 말하면 문자를 "받기만 한 알림" 으로 읽는다. 프롬프트가 가리키는 정책 id 가
+    사전에 실제로 있어야 한다.
+    """
+
+    text = _event_prompt("notification")
+
+    assert "**사용자가 직접 눌러야**" in text
+    assert "문자(`SMS` 정책)" in text
+    assert "SMS" in {policy.policy_id for policy in load_app_dictionary().policies}
+    assert "누르지 않아도 수집됩니다" in text
+
+
+def test_v3_notification_conversation_limit_does_not_count_news() -> None:
+    """대화 3개 한도가 메신저로 온 소식·예약·결제를 밀어내지 않는다 (#135)."""
+
+    text = _event_prompt("notification")
+
+    assert "3개는 대화에만 적용합니다" in text
+    assert "`SOCIAL`·`WORK`는 대화로 만든 candidate에만 씁니다" in text, (
+        "소식 candidate 가 SOCIAL·WORK 가 되면 확정 pass 가 대화 event 로 센다."
+    )
 
 
 def test_v3_notification_drops_code_made_guidance() -> None:
@@ -443,13 +491,13 @@ def test_v3_notification_links_policy_ids_to_policies() -> None:
     assert "앱 이름만으로 정하지 않습니다" in text
 
 
-def test_v3_notification_reads_payment_and_reservation_in_conversations() -> None:
-    """카카오톡은 내용에 따라 결제·예약도 된다. 대화 묶음을 대화로만 읽으면 알림톡을 놓친다."""
+def test_v3_notification_reads_payment_and_reservation_in_any_app() -> None:
+    """카카오톡·문자는 내용에 따라 결제·예약도 된다. 대화 묶음을 대화로만 읽으면 알림톡을 놓친다."""
 
     text = _event_prompt("notification")
 
-    assert "`conversations`의 메시지도 결제 근거가 됩니다" in text
-    assert "`conversations`의 메시지도 예약 근거가 됩니다" in text
+    assert "결제·예약 안내는 어느 앱으로 오든 내용으로 읽습니다" in text
+    assert "묶음의 내용이 대화가 아니면" in text
     assert "대화 상대 단위" in text, "묶음 단위가 방이 아니라 대화 상대라고 적어야 합니다."
 
 
