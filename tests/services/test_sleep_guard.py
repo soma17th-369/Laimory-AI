@@ -221,3 +221,120 @@ def test_removing_an_event_renumbers_the_remaining_ids():
     enforce_sleep_boundary(draft, _request())
 
     assert [event.client_event_id for event in draft.events] == ["event-001"]
+
+
+# --- 수면과 겹친 event 제거 (#134) ----------------------------------------------
+#
+# 캘린더 수면으로 만든 `SLEEP` 은 `enforce_sleep_boundary`(HEALTH 만 읽는다)의 경계 밖이다.
+# 밤사이 체류가 수면보다 길면 Timeline 이 체류 전체를 `REST` 로 남기고 그 안에 `SLEEP` 을
+# 얹었고, 프롬프트로는 안정적으로 막지 못했다. 겹치면 자르지 않고 통째로 지운다.
+
+from app.services.draft_repair import repair_draft  # noqa: E402
+from app.services.sleep_guard import remove_events_overlapping_sleep  # noqa: E402
+from tests.fixtures.requests import calendar_item, stay_item  # noqa: E402
+
+CALENDAR_SLEEP_REF = (EventSourceType.CALENDAR, "calendar-sleep")
+PHOTO_REF = (EventSourceType.PHOTO, "photo-1")
+OTHER_CALENDAR_REF = (EventSourceType.CALENDAR, "calendar-alarm")
+
+
+def _sleep(start="00:30", end="08:30"):
+    return _event("event-sleep", start, end, CALENDAR_SLEEP_REF, event_type=EventType.SLEEP)
+
+
+def test_events_overlapping_sleep_are_removed_whole():
+    """수면보다 긴 밤사이 체류도 자르지 않고 통째로 지운다."""
+
+    stay = _event("event-stay", "00:00", "09:30", title="밤사이 체류")
+    morning = _event("event-move", "09:30", "10:10", event_type=EventType.MOVEMENT)
+    draft = _draft(stay, _sleep(), morning)
+
+    remove_events_overlapping_sleep(draft, make_request())
+
+    assert [e.event_type for e in draft.events] == [EventType.SLEEP, EventType.MOVEMENT]
+    assert draft.events[1].start_time == morning.start_time  # 겹치지 않은 event 는 그대로
+    (warning,) = draft.warnings
+    assert warning.severity is TimelineWarningSeverity.LOW
+    assert "밤사이 체류" in warning.message
+
+
+def test_partial_overlap_is_removed_too():
+    """경계에 걸치기만 해도 지운다. 애매하게 남기지 않는다."""
+
+    draft = _draft(_sleep(), _event("event-late", "08:00", "11:00"))
+
+    remove_events_overlapping_sleep(draft, make_request())
+
+    assert [e.event_type for e in draft.events] == [EventType.SLEEP]
+
+
+def test_events_touching_sleep_boundaries_stay():
+    """끝나는 순간에 시작하거나 시작하는 순간에 끝나는 event 는 겹치지 않는다."""
+
+    before = _event("event-before", "00:00", "00:30")
+    after = _event("event-after", "08:30", "09:30")
+    draft = _draft(before, _sleep(), after)
+
+    remove_events_overlapping_sleep(draft, make_request())
+
+    assert len(draft.events) == 3
+    assert draft.warnings == []
+
+
+def test_wake_up_and_other_sleeps_are_kept():
+    wake = _event("event-wake", "08:30", "08:30", event_type=EventType.WAKE_UP)
+    nap_record = _event("event-sleep-2", "01:00", "07:00", SLEEP_REF, event_type=EventType.SLEEP)
+    draft = _draft(_sleep(), nap_record, wake)
+
+    remove_events_overlapping_sleep(draft, make_request())
+
+    assert len(draft.events) == 3
+
+
+def test_photo_and_calendar_of_removed_event_move_to_the_sleep():
+    """사진은 사라지면 안 되고, 캘린더는 참조가 없으면 다음 확정에서 되살아나 또 지워진다."""
+
+    stay = _event("event-stay", "00:00", "09:30", STAY_REF, PHOTO_REF, OTHER_CALENDAR_REF)
+    draft = _draft(stay, _sleep())
+
+    remove_events_overlapping_sleep(draft, make_request())
+
+    (sleep,) = draft.events
+    kept = {(ref.source_type, ref.raw_id) for ref in sleep.source_refs}
+    assert (EventSourceType.PHOTO, fixture_raw_id("photo-1")) in kept
+    assert (EventSourceType.CALENDAR, fixture_raw_id("calendar-alarm")) in kept
+    assert (EventSourceType.STAY, fixture_raw_id("stay-1")) not in kept
+
+
+def test_nothing_happens_without_a_sleep_event():
+    draft = _draft(_event("event-stay", "00:00", "09:30"))
+
+    remove_events_overlapping_sleep(draft, make_request())
+
+    assert len(draft.events) == 1
+    assert draft.warnings == []
+
+
+def _calendar_sleep_day():
+    request = make_request(
+        stays=[
+            stay_item(1, start=f"{DAY}T00:00:00", end=f"{DAY}T09:30:00", raw_id="stay-1", place="한빛아파트"),
+        ],
+        calendars=[
+            calendar_item(1, "수면", start=f"{DAY}T00:30:00", end=f"{DAY}T08:30:00", raw_id="calendar-sleep"),
+        ],
+    )
+    draft = _draft(_event("event-stay", "00:00", "09:30", title="밤사이 체류"), _sleep())
+    return request, draft
+
+
+def test_confirm_pass_removes_the_overlap_in_v3_sets_only():
+    """v3 가 정한 규칙이라 v1·v2(운영) 세트의 확정에서는 돌지 않는다."""
+
+    request, draft = _calendar_sleep_day()
+    repair_draft(draft, request, extended=True)
+    assert [e.event_type for e in draft.events] == [EventType.SLEEP]
+
+    request, legacy = _calendar_sleep_day()
+    repair_draft(legacy, request, extended=False)
+    assert EventType.REST in [e.event_type for e in legacy.events]
