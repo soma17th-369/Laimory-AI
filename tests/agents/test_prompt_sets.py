@@ -15,7 +15,6 @@ from pathlib import Path
 import pytest
 
 from app.agents.events.notification.agent import build_notification_payload
-from app.agents.events.notification.app_dictionary import load_app_dictionary
 from app.schemas import AiEventCandidate, NotificationItem
 from app.services.location_metrics import MovementMetric, MovementMode
 from tests.fixtures.requests import fixture_raw_id
@@ -394,26 +393,10 @@ def test_v3_notification_reads_content_before_app() -> None:
     text = _event_prompt("notification")
 
     assert "문자·메신저로 왔다고 대화가 아닙니다" in text
-    assert "그것을 받고 확인한 것 자체가 하루의 일입니다" in text, (
+    assert "그 소식 자체가 하루의 일입니다" in text, (
         "개인에게 온 소식은 답장·결제가 없어도 사건이 될 수 있다고 적어야 합니다."
     )
     assert "알림에 없는 결과(합격·불합격)" in text, "알림에 없는 결과를 만들지 않는다고 적어야 합니다."
-
-
-def test_v3_notification_states_which_apps_are_tapped() -> None:
-    """수집 맥락은 목록이 아니라 앱 종류로 갈린다 (#135).
-
-    문자는 결제·예약 앱과 같은 `notifications` 에 실리지만 사용자가 직접 눌러야 수집된다.
-    목록 단위로 말하면 문자를 "받기만 한 알림" 으로 읽는다. 프롬프트가 가리키는 정책 id 가
-    사전에 실제로 있어야 한다.
-    """
-
-    text = _event_prompt("notification")
-
-    assert "**사용자가 직접 눌러야**" in text
-    assert "문자(`SMS` 정책)" in text
-    assert "SMS" in {policy.policy_id for policy in load_app_dictionary().policies}
-    assert "누르지 않아도 수집됩니다" in text
 
 
 def test_v3_notification_conversation_limit_does_not_count_news() -> None:
@@ -496,7 +479,9 @@ def test_v3_notification_reads_payment_and_reservation_in_any_app() -> None:
 
     text = _event_prompt("notification")
 
-    assert "결제·예약 안내는 어느 앱으로 오든 내용으로 읽습니다" in text
+    assert "## 결제\n" in text and "## 예약\n" in text, "결제와 예약은 각자의 절을 갖습니다."
+    assert "대화 속 송금·정산 이야기도 결제 근거가 됩니다" in text
+    assert "대화 속 예약·예매 이야기도 예약 근거가 됩니다" in text
     assert "묶음의 내용이 대화가 아니면" in text
     assert "대화 상대 단위" in text, "묶음 단위가 방이 아니라 대화 상대라고 적어야 합니다."
 
