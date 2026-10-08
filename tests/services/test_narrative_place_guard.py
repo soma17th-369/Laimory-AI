@@ -1,6 +1,6 @@
 """사용자 문장의 주소 원문·체류·시각 정리 (#138).
 
-입력 주소 원문은 바꿀 값(장소명, 시·군·구)이 규칙으로 정해져 코드가 바꾼다. `체류` 제목과
+입력 주소 원문은 바꿀 값(장소명, 동·도로명)이 규칙으로 정해져 코드가 바꾼다. `체류` 제목과
 제목의 시각은 무엇으로 바꿀지가 의미 판단이라 찾아서 Repair 에 넘긴다.
 """
 
@@ -82,7 +82,7 @@ def test_without_a_place_the_address_becomes_its_district() -> None:
 
     replace_input_addresses(draft, _request())
 
-    assert draft.events[0].title == "예시구에서 보낸 시간"
+    assert draft.events[0].title == "예시로에서 보낸 시간"
 
 
 def test_an_approximate_input_address_is_found_without_its_suffix() -> None:
@@ -90,7 +90,7 @@ def test_an_approximate_input_address_is_found_without_its_suffix() -> None:
 
     replace_input_addresses(draft, _request(address=f"{ADDRESS} 인근"))
 
-    assert draft.events[0].title == "예시구에서 보낸 시간"
+    assert draft.events[0].title == "예시로에서 보낸 시간"
 
 
 def test_the_road_part_of_an_input_address_is_replaced_too() -> None:
@@ -100,7 +100,39 @@ def test_the_road_part_of_an_input_address_is_replaced_too() -> None:
 
     replace_input_addresses(draft, _request())
 
-    assert draft.events[0].title == "예시구에서 보낸 밤"
+    assert draft.events[0].title == "예시로에서 보낸 밤"
+
+
+@pytest.mark.parametrize(
+    ("address", "expected"),
+    [
+        ("서울특별시 관악구 지범로 12-3", "지범로에서 보낸 시간"),
+        ("경기도 오산시 운암동 123", "운암동에서 보낸 시간"),
+        ("서울특별시 예시구 중앙로12번길 34", "중앙로12번길에서 보낸 시간"),
+        # 아파트의 `101동` 은 건물이다. 동네 이름으로 쓰지 않는다.
+        ("경기도 오산시 운암동 한빛아파트 101동 1203호", "운암동에서 보낸 시간"),
+    ],
+)
+def test_without_a_place_the_address_goes_down_to_the_dong_or_road(
+    address: str, expected: str
+) -> None:
+    """시·군·구는 너무 넓다. 동이나 도로명까지 내려가고 건물번호·지번은 뺀다(사용자 결정)."""
+
+    draft = _draft(_event(f"{address}에서 보낸 시간"))
+
+    replace_input_addresses(draft, _request(address=address))
+
+    assert draft.events[0].title == expected
+
+
+def test_an_address_without_a_dong_or_road_is_left_for_repair() -> None:
+    """시·군·구로 올라가지 않는다. 바꿀 이름이 없으면 그대로 두고 문장 검사가 짚는다."""
+
+    draft = _draft(_event("서울특별시 예시구 123에서 보낸 시간"))
+
+    replace_input_addresses(draft, _request(address="서울특별시 예시구 123"))
+
+    assert draft.events[0].title == "서울특별시 예시구 123에서 보낸 시간"
 
 
 def test_numbers_in_a_place_name_are_kept() -> None:

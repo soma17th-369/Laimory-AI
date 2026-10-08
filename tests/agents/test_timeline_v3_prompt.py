@@ -479,6 +479,7 @@ def test_timeline_v3_keeps_stay_words_times_and_addresses_out_of_titles() -> Non
     assert "`자정 전`" in section
     assert "`집에서 보낸 밤`" in section
     assert "하루 중 때를 가리키는 말은 쓸 수 있습니다" in section
-    assert "`예시구에서 보낸 시간`" in section
+    assert "`예시로에서 보낸 시간`" in section
+    assert "구·시처럼 넓은 지역명으로 올라가지 않습니다" in section
     assert "장소명에 들어 있는 숫자(`2호선`)는 그대로 둡니다" in section
     assert text.count("`집에서 보낸 밤`") == 1

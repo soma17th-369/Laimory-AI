@@ -8,7 +8,8 @@
 Repair 에 넘긴다.**
 
     - 입력 주소 원문: event 가 근거로 댄 입력의 주소와 글자 그대로 같은 부분만 `place`
-      로, `place` 가 없으면 그 주소의 시·군·구 이름으로 바꾼다. 입력 주소와 일치하는
+      로, `place` 가 없으면 그 주소의 동·도로명(`지범로`, `운암동`)으로 바꾼다. 시·군·구는
+      너무 넓어 어디였는지 알아볼 수 없다(사용자 결정). 입력 주소와 일치하는
       부분만 바꾸므로 장소명 안의 숫자(`2호선`, `63빌딩`)는 남는다.
     - `체류` 제목, 제목의 시각, 입력에 없는 주소 모양 문자열: 무엇으로 바꿀지(활동인지
       `~에서 보낸 시간` 인지)가 의미 판단이다. 찾아서 `findings` 로 남긴다. 주소 모양은
@@ -35,8 +36,9 @@ _APPROXIMATE_SUFFIX = re.compile(r"\s*(인근|부근|근처|주변|일대)\s*$")
 #: 주소로 보기에는 너무 짧은 문자열. 이보다 짧으면 바꾸지 않는다(`서울` 같은 지역명).
 _MIN_ADDRESS_LENGTH = 5
 
-#: 주소의 시·군·구 토큰.
-_DISTRICT = re.compile(r"^[가-힣]+(구|군|시)$")
+#: 주소의 동·도로명 토큰. 지범로, 중앙로12번길, 운암동, 오산리, 종로3가.
+#: 숫자로 시작하는 것(101동)은 건물의 동이라 뺀다.
+_LOCAL_AREA = re.compile(r"^[가-힣][가-힣0-9]*(로|길|동|리|가)$")
 
 #: 제목에 쓰지 않는 체류 표현(`장기 체류`·`재체류` 포함).
 _STAY_WORD = re.compile(r"체류")
@@ -62,7 +64,7 @@ def _variants(address: str) -> Iterator[str]:
     """입력 주소와, 문장에 옮겨 적힐 수 있는 그 뒷부분.
 
     모델은 주소를 통째로 옮기기도 하고 앞의 시·도를 떼고 `예시로 123-4` 만 옮기기도 한다.
-    뒷부분은 번호가 든 것만 낸다 — `예시구` 같은 지역명은 주소가 아니라 쓸 수 있는 말이다.
+    뒷부분은 번호가 든 것만 낸다 — `예시로` 같은 동·도로명만으로는 주소가 아니라 쓸 수 있는 말이다.
     """
 
     stripped = address.strip()
@@ -116,10 +118,14 @@ def _input_addresses(request: TimelineDraftRequest) -> dict[str, list[tuple[str,
     return addresses
 
 
-def _district(address: str) -> str | None:
-    """주소의 가장 좁은 시·군·구. `서울특별시 예시구 예시로 123` → `예시구`."""
+def _local_area(address: str) -> str | None:
+    """주소의 가장 좁은 동·도로명. `서울특별시 예시구 예시로 123` → `예시로`.
 
-    tokens = [token for token in address.split() if _DISTRICT.match(token)]
+    건물번호·지번은 뺀다. 동·도로명이 없는 주소는 바꿀 이름이 없다 — 시·군·구로 올라가지
+    않고, 문장 검사가 짚어 Repair 가 고친다.
+    """
+
+    tokens = [token for token in address.split() if _LOCAL_AREA.match(token)]
     return tokens[-1] if tokens else None
 
 
@@ -132,11 +138,11 @@ def _replacement(event: TimelineEventDraft, address: str) -> str | None:
     if place and not is_vague_place_label(place) and place not in address:
         if not _looks_like_address(place):
             return place
-    return _district(address)
+    return _local_area(address)
 
 
 def replace_input_addresses(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
-    """제목·본문의 입력 주소 원문을 장소명이나 시·군·구로 바꾼다(in-place)."""
+    """제목·본문의 입력 주소 원문을 장소명이나 동·도로명으로 바꾼다(in-place)."""
 
     addresses = _input_addresses(request)
     if not addresses:
