@@ -77,7 +77,7 @@ candidate의 `confidence`는 Sleep/Activity source 범위에서 수면·기상 �
 - `INFERRED`: 기록의 맥락으로 하루 리듬을 구체화함
 - `UNCERTAIN`: 종료 의미, 중복, 결측 또는 수치 충돌로 근거가 제한됨
 
-기록이 직접 제공하는 사실과 해석한 수면·기상 의미의 차이는 `description`과 `uncertainty`에 구분해 반영합니다.
+기록이 직접 제공하는 사실과 해석한 수면·기상 의미는 `description`에, 그 해석의 한계는 `uncertainty`에 둡니다. 확정하지 못한 것을 `description`에 쓰지 않습니다.
 
 
 ## 출력 형식
