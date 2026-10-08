@@ -725,6 +725,12 @@ def event_evidence_text(ctx: RepairContext) -> str:
 
             candidate_id = f"candidate-{len(candidates) + 1:03d}"
             detail = {**summary, "description": candidate.description}
+            # 장소 후보(#140). event 의 `place` 는 이 목록에서 고른 것이라, 다른 후보로 바꿀지
+            # 판단하려면 목록을 봐야 한다. `[근거 원본]` 은 단수 `place` 만 보인다.
+            if candidate.places:
+                detail["places"] = list(candidate.places)
+            if candidate.address:
+                detail["address"] = candidate.address
             if candidate.uncertainty:
                 detail["uncertainty"] = list(candidate.uncertainty)
             candidates[candidate_id] = detail

@@ -46,7 +46,7 @@ Timeline Agent는 의미 병합과 tolerant parse를 맡는다. LLM 출력 계�
 
 LLM이 준 `userId`, date, timezone, `clientEventId`는 신뢰하지 않는다. date/timezone은 request 기준으로, event ID는 parse 순서로 임시 부여한다.
 
-v3 Timeline 프롬프트는 판단 순서대로 읽힌다. 작업을 하루 구조 → 근거로 event 구성 → eventType·시간·장소 결정 → User Memory 반영 → 문장 → 최종 검증의 여섯 단계로 나누고, 3단계까지는 User Memory를 쓰지 않는다. 2·3단계의 공통 규칙은 기본값이고 타입별 절이 다르게 적으면 그 타입에서는 그 절이 이긴다. eventType마다 다른 Event Agent의 candidate에서 무엇을 보고 어떻게 합치는지(합치는 근거·보태는 근거·시간과 지속시간·장소·User Memory 구체화 범위·근거가 약할 때)와 candidate → event 예시는 그 타입의 절 하나에 모여 있다. `REST`는 쉬었다는 근거가 있을 때만 쓰고 근거 없는 체류는 `UNKNOWN`이다. 취소·변경 알림은 다루지 않는다. Event Agent가 이미 하는 판단(이동수단 라벨·경유지·예약 날짜·알림 가치·수면 유효성)은 Timeline에서 지웠다. v2는 그대로다. 타입 절의 시간은 "검토 기준 N시간"이고 자르는 상한이 아니다(#134). v3 Timeline은 #134에서 수면 금지를 걷어내고 `SLEEP` 절을 두었다 — 금지 때문에 Calendar의 수면 후보가 빠지고 코드가 그 일정을 일반 일정으로 되살려 같은 시간의 체류와 겹쳤다. 캘린더 수면은 계획이라 `INFERRED`로 두고 그 구간의 체류는 수면 event에 합친다. `WAKE_UP`은 그 절의 한 줄이다. v3 Question은 여전히 수면 예시가 없다.
+v3 Timeline 프롬프트는 판단 순서대로 읽힌다. 작업을 하루 구조 → 근거로 event 구성 → eventType·시간·장소 결정 → User Memory 반영 → 문장 → 최종 검증의 여섯 단계로 나누고, 3단계까지는 User Memory를 쓰지 않는다. 2·3단계의 공통 규칙은 기본값이고 타입별 절이 다르게 적으면 그 타입에서는 그 절이 이긴다. eventType마다 다른 Event Agent의 candidate에서 무엇을 보고 어떻게 합치는지(합치는 근거·보태는 근거·시간과 지속시간·장소·User Memory 구체화 범위·근거가 약할 때)와 candidate → event 예시는 그 타입의 절 하나에 모여 있다. 활동 근거 없이 체류만 있으면 고른 `place`의 성격으로 그곳에서 흔히 하는 일상 활동을 쓴다(#140, 「장소 성격으로 읽는 활동」 표: 대학교→`CLASS`, 회사·사무실 건물→`WORK`, 식당→`MEAL`, 관광지·번화가와 아파트·주택·빌라→`REST`). `INFERRED`·confidence 0.6 이하로 두고 과목·메뉴·업무 내용·동행은 지어내지 않으며, 다른 활동 근거가 있으면 그것이 이긴다. `REST`는 쉬었다는 근거(쉬는 장면 사진, User Memory 휴식 습관, 주거지·나들이 장소)가 있을 때만 쓰고, 활동 근거도 장소 성격도 없는 체류는 `UNKNOWN`이다. Repair v3 는 같은 표를 갖고 누락·불일치만 고친다(두 표가 같은지 테스트가 본다). 취소·변경 알림은 다루지 않는다. Event Agent가 이미 하는 판단(이동수단 라벨·경유지·예약 날짜·알림 가치·수면 유효성)은 Timeline에서 지웠다. v2는 그대로다. 타입 절의 시간은 "검토 기준 N시간"이고 자르는 상한이 아니다(#134). v3 Timeline은 #134에서 수면 금지를 걷어내고 `SLEEP` 절을 두었다 — 금지 때문에 Calendar의 수면 후보가 빠지고 코드가 그 일정을 일반 일정으로 되살려 같은 시간의 체류와 겹쳤다. 캘린더 수면은 계획이라 `INFERRED`로 두고 그 구간의 체류는 수면 event에 합친다. `WAKE_UP`은 그 절의 한 줄이다. v3 Question은 여전히 수면 예시가 없다.
 
 ### Repair Agent와 확정 pass
 
@@ -78,7 +78,7 @@ main agent는 draft를 돌려주기 직전에 사진 단일 귀속을 한 번 �
 
 ### Repair 입력과 도구
 
-Repair 프롬프트는 반복마다 그 시점의 draft로 새로 만든다. v3 세트에서는 `[자동 검사 결과]`(코드가 고친 것·지운 것·찾은 것), `[event 근거]`(event가 참조한 rawId의 candidate·fragment), `[user memory]`를 함께 싣는다(#119). 찾은 것은 확정할 때마다 그 draft로 다시 계산한 값만 싣고, 고친 것은 몇 번째 확정에서 나온 것인지 붙여 쌓는다. candidate 본문은 한 번만 싣고 event는 id로 가리키며, 어느 event에도 쓰이지 않은 candidate는 한 줄 요약만 싣는다.
+Repair 프롬프트는 반복마다 그 시점의 draft로 새로 만든다. v3 세트에서는 `[자동 검사 결과]`(코드가 고친 것·지운 것·찾은 것), `[event 근거]`(event가 참조한 rawId의 candidate·fragment), `[user memory]`를 함께 싣는다(#119). 찾은 것은 확정할 때마다 그 draft로 다시 계산한 값만 싣고, 고친 것은 몇 번째 확정에서 나온 것인지 붙여 쌓는다. candidate 본문은 한 번만 싣고 event는 id로 가리키며, 어느 event에도 쓰이지 않은 candidate는 한 줄 요약만 싣는다. candidate 본문에는 장소 후보 `places`와 `address`도 싣는다(#140) — Repair가 event의 `place`를 다른 후보로 바꿀 재료이고, `[근거 원본]`(v1·v2 공용)은 단수 `place`만 보인다.
 
 #119의 Repair 계약은 v3 세트에서만 돈다. 확정 pass의 새 검사, Repair의 새 입력, `split_event` 도구가 한 묶음이고 갈리는 기준은 `prompt_loader.uses_legacy_contract` 하나다. v1·v2 세트에서 Repair가 보는 warning·입력·도구는 예전 그대로다. v2 프롬프트는 이것들을 설명하지 않고 v2는 운영 세트라 고치지 않는다. 실제 LLM으로 확인한 것이다 — `split_event`를 v2에 내놓자 캘린더 일정대로인 event와 사진 event를 잘게 쪼개 event가 7개에서 13개로 늘었고, 새 검사의 warning을 보이자 나눌 도구가 없는 v2가 Timeline 재실행을 두 번 불렀으며 위반은 그대로 남았다. draft를 **고치는** 단계는 세트와 무관하게 같다 — 사진 단일 귀속은 어느 세트에서든 강제한다.
 

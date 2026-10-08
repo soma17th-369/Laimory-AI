@@ -139,10 +139,14 @@ def test_timeline_v3_uses_rest_only_with_evidence_of_rest() -> None:
     rest = _event_type_section("REST")
     unknown = _event_type_section("UNKNOWN")
 
-    assert "`REST`는 쉬었다는 근거(쉬는 장면 사진, User Memory의 휴식 습관)가 있을 때만 씁니다" in boundary
-    assert "체류만 있고 무엇을 했는지 말해 주는 근거가 없으면 `UNKNOWN`입니다" in boundary
+    # 주거지·나들이 장소의 성격도 쉬었다는 근거다(#140).
+    assert (
+        "`REST`는 쉬었다는 근거(쉬는 장면 사진, User Memory의 휴식 습관, "
+        "「장소 성격으로 읽는 활동」의 주거지·나들이 장소)가 있을 때만 씁니다"
+    ) in boundary
+    assert "근거도, 활동을 읽을 장소 성격도 없으면 `UNKNOWN`입니다" in boundary
     assert "쉬었다는 근거가 있을 때만 씁니다" in rest
-    assert "체류만 있고 무엇을 했는지 말해 주는 근거가 없음" in unknown
+    assert "근거도, 활동을 읽을 장소 성격도 없음" in unknown
 
 
 def test_timeline_v3_lets_type_sections_override_the_common_order() -> None:
@@ -483,3 +487,56 @@ def test_timeline_v3_keeps_stay_words_times_and_addresses_out_of_titles() -> Non
     assert "구·시처럼 넓은 지역명으로 올라가지 않습니다" in section
     assert "장소명에 들어 있는 숫자(`2호선`)는 그대로 둡니다" in section
     assert text.count("`집에서 보낸 밤`") == 1
+
+# --- Timeline v3: 장소 성격으로 읽는 활동 (#140) ----------------------------------
+
+
+#: 장소만 있을 때 읽는 활동. 이슈 #140 의 대표 장소와 그 eventType 이다. 관광지·시내는
+#: 사용자 결정으로 `REST` 다.
+PLACE_ACTIVITY_ROWS = {
+    "대학교·학교": "`CLASS`",
+    "회사·사무실 건물": "`WORK`",
+    "식당·음식점": "`MEAL`",
+    "관광지·도심·번화가": "`REST`",
+    "아파트·주택·빌라": "`REST`",
+}
+
+
+def place_activity_table(text: str) -> list[str]:
+    """「장소 성격으로 읽는 활동」 절의 표 행. Repair v3 도 같은 표를 쓴다."""
+
+    section = _between(text, "#### 장소 성격으로 읽는 활동", "\n- ")
+    return [line for line in section.splitlines() if line.startswith("| ")]
+
+
+def test_timeline_v3_reads_an_activity_from_the_nature_of_the_place() -> None:
+    """활동 근거 없이 장소만 있어도 그곳에서 흔히 하는 일을 쓴다.
+
+    예전 v3 는 체류만 있으면 `UNKNOWN` 으로 두고 "공부·수업을 지어내지 않습니다" 라고 했다.
+    """
+
+    text = _timeline_v3()
+    section = _between(text, "#### 장소 성격으로 읽는 활동", "## eventType별 생성 규칙")
+    rows = place_activity_table(text)
+
+    for place, event_type in PLACE_ACTIVITY_ROWS.items():
+        assert any(row.startswith(f"| {place} | {event_type} |") for row in rows), place
+    assert "공부·수업을 지어내지 않습니다" not in text
+    assert "다른 근거가 있으면 그 근거가 이깁니다" in section
+    assert "성격은 `place`로 고른 이름에서 읽습니다" in section
+    assert "`데이트`라고 쓰지 않습니다" in section
+    assert "`confidence`는 0.6을 넘기지 않고" in section
+    assert "`활동은 장소의 성격으로 추론함`" in section
+    # 장소를 고른 뒤에 그 장소로 활동을 읽는다. User Memory 보다 앞(3단계)이다.
+    assert (
+        text.index("#### 장소를 뒷받침하는 근거")
+        < text.index("#### 장소 성격으로 읽는 활동")
+        < text.index("## 4단계. User Memory 반영")
+    )
+
+
+@pytest.mark.parametrize("event_type", ["CLASS", "WORK", "MEAL", "REST"])
+def test_timeline_v3_type_sections_point_to_the_place_activity_rule(event_type: str) -> None:
+    """규칙은 한 절에 두고 타입 절은 그 절을 가리킨다."""
+
+    assert "「장소 성격으로 읽는 활동」" in _event_type_section(event_type)
