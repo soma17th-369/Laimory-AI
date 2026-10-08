@@ -364,6 +364,26 @@ def test_evidence_carries_what_the_event_agent_read():
     }
 
 
+def test_evidence_carries_the_place_candidates_the_place_was_picked_from():
+    """event 의 `place` 를 다른 후보로 바꾸려면 후보 목록을 봐야 한다(#140).
+
+    `[근거 원본]` 은 단수 `place` 만 보인다.
+    """
+
+    candidate = _candidate("경북대학교 체류", "산격동에 머물렀다.", OFFICE)
+    candidate.places = ["산격동", "경북대학교 IT대학", "경북대학교"]
+    candidate.address = "대구광역시 북구 대학로 80"
+    ctx = _evidence_context(
+        _event("event-001", "09:00", "12:00", OFFICE, event_type=EventType.UNKNOWN),
+        results={"location": AgentEventResult(candidates=[candidate])},
+    )
+
+    detail = json.loads(event_evidence_text(ctx))["candidates"]["candidate-001"]
+
+    assert detail["places"] == ["산격동", "경북대학교 IT대학", "경북대학교"]
+    assert detail["address"] == "대구광역시 북구 대학로 80"
+
+
 def test_candidate_body_is_carried_once_however_many_events_use_it():
     ctx = _evidence_context(
         _event("event-001", "09:00", "12:00", OFFICE, event_type=EventType.WORK),
