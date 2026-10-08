@@ -43,6 +43,7 @@ from app.schemas import (
     TimelineWarning,
     TimelineWarningSeverity,
 )
+from app.services.location_link import LINK_REASON
 from app.services.source_lookup import raw_id_of
 from app.services.validator import parse_datetime, resolve_timezone
 
@@ -231,8 +232,21 @@ def _by_time(event: TimelineEventDraft, taken: datetime | None):
     )
 
 
+def _is_own_evidence(ref: SourceRef) -> bool:
+    """event 가 스스로 댄 근거인가.
+
+    확정 단계가 일정·사진 event 에 장소 근거로 붙인 체류(#138)는 아니다. 그 체류는 사진이
+    있어서 붙은 것이라, 사진을 빼면 함께 뜻을 잃는다. 근거로 치면 사진만으로 만든 event 가
+    사진을 잃고도 체류 카드로 살아남는다.
+    """
+
+    return ref.reason != LINK_REASON
+
+
 def _has_other_evidence(event: TimelineEventDraft, photo_ids: set[str]) -> bool:
-    return any(ref.raw_id not in photo_ids for ref in event.source_refs)
+    return any(
+        ref.raw_id not in photo_ids and _is_own_evidence(ref) for ref in event.source_refs
+    )
 
 
 def _collect_holders(
@@ -323,7 +337,8 @@ def enforce_photo_assignment(
            말하는 event 이고, 사진만으로 만든 event 는 같은 사진을 한 번 더 보여 주는
            카드다. 그다음은 촬영 시각을 포함하는 event, 가장 짧은 event 순이다.
         2. 사진을 빼서 근거가 하나도 남지 않은 event 는 지운다. 근거 없는 event 는 저장 전
-           검증을 통과하지 못해 하루 전체가 실패한다.
+           검증을 통과하지 못해 하루 전체가 실패한다. 확정 단계가 장소 근거로 붙인 체류만
+           남은 event 도 지운다(#138) — 그 체류는 사진이 있어서 붙은 것이다.
         3. 어느 event 에도 없는 사진은 촬영 시각을 포함하는(없으면 가장 가까운) event 에
            붙인다. Timeline 프롬프트가 쓰는 규칙과 같다.
         4. event 가 하나도 없으면 촬영 시각의 `PHOTO_MOMENT` 를 만들어 담는다.
@@ -365,9 +380,14 @@ def enforce_photo_assignment(
             ]
         enforcement.deduplicated.append(raw_id)
 
-    emptied = [event for event in draft.events if not event.source_refs]
+    emptied = [
+        event
+        for event in draft.events
+        if not any(_is_own_evidence(ref) for ref in event.source_refs)
+    ]
     if emptied:
-        draft.events = [event for event in draft.events if event.source_refs]
+        gone = {id(event) for event in emptied}
+        draft.events = [event for event in draft.events if id(event) not in gone]
         enforcement.removed.extend(emptied)
 
     missing = sorted(raw_id for raw_id in photo_ids if not holders[raw_id])

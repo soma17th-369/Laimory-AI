@@ -18,14 +18,17 @@ repair 순서와 이유:
     3. `MEAL repair`     : 과장된 식사 시간을 20~60분으로 되돌린다.
     4. `수면 경계 강제`  : 기상 이전 event 를 제거하고, 수면에 걸친 event 를 잘라 낸다.
     5. `window 강제`     : 요청 시간 범위 밖 event 를 제거하고 경계를 클램프한다.
+    5.5 `위치 근거 연결` : (v3) 일정·사진 event 에 같은 시간의 체류를 장소 근거로 붙인다(#138).
     6. `장소 확정`       : place 를 근거의 장소명으로 채우고, 근거에 없는 주소를 지운다.
     7. `정렬`            : startTime → endTime → confidence(내림차순) → eventType → title.
     8. `체류 병합`       : 이동 없이 같은 장소에서 이어진 체류 event 를 하나로 합친다.
     9. `겹침 정리`       : 중복 event 를 병합하고, 모순되는 부분 겹침은 경고로 남긴다.
    10. `사진 단일 귀속`  : 입력의 모든 사진이 정확히 한 event 에만 있게 만든다(#119).
    11. `confidence 보강` : 캘린더 장소와 체류 장소가 일치하면 confidence 를 올린다.
+   11.5 (v3) 수면과 겹친 event 제거, 대화 개수 제한.
    12. `검사`            : 고치지 않고 찾기만 한다. 사진·알림 안전성, 문장 길이, 타입별
-                           지속시간, event 개수, 이동 사이 장시간 체류, 대화 event 개수.
+                           지속시간, event 개수, 이동 사이 장시간 체류, (v3) 일정·사진과
+                           겹치는 위치만 있는 event.
    13. `clientEventId`   : 최종 정렬 결과에 1번부터 다시 부여한다.
 
 1~11 은 draft 를 고치고 12 는 고치지 않는다. **무엇을 고칠지가 규칙으로 정해져 있으면
@@ -58,6 +61,10 @@ rawId 참조는 제거하고, 그 결과 유효한 근거가 하나도 남지 �
 (`MEAL`)가 들어 있는 구조는 우리가 프롬프트로 요구한 정상적인 모양이다. 여기서
 병합하는 것은 *같은 종류 + 같은 장소 + 시간이 겹치는* 중복 event 뿐이고, 서로 다른
 장소를 동시에 가리키는 부분 겹침은 시간을 건드리지 않고 경고로만 남긴다.
+
+일정·사진 event 와 같은 방문을 그린 체류 카드(#138)도 코드가 합치지 않는다. 같은 방문인지
+더 긴 다른 시간(근무 체류 안의 회의)인지는 의미 판단이라, v3 에서는 찾아서 Repair 에 넘기고
+Repair 가 `absorb_location_event` 로 흡수한다. 일정·사진 event 는 어떤 단계도 지우지 않는다.
 """
 
 from collections.abc import Callable
@@ -85,6 +92,8 @@ from app.services.event_count_guard import (
     MAX_EVENT_COUNT,
     verify_event_count,
 )
+from app.services.location_link import link_location_evidence
+from app.services.location_only_overlap import find_location_only_overlaps
 from app.services.meal_guard import enforce_meal_duration
 from app.services.movement_stay_guard import verify_movement_stay_boundary
 from app.services.narrative_guard import verify_narrative_length
@@ -600,6 +609,30 @@ _EXTENDED_CORRECTION_STEPS: tuple[
     ("대화 개수 제한", enforce_conversation_limit),
 )
 
+#: v3 세트에서 `장소 확정` 바로 앞에 끼우는 단계(#138).
+#:
+#: 일정·사진 event 에 같은 시간의 체류를 위치 근거로 붙인다. 장소 확정보다 앞이어야 붙인
+#: 체류로 비어 있는 place·address 가 같은 확정에서 채워진다. 붙인 체류는 사진 단일 귀속이
+#: 그 event 의 근거로 치지 않으므로, 사진을 잃은 event 가 체류 카드로 살아남지 않는다.
+_LOCATION_LINK_STEP: tuple[
+    str, Callable[[TimelineDraft, TimelineDraftRequest], object]
+] = ("위치 근거 연결", link_location_evidence)
+
+
+def _correction_steps(
+    extended: bool,
+) -> tuple[tuple[str, Callable[[TimelineDraft, TimelineDraftRequest], object]], ...]:
+    if not extended:
+        return _CORRECTION_STEPS
+    names = [name for name, _ in _CORRECTION_STEPS]
+    position = names.index("장소 확정")
+    return (
+        *_CORRECTION_STEPS[:position],
+        _LOCATION_LINK_STEP,
+        *_CORRECTION_STEPS[position:],
+        *_EXTENDED_CORRECTION_STEPS,
+    )
+
 
 def _inspect(
     draft: TimelineDraft,
@@ -640,6 +673,10 @@ def _inspect(
         # 나눌 자리는 event 의 시간 안으로 맞춘 값이라 최종 시간이 정해진 뒤에 만든다.
         report.add_finding("LONG_STAY_BETWEEN_MOVEMENTS", found.detail, event=found.event)
 
+    # 겹치는 event 의 clientEventId 는 최종 id 가 매겨진 뒤에 굳힌다(#138).
+    for overlap in find_location_only_overlaps(draft, request):
+        report.add_finding("LOCATION_ONLY_OVERLAP", overlap.detail, event=overlap.event)
+
 
 def repair_draft(
     draft: TimelineDraft,
@@ -660,8 +697,7 @@ def repair_draft(
 
     report = report if report is not None else ConfirmReport()
 
-    steps = _CORRECTION_STEPS + (_EXTENDED_CORRECTION_STEPS if extended else ())
-    for name, step in steps:
+    for name, step in _correction_steps(extended):
         report.run(name, draft, lambda step=step: step(draft, request))
 
     # source 하나를 여러 event가 근거로 사용할 수 있다. 현재는 timeline_items에
