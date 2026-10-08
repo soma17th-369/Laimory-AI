@@ -25,10 +25,10 @@ repair 순서와 이유:
     9. `겹침 정리`       : 중복 event 를 병합하고, 모순되는 부분 겹침은 경고로 남긴다.
    10. `사진 단일 귀속`  : 입력의 모든 사진이 정확히 한 event 에만 있게 만든다(#119).
    11. `confidence 보강` : 캘린더 장소와 체류 장소가 일치하면 confidence 를 올린다.
-   11.5 (v3) 수면과 겹친 event 제거, 대화 개수 제한.
+   11.5 (v3) 수면과 겹친 event 제거, 대화 개수 제한, 문장의 입력 주소 원문 정리(#138).
    12. `검사`            : 고치지 않고 찾기만 한다. 사진·알림 안전성, 문장 길이, 타입별
                            지속시간, event 개수, 이동 사이 장시간 체류, (v3) 일정·사진과
-                           겹치는 위치만 있는 event.
+                           겹치는 위치만 있는 event, 제목의 체류·시각과 문장의 주소 모양.
    13. `clientEventId`   : 최종 정렬 결과에 1번부터 다시 부여한다.
 
 1~11 은 draft 를 고치고 12 는 고치지 않는다. **무엇을 고칠지가 규칙으로 정해져 있으면
@@ -97,6 +97,10 @@ from app.services.location_only_overlap import find_location_only_overlaps
 from app.services.meal_guard import enforce_meal_duration
 from app.services.movement_stay_guard import verify_movement_stay_boundary
 from app.services.narrative_guard import verify_narrative_length
+from app.services.narrative_place_guard import (
+    find_narrative_labels,
+    replace_input_addresses,
+)
 from app.services.notification_guard import verify_notification_draft
 from app.services.photo_guard import enforce_photo_assignment, verify_photo_assignment
 from app.services.place_resolver import resolve_places
@@ -607,6 +611,8 @@ _EXTENDED_CORRECTION_STEPS: tuple[
 ] = (
     ("수면과 겹친 event 제거", remove_events_overlapping_sleep),
     ("대화 개수 제한", enforce_conversation_limit),
+    # 문장을 바꾸는 단계라 event 를 지우거나 합치는 단계가 모두 끝난 뒤에 둔다(#138).
+    ("문장 주소 정리", replace_input_addresses),
 )
 
 #: v3 세트에서 `장소 확정` 바로 앞에 끼우는 단계(#138).
@@ -676,6 +682,8 @@ def _inspect(
     # 겹치는 event 의 clientEventId 는 최종 id 가 매겨진 뒤에 굳힌다(#138).
     for overlap in find_location_only_overlaps(draft, request):
         report.add_finding("LOCATION_ONLY_OVERLAP", overlap.detail, event=overlap.event)
+    for label in find_narrative_labels(draft):
+        report.add_finding(label.kind, label.detail(), event=label.event)
 
 
 def repair_draft(
