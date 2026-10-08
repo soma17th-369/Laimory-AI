@@ -657,3 +657,99 @@ def test_on_confirm_is_optional():
     )
 
     assert result.events[0].title == "체류"
+
+
+# --- 장소 후보 다시 고르기 (#140) --------------------------------------------------
+
+
+def _campus_request():
+    """첫 후보가 동 이름인 대학 체류 하나와, 다른 장소의 체류 하나."""
+
+    return make_request(
+        stays=[
+            stay_item(
+                1,
+                raw_id="campus",
+                start="2026-06-20T09:00:00",
+                end="2026-06-20T12:00:00",
+                place="산격동",
+                address="대구광역시 북구 대학로 80",
+                places=["산격동", "경북대학교 IT대학", "경북대학교"],
+            ),
+            stay_item(
+                2,
+                raw_id="cafe",
+                start="2026-06-20T15:00:00",
+                end="2026-06-20T16:00:00",
+                lat=37.6,
+                lon=127.2,
+                place="카페 OO",
+                address="서울 카페 주소",
+                places=["카페 OO"],
+            ),
+        ]
+    )
+
+
+def _replace_place(place: str, *, refs: list[dict] | None = None) -> str:
+    fields = {
+        "place": place,
+        "eventType": "CLASS",
+        "title": f"{place}에서 수업과 공부",
+        "description": f"{place}에서 수업을 듣고 공부했어요.",
+        "inferenceLevel": "INFERRED",
+        "uncertainty": ["활동은 장소의 성격으로 추론함"],
+    }
+    if refs is not None:
+        fields["sourceRefs"] = refs
+    return _plan(
+        [{"tool": "update_event", "args": {"clientEventId": "event-001", "fields": fields}}],
+        done=True,
+    )
+
+
+def _campus_draft():
+    event = _event("산격동에서 보낸 시간", "09:00", "12:00", raw_id="campus")
+    event.event_type = EventType.UNKNOWN
+    event.place = "산격동"
+    return _draft(event)
+
+
+def test_a_place_replaced_by_another_candidate_survives_the_confirm_pass():
+    """같은 근거의 다른 후보로 바꾼 `place` 를 확정 단계가 되돌리지 않는다.
+
+    `resolve_places` 는 얼버무림이 아닌 `place` 를 덮어쓰지 않고, 근거의 후보 목록에 있는
+    이름이면 근거 없는 장소로 짚지 않는다. 주소는 같은 체류의 것이라 그대로다.
+    """
+
+    agent = RepairAgent(llm=FakeLLM([_replace_place("경북대학교")]), max_iterations=2, extended_input=True)
+
+    result = agent.generate(_campus_request(), _campus_draft())
+
+    (event,) = [e for e in result.events if e.place == "경북대학교"]
+    assert event.event_type is EventType.CLASS
+    assert event.title == "경북대학교에서 수업과 공부"
+    assert event.inference_level is InferenceLevel.INFERRED
+    assert event.address == "대구광역시 북구 대학로 80"
+    assert [ref.raw_id for ref in event.source_refs] == [fixture_raw_id("campus")]
+    assert not any("없는 장소명" in w.message for w in result.warnings)
+
+
+def test_a_place_taken_from_an_unreferenced_input_is_flagged_until_its_ref_is_added():
+    """다른 근거의 이름으로 바꾸면서 그 rawId 를 넣지 않으면 근거 없는 장소로 짚인다."""
+
+    flagged = RepairAgent(
+        llm=FakeLLM([_replace_place("카페 OO")]), max_iterations=2, extended_input=True
+    ).generate(_campus_request(), _campus_draft())
+
+    assert any("없는 장소명" in w.message for w in flagged.warnings)
+
+    refs = [
+        {"sourceType": "STAY", "rawId": fixture_raw_id("campus"), "reason": "체류"},
+        {"sourceType": "STAY", "rawId": fixture_raw_id("cafe"), "reason": "장소 근거"},
+    ]
+    supported = RepairAgent(
+        llm=FakeLLM([_replace_place("카페 OO", refs=refs)]), max_iterations=2, extended_input=True
+    ).generate(_campus_request(), _campus_draft())
+
+    assert not any("없는 장소명" in w.message for w in supported.warnings)

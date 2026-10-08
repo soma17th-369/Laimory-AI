@@ -512,7 +512,7 @@ def test_repair_v3_examples_do_not_teach_time_expressions() -> None:
 
 
 def test_repair_v3_keeps_the_place_name_the_same_as_place() -> None:
-    section = _between(_repair_v3(), "#### 장소", "#### 문장에 쓰지 않는 것")
+    section = _between(_repair_v3(), "#### 장소\n", "#### 문장에 쓰지 않는 것")
 
     assert "`place`와 같은 이름" in section
     assert "`place`가 비어 있으면" in section
@@ -685,3 +685,38 @@ def test_repair_v3_keeps_stay_words_times_and_addresses_out_of_titles() -> None:
     assert "`자정 전 귀가` → `집으로 귀가`" in examples
     # 같은 규칙은 한 곳에만 둔다.
     assert text.count("`집에서 보낸 밤`처럼") == 1
+
+# --- 장소 성격으로 읽는 활동과 장소 후보 (#140) ------------------------------------
+
+
+def test_repair_v3_reads_place_activities_by_the_same_table_as_timeline() -> None:
+    """Repair 는 Timeline 과 같은 기준으로 누락만 채운다. 표가 갈리면 서로 되돌린다."""
+
+    from tests.agents.test_timeline_v3_prompt import place_activity_table
+
+    repair = place_activity_table(_repair_v3())
+
+    assert repair
+    assert repair == place_activity_table(_timeline_v3())
+
+
+def test_repair_v3_fills_only_missing_place_activities() -> None:
+    section = _between(_repair_v3(), "#### 장소 성격으로 읽는 활동", "#### 장소 후보 다시 고르기")
+
+    assert "고치는 것은 둘뿐입니다" in section
+    assert "장소 성격으로 쓴 활동은 되돌리지 않습니다" in section
+    assert "`데이트`라고 쓰지 않습니다" in section
+    assert "이 단계에서 다시 추론하지 않습니다" in _between(_repair_v3(), "### 3단계.", "#### 합리적인 추론")
+
+
+def test_repair_v3_can_pick_another_place_candidate() -> None:
+    text = _repair_v3()
+    section = _between(text, "#### 장소 후보 다시 고르기", "#### User Memory 반영")
+    inputs = _between(text, "## 입력 의미", "## 작업 순서")
+
+    assert "`places`" in inputs and "`address`" in inputs
+    assert "후보 목록은 고치지 않습니다" in section
+    assert "`update_event` 한 번에 `place`와 함께" in section
+    assert "`sourceRefs`에 넣습니다" in section
+    assert "가게를 골라 그곳에서 한 일처럼 쓰지 않습니다" in section
+    assert "`PLACE_MISMATCH`" in _between(text, "## 문제 분류", "## 도구 선택")
