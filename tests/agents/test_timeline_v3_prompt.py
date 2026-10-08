@@ -455,3 +455,31 @@ def test_v2_prompts_keep_their_old_structure() -> None:
     assert "## User Memory 반영" not in timeline_v2
     assert "## Questions와 Warnings" in timeline_v2
     assert "하나의 질문에 하나만" in question_v2
+
+
+# --- 같은 방문의 체류와 제목 (#138) ------------------------------------------------
+
+
+def test_timeline_v3_merges_a_stay_with_the_same_visit_even_when_nested() -> None:
+    """포함 허용 문장이 같은 방문의 체류까지 따로 두라고 읽혔다(#138). 새 규칙을 더하지 않고
+    그 문장만 고쳤다 — 하나로 합치라는 근거는 이미 「합치는 경우」에 있다."""
+
+    section = _between(_timeline_v3(), "### 합치는 경우와 나누는 경우", "### fragment와 사진")
+
+    assert "그와 다른 짧은 식사·회의·사진 event" in section
+    assert "체류 시간 대부분을 덮는 같은 방문이면 포함 관계여도 하나" in section
+    assert "체류가 더 길면 체류 event를 그대로 둡니다" in section
+
+
+def test_timeline_v3_keeps_stay_words_times_and_addresses_out_of_titles() -> None:
+    text = _timeline_v3()
+    section = _between(text, "## 5단계.", "## confidence")
+
+    assert "`재체류`" in section
+    assert "`자정 전`" in section
+    assert "`집에서 보낸 밤`" in section
+    assert "하루 중 때를 가리키는 말은 쓸 수 있습니다" in section
+    assert "`예시로에서 보낸 시간`" in section
+    assert "구·시처럼 넓은 지역명으로 올라가지 않습니다" in section
+    assert "장소명에 들어 있는 숫자(`2호선`)는 그대로 둡니다" in section
+    assert text.count("`집에서 보낸 밤`") == 1

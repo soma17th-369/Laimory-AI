@@ -145,6 +145,10 @@ def test_repair_v3_names_every_key_the_code_sends(key: str) -> None:
     [
         "LONG_STAY_BETWEEN_MOVEMENTS",
         "DURATION_OVER_LIMIT",
+        "LOCATION_ONLY_OVERLAP",
+        "STAY_WORD_IN_TITLE",
+        "TIME_IN_TITLE",
+        "ADDRESS_IN_NARRATION",
     ],
 )
 def test_repair_v3_says_what_to_do_for_every_finding_kind(kind: str) -> None:
@@ -152,7 +156,7 @@ def test_repair_v3_says_what_to_do_for_every_finding_kind(kind: str) -> None:
 
     source = "\n".join(
         (APP_ROOT / path).read_text(encoding="utf-8")
-        for path in ("services/draft_repair.py", "agents/repair/repair_agent.py")
+        for path in ("services/draft_repair.py", "services/narrative_place_guard.py", "agents/repair/repair_agent.py")
     )
 
     assert f'"{kind}"' in source, f"코드가 `{kind}` 를 내지 않습니다."
@@ -170,6 +174,9 @@ def test_repair_v3_says_what_to_do_for_every_finding_kind(kind: str) -> None:
         "eventEndTime",
         "limitHours",
         "durationHours",
+        "overlappingEvents",
+        "coverRatio",
+        "found",
     ],
 )
 def test_repair_v3_names_the_finding_fields_it_relies_on(key: str) -> None:
@@ -645,3 +652,36 @@ def test_v2_repair_keeps_its_old_structure() -> None:
     assert "자동 검사 결과" not in repair_v2
     assert "split_event" not in repair_v2
     assert "event가 참조한 candidate를 보지만" not in timeline_v2
+
+
+# --- 위치만 있는 event 와 문장 (#138) ----------------------------------------------
+
+
+def test_repair_v3_decides_whether_a_stay_card_is_the_same_visit() -> None:
+    """같은 방문인지는 의미 판단이라 Repair 가 정한다. 일정·사진은 남고 빈칸도 없다."""
+
+    section = _between(
+        _repair_v3(), "#### `LOCATION_ONLY_OVERLAP`", "#### `STAY_WORD_IN_TITLE`"
+    )
+
+    assert "`absorb_location_event`로 그 event에 흡수합니다" in section
+    assert "흡수하지 않고 둡니다" in section
+    assert "빈칸이 생깁니다" in section
+    assert "일정·사진 event끼리는 합치지 않습니다" in section
+    for example in ("`치과 검진`", "`회사` 체류"):
+        assert example in section
+
+
+def test_repair_v3_keeps_stay_words_times_and_addresses_out_of_titles() -> None:
+    text = _repair_v3()
+    section = _between(text, "#### 문장에 쓰지 않는 것", "#### 예시")
+    examples = _between(text, "#### 예시", "## warning을 읽는 법")
+
+    assert "`재체류`" in section
+    assert "`집에서 보낸 밤`" in section
+    assert "`자정 전`" in section
+    assert "하루 중 때를 가리키는 말은 쓸 수 있습니다" in section
+    assert "장소명에 들어 있는 숫자는 그대로 둡니다" in section
+    assert "`자정 전 귀가` → `집으로 귀가`" in examples
+    # 같은 규칙은 한 곳에만 둔다.
+    assert text.count("`집에서 보낸 밤`처럼") == 1

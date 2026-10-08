@@ -1,4 +1,4 @@
-"""draft event 수정·삭제·나누기 (결정론).
+"""draft event 수정·삭제·나누기·흡수 (결정론).
 
 Repair Agent 가 "이 event 의 이 필드를 이렇게 고쳐라", "이 event 는 지워라", "이 event 를
 이 시각에서 나눠라" 라고 말하면 실제 적용은 여기서 한다. LLM 이 draft 전체를 다시 써 내려가게 두지 않는
@@ -25,11 +25,14 @@ from app.core.error_codes import ErrorCode
 from app.core.exceptions import AppError
 from app.core.logging import get_logger
 from app.schemas import (
+    EventType,
     SourceRef,
     TimelineDraft,
     TimelineDraftRequest,
     TimelineEventDraft,
 )
+from app.services.location_link import has_event_evidence, is_location_only
+from app.services.meal_guard import MEAL_MAX_DURATION
 from app.services.validator import parse_datetime, resolve_timezone
 
 logger = get_logger(__name__)
@@ -120,6 +123,71 @@ def delete_event(draft: TimelineDraft, client_event_id: str) -> TimelineEventDra
     # 실행 기록에서 본다.
     logger.debug("Repair: event 삭제 clientEventId=%s", client_event_id)
     return event
+
+
+# --- 위치만 있는 event 흡수 (#138) ---------------------------------------------
+
+
+def absorb_location_event(
+    draft: TimelineDraft, client_event_id: str, into_client_event_id: str
+) -> TimelineEventDraft:
+    """위치만 있는 event 를 일정·사진 event 에 흡수한다(in-place). 흡수한 event 를 돌려준다.
+
+    같은 방문을 두 번 그린 카드인지는 Repair 가 판단한다. 여기서는 정해진 흡수를 그대로
+    적용한다 — 체류 근거를 옮기고(디듀프), 대상의 시간을 체류까지 넓혀 하루에 빈칸이
+    생기지 않게 한 뒤, 위치만 있는 event 를 지운다. 대상의 제목·본문·eventType 은 바꾸지
+    않는다. 체류를 담아 고쳐 쓸 문장은 Repair 가 `update_event` 로 정한다.
+
+    거절하는 경우(원본은 건드리지 않는다):
+
+    - 흡수되는 쪽이 위치만 있는 event 가 아니다. 일정·사진·알림이 있는 event 는 코드가
+      지우지 않는다.
+    - 대상이 일정·사진 event 가 아니다.
+    - 둘의 시간이 겹치지 않는다.
+    - 대상이 `MEAL` 인데 넓힌 시간이 60분을 넘는다. 다음 확정에서 `meal_guard` 가 잘라
+      체류의 나머지 시간이 하루에서 사라진다.
+    """
+
+    if client_event_id == into_client_event_id:
+        raise DraftEditError("흡수되는 event 와 대상 event 가 같습니다.")
+
+    source = find_event(draft, client_event_id)
+    target = find_event(draft, into_client_event_id)
+
+    if not is_location_only(source):
+        raise DraftEditError(
+            f"{client_event_id} 는 근거가 체류뿐인 event 가 아닙니다. 일정·사진·알림이 "
+            "있는 event 는 흡수할 수 없습니다."
+        )
+    if not has_event_evidence(target):
+        raise DraftEditError(
+            f"{into_client_event_id} 는 일정이나 사진 근거가 있는 event 가 아닙니다."
+        )
+    if not (
+        source.start_time <= target.end_time and target.start_time <= source.end_time
+    ):
+        raise DraftEditError("두 event 의 시간이 겹치지 않습니다.")
+
+    start = min(source.start_time, target.start_time)
+    end = max(source.end_time, target.end_time)
+    if target.event_type is EventType.MEAL and end - start > MEAL_MAX_DURATION:
+        raise DraftEditError(
+            "흡수하면 MEAL 이 60분을 넘습니다. 식사 시간은 다음 확정에서 60분으로 잘려 "
+            "나머지 체류 시간이 사라지므로, 이 체류는 흡수하지 말고 그대로 둡니다."
+        )
+
+    cited = {ref.raw_id for ref in target.source_refs}
+    moved = [ref for ref in source.source_refs if ref.raw_id not in cited]
+    target.source_refs = [*target.source_refs, *moved]
+    target.start_time, target.end_time = start, end
+    draft.events.remove(source)
+
+    logger.debug(
+        "Repair: 위치만 있는 event 흡수 clientEventId=%s → %s",
+        client_event_id,
+        into_client_event_id,
+    )
+    return target
 
 
 # --- 나누기 (#119) -------------------------------------------------------------

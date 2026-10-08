@@ -4,8 +4,8 @@ Repair Agent 는 draft 를 직접 다시 쓰지 않는다. **이미 있는 결�
 도구로 호출**해서 고친다. 도구는 세 종류다.
 
     1. 조회   : `lookup_source` 로 근거 원본을 되짚는다.
-    2. 편집   : `update_event` / `delete_event` / `split_event` 로 event 를 고치거나
-                지우거나 나눈다.
+    2. 편집   : `update_event` / `delete_event` / `split_event` / `absorb_location_event`
+                로 event 를 고치거나 지우거나 나누거나 체류 카드를 흡수한다.
     3. 재적용 : `enforce_sleep_boundary`, `resolve_places` 같은 결정론 서비스를 다시 돌린다.
     4. 재실행 : `rerun_event_agent` / `rerun_timeline_agent` 로 상류 Agent 를 다시 돌린다.
 
@@ -50,7 +50,12 @@ from app.schemas import (
 from app.services.calendar_guard import ensure_calendar_events
 from app.services.calendar_location import reinforce_calendar_location
 from app.services.confirm_report import ConfirmReport, reports_to_prompt
-from app.services.draft_edit import delete_event, split_event, update_event
+from app.services.draft_edit import (
+    absorb_location_event,
+    delete_event,
+    split_event,
+    update_event,
+)
 from app.services.draft_repair import (
     align_location_events,
     merge_stay_events,
@@ -241,6 +246,21 @@ def _split_event(ctx: RepairContext, args: dict) -> str:
     return message
 
 
+def _absorb_location_event(ctx: RepairContext, args: dict) -> str:
+    client_event_id = args.get("clientEventId")
+    into_client_event_id = args.get("intoClientEventId")
+    if not client_event_id or not into_client_event_id:
+        raise RepairToolError("clientEventId 와 intoClientEventId 인자가 필요합니다.")
+
+    target = absorb_location_event(
+        ctx.draft, str(client_event_id), str(into_client_event_id)
+    )
+    return (
+        f"{client_event_id} 를 {into_client_event_id}({target.title}) 에 흡수했습니다. "
+        f"남은 event={len(ctx.draft.events)}건"
+    )
+
+
 # --- 결정론 서비스 재적용 ------------------------------------------------------
 
 
@@ -381,6 +401,21 @@ _TOOLS: dict[str, RepairTool] = {
                 "주지 않는다 — 원래 event 의 근거를 코드가 각 조각의 시간에 맞춰 나눠 담는다."
             ),
             run=_split_event,
+            extended_only=True,
+        ),
+        RepairTool(
+            name="absorb_location_event",
+            usage=(
+                'absorb_location_event(clientEventId="event-002", '
+                'intoClientEventId="event-003")'
+            ),
+            description=(
+                "근거가 체류뿐인 event(clientEventId)를 같은 방문을 그린 일정·사진 "
+                "event(intoClientEventId)에 흡수한다. 체류 근거를 옮기고 대상의 시간을 "
+                "체류까지 넓힌 뒤 체류 event 를 지운다. 대상의 제목·본문·eventType 은 "
+                "바꾸지 않는다. 흡수하면 MEAL 이 60분을 넘으면 거절한다."
+            ),
+            run=_absorb_location_event,
             extended_only=True,
         ),
         _service_tool(
