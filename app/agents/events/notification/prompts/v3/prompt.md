@@ -148,7 +148,7 @@ candidate의 `confidence`는 Notification source 안에서 알림의 사건 의�
 - `INFERRED`: 알림의 주제와 대화 맥락으로 목적을 구체화함
 - `UNCERTAIN`: 사용자 행동, 양방향 소통, 실제 수행 여부의 근거가 제한적이거나 충돌함
 
-알림이 직접 제공하는 사실과 해석한 사람·주제·목적의 차이는 `description`과 `uncertainty`에 구분해 반영합니다.
+알림이 직접 제공하는 사실과 해석한 사람·주제·목적은 `description`에, 그 해석의 한계는 `uncertainty`에 둡니다. 확정하지 못한 것을 `description`에 쓰지 않습니다.
 
 ## 출력 형식
 

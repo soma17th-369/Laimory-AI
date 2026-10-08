@@ -488,14 +488,17 @@ def test_repair_v3_does_not_blur_the_names_timeline_wrote() -> None:
 
 
 def test_repair_v3_keeps_time_expressions_out_of_descriptions_only() -> None:
-    """Timeline v3 는 이 규칙을 `description` 에만 적용하고 제목 예시는 `오전 근무` 다."""
+    """Timeline v3 는 이 규칙을 `description` 에만 적용하고 제목 예시는 `아침 근무` 다(#142).
+
+    제목에 쓰는 하루 중 때는 `아침`·`점심`·`저녁`·`밤` 넷뿐이라 `오전` 이 아니다.
+    """
 
     section = _between(_repair_v3(), "#### 말투와 길이", "#### 장소")
 
     assert "`description`에 시간 표현을 쓰지 않습니다" in section
     assert "이 규칙은 `description`에 한합니다" in section
-    assert "`회사에서 오전 근무`" in section
-    assert "`회사에서 오전 근무`" in _timeline_v3()
+    assert "`회사에서 아침 근무`" in section
+    assert "`회사에서 아침 근무`" in _timeline_v3()
 
 
 def test_repair_v3_examples_do_not_teach_time_expressions() -> None:
@@ -680,7 +683,10 @@ def test_repair_v3_keeps_stay_words_times_and_addresses_out_of_titles() -> None:
     assert "`재체류`" in section
     assert "`집에서 보낸 밤`" in section
     assert "`자정 전`" in section
-    assert "하루 중 때를 가리키는 말은 쓸 수 있습니다" in section
+    # 하루 중 때는 넷만 쓰고 표현을 이어 붙이지 않는다(#142).
+    assert "`아침`·`점심`·`저녁`·`밤` 넷 중 하나만" in section
+    assert "`새벽`은 `밤`" in section
+    assert "`수업과 식사`" in section
     assert "장소명에 들어 있는 숫자는 그대로 둡니다" in section
     assert "`자정 전 귀가` → `집으로 귀가`" in examples
     # 같은 규칙은 한 곳에만 둔다.

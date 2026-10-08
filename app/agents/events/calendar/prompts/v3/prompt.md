@@ -80,7 +80,7 @@ candidate의 `confidence`는 Calendar source 범위에서 일정의 의미가 �
 - `INFERRED`: Calendar 입력의 맥락으로 의미를 구체화함
 - `UNCERTAIN`: 일정 의미나 timezone의 근거가 제한적이거나 충돌함
 
-일정이 직접 제공하는 사실과 Agent가 해석한 의미는 `description`과 `uncertainty`에 구분해 반영합니다.
+일정이 직접 제공하는 사실과 Agent가 해석한 의미는 `description`에, 그 해석의 한계는 `uncertainty`에 둡니다. 확정하지 못한 것을 `description`에 쓰지 않습니다.
 
 
 ## 출력 형식
