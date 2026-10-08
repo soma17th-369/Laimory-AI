@@ -68,13 +68,8 @@ class LLMStage(StrEnum):
 #: 자기 source 에서 사실을 뽑아 내부로만 넘기고, Timeline·Repair·Question 은 사용자가 읽는
 #: 일기와 질문을 쓴다(#61, #66). User Memory 는 사용자에게 보이지 않지만 사람에 대한 해석을
 #: 다시 쓰는 일이라 같은 쪽에 둔다(#64).
-#:
-#: Location 은 Event 계열이지만 QUALITY 에 둔다(#142). STAY·MOVEMENT 경계와 체류의 의미가
-#: 여기서 정해지고 Timeline 병합·`stay_merge`·`place_resolver` 가 그 위에 쌓이므로, 이
-#: 단계가 틀리면 뒤에서 되돌리기 어렵다. 같은 입력에서 이동과 도착 뒤 체류를 한 번은 합치고
-#: 한 번은 나눴다.
 _STAGE_TIERS: dict[LLMStage, LLMTier] = {
-    LLMStage.LOCATION: LLMTier.QUALITY,
+    LLMStage.LOCATION: LLMTier.FAST,
     LLMStage.CALENDAR: LLMTier.FAST,
     LLMStage.PHOTO: LLMTier.FAST,
     LLMStage.PHOTO_DESCRIBE: LLMTier.FAST,

@@ -97,12 +97,8 @@ provider 는 `LLM_PROVIDER` 하나로 전역이고 **모델만** 두 티어로 �
 
 | 티어 | 단계 |
 |---|---|
-| FAST | calendar, photo, photo_describe, sleep_activity, notification |
-| QUALITY | location, timeline, repair, question, user_memory |
-
-location 은 Event 계열이지만 QUALITY 에 둔다(#142). STAY·MOVEMENT 경계와 체류의 의미가
-여기서 정해지고 Timeline 병합·체류 병합·장소 확정이 그 위에 쌓인다. Repair 가
-`rerun_event_agent` 로 Location 을 다시 돌릴 때도 같은 모델이다.
+| FAST | location, calendar, photo, photo_describe, sleep_activity, notification |
+| QUALITY | timeline, repair, question, user_memory |
 
 **티어 설정은 provider 별로 따로 둔다.** 필드 이름은 기존 `{PROVIDER}_MODEL` 규칙을 그대로
 늘린 `{PROVIDER}_MODEL_{TIER}` 다.

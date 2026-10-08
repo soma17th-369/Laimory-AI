@@ -76,12 +76,6 @@ def test_every_stage_has_a_tier() -> None:
         assert isinstance(tier_of(stage), LLMTier)
 
 
-def test_location_is_placed_in_the_quality_tier() -> None:
-    """Location 이 STAY·MOVEMENT 경계를 정하고 뒤 단계가 그 위에 쌓인다(#142)."""
-
-    assert tier_of(LLMStage.LOCATION) is LLMTier.QUALITY
-
-
 def test_tiered_providers_declare_every_tier_field() -> None:
     from app.core.config import Settings
 
@@ -101,7 +95,7 @@ def test_tier_setting_name_follows_the_provider_model_convention() -> None:
 def test_tier_model_wins_when_configured(stage_settings) -> None:
     stage_settings(fast="cheap-model", quality="good-model")
 
-    assert model_for_stage(LLMStage.CALENDAR) == "cheap-model"
+    assert model_for_stage(LLMStage.LOCATION) == "cheap-model"
     assert model_for_stage(LLMStage.TIMELINE) == "good-model"
 
 
@@ -110,7 +104,7 @@ def test_unset_tier_falls_back_to_the_provider_model(stage_settings) -> None:
 
     stage_settings(fast="", quality="good-model")
 
-    assert model_for_stage(LLMStage.CALENDAR) is None
+    assert model_for_stage(LLMStage.LOCATION) is None
     assert model_for_tier(LLMTier.FAST) is None
     assert model_for_stage(LLMStage.TIMELINE) == "good-model"
 
@@ -164,10 +158,10 @@ def test_another_providers_tier_does_not_leak(stage_settings) -> None:
 
 def test_each_provider_reads_its_own_tier(stage_settings) -> None:
     stage_settings(provider="bedrock", default="bedrock-default", fast="bedrock-fast")
-    assert model_for_stage(LLMStage.CALENDAR) == "bedrock-fast"
+    assert model_for_stage(LLMStage.LOCATION) == "bedrock-fast"
 
     stage_settings(provider="openai", default="openai-default", fast="openai-fast")
-    assert model_for_stage(LLMStage.CALENDAR) == "openai-fast"
+    assert model_for_stage(LLMStage.LOCATION) == "openai-fast"
 
 
 def test_provider_without_tier_fields_always_uses_its_model(
@@ -217,7 +211,7 @@ def test_missing_model_everywhere_keeps_the_existing_error(stage_settings) -> No
     stage_settings(default="", fast="", quality="")
 
     with pytest.raises(ValueError, match="OPENAI_MODEL"):
-        default_llm(LLMStage.CALENDAR)
+        default_llm(LLMStage.LOCATION)
 
 
 # --- 5. Agent 별 모델 선택과 인스턴스 공유 ----------------------------------------
@@ -236,38 +230,10 @@ def test_agents_in_different_tiers_get_different_models(
 ) -> None:
     stage_settings(fast="cheap-model", quality="good-model")
 
-    assert default_llm(LLMStage.CALENDAR).provider.model == "cheap-model"
+    assert default_llm(LLMStage.LOCATION).provider.model == "cheap-model"
     assert default_llm(LLMStage.PHOTO_DESCRIBE).provider.model == "cheap-model"
     assert default_llm(LLMStage.TIMELINE).provider.model == "good-model"
     assert default_llm(LLMStage.USER_MEMORY).provider.model == "good-model"
-
-
-def test_location_agent_and_its_repair_rerun_use_the_quality_model(
-    stage_settings, fake_openai, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Repair 의 `rerun_event_agent` 도 같은 Agent 를 다시 돌리므로 QUALITY 모델이다(#142)."""
-
-    from types import SimpleNamespace
-
-    from app.agents.events.location.agent import LocationEventAgent
-    from app.agents.repair import tools
-    from app.schemas import AgentEventResult
-
-    stage_settings(fast="cheap-model", quality="good-model")
-
-    seen: list[str] = []
-
-    def fake_generate(self, request):
-        seen.append(self.llm.provider.model)
-        return AgentEventResult()
-
-    monkeypatch.setattr(LocationEventAgent, "generate", fake_generate)
-    agent = LocationEventAgent()
-    ctx = SimpleNamespace(event_agents={"location": agent}, request=None, event_results={})
-
-    tools._rerun_event_agent(ctx, {"agent": "location"})
-
-    assert seen == ["good-model"]
 
 
 def test_same_tier_stages_share_one_provider_instance(
@@ -277,15 +243,15 @@ def test_same_tier_stages_share_one_provider_instance(
 
     stage_settings(fast="cheap-model", quality="good-model")
 
-    calendar = default_llm(LLMStage.CALENDAR).provider
+    location = default_llm(LLMStage.LOCATION).provider
     notification = default_llm(LLMStage.NOTIFICATION).provider
     timeline = default_llm(LLMStage.TIMELINE).provider
     repair = default_llm(LLMStage.REPAIR).provider
 
-    assert calendar is notification
+    assert location is notification
     assert timeline is repair
-    assert calendar is not timeline
-    assert len({id(p) for p in (calendar, notification, timeline, repair)}) == 2
+    assert location is not timeline
+    assert len({id(p) for p in (location, notification, timeline, repair)}) == 2
 
 
 def test_unconfigured_tiers_keep_the_single_provider_singleton(
