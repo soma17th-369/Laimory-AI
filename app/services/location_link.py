@@ -14,7 +14,8 @@
 
 장소 판정은 느슨하다. 시간이 겹친다는 사실이 이미 강한 근거라, 일정·사진이 장소를
 말하는데 체류와 **이름조차 겹치지 않을 때만** 다른 곳으로 본다. 일정은 계획이라 실제로
-다른 곳에 있었을 수 있는데, 그것을 가릴 수 있는 것이 그 장소 정보뿐이다.
+다른 곳에 있었을 수 있는데, 그것을 가릴 수 있는 것이 그 장소 정보뿐이다. 장소를 말하지
+않는 일정에는 그 시간에 가장 오래 머문 장소의 체류만 붙인다(#145).
 """
 
 from collections.abc import Iterator
@@ -34,7 +35,7 @@ from app.schemas import (
     TimelineEventDraft,
 )
 from app.services.place_resolver import calendar_place_label, is_vague_place_label
-from app.services.place_text import places_match
+from app.services.place_text import normalize_place_text, places_match
 from app.services.source_lookup import raw_id_of
 from app.services.validator import parse_datetime, resolve_timezone
 
@@ -212,19 +213,62 @@ def _overlaps(stay: StaySpan, moment: Span) -> bool:
     return stay.start < end and start < stay.end
 
 
+def _stay_place_key(stay: StayItem) -> str:
+    """같은 장소의 체류끼리 묶는 키. 주소가 가장 안정적이라 먼저 쓴다."""
+
+    return normalize_place_text(stay.address or stay.place or next(iter(stay.places), "") or "")
+
+
+def _overlap_seconds(stay: StaySpan, spans: list[Span]) -> float:
+    return sum(
+        max((min(stay.end, end) - max(stay.start, start)).total_seconds(), 0.0)
+        for start, end in spans
+    )
+
+
+def _main_place_stays(stays: list[StaySpan], spans: list[Span]) -> list[StaySpan]:
+    """일정 시간에 가장 오래 머문 장소의 체류만 남긴다(#145).
+
+    장소를 말하지 않는 일정은 다른 곳인지 가릴 수 없어, 11시간짜리 회의 일정에 그 시간의
+    체류가 장소를 가리지 않고 전부 붙었다(회의 장소, 저녁을 먹은 곳, 귀가길의 역). 한 일정의
+    장소는 하나이므로 겹친 시간이 가장 긴 장소를 고른다. 같으면 먼저 머문 곳이다.
+    """
+
+    groups: dict[str, list[StaySpan]] = {}
+    for stay in stays:
+        groups.setdefault(_stay_place_key(stay.item), []).append(stay)
+    if len(groups) < 2:
+        return stays
+    chosen = max(
+        groups.values(),
+        key=lambda group: (
+            sum(_overlap_seconds(stay, spans) for stay in group),
+            -group[0].start.timestamp(),
+        ),
+    )
+    return chosen
+
+
 def stays_for_event(event: TimelineEventDraft, evidence: Evidence) -> list[StaySpan]:
-    """일정·사진 event 의 위치 근거가 될 체류. 시간이 겹치고 장소가 어긋나지 않는다."""
+    """일정·사진 event 의 위치 근거가 될 체류. 시간이 겹치고 장소가 어긋나지 않는다.
+
+    event 가 장소를 말하지 않는 일정이면 그 시간에 가장 오래 머문 장소의 체류만이다.
+    """
 
     moments = list(_evidence_moments(event, evidence))
     if not moments:
         return []
     own = own_place_texts(event, evidence)
-    return [
+    stays = [
         stay
         for stay in evidence.stays
         if any(_overlaps(stay, moment) for moment in moments)
         and place_compatible(own, stay.item)
     ]
+    spans = [(start, end) for start, end in moments if start != end]
+    if own or not spans:
+        return stays
+    return _main_place_stays(stays, spans)
 
 
 def _drop_stale_links(draft: TimelineDraft) -> int:
