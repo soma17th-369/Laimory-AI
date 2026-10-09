@@ -560,3 +560,33 @@ def test_timeline_v3_writes_a_meal_only_from_a_food_photo_or_a_payment() -> None
     assert "`MEAL`이 아니라 장소까지만 쓴 체류입니다" in meal
     # 사진·결제가 없는 식사 약속은 약속 일정으로 남는다.
     assert "없으면 약속 일정 그대로 둡니다" in text
+
+
+def test_timeline_v3_writes_photos_as_what_they_show() -> None:
+    """예시가 `노을을 사진으로 남겼어요` 를 정답으로 보여 줘 식사도 그렇게 끝났다."""
+
+    text = _timeline_v3()
+
+    assert "`반포한강공원에서 노을을 봤어요.`" in _event_type_section("PHOTO_MOMENT")
+    # 금지 문장을 두지 않는다. 활동 동사를 쓰라는 규칙과 예시만 둔다.
+    assert "사진으로 남겼어요" not in text
+    assert "사진은 그것이 보여 주는 활동으로 씁니다(음식 → `먹었어요`, 풍경 → `봤어요`)" in text
+    assert "음식 사진(순두부찌개·만두)만 있음 → `순두부찌개와 만두` / `null` / `순두부찌개와 만두를 먹었어요.`" in (
+        _event_type_section("MEAL")
+    )
+    assert "`튀김 또는 구운 음식`처럼 짐작해 헤지하는" in text
+    assert "`식당`·`가게` 같은 말로도 문장에 장소를 지어내지 않습니다" in text
+
+
+def test_photo_v3_titles_the_activity_not_the_photo() -> None:
+    text = _read("agents/events/photo/prompts/v3/prompt.md")
+
+    assert "남긴 사진" not in text
+    assert "남긴 풍경" not in text
+    assert "촬영했다" not in text
+    # candidate 를 사진 묘사가 아니라 사용자가 한 일로 정의한다. 묘사로 정의하면 `촬영했다` 로 끝난다.
+    assert "사진이 남겨진" not in text
+    assert "촬영된 순간" not in text
+    assert "사진 내용을 근거로 사용자가 무엇을 했는지 쓴 문장입니다" in text
+    assert "사용자가 한 일을 동사로 씁니다(음식 → 먹었다, 풍경 → 봤다)" in text
+    assert "실제로 먹었는지" in text

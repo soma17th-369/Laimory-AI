@@ -742,3 +742,13 @@ def test_repair_v3_turns_a_meal_without_a_photo_or_payment_back() -> None:
     assert "식당·카페는 이 표로 식사를 읽지 않습니다" in section
     assert "음식 사진·결제 없는 `MEAL`은 어긋난 event" in section
     assert "#### `UNSUPPORTED_MEAL`" in text
+
+
+def test_repair_v3_rewrites_a_photo_sentence_as_its_activity() -> None:
+    text = _repair_v3()
+
+    assert "`공덕에서 사진을 남겼어요.`" not in text
+    assert "`식당 테이블에서 순두부찌개를 사진으로 남겼어요.` → `순두부찌개를 먹었어요.`" in text
+    assert "사진은 그것이 보여 주는 활동(음식 → `먹었어요`, 풍경 → `봤어요`)으로 씁니다" in text
+    assert "`튀김 또는 구운 음식`처럼 짐작해 헤지하는" in text
+    assert "`식당`·`가게` 같은 말로도 `place`와 문장에 장소를 지어내지 않습니다" in text
