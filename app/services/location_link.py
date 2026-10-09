@@ -47,7 +47,7 @@ Span = tuple[datetime, datetime]
 EXCLUDED_EVENT_TYPES = frozenset({EventType.MOVEMENT, EventType.SLEEP, EventType.WAKE_UP})
 
 #: 위치만 있는 event 의 근거로 허용하는 종류. 걸음 수는 하루를 덮는 집계라 무엇을 했는지
-#: 말해 주지 않는다.
+#: 말해 주지 않는다. 알림은 따로 가른다(`is_location_only`).
 _LOCATION_ONLY_SOURCES = frozenset({EventSourceType.STAY, EventSourceType.ACTIVITY})
 
 #: 사건을 말해 주는 근거. 알림은 넣지 않는다 — 대화는 어디서든 오므로 그 시간의 체류가
@@ -102,13 +102,49 @@ def collect_evidence(request: TimelineDraftRequest) -> Evidence:
     )
 
 
-def is_location_only(event: TimelineEventDraft) -> bool:
-    """근거가 체류(와 걸음 수)뿐인 event. "여기 있었다" 말고는 말하는 것이 없다."""
+def activity_notification_ids(request: TimelineDraftRequest) -> frozenset[str]:
+    """그 자리에서 한 일을 말하는 알림의 rawId. 결제·예약 앱(메신저가 아닌 정책)의 알림이다.
+
+    나머지 알림 — 메신저, 사전에 없는 앱(YouTube 댓글 등) — 은 어디서든 온다. 체류 카드에
+    붙어 있어도 그곳에서 무엇을 했는지 말하지 않는다(#145).
+    """
+
+    # 앱 분류의 정본은 Notification Agent 의 사전이다(`conversation_guard` 와 같은 이유로
+    # 함수 안에서 가져온다).
+    from app.agents.events.notification.app_dictionary import (
+        match_policy_ids,
+        provides_conversation,
+    )
+
+    found: set[str] = set()
+    for item in request.notifications:
+        policy_ids = match_policy_ids(item.app_name)
+        if policy_ids and not provides_conversation(policy_ids) and (raw_id := raw_id_of(item)):
+            found.add(raw_id)
+    return frozenset(found)
+
+
+def is_location_only(
+    event: TimelineEventDraft, activity_notifications: frozenset[str]
+) -> bool:
+    """근거가 체류(와 걸음 수)뿐인 event. "여기 있었다" 말고는 말하는 것이 없다.
+
+    알림은 보조 근거로 보고 세지 않는다. Timeline 이 그 시간에 온 무관한 알림 하나를 붙이면
+    체류 카드가 체류 카드로 보이지 않아 흡수 후보에서 빠졌다(#145). 다만 결제·예약 알림
+    (`activity_notifications`)은 그 자리에서 한 일을 말하므로 붙어 있으면 체류 카드가 아니다.
+    """
 
     return (
         event.event_type not in EXCLUDED_EVENT_TYPES
         and any(ref.source_type is EventSourceType.STAY for ref in event.source_refs)
-        and all(ref.source_type in _LOCATION_ONLY_SOURCES for ref in event.source_refs)
+        and all(
+            ref.source_type in _LOCATION_ONLY_SOURCES
+            or (
+                ref.source_type is EventSourceType.NOTIFICATION
+                and ref.raw_id not in activity_notifications
+            )
+            for ref in event.source_refs
+        )
     )
 
 
