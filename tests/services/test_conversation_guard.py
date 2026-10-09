@@ -28,6 +28,7 @@ from app.services.conversation_guard import (
 )
 from app.services.draft_repair import repair_draft
 from app.services.timeline_validator import validate_timeline_for_storage
+from app.services.validator import renumber_events
 from tests.fixtures.requests import (
     fixture_raw_id,
     make_request,
@@ -86,9 +87,13 @@ def _kakao(title: str, *indexes: int, start: str = "10:00") -> TimelineEventDraf
 
 
 def _draft(*events) -> TimelineDraft:
-    return TimelineDraft(
+    draft = TimelineDraft(
         user_id="u", date=DAY, timezone="Asia/Seoul", events=list(events)
     )
+    # Timeline Agent 의 draft 처럼 번호가 서로 다르게 한다. 확정 pass 는 중간에 번호를
+    # 다시 매기지 않아(#144) 같은 번호의 event 를 보정 기록에서 가려내지 못한다.
+    renumber_events(draft)
+    return draft
 
 
 def _titles(draft: TimelineDraft) -> list[str]:

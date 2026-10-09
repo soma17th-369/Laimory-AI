@@ -21,6 +21,7 @@ from app.schemas import (
     TimelineWarningSeverity,
 )
 from app.services.validator import (
+    assign_event_ids,
     filter_result_to_window,
     resolve_window_bounds,
     validate_draft_to_window,
@@ -90,7 +91,7 @@ def test_filter_drops_only_outside_candidates():
     assert len(filtered.candidates) == 2
 
 
-def test_validate_draft_drops_outside_and_renumbers():
+def test_validate_draft_drops_outside_and_keeps_the_remaining_ids():
     bounds = _bounds()
     draft = TimelineDraft(
         user_id="u",
@@ -101,7 +102,8 @@ def test_validate_draft_drops_outside_and_renumbers():
     validate_draft_to_window(draft, bounds)
 
     assert len(draft.events) == 1
-    assert draft.events[0].client_event_id == "event-001"  # 재번호 부여
+    # 번호는 확정 pass 끝에서만 준다(#144).
+    assert draft.events[0].client_event_id == "event-002"
     assert any(
         w.severity is TimelineWarningSeverity.HIGH and "범위" in w.message
         for w in draft.warnings
@@ -188,3 +190,50 @@ def test_valid_window_stays_silent(caplog):
         assert resolve_window_bounds(make_request()) is not None
 
     assert _degraded(caplog) == []
+
+
+# --- 번호 부여 (#144) -----------------------------------------------------------
+
+
+def _numbered(*identifiers: str) -> TimelineDraft:
+    return TimelineDraft(
+        user_id="u",
+        date="2026-06-20",
+        timezone="Asia/Seoul",
+        events=[_event(identifier, *INSIDE) for identifier in identifiers],
+    )
+
+
+def _ids(draft: TimelineDraft) -> list[str]:
+    return [event.client_event_id for event in draft.events]
+
+
+def test_assign_event_ids_numbers_from_one_when_nothing_was_issued():
+    draft = _numbered("tmp-a", "tmp-b")
+    issued: set[str] = set()
+
+    assign_event_ids(draft, issued)
+
+    assert _ids(draft) == ["event-001", "event-002"]
+    assert issued == {"event-001", "event-002"}
+
+
+def test_assign_event_ids_keeps_issued_numbers_and_skips_deleted_ones():
+    """지운 번호(event-003)도 장부에 남아 새 event 가 받지 않는다."""
+
+    draft = _numbered("event-002", "calendar-restored-001", "event-001", "event-002-1")
+    issued = {"event-001", "event-002", "event-003"}
+
+    assign_event_ids(draft, issued)
+
+    assert _ids(draft) == ["event-002", "event-004", "event-001", "event-005"]
+    assert issued == {f"event-{n:03d}" for n in range(1, 6)}
+
+
+def test_assign_event_ids_gives_a_new_number_to_a_duplicate():
+    draft = _numbered("event-001", "event-001")
+    issued = {"event-001"}
+
+    assign_event_ids(draft, issued)
+
+    assert _ids(draft) == ["event-001", "event-002"]

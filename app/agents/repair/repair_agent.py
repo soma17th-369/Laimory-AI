@@ -13,9 +13,15 @@ Timeline Agent 가 만든 draft 를 **검토하고 개선해 최종 draft 를 �
     5. 2~4 를 `done` 이거나 반복 상한(`settings.repair_max_iterations`)까지 되풀이한다.
 
 **LLM 은 확정된 draft 만 본다.** 매 반복이 코드 확정으로 끝나므로, 다음 분석은 항상
-정렬·id 가 맞은 상태에서 시작한다. 반대로 정렬·`clientEventId` 재부여·window 강제는
+정렬·id 가 맞은 상태에서 시작한다. 반대로 정렬·`clientEventId` 부여·window 강제는
 도구로 노출하지 않는다(`tools.py` 참고). 결과가 반드시 일관돼야 하는 처리를 LLM 의
 선택에 맡기면, LLM 이 그 도구를 부르지 않는 순간 깨지기 때문이다.
+
+**한 번 준 `clientEventId` 는 Repair 가 끝날 때까지 바뀌지 않는다**(#144). 확정마다
+1번부터 다시 매기면 앞 차례에서 지운 event 만큼 뒤 번호가 당겨지는데, 도구 로그와 쌓인
+보정 기록은 그때의 번호를 그대로 싣는다. 그 번호로 부른 도구가 다른 event 를 고치고
+성공으로 끝났다. 그래서 확정은 새 event 에만 쓴 적 없는 번호를 주고, 지운 번호는 비워
+둔다. 번호는 결과 저장 계약에 없는 AI 서버 안의 값이라 끝난 뒤 다시 맞추지 않는다.
 
 실패는 draft 를 잃지 않는다. LLM 호출·응답 파싱이 실패하면 **마지막으로 확정된
 draft**(첫 확정 또는 마지막 성공 반복의 결과)를 돌려주고 warning 을 남긴다. 개별 도구
@@ -204,7 +210,13 @@ def _confirm(ctx: RepairContext) -> None:
     # 구조인지는 싣지 않는다 — Repair 는 candidate 를 고칠 수 없어 그 지적이 끝까지 남고,
     # 실제 LLM 은 그것을 해소하려고 위반이 아닌 event(20분 이하 체류를 낀 이동)까지 나눴다.
     report = ConfirmReport(sequence=len(ctx.reports) + 1)
-    repair_draft(ctx.draft, ctx.request, report=report, extended=ctx.extended)
+    repair_draft(
+        ctx.draft,
+        ctx.request,
+        report=report,
+        extended=ctx.extended,
+        issued_ids=ctx.issued_ids,
+    )
     ctx.reports.append(report)
     # 확정된 event 를 대상으로 본다. 병합·삭제로 구성이 바뀐 뒤라야 "이 event 의 근거가
     # 정말 fragment 뿐인가" 를 옳게 판정한다.

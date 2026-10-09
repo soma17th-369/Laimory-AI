@@ -38,7 +38,7 @@
 | Timeline Agent 출력 계약 | `TimelineAgentOutput`. Timeline LLM이 쓰는 `events`(`TimelineAgentEvent`)와 `warnings`뿐이다(#118). 코드가 부여하는 `clientEventId`와 Question Agent가 채우는 `question`은 여기 없고, `TimelineEventDraft`가 `TimelineAgentEvent`를 상속해 그 둘을 더한다. |
 | Timeline draft | event, warning과 판단 metadata를 담는 편집 가능한 내부 결과. App Server 저장 request보다 넓다. |
 | Timeline event | 사용자가 읽는 하루의 사건 단위. source에 근거해야 하며 Repair 뒤 시간순 ID를 갖는다. |
-| `clientEventId` | 현재 draft 안에서만 쓰는 `event-NNN` 식별자. 병합·삭제 뒤 코드가 다시 부여하며 App Server result에는 보내지 않는다. |
+| `clientEventId` | AI 서버 안에서만 쓰는 `event-NNN` 식별자. 코드가 부여하며 App Server result에는 보내지 않는다. Repair가 도는 동안 한 번 준 번호는 그 event를 계속 가리키고, 지운 번호는 다시 쓰지 않는다(#144). 연속이거나 시간순이라는 보장은 없다. |
 | Repair Agent | draft를 코드로 확정하고 남은 의미 문제를 LLM tool plan으로 제한 횟수 개선하는 Agent. v3 세트에서는 코드가 이미 본 것을 다시 검증하지 않고 내용과 문장을 다듬는다(#119). |
 | Confirm/확정 pass | `repair_draft`와 fragment 검사를 실행해 source·시간·정렬·ID 등 결정론 규칙을 재적용하는 단계. |
 | Guard | 특정 불변식을 검사·보정하거나 warning으로 드러내는 결정론 service. 모든 guard가 값을 자동 수정하는 것은 아니다. 무엇을 고칠지가 규칙으로 정해져 있으면 고치고, 의미 판단이 필요하면 찾기만 한다. |
