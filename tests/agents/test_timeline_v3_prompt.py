@@ -495,11 +495,10 @@ def test_timeline_v3_keeps_stay_words_times_and_addresses_out_of_titles() -> Non
 
 
 #: 장소만 있을 때 읽는 활동. 이슈 #140 의 대표 장소와 그 eventType 이다. 관광지·시내는
-#: 사용자 결정으로 `REST` 다.
+#: 사용자 결정으로 `REST` 다. 식당은 #148 에서 뺐다 — 식사는 음식 사진·결제로만 쓴다.
 PLACE_ACTIVITY_ROWS = {
     "대학교·학교": "`CLASS`",
     "회사·사무실 건물": "`WORK`",
-    "식당·음식점": "`MEAL`",
     "관광지·도심·번화가": "`REST`",
     "아파트·주택·빌라": "`REST`",
 }
@@ -543,3 +542,21 @@ def test_timeline_v3_type_sections_point_to_the_place_activity_rule(event_type: 
     """규칙은 한 절에 두고 타입 절은 그 절을 가리킨다."""
 
     assert "「장소 성격으로 읽는 활동」" in _event_type_section(event_type)
+
+
+# --- 식사 근거와 사진 문장 (#148) ---------------------------------------------
+
+
+def test_timeline_v3_writes_a_meal_only_from_a_food_photo_or_a_payment() -> None:
+    """체류에 붙는 가게 이름만으로 식사를 쓰면 밤사이 귀가 체류가 `피자성찬에서 식사` 가 된다."""
+
+    text = _timeline_v3()
+    table = place_activity_table(text)
+    meal = _event_type_section("MEAL")
+
+    assert not any("`MEAL`" in row for row in table)
+    assert "식당·카페는 이 표로 식사를 읽지 않습니다" in text
+    assert "음식 사진(메뉴·동석, 정본)이나 음식점 결제 알림(가맹점·시점)이 있어야 `MEAL`입니다" in meal
+    assert "`MEAL`이 아니라 장소까지만 쓴 체류입니다" in meal
+    # 사진·결제가 없는 식사 약속은 약속 일정으로 남는다.
+    assert "없으면 약속 일정 그대로 둡니다" in text

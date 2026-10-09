@@ -146,6 +146,7 @@ def test_repair_v3_names_every_key_the_code_sends(key: str) -> None:
         "LONG_STAY_BETWEEN_MOVEMENTS",
         "DURATION_OVER_LIMIT",
         "LOCATION_ONLY_OVERLAP",
+        "UNSUPPORTED_MEAL",
         "STAY_WORD_IN_TITLE",
         "TIME_IN_TITLE",
         "ADDRESS_IN_NARRATION",
@@ -176,6 +177,7 @@ def test_repair_v3_says_what_to_do_for_every_finding_kind(kind: str) -> None:
         "durationHours",
         "overlappingEvents",
         "coverRatio",
+        "sourceTypes",
         "found",
     ],
 )
@@ -726,3 +728,17 @@ def test_repair_v3_can_pick_another_place_candidate() -> None:
     assert "`sourceRefs`에 넣습니다" in section
     assert "가게를 골라 그곳에서 한 일처럼 쓰지 않습니다" in section
     assert "`PLACE_MISMATCH`" in _between(text, "## 문제 분류", "## 도구 선택")
+
+
+# --- 식사 근거와 사진 문장 (#148) ---------------------------------------------
+
+
+def test_repair_v3_turns_a_meal_without_a_photo_or_payment_back() -> None:
+    """trace 에서 근거 없는 식사를 만든 것은 Repair 자신이었다(`장소 성격상 식사로 읽힌다`)."""
+
+    text = _repair_v3()
+    section = _between(text, "#### 장소 성격으로 읽는 활동", "#### 장소 후보 다시 고르기")
+
+    assert "식당·카페는 이 표로 식사를 읽지 않습니다" in section
+    assert "음식 사진·결제 없는 `MEAL`은 어긋난 event" in section
+    assert "#### `UNSUPPORTED_MEAL`" in text
