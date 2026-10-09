@@ -210,6 +210,75 @@ def test_a_photo_is_linked_only_to_the_stay_that_holds_its_taken_time() -> None:
     ]
 
 
+def _placeless_meeting_request():
+    """장소 없는 11시간 회의 일정과 그 시간의 여러 장소 체류 (#145, trace 468)."""
+
+    def stay(raw_id: str, start: str, end: str, place: str, address: str):
+        return stay_item(
+            1, raw_id=raw_id, start=_local(start), end=_local(end), places=[place], address=address
+        )
+
+    return make_request(
+        stays=[
+            stay("stay-post-1", "12:08", "14:38", "포스트타워마포", "서울특별시 마포구 마포대로 89"),
+            stay("stay-post-2", "14:44", "15:28", "포스트타워마포", "서울특별시 마포구 마포대로 89"),
+            stay("stay-gongdeok", "17:57", "18:37", "공덕더샵아파트", "서울특별시 마포구 백범로 170"),
+            stay("stay-post-3", "20:13", "20:36", "포스트타워마포", "서울특별시 마포구 마포대로 89"),
+            stay("stay-station", "22:34", "22:59", "서울역", "서울특별시 용산구 청파로 378"),
+        ],
+        calendars=[
+            calendar_item(
+                1, "정기 회의", start=_local("12:00"), end=_local("23:00"), raw_id="cal-meeting"
+            )
+        ],
+    )
+
+
+def test_a_placeless_calendar_gets_only_the_stays_of_its_main_place() -> None:
+    request = _placeless_meeting_request()
+    draft = _draft(_event("event-001", "12:00", "23:00", (CALENDAR, "cal-meeting")))
+
+    link_location_evidence(draft, request)
+
+    assert _raw_ids(draft.events[0]) == [
+        fixture_raw_id("cal-meeting"),
+        fixture_raw_id("stay-post-1"),
+        fixture_raw_id("stay-post-2"),
+        fixture_raw_id("stay-post-3"),
+    ]
+
+
+def test_v3_confirm_reports_the_main_place_stay_card_and_keeps_the_others() -> None:
+    request = _placeless_meeting_request()
+    draft = _draft(
+        _event(
+            "event-001",
+            "12:00",
+            "23:00",
+            (CALENDAR, "cal-meeting"),
+            event_type=EventType.CALENDAR_EVENT,
+            title="정기 회의",
+        ),
+        _event("event-002", "12:08", "15:28", (STAY, "stay-post-1"), (STAY, "stay-post-2")),
+        _event("event-003", "17:57", "18:37", (STAY, "stay-gongdeok")),
+    )
+    report = ConfirmReport()
+
+    confirmed = repair_draft(draft, request, report=report, extended=True)
+
+    meeting = next(event for event in confirmed.events if event.title == "정기 회의")
+    post_card = next(
+        event for event in confirmed.events if fixture_raw_id("stay-post-1") in _raw_ids(event)
+        and event is not meeting
+    )
+    assert meeting.place == "포스트타워마포"
+    assert fixture_raw_id("stay-gongdeok") not in _raw_ids(meeting)
+    # 공덕 체류는 회의 장소와 어긋나 흡수 후보가 아니다. 자기 카드로 남는다.
+    (finding,) = [item for item in report.findings if item["kind"] == "LOCATION_ONLY_OVERLAP"]
+    assert finding["clientEventId"] == post_card.client_event_id
+    assert len(confirmed.events) == 3
+
+
 def test_linking_twice_adds_nothing_more() -> None:
     request = _dentist_request()
     draft = _draft(_event("event-001", "14:00", "15:00", (CALENDAR, "cal-dentist")))
@@ -287,6 +356,90 @@ def test_a_notification_only_event_is_not_a_target() -> None:
     assert find_location_only_overlaps(draft, request) == []
 
 
+def _meeting_with_noted_stay_request(app_name: str):
+    """회의 일정과 같은 시간의 체류, 그 사이에 온 알림 하나 (#145, trace 468)."""
+
+    return make_request(
+        stays=[
+            stay_item(
+                1,
+                raw_id="stay-post",
+                start=_local("12:08"),
+                end=_local("15:28"),
+                place="포스트타워마포",
+                places=["포스트타워마포"],
+            )
+        ],
+        calendars=[
+            calendar_item(
+                1, "정기 회의", start=_local("12:00"), end=_local("16:00"), raw_id="cal-meeting"
+            )
+        ],
+        notifications=[
+            notification_item(1, app_name, "알림", posted=_local("13:09"), raw_id="noti-1")
+        ],
+    )
+
+
+def _meeting_with_noted_stay_draft() -> TimelineDraft:
+    return _draft(
+        _event(
+            "event-001",
+            "12:00",
+            "16:00",
+            (CALENDAR, "cal-meeting"),
+            event_type=EventType.CALENDAR_EVENT,
+        ),
+        _event(
+            "event-002",
+            "12:08",
+            "15:28",
+            (STAY, "stay-post"),
+            (NOTIFICATION, "noti-1"),
+            event_type=EventType.REST,
+        ),
+    )
+
+
+@pytest.mark.parametrize("app_name", ["YouTube", "카카오톡"])
+def test_a_stay_card_with_an_unrelated_notification_is_still_reported(app_name: str) -> None:
+    # 사전에 없는 앱이나 메신저의 알림은 어디서든 온다. 붙어 있어도 체류 카드다.
+    request = _meeting_with_noted_stay_request(app_name)
+    draft = _meeting_with_noted_stay_draft()
+
+    [overlap] = find_location_only_overlaps(draft, request)
+
+    assert overlap.event.client_event_id == "event-002"
+    assert [target.event.client_event_id for target in overlap.targets] == ["event-001"]
+
+
+@pytest.mark.parametrize("app_name", ["토스", "캐치테이블", "메시지"])
+def test_a_stay_card_with_a_payment_or_reservation_notification_is_not_reported(
+    app_name: str,
+) -> None:
+    # 결제·예약 알림은 그 자리에서 한 일을 말한다. 그런 event 는 체류 카드가 아니다.
+    request = _meeting_with_noted_stay_request(app_name)
+    draft = _meeting_with_noted_stay_draft()
+
+    assert find_location_only_overlaps(draft, request) == []
+    with pytest.raises(DraftEditError, match="체류뿐인 event 가 아닙니다"):
+        absorb_location_event(draft, request, "event-002", "event-001")
+
+
+def test_absorbing_a_stay_card_carries_its_unrelated_notification_along() -> None:
+    request = _meeting_with_noted_stay_request("YouTube")
+    draft = _meeting_with_noted_stay_draft()
+
+    target = absorb_location_event(draft, request, "event-002", "event-001")
+
+    assert [event.client_event_id for event in draft.events] == ["event-001"]
+    assert _raw_ids(target) == [
+        fixture_raw_id("cal-meeting"),
+        fixture_raw_id("stay-post"),
+        fixture_raw_id("noti-1"),
+    ]
+
+
 # --- 흡수 도구 --------------------------------------------------------------------
 
 
@@ -303,7 +456,7 @@ def test_absorbing_moves_the_stay_and_widens_the_event_so_no_time_is_lost() -> N
         ),
     )
 
-    target = absorb_location_event(draft, "event-001", "event-002")
+    target = absorb_location_event(draft, make_request(), "event-001", "event-002")
 
     assert [event.client_event_id for event in draft.events] == ["event-002"]
     assert target.title == "치과 검진"
@@ -318,7 +471,7 @@ def test_absorbing_does_not_duplicate_an_already_cited_stay() -> None:
         _event("event-002", "14:00", "15:00", (CALENDAR, "cal-dentist"), (STAY, "stay-dentist")),
     )
 
-    target = absorb_location_event(draft, "event-001", "event-002")
+    target = absorb_location_event(draft, make_request(), "event-001", "event-002")
 
     assert _raw_ids(target).count(fixture_raw_id("stay-dentist")) == 1
 
@@ -344,7 +497,7 @@ def test_absorbing_refuses_what_would_lose_an_event_or_time(
     )
 
     with pytest.raises(DraftEditError, match=message):
-        absorb_location_event(draft, source, into)
+        absorb_location_event(draft, make_request(), source, into)
     assert len(draft.events) == 5
 
 

@@ -31,7 +31,11 @@ from app.schemas import (
     TimelineDraftRequest,
     TimelineEventDraft,
 )
-from app.services.location_link import has_event_evidence, is_location_only
+from app.services.location_link import (
+    activity_notification_ids,
+    has_event_evidence,
+    is_location_only,
+)
 from app.services.meal_guard import MEAL_MAX_DURATION
 from app.services.validator import parse_datetime, resolve_timezone
 
@@ -129,19 +133,22 @@ def delete_event(draft: TimelineDraft, client_event_id: str) -> TimelineEventDra
 
 
 def absorb_location_event(
-    draft: TimelineDraft, client_event_id: str, into_client_event_id: str
+    draft: TimelineDraft,
+    request: TimelineDraftRequest,
+    client_event_id: str,
+    into_client_event_id: str,
 ) -> TimelineEventDraft:
     """위치만 있는 event 를 일정·사진 event 에 흡수한다(in-place). 흡수한 event 를 돌려준다.
 
     같은 방문을 두 번 그린 카드인지는 Repair 가 판단한다. 여기서는 정해진 흡수를 그대로
-    적용한다 — 체류 근거를 옮기고(디듀프), 대상의 시간을 체류까지 넓혀 하루에 빈칸이
+    적용한다 — 체류 근거와 함께 붙어 있던 보조 알림을 옮기고(디듀프), 대상의 시간을 체류까지 넓혀 하루에 빈칸이
     생기지 않게 한 뒤, 위치만 있는 event 를 지운다. 대상의 제목·본문·eventType 은 바꾸지
     않는다. 체류를 담아 고쳐 쓸 문장은 Repair 가 `update_event` 로 정한다.
 
     거절하는 경우(원본은 건드리지 않는다):
 
-    - 흡수되는 쪽이 위치만 있는 event 가 아니다. 일정·사진·알림이 있는 event 는 코드가
-      지우지 않는다.
+    - 흡수되는 쪽이 위치만 있는 event 가 아니다. 일정·사진이나 결제·예약 알림이 있는
+      event 는 코드가 지우지 않는다(`is_location_only`).
     - 대상이 일정·사진 event 가 아니다.
     - 둘의 시간이 겹치지 않는다.
     - 대상이 `MEAL` 인데 넓힌 시간이 60분을 넘는다. 다음 확정에서 `meal_guard` 가 잘라
@@ -154,10 +161,10 @@ def absorb_location_event(
     source = find_event(draft, client_event_id)
     target = find_event(draft, into_client_event_id)
 
-    if not is_location_only(source):
+    if not is_location_only(source, activity_notification_ids(request)):
         raise DraftEditError(
-            f"{client_event_id} 는 근거가 체류뿐인 event 가 아닙니다. 일정·사진·알림이 "
-            "있는 event 는 흡수할 수 없습니다."
+            f"{client_event_id} 는 근거가 체류뿐인 event 가 아닙니다. 일정·사진이나 "
+            "결제·예약 알림이 있는 event 는 흡수할 수 없습니다."
         )
     if not has_event_evidence(target):
         raise DraftEditError(

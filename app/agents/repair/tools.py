@@ -257,7 +257,7 @@ def _absorb_location_event(ctx: RepairContext, args: dict) -> str:
         raise RepairToolError("clientEventId 와 intoClientEventId 인자가 필요합니다.")
 
     target = absorb_location_event(
-        ctx.draft, str(client_event_id), str(into_client_event_id)
+        ctx.draft, ctx.request, str(client_event_id), str(into_client_event_id)
     )
     return (
         f"{client_event_id} 를 {into_client_event_id}({target.title}) 에 흡수했습니다. "
@@ -419,8 +419,9 @@ _TOOLS: dict[str, RepairTool] = {
                 'intoClientEventId="event-003")'
             ),
             description=(
-                "근거가 체류뿐인 event(clientEventId)를 같은 방문을 그린 일정·사진 "
-                "event(intoClientEventId)에 흡수한다. 체류 근거를 옮기고 대상의 시간을 "
+                "근거가 체류뿐인 event(clientEventId, 결제·예약이 아닌 알림이 붙어 있어도 "
+                "된다)를 같은 방문을 그린 일정·사진 event(intoClientEventId)에 흡수한다. "
+                "체류 근거와 그 알림을 옮기고 대상의 시간을 "
                 "체류까지 넓힌 뒤 체류 event 를 지운다. 대상의 제목·본문·eventType 은 "
                 "바꾸지 않는다. 흡수하면 MEAL 이 60분을 넘으면 거절한다."
             ),
