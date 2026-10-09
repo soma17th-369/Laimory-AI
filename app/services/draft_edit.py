@@ -6,14 +6,14 @@ Repair Agent 가 "이 event 의 이 필드를 이렇게 고쳐라", "이 event �
 event 의 지정한 필드에만 닿고, 나머지 값은 원본 그대로 남는다.
 
 바꿀 수 있는 필드는 `_EDITABLE_FIELDS` 로 한정한다. `clientEventId` 는 편집 대상이
-아니다. 그 id 는 repair 파이프라인이 정렬 결과에 맞춰 다시 부여하는 값이라
-(`validator.renumber_events`), LLM 이 임의로 바꾸면 같은 계획 안의 다음 도구 호출과
-Question Agent 가 가리키는 곳이 어긋난다.
+아니다. 그 id 는 확정 pass 가 주는 값이라(`validator.assign_event_ids`), LLM 이 임의로
+바꾸면 같은 계획 안의 다음 도구 호출과 Question Agent 가 가리키는 곳이 어긋난다.
 
 여기서는 **id 를 다시 매기지 않는다.** 한 번의 개선 계획이 여러 도구 호출을 담기
 때문이다. 삭제할 때마다 번호를 다시 매기면 같은 계획 안의 다음 호출이 가리키는
-`clientEventId` 가 다른 event 를 뜻하게 된다. 번호 재부여는 도구 실행이 모두 끝난 뒤
-`repair_draft` 가 한 번에 한다.
+`clientEventId` 가 다른 event 를 뜻하게 된다. 새로 생긴 event(split 조각)의 번호는 도구
+실행이 모두 끝난 뒤 `repair_draft` 가 준다. 이미 준 번호는 Repair 가 끝날 때까지 바뀌지
+않는다(#144).
 """
 
 from datetime import datetime, timedelta
@@ -384,7 +384,7 @@ def split_event(
     없으면 원본을 **건드리지 않고** `DraftEditError` 를 던진다. 마지막 것은 조각이 덮지
     않은 시간의 체류나 이동이 하루에서 조용히 사라지는 것을 막는다.
 
-    조각의 id 는 임시 값이다(`event-003-1`). 확정 pass 가 정렬 후 다시 매긴다.
+    조각의 id 는 임시 값이다(`event-003-1`). 확정 pass 가 쓴 적 없는 새 번호를 준다.
     """
 
     event = find_event(draft, client_event_id)

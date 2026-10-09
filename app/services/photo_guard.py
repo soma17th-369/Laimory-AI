@@ -203,7 +203,7 @@ class PhotoEnforcement:
 
     @property
     def changed_composition(self) -> bool:
-        """event 가 생기거나 사라졌는가. 그랬다면 정렬과 id 를 다시 매겨야 한다."""
+        """event 가 생기거나 사라졌는가. 그랬다면 정렬하고 새 event 에 id 를 줘야 한다."""
 
         return bool(self.created or self.removed)
 
@@ -303,7 +303,7 @@ def _create_event(
 ) -> TimelineEventDraft:
     moment = _created_time(taken, request, tz)
     return TimelineEventDraft(
-        # 임시 id 다. 확정 마지막의 `renumber_events` 가 정렬 후 다시 매긴다.
+        # 임시 id 다. 확정 마지막이 정식 번호를 준다.
         client_event_id=f"event-photo-{sequence:03d}",
         event_type=EventType.PHOTO_MOMENT,
         title=_CREATED_TITLE,

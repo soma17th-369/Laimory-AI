@@ -14,7 +14,7 @@ Repair Agent 가 event 를 고치거나 상류 Agent 를 다시 돌리면 그 �
 LLM 이 "무엇을 다시 확정해야 하는지" 골라 부를 수 있어야 한다. 로직을 복제하지 않고
 같은 함수를 그대로 부른다.
 
-**정렬·`clientEventId` 재부여·window 강제는 도구가 아니다.** 그 셋은 결과가 반드시
+**정렬·`clientEventId` 부여·window 강제는 도구가 아니다.** 그 셋은 결과가 반드시
 일관돼야 하는 처리라 LLM 의 선택지로 두지 않는다. Repair Agent 는 매 반복이 끝날 때
 `repair_draft` 를 통째로 다시 돌리고, 그 안에서 코드가 항상 확정한다.
 
@@ -105,6 +105,10 @@ class RepairContext:
     #: v3 세트의 입력과 도구를 쓰는가(이슈 #119). 거짓이면 Repair 가 보는 입력과 도구가
     #: 예전 그대로다. 값은 Repair Agent 가 프롬프트 세트를 보고 정한다.
     extended: bool = False
+    #: 지금까지 준 `clientEventId` 의 장부(이슈 #144). `_confirm` 이 `repair_draft` 에 넘긴다.
+    #: 한 번 준 번호는 Repair 가 끝날 때까지 그 event 를 가리키고, 지운 번호는 다시 쓰지
+    #: 않는다. 도구 로그와 쌓인 보정 기록은 실행 당시의 번호를 그대로 싣기 때문이다.
+    issued_ids: set[str] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -351,7 +355,12 @@ def _rerun_timeline_agent(ctx: RepairContext, args: dict) -> str:
 
     merged = merge_event_results(list(ctx.event_results.values()), ctx.request)
     with execution_scope(ExecutionStage.TIMELINE_AGENT, agent="timeline"):
-        ctx.draft = ctx.timeline_agent.generate(ctx.request, merged)
+        draft = ctx.timeline_agent.generate(ctx.request, merged)
+    # 새 draft 는 `event-001` 부터 번호를 갖고 온다. 그대로 두면 로그와 보정 기록에 남은 옛
+    # 번호가 새 event 를 가리킨다(#144). 임시 id 로 바꿔 다음 확정에서 새 번호를 받게 한다.
+    for index, event in enumerate(draft.events, start=1):
+        event.client_event_id = f"rerun-{index:03d}"
+    ctx.draft = draft
     return (
         f"Timeline Agent 를 다시 돌려 draft 를 새로 만들었습니다: "
         f"events={len(ctx.draft.events)}건. 이전 draft 의 수정 내용은 남지 않습니다."

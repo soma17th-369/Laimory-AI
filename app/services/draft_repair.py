@@ -29,7 +29,8 @@ repair 순서와 이유:
    12. `검사`            : 고치지 않고 찾기만 한다. 사진·알림 안전성, 문장 길이, 타입별
                            지속시간, event 개수, 이동 사이 장시간 체류, (v3) 일정·사진과
                            겹치는 위치만 있는 event, 제목의 체류·시각과 문장의 주소 모양.
-   13. `clientEventId`   : 최종 정렬 결과에 1번부터 다시 부여한다.
+   13. `clientEventId`   : 새 event 에만 번호를 준다. Repair 가 돌 때는 이미 준 번호를
+                           유지하고 지운 번호도 다시 쓰지 않는다(#144). 번호는 여기서만 준다.
 
 1~11 은 draft 를 고치고 12 는 고치지 않는다. **무엇을 고칠지가 규칙으로 정해져 있으면
 코드가 고치고, 어디서 끊고 무엇을 남길지가 의미 판단이면 찾아서 Repair 에 넘긴다.**
@@ -112,6 +113,7 @@ from app.services.source_lookup import normalize_source_types, raw_id_of
 from app.services.source_integrity import filter_draft_sources
 from app.services.stay_merge import mergeable_stay_groups
 from app.services.validator import (
+    assign_event_ids,
     parse_datetime,
     renumber_events,
     resolve_timezone,
@@ -692,6 +694,7 @@ def repair_draft(
     *,
     report: ConfirmReport | None = None,
     extended: bool = True,
+    issued_ids: set[str] | None = None,
 ) -> TimelineDraft:
     """LLM 이 만든 draft 를 코드로 확정한다(in-place, 같은 객체를 돌려준다).
 
@@ -701,6 +704,11 @@ def repair_draft(
     `extended` 는 v3 프롬프트가 정한 규칙을 적용할지다. 거짓이면 #119 의 검사와 대화 개수
     제한을 돌리지 않는다. 사진 단일 귀속은 이 값과 무관하게 어느 세트에서든 강제한다.
     Repair Agent 가 프롬프트 세트를 보고 정해 넘긴다.
+
+    `issued_ids` 는 지금까지 준 `clientEventId` 의 장부다(#144). 주면 이미 준 번호는
+    그대로 두고 새 event 에만 쓴 적 없는 번호를 준다(`assign_event_ids`). Repair 가 반복마다
+    넘겨, 도구 로그와 쌓인 보정 기록의 번호가 끝까지 같은 event 를 가리키게 한다. 주지
+    않으면 1번부터 다시 매긴다.
     """
 
     report = report if report is not None else ConfirmReport()
@@ -713,9 +721,13 @@ def repair_draft(
 
     _inspect(draft, request, report, extended=extended)
 
-    # 병합으로 event 구성이 바뀌었을 수 있어 한 번 더 정렬한 뒤 최종 id 를 부여한다.
+    # 병합으로 event 구성이 바뀌었을 수 있어 한 번 더 정렬한 뒤 id 를 부여한다.
+    # 번호는 여기서만 준다. 중간 guard 는 event 를 지워도 번호를 다시 매기지 않는다(#144).
     sort_events(draft)
-    renumber_events(draft)
+    if issued_ids is None:
+        renumber_events(draft)
+    else:
+        assign_event_ids(draft, issued_ids)
     report.finish(draft)
 
     logger.debug(
@@ -737,7 +749,9 @@ def enforce_final_photo_assignment(
     사라진다.
     """
 
+    # 남아 있는 event 의 번호는 바꾸지 않고 새로 만든 사진 event 에만 번호를 준다(#144).
+    issued = {event.client_event_id for event in draft.events}
     enforcement = enforce_photo_assignment(draft, request)
     if enforcement.changed_composition:
         sort_events(draft)
-        renumber_events(draft)
+        assign_event_ids(draft, issued)
