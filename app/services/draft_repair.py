@@ -95,7 +95,7 @@ from app.services.event_count_guard import (
 )
 from app.services.location_link import link_location_evidence
 from app.services.location_only_overlap import find_location_only_overlaps
-from app.services.meal_guard import enforce_meal_duration
+from app.services.meal_guard import enforce_meal_duration, find_unsupported_meals
 from app.services.movement_stay_guard import verify_movement_stay_boundary
 from app.services.narrative_guard import verify_narrative_length
 from app.services.narrative_place_guard import (
@@ -684,6 +684,12 @@ def _inspect(
     # 겹치는 event 의 clientEventId 는 최종 id 가 매겨진 뒤에 굳힌다(#138).
     for overlap in find_location_only_overlaps(draft, request):
         report.add_finding("LOCATION_ONLY_OVERLAP", overlap.detail, event=overlap.event)
+    for meal in find_unsupported_meals(draft):
+        report.add_finding(
+            "UNSUPPORTED_MEAL",
+            {"sourceTypes": sorted({ref.source_type.value for ref in meal.source_refs})},
+            event=meal,
+        )
     for label in find_narrative_labels(draft):
         report.add_finding(label.kind, label.detail(), event=label.event)
 

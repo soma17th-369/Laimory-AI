@@ -196,3 +196,25 @@ def enforce_meal_duration(draft: TimelineDraft, request: TimelineDraftRequest) -
             _minutes(before),
             _minutes(after),
         )
+
+
+#: 식사가 있었다고 말해 주는 근거의 종류. 시점 근거(`_anchor_times`)와 같은 둘이다.
+_MEAL_EVIDENCE = (EventSourceType.PHOTO, EventSourceType.NOTIFICATION)
+
+
+def find_unsupported_meals(draft: TimelineDraft) -> list[TimelineEventDraft]:
+    """음식 사진도 결제 알림도 근거로 갖지 않은 `MEAL` 을 찾는다(#148, v3 세트). 고치지 않는다.
+
+    v3 는 장소 이름만으로 식사를 쓰지 않는다. 체류에 붙는 장소명은 그 지점의 역지오코딩
+    후보라 집 근처 가게 이름이 들어오기 쉽고, 그 이름으로 만든 식사가 그대로 하루 기록이
+    된다(실측: 밤사이 귀가 체류가 `피자성찬에서 식사` 가 됐다). 사진이 음식인지, 알림이
+    음식 결제인지는 가리지 않는다 — 코드가 알 수 없어 근거가 아예 없는 것만 짚는다.
+    무엇으로 되돌릴지(체류, 약속 일정)는 Repair 가 판단한다.
+    """
+
+    return [
+        event
+        for event in draft.events
+        if event.event_type is EventType.MEAL
+        and not any(ref.source_type in _MEAL_EVIDENCE for ref in event.source_refs)
+    ]
