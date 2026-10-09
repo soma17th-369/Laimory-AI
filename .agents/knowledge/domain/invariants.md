@@ -85,7 +85,7 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 - event/candidate의 end는 start보다 빠를 수 없다.
 - 접수 request의 window가 정본이며 완전히 밖인 candidate/event는 제외하고 경계에 걸친 구간은 clamp한다.
 - 수면 외 일반 event는 알려진 기상 경계 이전으로 확정하지 않는다. 경계를 알 수 없으면 시간을 지어내지 않는다.
-- MEAL duration은 20~60분 범위로 제한하는 전용 guard가 맡는다. 시점 근거(사진·결제 알림)가 없는 MEAL은 길이와 무관하게 confidence를 0.6 이하로 묶는다(#118). 캘린더만 근거인 식사도 같다.
+- MEAL duration은 20~60분 범위로 제한하는 전용 guard가 맡는다. 시점 근거(사진·결제 알림)가 없는 MEAL은 길이와 무관하게 confidence를 0.6 이하로 묶는다(#118). 캘린더만 근거인 식사도 같다. v3 세트는 장소 이름만으로 `MEAL`을 쓰지 않는다(#148) — 음식 사진이나 결제 알림이 있어야 하고, 사진·알림 근거가 아예 없는 `MEAL`은 확정 pass가 `UNSUPPORTED_MEAL`로 찾아 Repair가 체류(장소까지만)나 약속 일정으로 되돌린다. 사진이 음식인지, 알림이 음식 결제인지는 코드가 가리지 않는다.
 - eventType별 검토 기준(`docs/ai-event-candidate.md`)을 넘는 event는 LOW warning으로 드러내되 코드가 임의 분할·절단하지 않는다(#119). 이 값은 자르는 상한이 아니라 묻힌 사건이 있는지 다시 보라는 기준이고, 길이만으로는 event를 나누지 않는다(#134). 나누는 것은 독립 사건이 근거와 함께 흡수됐을 때와 이동이 끼었을 때뿐이며, 앞의 경우는 기준 아래여도 나눈다. 값의 코드 정본은 `duration_guard.DURATION_LIMITS` 표 하나이고 모든 eventType을 한 줄씩 적는다. 기본값을 두지 않으므로 새 eventType은 표에 적어야 하고, 프롬프트·문서가 같은 값을 말하는지는 테스트가 본다. 값이 `None`인 종류(Calendar, Movement, Sleep, WakeUp, Meal)는 이 검사에서 제외한다. 캘린더 근거가 있고 event 길이가 그 일정의 길이를 넘지 않으면 타입과 무관하게 면제하고, MOVEMENT 근거가 있는 `EXERCISE`(산책)도 면제한다. 근거가 전부 한 묶음(이동 없이 같은 장소에서 이어진 STAY)의 체류인 event도 면제한다 — 확정 pass가 그런 event를 하나로 합치므로 나눠도 다시 합쳐져 Repair가 고칠 수 없다. v1·v2 세트에서는 예전처럼 일괄 3시간으로 재고 이 세 면제도 없다.
 - 하나의 candidate·event가 `MOVEMENT → 20분을 넘는 STAY → MOVEMENT`를 함께 품으면 위반이다(#119). 기준은 Location 파생 지표의 `SHORT_STAY_MAX` 하나이고, 역·터미널·공항에서의 환승·대기도, 같은 캠퍼스 안에서 옮겨 다닌 이동도 20분을 넘으면 예외가 없다(같은 생활 공간이라는 이유로 면제하지 않는 것은 #134에서 사용자가 정했다). eventType을 가리지 않는다. 코드는 찾기만 하고 나누는 것은 Repair가 한다. 20분 이하 STAY를 낀 연속 이동은 그대로 둔다. v3 세트에서만 검사한다.
 - 최종 event는 10개를 넘지 않는다(#118). 초과는 MEDIUM warning으로 드러내고 코드가 자르지 않는다 — 무엇을 합칠지는 의미 판단이다. 10개는 Timeline·Repair v3 프롬프트가 지시하는 값이고, 개수 지시가 없는 v1·v2 세트는 예전 값 24개로 잰다.
@@ -117,7 +117,7 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 
 - 최종 Timeline·Repair title/description은 사용자가 읽는 1인칭 해요체 과거형 일기다.
 - title은 30자 이내 명사구, description은 1~2문장 100자 안팎을 목표로 하며 120자 초과는 warning이다.
-- 최종 문장에 `듯해요` 같은 hedge와 분 단위 시각·걸음 수 같은 원본 수치를 쓰지 않는다. `알 수 없어요`·`확인되지 않았어요`처럼 모른다고 밝히는 문장도 같은 규칙이다(#142). 모르는 내용은 빼고 uncertainty에 적으며, 확신 정도는 confidence·inferenceLevel로 표현한다. Event Agent v3도 근거 한계를 candidate `description`이 아니라 `uncertainty`에 둔다 — Timeline이 `description`의 한계 문장을 해요체로 옮겼다.
+- 최종 문장에 `듯해요` 같은 hedge와 분 단위 시각·걸음 수 같은 원본 수치를 쓰지 않는다. `알 수 없어요`·`확인되지 않았어요`처럼 모른다고 밝히는 문장도 같은 규칙이다(#142). 모르는 내용은 빼고 uncertainty에 적으며, 확신 정도는 confidence·inferenceLevel로 표현한다. Event Agent v3도 근거 한계를 candidate `description`이 아니라 `uncertainty`에 둔다 — Timeline이 `description`의 한계 문장을 해요체로 옮겼다. 사진 근거는 사진 내용을 근거로 사용자가 한 일로 쓴다(음식→`먹었어요`, 풍경→`봤어요`, #148). Timeline·Repair는 Photo candidate 문장을 옮기므로 이 기준은 Photo v3가 candidate `description`을 사용자가 한 일로 정의하는 데서 나온다. 사진에 무엇이 보였는지는 `sourceRefs.reason`에 둔다.
 - 이 문장 규칙은 Event Agent의 정확한 사실 보고에는 적용하지 않는다.
 - v3 Timeline의 description은 시간 표현 없이 어디서·무엇을 했는지를 쓴다(#118). 언제는 `startTime`·`endTime`이 담는다. v2는 그대로다.
 - 병합·문장 수정이 끝난 뒤 길이·duration·event 개수·이동 사이 체류·대화 개수를 검사하고, 반복마다 stale warning을 제거해 다시 계산한다.

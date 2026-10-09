@@ -21,6 +21,7 @@ from app.services.meal_guard import (
     MEAL_MAX_DURATION,
     MEAL_MIN_DURATION,
     enforce_meal_duration,
+    find_unsupported_meals,
 )
 from tests.fixtures.requests import (
     calendar_item,
@@ -278,3 +279,39 @@ def test_adjustment_leaves_a_warning_with_before_and_after_minutes():
     assert "180분에서 20분으로" in warning.message
     assert "카페에서 점심 식사" in warning.message
     assert warning.source_refs  # 어떤 근거의 event였는지 남긴다.
+
+
+# --- 근거 없는 식사 (#148) ---------------------------------------------------
+
+
+def test_a_meal_without_a_photo_or_notification_is_unsupported():
+    """장소 이름만으로 만든 식사. 체류에 붙는 가게 이름은 집 근처 가게일 수 있다."""
+
+    stay_only = _event(STAY_REF)
+    with_photo = _event(STAY_REF, PHOTO_REF)
+    with_notification = _event(NOTIFICATION_REF)
+    calendar_only = _event((EventSourceType.CALENDAR, "cal-1"))
+    not_a_meal = _event(STAY_REF, event_type=EventType.UNKNOWN)
+
+    found = find_unsupported_meals(
+        _draft(stay_only, with_photo, with_notification, calendar_only, not_a_meal)
+    )
+
+    # 사진이 음식인지, 알림이 음식 결제인지는 가리지 않는다. 근거가 아예 없는 것만 짚는다.
+    assert found == [stay_only, calendar_only]
+
+
+def test_only_the_v3_confirm_reports_an_unsupported_meal():
+    from app.services.confirm_report import ConfirmReport
+    from app.services.draft_repair import repair_draft
+
+    def run(extended: bool) -> ConfirmReport:
+        report = ConfirmReport()
+        repair_draft(
+            _draft(_event(STAY_REF)), _request(photo_taken=None), report=report, extended=extended
+        )
+        return report
+
+    (finding,) = [item for item in run(True).findings if item["kind"] == "UNSUPPORTED_MEAL"]
+    assert finding["sourceTypes"] == ["STAY"]
+    assert not any(item["kind"] == "UNSUPPORTED_MEAL" for item in run(False).findings)
