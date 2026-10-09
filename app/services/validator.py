@@ -205,12 +205,13 @@ def renumber_events(draft: TimelineDraft) -> None:
 def validate_draft_to_window(draft: TimelineDraft, bounds: WindowBounds) -> None:
     """draft 의 event 시간을 검증한다(in-place).
 
-    - 완전히 window 밖인 event 는 제거하고 `clientEventId` 를 다시 매긴다.
+    - 완전히 window 밖인 event 는 제거한다. 남은 event 의 `clientEventId` 는 건드리지
+      않는다 — 번호는 확정 pass 끝에서만 준다(#144). 여기서 다시 매기면 Repair 가 이
+      검증을 도구로 부른 뒤 같은 계획의 다음 호출이 다른 event 를 가리킨다.
     - 경계에 걸친 event 는 유지하되 warning 을 남긴다.
 
     warning 은 `clientEventId` 대신 **제목**으로 event 를 가리킨다. 이 검증 뒤에
-    repair 가 event 를 다시 정렬하고 id 를 다시 매기므로, 여기서 적어 둔 id 는
-    사용자가 볼 때쯤이면 다른 event 를 가리킨다.
+    확정 pass 가 event 를 합치거나 지우고 새 event 에 번호를 주므로, 제목이 더 오래 맞는다.
     """
 
     kept = []
@@ -232,7 +233,6 @@ def validate_draft_to_window(draft: TimelineDraft, bounds: WindowBounds) -> None
         kept.append(event)
 
     draft.events = kept
-    renumber_events(draft)
 
     seq = len(draft.warnings)
     if dropped:

@@ -36,7 +36,7 @@ from app.schemas import (
     TimelineWarning,
     TimelineWarningSeverity,
 )
-from app.services.validator import parse_datetime, renumber_events, resolve_timezone
+from app.services.validator import parse_datetime, resolve_timezone
 
 logger = get_logger(__name__)
 
@@ -163,7 +163,6 @@ def enforce_sleep_boundary(draft: TimelineDraft, request: TimelineDraftRequest) 
         return
 
     draft.events = kept
-    renumber_events(draft)
 
     seq = len(draft.warnings)
     if removed:
@@ -255,7 +254,6 @@ def remove_events_overlapping_sleep(
         return
 
     draft.events = kept
-    renumber_events(draft)
     draft.warnings.append(
         TimelineWarning(
             warning_id=f"warning-sleep-overlap-{len(draft.warnings) + 1:03d}",

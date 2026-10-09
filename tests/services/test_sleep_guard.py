@@ -212,7 +212,10 @@ def test_a_nap_does_not_erase_the_morning():
     assert _titles(draft) == ["오전 작업"]  # 낮잠 구간만 금지된다
 
 
-def test_removing_an_event_renumbers_the_remaining_ids():
+def test_removing_an_event_keeps_the_remaining_ids():
+    """번호는 확정 pass 끝에서만 준다(#144). Repair 가 이 guard 를 도구로 부른 뒤 같은
+    계획의 다음 호출이 다른 event 를 가리키면 안 된다."""
+
     draft = _draft(
         _event("event-001", "03:00", "04:00", title="새벽의 유령"),
         _event("event-002", "09:00", "10:00", title="오전 작업"),
@@ -220,7 +223,7 @@ def test_removing_an_event_renumbers_the_remaining_ids():
 
     enforce_sleep_boundary(draft, _request())
 
-    assert [event.client_event_id for event in draft.events] == ["event-001"]
+    assert [event.client_event_id for event in draft.events] == ["event-002"]
 
 
 # --- 수면과 겹친 event 제거 (#134) ----------------------------------------------

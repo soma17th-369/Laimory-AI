@@ -90,7 +90,7 @@ def test_filter_drops_only_outside_candidates():
     assert len(filtered.candidates) == 2
 
 
-def test_validate_draft_drops_outside_and_renumbers():
+def test_validate_draft_drops_outside_and_keeps_the_remaining_ids():
     bounds = _bounds()
     draft = TimelineDraft(
         user_id="u",
@@ -101,7 +101,8 @@ def test_validate_draft_drops_outside_and_renumbers():
     validate_draft_to_window(draft, bounds)
 
     assert len(draft.events) == 1
-    assert draft.events[0].client_event_id == "event-001"  # 재번호 부여
+    # 번호는 확정 pass 끝에서만 준다(#144).
+    assert draft.events[0].client_event_id == "event-002"
     assert any(
         w.severity is TimelineWarningSeverity.HIGH and "범위" in w.message
         for w in draft.warnings
