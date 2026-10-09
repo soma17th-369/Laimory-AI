@@ -68,9 +68,11 @@ Repair는 시작할 때 LLM 호출 여부와 무관하게 `repair_draft`를 한 
 8. **수면과 겹친 event 제거**(#134, v3 세트): `SLEEP` event와 조금이라도 겹치는 다른 event를 자르지 않고 지운다. 지운 event의 사진·캘린더 근거는 수면 event로 옮긴다
 9. **대화 event 개수 제한**(#119, v3 세트): 3개를 넘으면 알림이 많은 3개만 남긴다 → **문장의 입력 주소 원문 정리**(#138, v3 세트): 제목·본문에 입력 주소가 그대로 있으면 `place` 나 동·도로명(건물번호 제외)으로 바꾼다
 10. 검사(고치지 않음): Photo·Notification 안전성, 최종 문장 길이, 지속시간, event 개수. event 개수는 v3 세트에서 10개, v1·v2 세트에서 24개로 잰다. v3 세트에서는 지속시간을 eventType별로 재고 이동 사이 장시간 체류, 일정·사진 event 와 겹치는 체류 카드(`LOCATION_ONLY_OVERLAP`), 제목의 `체류`·시각과 문장의 주소 모양을 더 본다
-11. 재정렬 → `clientEventId` 재부여
+11. 재정렬 → `clientEventId` 부여. 번호는 여기서만 준다 — 중간 guard(window·수면)는 event 를 지워도 번호를 다시 매기지 않는다(#144)
 
-1~9는 draft를 고치고 10은 고치지 않는다. `verify_fragment_usage`는 이 확정 pass 뒤에 실행해 최종 event가 fragment-only 근거인지 검사한다. 반복마다 동일 warning을 dedupe한다.
+1~9는 draft를 고치고 10은 고치지 않는다.
+
+**Repair가 도는 동안 한 번 준 `clientEventId`는 바뀌지 않는다**(#144). Repair 작업 상태가 지금까지 준 번호의 장부(`issued_ids`)를 들고 확정마다 넘기며, 확정은 이미 준 번호를 유지하고 새 event(캘린더 복원·사진 event·split 조각·Timeline 재실행 결과)에만 장부의 가장 큰 번호 다음을 준다. 지운 번호는 비워 두고 다시 쓰지 않는다. 예전에는 확정마다 1번부터 다시 매겨, 앞 차례에서 지운 event만큼 뒤 번호가 당겨졌다. 도구 로그와 쌓인 보정 기록(`corrected`·`removed`·`added`)은 그때의 번호를 그대로 싣고, 모델이 그 번호로 부른 `update_event`가 다른 event를 고친 채 성공으로 끝났다. `rerun_timeline_agent`는 새 draft의 번호를 임시 id(`rerun-NNN`)로 바꿔 옛 번호를 다시 받지 않게 한다. 번호는 결과 저장 계약에 없는 AI 서버 안의 값이라 Repair가 끝난 뒤 `event-001`부터 다시 맞추지 않는다 — 같은 event는 Repair 로그부터 Question 단계까지 같은 번호이고, 번호는 시간순과 어긋날 수 있다. 저장 직전의 사진 단일 귀속도 새로 만든 event에만 번호를 준다. `verify_fragment_usage`는 이 확정 pass 뒤에 실행해 최종 event가 fragment-only 근거인지 검사한다. 반복마다 동일 warning을 dedupe한다.
 
 단계마다 직전·직후의 event를 비교해 무엇이 바뀌었는지 기록한다(`confirm_report`, #119). guard는 고치지 않고 옆에서 적는다. 어느 event의 어느 값이 무엇에서 무엇으로 바뀌었는지, 지워지거나 합쳐진 event의 전체 내용, 코드가 찾았지만 고치지 않은 것을 담는다. 기록은 draft가 아니라 Repair의 작업 상태가 들고 있어 결과 저장 계약에 나가지 않는다.
 
