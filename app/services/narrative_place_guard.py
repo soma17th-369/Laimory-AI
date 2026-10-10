@@ -40,6 +40,9 @@ _MIN_ADDRESS_LENGTH = 5
 #: 숫자로 시작하는 것(101동)은 건물의 동이라 뺀다.
 _LOCAL_AREA = re.compile(r"^[가-힣][가-힣0-9]*(로|길|동|리|가)$")
 
+#: 번호 붙은 길. `지범로17길`·`중앙로12번길`·`세종대로23길` 의 번호 뒤를 떼어 기본 도로명만 남긴다.
+_NUMBERED_STREET = re.compile(r"^([가-힣][가-힣0-9]*?(?:로|길))\d+(?:번)?길$")
+
 #: 제목에 쓰지 않는 체류 표현(`장기 체류`·`재체류` 포함).
 _STAY_WORD = re.compile(r"체류")
 
@@ -121,12 +124,16 @@ def _input_addresses(request: TimelineDraftRequest) -> dict[str, list[tuple[str,
 def _local_area(address: str) -> str | None:
     """주소의 가장 좁은 동·도로명. `서울특별시 예시구 예시로 123` → `예시로`.
 
-    건물번호·지번은 뺀다. 동·도로명이 없는 주소는 바꿀 이름이 없다 — 시·군·구로 올라가지
-    않고, 문장 검사가 짚어 Repair 가 고친다.
+    건물번호·지번은 뺀다. 번호 붙은 길은 기본 도로명으로 줄인다(`지범로17길` → `지범로`,
+    #150) — `지범로17길에서 보낸 밤` 은 일기 문장으로 어색하다. 동·도로명이 없는 주소는
+    바꿀 이름이 없다 — 시·군·구로 올라가지 않고, 문장 검사가 짚어 Repair 가 고친다.
+    큰 도로 이름 앞에 구를 붙이는 것은 프롬프트의 판단이다(코드가 큰 도로를 가를 기준이 없다).
     """
 
     tokens = [token for token in address.split() if _LOCAL_AREA.match(token)]
-    return tokens[-1] if tokens else None
+    if not tokens:
+        return None
+    return _NUMBERED_STREET.sub(r"\1", tokens[-1])
 
 
 def _looks_like_address(text: str) -> bool:

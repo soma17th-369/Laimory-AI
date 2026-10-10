@@ -49,14 +49,13 @@ def _question_v3() -> str:
 
 
 #: 타입별 절이 빠짐없이 갖는 항목. 예전에는 표 네 개에 흩어져 있었다.
+#: 문장 예시와 피할 문장은 5단계 「문장 형식」 표 하나로 모았다(#150).
 _TYPE_SECTION_LABELS = (
     "**합치는 근거**",
     "**시간**",
     "**장소**",
     "**User Memory**",
     "**근거가 약할 때**",
-    "**예시**",
-    "**피할 문장**",
 )
 
 #: 위에서 아래로 읽는 순서. 작업 단계의 순서와 같다.
@@ -139,14 +138,14 @@ def test_timeline_v3_uses_rest_only_with_evidence_of_rest() -> None:
     rest = _event_type_section("REST")
     unknown = _event_type_section("UNKNOWN")
 
-    # 주거지·나들이 장소의 성격도 쉬었다는 근거다(#140).
+    # 장소의 성격은 쉬었다는 근거가 아니다(#150, #140 을 되돌림).
     assert (
-        "`REST`는 쉬었다는 근거(쉬는 장면 사진, User Memory의 휴식 습관, "
-        "「장소 성격으로 읽는 활동」의 주거지·나들이 장소)가 있을 때만 씁니다"
+        "`REST`는 쉬었다는 근거(쉬는 장면 사진, User Memory의 휴식 습관)가 있을 때만 씁니다"
     ) in boundary
-    assert "근거도, 활동을 읽을 장소 성격도 없으면 `UNKNOWN`입니다" in boundary
+    assert "무엇을 했는지 말해 주는 근거가 없으면 `UNKNOWN`입니다" in boundary
+    assert "집에서 보낸 시간도 쉬었다는 근거가 없으면 `UNKNOWN`입니다" in boundary
     assert "쉬었다는 근거가 있을 때만 씁니다" in rest
-    assert "근거도, 활동을 읽을 장소 성격도 없음" in unknown
+    assert "장소 이름이 학교·회사·집이어도 같습니다" in unknown
 
 
 def test_timeline_v3_lets_type_sections_override_the_common_order() -> None:
@@ -164,7 +163,7 @@ def test_timeline_v3_lets_type_sections_override_the_common_order() -> None:
 
 
 @pytest.mark.parametrize("event_type", TIMELINE_SECTION_TYPES)
-def test_timeline_v3_has_rules_and_an_example_for_every_event_type(event_type: str) -> None:
+def test_timeline_v3_has_rules_for_every_event_type(event_type: str) -> None:
     """한 타입을 만드는 데 필요한 것이 그 타입의 절 하나에 모여 있다."""
 
     section = _event_type_section(event_type)
@@ -306,35 +305,60 @@ def test_timeline_v3_keeps_time_expressions_out_of_descriptions() -> None:
 def test_timeline_v3_states_the_place_selection_rules() -> None:
     text = _timeline_v3()
 
-    assert "가장 잘 설명하는 장소 하나" in text
+    assert "가장 잘 설명하는 하나를 고릅니다" in text
     assert "출발지가 아니라 도착지" in text
     assert "`일대`" in text
 
 
-def test_timeline_v3_picks_and_writes_a_place_only_with_supporting_evidence() -> None:
-    """후보 목록에 이름이 있다는 것만으로 장소를 고르거나 문장에 쓰지 않는다.
+def test_timeline_v3_picks_a_place_only_when_other_evidence_points_to_it() -> None:
+    """후보 목록에 있다는 것만으로 `place` 를 고르지 않는다. 비운 것도 정상 결과다(#150).
 
-    사진·캘린더·알림이 뒷받침하면 `place` 로 고르고 title·description 에 같은 이름으로
-    적극적으로 쓴다. 뒷받침이 없으면 짐작으로 고르지 않고 목록의 첫 이름을 둔다.
+    체류·이동 후보는 그 지점 근처의 역지오코딩 이름이라, 첫 이름을 두게 하자 근처 가게·
+    주차장·이동 중간 지점(`피자성찬`, `포스트타워마포 주차장`, `주공아파트 108동`)이 붙었다.
     """
 
     text = _timeline_v3()
+    section = _between(text, "### 장소\n", "## eventType별 생성 규칙")
 
-    assert "그 장소를 뒷받침하는 다른 근거가 있어야 합니다" in text
-    assert "짐작으로 고르지 않습니다" in text
+    assert "후보 목록의 첫 이름" not in text
+    assert "다른 근거가 그 이름을 가리킬 때만 고르고, 아니면 비웁니다" in section
+    assert "비운 것도 정상 결과입니다" in section
+    for evidence in ("- 사진:", "- 캘린더:", "- 알림:", "「생활 장소명」"):
+        assert evidence in section, evidence
+    # 교통 시설은 이동 기록 자체가 가리킨다(승인 전 결정 1).
+    assert "역·터미널·공항 이름은 `MOVEMENT`와 그 앞뒤로 이어진 대기 체류에서 후보에만 있어도 고릅니다" in section
+    assert "체류·이동의 후보 목록에만 있는 이름" in section
+    assert "이동 중간 지점" in section
+    assert "주소 모양 문자열" in section
     assert "`place`와 같은 이름" in text
-    assert "후보 목록의 첫 이름" in text
-    assert "`place`가 비어 있으면 문장에도 장소를 쓰지 않습니다" in text
-    assert "한 event에는 장소 이름을 하나만 씁니다" in text
+    assert "한 event에는 장소 이름을 하나만 씁니다" in section
+    assert "#### 장소를 뒷받침하는 근거" not in text
     assert (
         text.index("## 3단계. eventType·시간·장소 결정")
         < text.index("### eventType을 결정하는 방법")
         < text.index("### 근거 우선순위와 충돌")
         < text.index("### 시간과 개수")
-        < text.index("### 장소")
-        < text.index("#### 장소를 뒷받침하는 근거")
+        < text.index("### 장소\n")
         < text.index("## eventType별 생성 규칙")
     )
+
+
+def test_timeline_v3_writes_an_empty_place_as_the_neighborhood_of_the_address() -> None:
+    """`place` 를 비우면 문장은 주소의 동네로 쓴다. `지범로17길에서 보낸 밤` 은 어색하다."""
+
+    text = _timeline_v3()
+    section = _between(text, "### 문장에 담는 것", "### 문장 형식")
+
+    assert "**`place`가 없으면 주소의 동네로 씁니다.**" in section
+    assert "`지범로17길` → `지범로`" in section
+    assert "`마포구 마포대로`" in section
+    # live 에서 `대구광역시 수성구에서 보낸 밤`·`대구 북구 산격동` 이 나왔다.
+    assert "`대구 북구 산격동` → `산격동`" in section
+    assert "`대구광역시 수성구` → `지범로`" in section
+    assert "이동 중간 지점의 주소는 쓰지 않습니다" in section
+    assert "`place`가 비어 있으면 장소 이름 대신 주소의 동네를 씁니다" in text
+    # live 에서 문장은 `수성구에서 보낸 밤` 인데 place 는 후보의 `피자성찬` 으로 남았다.
+    assert "문장을 동네로 썼으면 `place`는 `null`입니다" in text
 
 
 def test_timeline_v3_defines_every_user_memory_field() -> None:
@@ -486,62 +510,70 @@ def test_timeline_v3_keeps_stay_words_times_and_addresses_out_of_titles() -> Non
     assert "`아침`·`점심`·`저녁`·`밤` 넷 중 하나만" in section
     assert "`새벽`은 그 시간이어도 `밤`" in section
     assert "`title` 하나에는 표현 하나만 씁니다" in section
-    assert "`예시로에서 보낸 시간`" in section
-    assert "구·시처럼 넓은 지역명으로 올라가지 않습니다" in section
+    assert "`예시로에서 보낸 밤`" in section
     assert "장소명에 들어 있는 숫자(`2호선`)는 그대로 둡니다" in section
     assert text.count("`집에서 보낸 밤`") == 1
 
-# --- Timeline v3: 장소 성격으로 읽는 활동 (#140) ----------------------------------
+# --- Timeline v3: 근거 없는 활동 추론 제거와 문장 형식 (#150) -------------------
 
 
-#: 장소만 있을 때 읽는 활동. 이슈 #140 의 대표 장소와 그 eventType 이다. 관광지·시내는
-#: 사용자 결정으로 `REST` 다. 식당은 #148 에서 뺐다 — 식사는 음식 사진·결제로만 쓴다.
-PLACE_ACTIVITY_ROWS = {
-    "대학교·학교": "`CLASS`",
-    "회사·사무실 건물": "`WORK`",
-    "관광지·도심·번화가": "`REST`",
-    "아파트·주택·빌라": "`REST`",
-}
+#: 「문장 형식」 표가 갖는 상황. Repair v3 도 같은 표를 쓴다.
+FORMAT_SITUATIONS = (
+    "이동",
+    "체류, 활동 근거 없음",
+    "체류, 활동 근거 없음, 밤을 보낸 곳",
+    "캘린더 일정만",
+    "일정 + 그 시간의 체류",
+    "음식 사진·결제",
+    "풍경·장면 사진",
+    "수면",
+)
 
 
-def place_activity_table(text: str) -> list[str]:
-    """「장소 성격으로 읽는 활동」 절의 표 행. Repair v3 도 같은 표를 쓴다."""
+def format_table(text: str) -> list[str]:
+    """「문장 형식」 절의 표 행. Repair v3 도 같은 표를 쓴다."""
 
-    section = _between(text, "#### 장소 성격으로 읽는 활동", "\n- ")
-    return [line for line in section.splitlines() if line.startswith("| ")]
+    section = text.split("### 문장 형식\n", 1)[1]
+    lines = section.split("\n\n## ", 1)[0].splitlines()
+    return [line for line in lines if line.startswith("| ")]
 
 
-def test_timeline_v3_reads_an_activity_from_the_nature_of_the_place() -> None:
-    """활동 근거 없이 장소만 있어도 그곳에서 흔히 하는 일을 쓴다.
-
-    예전 v3 는 체류만 있으면 `UNKNOWN` 으로 두고 "공부·수업을 지어내지 않습니다" 라고 했다.
-    """
+def test_timeline_v3_no_longer_reads_an_activity_from_the_place_alone() -> None:
+    """장소 이름만으로 활동을 쓰면 틀린다. 근거 없는 활동 추론을 없앴다(#150, #140 을 되돌림)."""
 
     text = _timeline_v3()
-    section = _between(text, "#### 장소 성격으로 읽는 활동", "## eventType별 생성 규칙")
-    rows = place_activity_table(text)
+    decide = _between(text, "### eventType을 결정하는 방법", "#### 헷갈리는 경계")
 
-    for place, event_type in PLACE_ACTIVITY_ROWS.items():
-        assert any(row.startswith(f"| {place} | {event_type} |") for row in rows), place
-    assert "공부·수업을 지어내지 않습니다" not in text
-    assert "다른 근거가 있으면 그 근거가 이깁니다" in section
-    assert "성격은 `place`로 고른 이름에서 읽습니다" in section
-    assert "`데이트`라고 쓰지 않습니다" in section
-    assert "`confidence`는 0.6을 넘기지 않고" in section
-    assert "`활동은 장소의 성격으로 추론함`" in section
-    # 장소를 고른 뒤에 그 장소로 활동을 읽는다. User Memory 보다 앞(3단계)이다.
-    assert (
-        text.index("#### 장소를 뒷받침하는 근거")
-        < text.index("#### 장소 성격으로 읽는 활동")
-        < text.index("## 4단계. User Memory 반영")
-    )
+    assert "장소 성격" not in text
+    assert "장소의 성격" not in text
+    assert "활동은 장소의 성격으로 추론함" not in text
+    assert "**활동을 말해 주는 근거가 체류뿐이면 활동을 쓰지 않습니다.**" in decide
+    assert "`피자성찬`에 있었다고 식사가 되지 않습니다" in decide
+    assert "- **활동(무엇을)**: 캘린더 제목·사진 내용·결제·예약 내용 > User Memory" in text
 
 
-@pytest.mark.parametrize("event_type", ["CLASS", "WORK", "MEAL", "REST"])
-def test_timeline_v3_type_sections_point_to_the_place_activity_rule(event_type: str) -> None:
-    """규칙은 한 절에 두고 타입 절은 그 절을 가리킨다."""
+@pytest.mark.parametrize("event_type", ["CLASS", "WORK", "REST"])
+def test_timeline_v3_needs_evidence_beyond_the_place_for_an_activity_type(event_type: str) -> None:
+    assert "장소까지만 쓴" in _event_type_section(event_type)
 
-    assert "「장소 성격으로 읽는 활동」" in _event_type_section(event_type)
+
+def test_timeline_v3_gives_one_sentence_format_per_situation() -> None:
+    """같은 상황이 실행마다 다르게 쓰였다. 뼈대 표 하나로 형식을 준다(#150)."""
+
+    text = _timeline_v3()
+    rows = format_table(text)
+
+    assert rows[0] == "| 상황 | `title` | `description` | 예 |"
+    for situation in FORMAT_SITUATIONS:
+        assert any(row.startswith(f"| {situation} |") for row in rows), situation
+    # 모든 description 뼈대는 해요체 과거형으로 끝난다.
+    for row in rows[2:]:
+        description = row.split(" | ")[2]
+        assert "요.`" in description, row
+    # 흩어진 예시와 좋은 예·나쁜 예는 표로 모았다.
+    for gone in ("### 나쁜 예", "### 좋은 예", "**예시**", "**피할 문장**"):
+        assert gone not in text, gone
+    assert text.index("### 문장에 담는 것") < text.index("### 문장 형식") < text.index("## confidence")
 
 
 # --- 식사 근거와 사진 문장 (#148) ---------------------------------------------
@@ -551,11 +583,8 @@ def test_timeline_v3_writes_a_meal_only_from_a_food_photo_or_a_payment() -> None
     """체류에 붙는 가게 이름만으로 식사를 쓰면 밤사이 귀가 체류가 `피자성찬에서 식사` 가 된다."""
 
     text = _timeline_v3()
-    table = place_activity_table(text)
     meal = _event_type_section("MEAL")
 
-    assert not any("`MEAL`" in row for row in table)
-    assert "식당·카페는 이 표로 식사를 읽지 않습니다" in text
     assert "음식 사진(메뉴·동석, 정본)이나 음식점 결제 알림(가맹점·시점)이 있어야 `MEAL`입니다" in meal
     assert "`MEAL`이 아니라 장소까지만 쓴 체류입니다" in meal
     # 사진·결제가 없는 식사 약속은 약속 일정으로 남는다.
@@ -566,16 +595,15 @@ def test_timeline_v3_writes_photos_as_what_they_show() -> None:
     """예시가 `노을을 사진으로 남겼어요` 를 정답으로 보여 줘 식사도 그렇게 끝났다."""
 
     text = _timeline_v3()
+    table = "\n".join(format_table(text))
 
-    assert "`반포한강공원에서 노을을 봤어요.`" in _event_type_section("PHOTO_MOMENT")
+    assert "`OO공원에서 노을을 봤어요.`" in table
     # 금지 문장을 두지 않는다. 활동 동사를 쓰라는 규칙과 예시만 둔다.
     assert "사진으로 남겼어요" not in text
     assert "사진은 그것이 보여 주는 활동으로 씁니다(음식 → `먹었어요`, 풍경 → `봤어요`)" in text
-    assert "음식 사진(순두부찌개·만두)만 있음 → `순두부찌개와 만두` / `null` / `순두부찌개와 만두를 먹었어요.`" in (
-        _event_type_section("MEAL")
-    )
+    assert "`OO식당에서 순두부찌개와 만두를 먹었어요.`" in table
     assert "`튀김 또는 구운 음식`처럼 짐작해 헤지하는" in text
-    assert "`식당`·`가게` 같은 말로도 문장에 장소를 지어내지 않습니다" in text
+    assert "`식당`·`가게` 같은 말로도 장소를 지어내지 않습니다" in text
 
 
 def test_photo_v3_titles_the_activity_not_the_photo() -> None:

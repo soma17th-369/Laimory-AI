@@ -193,7 +193,8 @@ def test_timeline_tone_rules_have_one_home(version: str) -> None:
         inputs = text.index("## 입력 데이터의 의미")
         writing = text.index("## 5단계. title·description 작성")
         tone = text.index("### 말투와 길이")
-        examples = text.index("### 나쁜 예")
+        # 흩어진 좋은 예·나쁜 예는 상황별 뼈대 표 하나로 모았다(#150).
+        examples = text.index("### 문장 형식")
 
         assert inputs < writing < tone < examples
         return

@@ -332,7 +332,12 @@ def test_an_unknown_raw_id_drops_the_unsupported_event():
     assert any("입력에 없는 rawId 참조" in warning.message for warning in draft.warnings)
 
 
-def test_repair_fills_place_and_drops_an_unsupported_address():
+@pytest.mark.parametrize(
+    ("extended", "expected_place"),
+    # v3 는 빈 place 를 후보로 채우지 않고 얼버무림만 지운다(#150). v2 는 예전처럼 채운다.
+    [(False, "두꺼비 감자탕 지산점"), (True, None)],
+)
+def test_repair_fills_place_and_drops_an_unsupported_address(extended, expected_place):
     request = make_request(
         stays=[
             stay_item(
@@ -352,10 +357,10 @@ def test_repair_fills_place_and_drops_an_unsupported_address():
     draft.events[0].place = "한 곳"
     draft.events[0].address = "서울특별시 강남구 테헤란로 152"
 
-    repair_draft(draft, request)
+    repair_draft(draft, request, extended=extended)
 
     event = draft.events[0]
-    assert event.place == "두꺼비 감자탕 지산점"  # 얼버무림 → 근거의 장소명
+    assert event.place == expected_place  # 얼버무림 → 근거의 장소명(v2) / 비움(v3)
     assert event.address == "경기도 오산시 운암로 90"  # 지어낸 주소 → 근거의 주소
     assert any("정확한 입력 근거가 없는 주소" in w.message for w in draft.warnings)
 
