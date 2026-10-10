@@ -19,6 +19,7 @@ from app.agents.repair.tools import RepairContext, tool_catalog_text
 from app.schemas import EventType, TimelineDraft
 from app.schemas.user_memory import NARRATIVE_FIELDS
 from app.services.event_count_guard import MAX_EVENT_COUNT
+from tests.agents.test_timeline_v3_prompt import format_table
 from tests.fixtures.requests import make_request
 
 APP_ROOT = Path(__file__).resolve().parents[2] / "app"
@@ -500,27 +501,32 @@ def test_repair_v3_keeps_time_expressions_out_of_descriptions_only() -> None:
     assert "`description`에 시간 표현을 쓰지 않습니다" in section
     assert "이 규칙은 `description`에 한합니다" in section
     assert "`회사에서 아침 근무`" in section
-    assert "`회사에서 아침 근무`" in _timeline_v3()
+    # Timeline 의 `WORK` 예시는 「문장 형식」 표로 모으며 빠졌다(#150). 제목의 하루 중 때를
+    # 허용하는 규칙은 그대로다.
+    assert "**`title`에 하루 중 때를 쓰면" in _timeline_v3()
 
 
 def test_repair_v3_examples_do_not_teach_time_expressions() -> None:
-    """예전 예시의 고친 쪽이 `점심 무렵…`·`저녁 무렵…` 이었다. 그것이 되살아났다."""
+    """예전 예시의 고친 쪽이 `점심 무렵…`·`저녁 무렵…` 이었다. 그것이 되살아났다.
 
-    section = _between(_repair_v3(), "#### 예시", "## warning을 읽는 법")
+    고친 쪽 예시는 이제 「문장 형식」 표의 description 뼈대와 예다(#150).
+    """
 
-    for line in section.splitlines():
-        if "→" not in line:
-            continue
-        fixed = line.split("→", 1)[1]
+    for row in format_table(_repair_v3())[2:]:
+        description, example = row.split(" | ")[2:4]
         for expression in ("무렵", "아침에", "저녁에", "오전부터", "밤늦게"):
-            assert expression not in fixed, f"고친 예시에 시간 표현이 있습니다: {line}"
+            assert expression not in description + example, f"표에 시간 표현이 있습니다: {row}"
 
 
 def test_repair_v3_keeps_the_place_name_the_same_as_place() -> None:
     section = _between(_repair_v3(), "#### 장소\n", "#### 문장에 쓰지 않는 것")
 
     assert "`place`와 같은 이름" in section
-    assert "`place`가 비어 있으면" in section
+    # place 가 비면 주소의 동네로 쓴다(#150). Timeline 과 같은 기준이다.
+    assert "**`place`가 없으면 주소의 동네로 씁니다.**" in section
+    assert "`지범로17길` → `지범로`" in section
+    assert "`마포구 마포대로`" in section
+    assert "이동 중간 지점의 주소는 쓰지 않습니다" in section
 
 
 # --- warning 과 도구 ------------------------------------------------------------
@@ -606,7 +612,7 @@ def test_repair_v3_fills_activities_only_as_far_as_the_evidence_goes() -> None:
     section = _between(_repair_v3(), "### 3단계.", "#### 합리적인 추론")
 
     assert "같은 뜻의 다른 문장으로 바꾸는 것은 채운 것이 아닙니다" in section
-    assert "| 고치기 전 | 근거 | 고친 뒤 |" in section
+    assert "장소 이름은 채울 근거가 아닙니다" in section
     assert "행동으로 바꾸지 않습니다" in section
 
 
@@ -679,8 +685,7 @@ def test_repair_v3_decides_whether_a_stay_card_is_the_same_visit() -> None:
 
 def test_repair_v3_keeps_stay_words_times_and_addresses_out_of_titles() -> None:
     text = _repair_v3()
-    section = _between(text, "#### 문장에 쓰지 않는 것", "#### 예시")
-    examples = _between(text, "#### 예시", "## warning을 읽는 법")
+    section = _between(text, "#### 문장에 쓰지 않는 것", "#### 문장 형식")
 
     assert "`재체류`" in section
     assert "`집에서 보낸 밤`" in section
@@ -689,44 +694,51 @@ def test_repair_v3_keeps_stay_words_times_and_addresses_out_of_titles() -> None:
     assert "`아침`·`점심`·`저녁`·`밤` 넷 중 하나만" in section
     assert "`새벽`은 `밤`" in section
     assert "`수업과 식사`" in section
-    assert "장소명에 들어 있는 숫자는 그대로 둡니다" in section
-    assert "`자정 전 귀가` → `집으로 귀가`" in examples
+    assert "장소명에 들어 있는 숫자(`2호선`)는 그대로 둡니다" in text
     # 같은 규칙은 한 곳에만 둔다.
     assert text.count("`집에서 보낸 밤`처럼") == 1
 
-# --- 장소 성격으로 읽는 활동과 장소 후보 (#140) ------------------------------------
+# --- 근거 없는 활동 되돌리기, 보수적인 place, 문장 형식 (#150) ---------------------
 
 
-def test_repair_v3_reads_place_activities_by_the_same_table_as_timeline() -> None:
-    """Repair 는 Timeline 과 같은 기준으로 누락만 채운다. 표가 갈리면 서로 되돌린다."""
+def test_repair_v3_writes_by_the_same_format_table_as_timeline() -> None:
+    """두 Agent 가 다른 뼈대를 쓰면 Repair 가 Timeline 의 문장을 자기 뼈대로 되쓴다."""
 
-    from tests.agents.test_timeline_v3_prompt import place_activity_table
-
-    repair = place_activity_table(_repair_v3())
+    repair = format_table(_repair_v3())
 
     assert repair
-    assert repair == place_activity_table(_timeline_v3())
+    assert repair == format_table(_timeline_v3())
+    assert "#### 예시" not in _repair_v3()
 
 
-def test_repair_v3_fills_only_missing_place_activities() -> None:
-    section = _between(_repair_v3(), "#### 장소 성격으로 읽는 활동", "#### 장소 후보 다시 고르기")
+def test_repair_v3_turns_an_activity_read_from_the_place_alone_back() -> None:
+    """예전에는 장소 성격으로 활동을 채우라고 강제했다. 이제 그것이 되돌릴 대상이다(#150)."""
 
-    assert "고치는 것은 둘뿐입니다" in section
-    assert "장소 성격으로 쓴 활동은 되돌리지 않습니다" in section
-    assert "`데이트`라고 쓰지 않습니다" in section
-    assert "이 단계에서 다시 추론하지 않습니다" in _between(_repair_v3(), "### 3단계.", "#### 합리적인 추론")
+    text = _repair_v3()
+    step = _between(text, "### 3단계.", "#### 합리적인 추론")
+
+    assert "장소 성격" not in text
+    assert "장소의 성격" not in text
+    assert "**반대로 근거 없이 채운 활동은 되돌립니다.**" in step
+    assert "User Memory가 그곳을 회사·학교로 확인하거나 휴식 습관이 그 체류를 설명하면 그대로 둡니다" in step
+    assert "`INVENTED_ACTIVITY`" in _between(text, "## 문제 분류", "## 도구 선택")
+    # 끝내는 조건이 활동을 채우라고 강제하지 않는다.
+    assert "머물렀어요`로 남아 있으면 아직 고칠 것이 있습니다" not in text
 
 
-def test_repair_v3_can_pick_another_place_candidate() -> None:
+def test_repair_v3_can_empty_or_change_a_place() -> None:
     text = _repair_v3()
     section = _between(text, "#### 장소 후보 다시 고르기", "#### User Memory 반영")
     inputs = _between(text, "## 입력 의미", "## 작업 순서")
 
     assert "`places`" in inputs and "`address`" in inputs
+    assert "비어 있을 수 있습니다" in inputs
+    assert "`place`는 다른 근거가 그 이름을 가리킬 때만 고릅니다" in section
+    assert "역·터미널·공항 이름은 `MOVEMENT`와 그 앞뒤로 이어진 대기 체류에서 후보에만 있어도 고릅니다" in section
+    assert "`place`를 `null`로 바꿉니다" in section
     assert "후보 목록은 고치지 않습니다" in section
     assert "`update_event` 한 번에 `place`와 함께" in section
     assert "`sourceRefs`에 넣습니다" in section
-    assert "가게를 골라 그곳에서 한 일처럼 쓰지 않습니다" in section
     assert "`PLACE_MISMATCH`" in _between(text, "## 문제 분류", "## 도구 선택")
 
 
@@ -737,18 +749,16 @@ def test_repair_v3_turns_a_meal_without_a_photo_or_payment_back() -> None:
     """trace 에서 근거 없는 식사를 만든 것은 Repair 자신이었다(`장소 성격상 식사로 읽힌다`)."""
 
     text = _repair_v3()
-    section = _between(text, "#### 장소 성격으로 읽는 활동", "#### 장소 후보 다시 고르기")
+    section = _between(text, "#### `UNSUPPORTED_MEAL`", "#### `STAY_WORD_IN_TITLE`")
 
-    assert "식당·카페는 이 표로 식사를 읽지 않습니다" in section
-    assert "음식 사진·결제 없는 `MEAL`은 어긋난 event" in section
-    assert "#### `UNSUPPORTED_MEAL`" in text
+    assert "체류만 있으면 장소까지만 쓴 `UNKNOWN`으로, 식사 약속 일정이면 그 약속으로 되돌립니다" in section
 
 
 def test_repair_v3_rewrites_a_photo_sentence_as_its_activity() -> None:
     text = _repair_v3()
 
     assert "`공덕에서 사진을 남겼어요.`" not in text
-    assert "`식당 테이블에서 순두부찌개를 사진으로 남겼어요.` → `순두부찌개를 먹었어요.`" in text
+    assert any("`OO식당에서 순두부찌개와 만두를 먹었어요.`" in row for row in format_table(text))
     assert "사진은 그것이 보여 주는 활동(음식 → `먹었어요`, 풍경 → `봤어요`)으로 씁니다" in text
     assert "`튀김 또는 구운 음식`처럼 짐작해 헤지하는" in text
-    assert "`식당`·`가게` 같은 말로도 `place`와 문장에 장소를 지어내지 않습니다" in text
+    assert "`식당`·`가게` 같은 말로도 장소를 지어내지 않습니다" in text
