@@ -271,7 +271,11 @@ def test_v3_confirm_reports_the_main_place_stay_card_and_keeps_the_others() -> N
         event for event in confirmed.events if fixture_raw_id("stay-post-1") in _raw_ids(event)
         and event is not meeting
     )
-    assert meeting.place == "포스트타워마포"
+    # 붙인 체류의 이름으로 place 를 채우지 않는다(#150). 장소 없는 일정에 가장 오래 머문
+    # 체류가 붙으면 그 후보가 `포스트타워마포 주차장` 처럼 엉뚱할 수 있다. 고르는 것은
+    # LLM 이고, 코드는 주소만 채운다.
+    assert meeting.place is None
+    assert meeting.address is not None
     assert fixture_raw_id("stay-gongdeok") not in _raw_ids(meeting)
     # 공덕 체류는 회의 장소와 어긋나 흡수 후보가 아니다. 자기 카드로 남는다.
     (finding,) = [item for item in report.findings if item["kind"] == "LOCATION_ONLY_OVERLAP"]
@@ -540,13 +544,20 @@ def test_a_photo_event_that_loses_its_photo_does_not_survive_on_a_linked_stay() 
 # --- 확정 단계 --------------------------------------------------------------------
 
 
-def test_v3_confirm_fills_the_calendar_place_from_the_linked_stay() -> None:
+def test_v3_confirm_links_the_stay_but_leaves_the_place_to_the_llm() -> None:
+    """체류는 근거로 붙고 주소도 채워지지만 place 는 채우지 않는다(#150).
+
+    `OO치과` 를 고를지는 일정 제목이 그 이름을 가리키는지 보는 LLM 의 판단이다. Repair 는
+    붙은 체류의 후보를 `[event 근거]` 로 본다.
+    """
+
     request = _dentist_request()
     draft = _draft(_event("event-001", "14:00", "15:00", (CALENDAR, "cal-dentist"), title="치과 검진"))
 
     repair_draft(draft, request, extended=True)
 
-    assert draft.events[0].place == "OO치과"
+    assert draft.events[0].place is None
+    assert draft.events[0].address is not None
     assert fixture_raw_id("stay-dentist") in _raw_ids(draft.events[0])
 
 
