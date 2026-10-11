@@ -292,6 +292,10 @@ PHOTO_MAX_TOTAL_IMAGE_BYTES=20971520
 PHOTO_DOWNLOAD_MAX_WORKERS=4
 PHOTO_DOWNLOAD_BUDGET_SEC=30
 
+# 동기 테스트 엔드포인트(이슈 #102). 이 인스턴스는 APP_ENV=prod 로 도므로 이 줄이
+# 없으면 dev 서버에서도 닫힌다. 아래 "동기 테스트 엔드포인트" 절을 읽고 넣는다.
+TIMELINE_TEST_ENABLED=true
+
 # 선택: Langfuse. secret key는 아래 파일이 아니라 Secrets Manager에 둔다.
 LANGFUSE_ENABLED=false
 LANGFUSE_PUBLIC_KEY=
@@ -314,6 +318,32 @@ App Server는 장당 5MB·요청당 20장을 허용하되 총합을 제한하지
 가능한데, 사진 설명은 배치 1회 vision 호출이라 그 전부가 한 요청에 실린다. 실사용
 이미지 크기는 Langfuse의 `download-photo-images` 스팬에 남는 `byteLength`로 확인하고
 값을 조정한다.
+
+### 동기 테스트 엔드포인트 (#102)
+
+`POST /v1/timeline/test`는 App Server 연동 없이 입력 JSON만으로 타임라인 결과를 바로
+확인하는 **테스트 전용** 경로다. 저장도 콜백도 하지 않는다. 계약은
+[AI 서버 API 명세 4-3](ai-server-api.md#4-3-동기-타임라인-테스트-요청-이슈-102)에 있다.
+
+이 인스턴스에서 쓰려면 `runtime.env`에 아래 한 줄이 있어야 한다.
+
+```dotenv
+TIMELINE_TEST_ENABLED=true
+```
+
+**생략하면 dev 서버에서도 닫힌다.** 코드 기본값은 `APP_ENV`가 `local`/`dev`일 때만
+여는데, 위 예시대로 이 인스턴스는 `APP_ENV=prod`로 돌기 때문이다. 같은 이유로
+`LANGFUSE_CONTENT_CAPTURE` 기본값도 여기서는 dev 취급을 받지 않는다(#48). `APP_ENV`가
+아니라 이 플래그로 여닫는 편이 확실하다 — 어느 서버에서 열려 있는지가 그 서버 파일
+한 줄로 결정된다.
+
+production(AgentCore)에는 **이 값을 넣지 않는다.** 넣어서 `true`로 두면 운영 컨테이너에
+테스트 경로가 열린다. 닫혀 있을 때는 없는 경로와 똑같이 `404`(errorCode `1003`)가 나가고
+`/openapi.json`에도 실리지 않는다.
+
+실제 LLM을 호출하므로 응답이 `PIPELINE_TIMEOUT_SEC`(기본 120초)까지 걸릴 수 있고 토큰
+사용 비용이 발생한다. 처리 중에는 `GET /ping`이 `HealthyBusy`를 답하므로, 이 요청이
+도는 동안 배포를 걸면 교체가 최대 20분까지 대기한다.
 
 `LANGFUSE_CONTENT_CAPTURE`는 넣지 않는다. 비워 두면 `APP_ENV` 기준으로 local/dev는
 `SANITIZED`, 그 밖은 `NONE`이 적용된다. 이 파일에 값을 적으면 그 값이 코드 기본값을

@@ -5,7 +5,7 @@
 만들지 않는 것** 이다 — 없는 근거를 있는 것처럼 실으면 LLM 이 그 위에 추론을 쌓는다.
 """
 
-from app.services.location_metrics import build_location_metrics
+from app.services.location_metrics import MovementMode, build_location_metrics
 from tests.fixtures.requests import make_request, movement_item, stay_item
 
 
@@ -58,39 +58,100 @@ def test_speed_is_absent_when_duration_is_unknown():
     assert "averageSpeedKmh" not in metric.as_prompt_dict()
 
 
-def test_walking_label_conflicts_with_vehicle_speed():
-    request = make_request(
+# --- 이동 방식: 도보 / 이동수단 이용 (#114) ----------------------------------
+
+
+def _hour_movement(distance, transports):
+    """09:00~10:00 한 시간 이동. 거리(m)가 곧 평균 속도(m/h)다."""
+
+    return make_request(
         movements=[
             _movement(
                 "m1",
                 start="2026-06-20T09:00:00",
                 end="2026-06-20T10:00:00",
-                distance=60_000,
-                transports=["WALKING"],
+                distance=distance,
+                transports=transports,
             )
         ]
     )
 
-    metric = build_location_metrics(request).movements[0]
 
-    assert metric.transport_conflict is not None
-    assert "WALKING" in metric.transport_conflict
+def _metric(distance, transports):
+    return build_location_metrics(_hour_movement(distance, transports)).movements[0]
 
 
-def test_realistic_transport_label_has_no_conflict():
-    request = make_request(
-        movements=[
-            _movement(
-                "m1",
-                start="2026-06-20T09:00:00",
-                end="2026-06-20T10:00:00",
-                distance=4_000,
-                transports=["WALKING"],
-            )
-        ]
-    )
+def test_walking_label_at_walking_pace_is_walk():
+    metric = _metric(4_000, ["WALKING"])
 
-    assert build_location_metrics(request).movements[0].transport_conflict is None
+    assert metric.mode is MovementMode.WALK
+    assert metric.mode_conflict is None
+
+
+def test_running_at_jogging_pace_stays_walk_without_conflict():
+    """달리기도 도보다. 도보 상한이 걷기 속도에 묶이면 달리기마다 불일치가 난다."""
+
+    metric = _metric(10_000, ["RUNNING"])
+
+    assert metric.mode is MovementMode.WALK
+    assert metric.mode_conflict is None
+
+
+def test_bicycle_label_is_vehicle():
+    """자전거와 자동차는 가르지 않는다. 둘 다 이동수단 이용이다."""
+
+    assert _metric(15_000, ["ON_BICYCLE"]).mode is MovementMode.VEHICLE
+    assert _metric(60_000, ["IN_VEHICLE"]).mode is MovementMode.VEHICLE
+
+
+def test_walk_and_vehicle_labels_together_are_vehicle():
+    """정류장까지 걸어가 탄 버스는 산책이 아니다."""
+
+    assert _metric(20_000, ["WALKING", "IN_VEHICLE"]).mode is MovementMode.VEHICLE
+
+
+def test_walk_label_conflicts_with_vehicle_speed():
+    """라벨을 고치지 않는다. 어긋난다는 사실만 알린다."""
+
+    metric = _metric(60_000, ["WALKING"])
+
+    assert metric.mode is MovementMode.WALK
+    assert metric.mode_conflict is not None
+    assert "도보" in metric.mode_conflict
+
+
+def test_vehicle_label_conflicts_with_crawling_speed():
+    metric = _metric(1_000, ["IN_VEHICLE"])
+
+    assert metric.mode is MovementMode.VEHICLE
+    assert metric.mode_conflict is not None
+    assert "이동수단" in metric.mode_conflict
+
+
+def test_unknown_label_falls_back_to_speed():
+    """표에 없는 라벨은 분류에 쓰지 않는다. 그때는 속도가 정한다."""
+
+    assert _metric(40_000, ["대중교통"]).mode is MovementMode.VEHICLE
+    assert _metric(4_000, ["STILL"]).mode is MovementMode.WALK
+    assert _metric(4_000, ["STILL"]).mode_conflict is None
+
+
+def test_mode_is_absent_without_label_or_speed():
+    metric = _metric(None, [])
+
+    assert metric.mode is None
+    assert "mode" not in metric.as_prompt_dict()
+
+
+def test_prompt_dict_carries_mode_instead_of_raw_labels():
+    """센서 라벨 원본은 derivedMetrics 에 싣지 않는다. 판단에 쓰는 것은 두 갈래 구분뿐이다."""
+
+    payload = _metric(60_000, ["WALKING"]).as_prompt_dict()
+
+    assert payload["mode"] == "WALK"
+    assert "도보" in payload["modeConflict"]
+    assert "transports" not in payload
+    assert "transportConflict" not in payload
 
 
 def test_gap_between_movements_is_measured():

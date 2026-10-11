@@ -18,12 +18,28 @@ repair 순서와 이유:
     3. `MEAL repair`     : 과장된 식사 시간을 20~60분으로 되돌린다.
     4. `수면 경계 강제`  : 기상 이전 event 를 제거하고, 수면에 걸친 event 를 잘라 낸다.
     5. `window 강제`     : 요청 시간 범위 밖 event 를 제거하고 경계를 클램프한다.
+    5.5 `위치 근거 연결` : (v3) 일정·사진 event 에 같은 시간의 체류를 장소 근거로 붙인다(#138).
     6. `장소 확정`       : place 를 근거의 장소명으로 채우고, 근거에 없는 주소를 지운다.
     7. `정렬`            : startTime → endTime → confidence(내림차순) → eventType → title.
     8. `체류 병합`       : 이동 없이 같은 장소에서 이어진 체류 event 를 하나로 합친다.
     9. `겹침 정리`       : 중복 event 를 병합하고, 모순되는 부분 겹침은 경고로 남긴다.
-   10. `confidence 보강` : 캘린더 장소와 체류 장소가 일치하면 confidence 를 올린다.
-   11. `clientEventId`   : 최종 정렬 결과에 1번부터 다시 부여하고 질문 참조를 보정한다.
+   10. `사진 단일 귀속`  : 입력의 모든 사진이 정확히 한 event 에만 있게 만든다(#119).
+   11. `confidence 보강` : 캘린더 장소와 체류 장소가 일치하면 confidence 를 올린다.
+   11.5 (v3) 수면과 겹친 event 제거, 대화 개수 제한, 문장의 입력 주소 원문 정리(#138).
+   12. `검사`            : 고치지 않고 찾기만 한다. 사진·알림 안전성, 문장 길이, 타입별
+                           지속시간, event 개수, 이동 사이 장시간 체류, (v3) 일정·사진과
+                           겹치는 위치만 있는 event, 제목의 체류·시각과 문장의 주소 모양.
+   13. `clientEventId`   : 새 event 에만 번호를 준다. Repair 가 돌 때는 이미 준 번호를
+                           유지하고 지운 번호도 다시 쓰지 않는다(#144). 번호는 여기서만 준다.
+
+1~11 은 draft 를 고치고 12 는 고치지 않는다. **무엇을 고칠지가 규칙으로 정해져 있으면
+코드가 고치고, 어디서 끊고 무엇을 남길지가 의미 판단이면 찾아서 Repair 에 넘긴다.**
+이동 사이의 장시간 체류를 나누는 것과 대화 event 를 3개로 줄이는 것이 뒤쪽이다 — 나눈
+조각마다 무엇을 했는지 다시 써야 하고, 어느 대화가 중요한지는 내용을 봐야 안다.
+
+단계마다 직전·직후의 event 를 비교해 무엇이 바뀌었는지 적는다(`confirm_report`). Repair
+는 그 기록을 받아 코드가 이미 본 것을 다시 검증하지 않고, 보정으로 어색해진 내용과
+문장을 다듬는다.
 
 `장소 확정`이 `겹침 정리`보다 앞에 있는 이유: 중복 판별이 place 를 쓰므로,
 장소가 확정되기 전에 겹침을 보면 같은 곳의 두 event 를 다른 곳으로 오인한다.
@@ -46,8 +62,13 @@ rawId 참조는 제거하고, 그 결과 유효한 근거가 하나도 남지 �
 (`MEAL`)가 들어 있는 구조는 우리가 프롬프트로 요구한 정상적인 모양이다. 여기서
 병합하는 것은 *같은 종류 + 같은 장소 + 시간이 겹치는* 중복 event 뿐이고, 서로 다른
 장소를 동시에 가리키는 부분 겹침은 시간을 건드리지 않고 경고로만 남긴다.
+
+일정·사진 event 와 같은 방문을 그린 체류 카드(#138)도 코드가 합치지 않는다. 같은 방문인지
+더 긴 다른 시간(근무 체류 안의 회의)인지는 의미 판단이라, v3 에서는 찾아서 Repair 에 넘기고
+Repair 가 `absorb_location_event` 로 흡수한다. 일정·사진 event 는 어떤 단계도 지우지 않는다.
 """
 
+from collections.abc import Callable
 from datetime import datetime, tzinfo
 
 from app.core.logging import get_logger, log_fields
@@ -64,17 +85,35 @@ from app.schemas import (
 )
 from app.services.calendar_guard import ensure_calendar_events
 from app.services.calendar_location import reinforce_calendar_location
+from app.services.confirm_report import ConfirmReport
+from app.services.conversation_guard import enforce_conversation_limit
 from app.services.duration_guard import verify_event_duration
-from app.services.meal_guard import enforce_meal_duration
+from app.services.event_count_guard import (
+    LEGACY_MAX_EVENT_COUNT,
+    MAX_EVENT_COUNT,
+    verify_event_count,
+)
+from app.services.location_link import link_location_evidence
+from app.services.location_only_overlap import find_location_only_overlaps
+from app.services.meal_guard import enforce_meal_duration, find_unsupported_meals
+from app.services.movement_stay_guard import verify_movement_stay_boundary
 from app.services.narrative_guard import verify_narrative_length
+from app.services.narrative_place_guard import (
+    find_narrative_labels,
+    replace_input_addresses,
+)
 from app.services.notification_guard import verify_notification_draft
-from app.services.photo_guard import verify_photo_assignment
+from app.services.photo_guard import enforce_photo_assignment, verify_photo_assignment
 from app.services.place_resolver import resolve_places
-from app.services.sleep_guard import enforce_sleep_boundary
+from app.services.sleep_guard import (
+    enforce_sleep_boundary,
+    remove_events_overlapping_sleep,
+)
 from app.services.source_lookup import normalize_source_types, raw_id_of
 from app.services.source_integrity import filter_draft_sources
 from app.services.stay_merge import mergeable_stay_groups
 from app.services.validator import (
+    assign_event_ids,
     parse_datetime,
     renumber_events,
     resolve_timezone,
@@ -400,13 +439,6 @@ def _absorb(target: TimelineEventDraft, other: TimelineEventDraft) -> None:
     target.source_refs = _dedupe_refs([*target.source_refs, *other.source_refs])
 
 
-def _remap_questions(draft: TimelineDraft, id_map: dict[str, str]) -> None:
-    for question in draft.questions:
-        question.related_event_ids = [
-            id_map.get(event_id, event_id) for event_id in question.related_event_ids
-        ]
-
-
 def _is_pure_stay_event(event: TimelineEventDraft, group: frozenset[str]) -> bool:
     """근거가 이 묶음의 STAY 뿐인가. 그런 event 만 "여기 있었다" 자체를 말한다."""
 
@@ -441,7 +473,6 @@ def merge_stay_events(draft: TimelineDraft, request: TimelineDraftRequest) -> No
     if not groups:
         return
 
-    id_map: dict[str, str] = {}
     merged_titles: list[str] = []
     absorbed: set[int] = set()  # 객체 identity. clientEventId 는 아직 중복일 수 있다.
 
@@ -457,7 +488,6 @@ def merge_stay_events(draft: TimelineDraft, request: TimelineDraftRequest) -> No
         target, *rest = members
         for event in rest:
             merged_titles.append(event.title)
-            id_map[event.client_event_id] = target.client_event_id
             absorbed.add(id(event))
             _absorb(target, event)
 
@@ -465,7 +495,6 @@ def merge_stay_events(draft: TimelineDraft, request: TimelineDraftRequest) -> No
         return
 
     draft.events = [event for event in draft.events if id(event) not in absorbed]
-    _remap_questions(draft, id_map)
     _add_warning(
         draft,
         TimelineWarningSeverity.LOW,
@@ -483,7 +512,6 @@ def resolve_overlaps(draft: TimelineDraft) -> None:
     """
 
     kept: list[TimelineEventDraft] = []
-    id_map: dict[str, str] = {}
     merged_titles: list[str] = []
 
     for event in draft.events:
@@ -492,12 +520,10 @@ def resolve_overlaps(draft: TimelineDraft) -> None:
             kept.append(event)
             continue
         merged_titles.append(event.title)
-        id_map[event.client_event_id] = target.client_event_id
         _absorb(target, event)
 
     draft.events = kept
-    if id_map:
-        _remap_questions(draft, id_map)
+    if merged_titles:
         _add_warning(
             draft,
             TimelineWarningSeverity.LOW,
@@ -520,69 +546,10 @@ def resolve_overlaps(draft: TimelineDraft) -> None:
         )
 
 
-# --- 질문 문장 다듬기 ---------------------------------------------------------
-
-
-def _polish_questions(draft: TimelineDraft) -> None:
-    """일반적인 검증 문구로 남은 질문을 사용자가 답할 수 있는 문장으로 바꾼다."""
-
-    events_by_id = {event.client_event_id: event for event in draft.events}
-    for question in draft.questions:
-        if not _is_generic_question(question.question):
-            continue
-        related_event = next(
-            (
-                events_by_id[event_id]
-                for event_id in question.related_event_ids
-                if event_id in events_by_id
-            ),
-            None,
-        )
-        question.question = _event_specific_question(question.time_range, related_event)
-
-
-def _is_generic_question(text: str) -> bool:
-    normalized = text.strip().lower()
-    generic = {
-        "q",
-        "확인 필요",
-        "시간 확인 필요",
-        "위치 확인 필요",
-        "일정 확인 필요",
-        "검증 필요",
-    }
-    return normalized in generic or len(normalized) <= 4
-
-
-def _event_specific_question(time_range: dict, related_event) -> str:
-    time_text = _korean_time_text(time_range.get("startTime"))
-    if related_event is not None:
-        return f"{time_text}쯤 {related_event.title} 활동이 맞나요?"
-    return f"{time_text}쯤 있었던 활동이 맞나요?"
-
-
-def _korean_time_text(value) -> str:
-    if value is None:
-        return "해당 시간"
-    hour = value.hour
-    minute = value.minute
-    period = "오전" if hour < 12 else "오후"
-    display_hour = hour if 1 <= hour <= 12 else abs(hour - 12)
-    if display_hour == 0:
-        display_hour = 12
-    if minute:
-        return f"{period} {display_hour}시 {minute:02d}분"
-    return f"{period} {display_hour}시"
-
-
 # --- 진입점 ------------------------------------------------------------------
 
 
-def repair_draft(draft: TimelineDraft, request: TimelineDraftRequest) -> TimelineDraft:
-    """LLM 이 만든 draft 를 코드로 확정한다(in-place, 같은 객체를 돌려준다)."""
-
-    # 입력에 없는 rawId는 LLM 환각으로 본다. 잘못된 참조를 먼저 제거하고 유효한
-    # 근거가 하나도 남지 않은 event는 이후 보정 단계로 넘기지 않는다.
+def _filter_sources(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
     source_stats = filter_draft_sources(draft, request)
     if source_stats.changed:
         logger.debug(
@@ -592,56 +559,213 @@ def repair_draft(draft: TimelineDraft, request: TimelineDraftRequest) -> Timelin
             ),
         )
 
-    # 이후 모든 단계가 sourceRef 로 입력을 되짚으므로, LLM 이 붙인 sourceType 라벨을
-    # 입력의 실제 타입으로 먼저 맞춘다. 라벨이 틀리면 근거를 영영 찾지 못한다.
-    normalize_source_types(draft, request)
 
-    # 되살린 캘린더 event 도 window·장소·정렬을 똑같이 거쳐야 하므로 여기서 채운다.
-    ensure_calendar_events(draft, request)
-
-    repair_durations(draft, request)
-    align_location_events(draft, request)
-    enforce_meal_duration(draft, request)
-    enforce_sleep_boundary(draft, request)
-
+def _enforce_window(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
     bounds = resolve_window_bounds(request)
     if bounds is not None:
         validate_draft_to_window(draft, bounds)
 
-    # 겹침 정리가 장소로 중복을 판별하므로, 그 전에 place 를 확정한다.
-    resolve_places(draft, request)
 
+def _merge_stays(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
     sort_events(draft)
     merge_stay_events(draft, request)
-    resolve_overlaps(draft)
 
-    # 사진 귀속 검사는 병합·겹침 정리 **뒤**여야 한다. 앞에 두면 곧 사라질 event 를
-    # 기준으로 판정해, 병합으로 event 가 합쳐지면서 생긴 중복을 놓친다.
+
+#: draft 를 고치는 단계. 이름은 보정 기록(`ConfirmReport`)에 그대로 실려 Repair 가 읽는다.
+#:
+#: 순서의 이유는 모듈 docstring 에 있다. 사진 단일 귀속이 맨 뒤인 것은 event 를 지우거나
+#: 합치는 단계가 모두 끝난 뒤여야 하기 때문이다. 앞에 두면 곧 사라질 event 에 사진을 붙이고,
+#: 병합으로 event 가 합쳐지면서 생긴 중복을 놓친다.
+_CORRECTION_STEPS: tuple[
+    tuple[str, Callable[[TimelineDraft, TimelineDraftRequest], object]], ...
+] = (
+    # 입력에 없는 rawId는 LLM 환각으로 본다. 잘못된 참조를 먼저 제거하고 유효한
+    # 근거가 하나도 남지 않은 event는 이후 보정 단계로 넘기지 않는다.
+    ("입력에 없는 근거 정리", _filter_sources),
+    # 이후 모든 단계가 sourceRef 로 입력을 되짚으므로, LLM 이 붙인 sourceType 라벨을
+    # 입력의 실제 타입으로 먼저 맞춘다. 라벨이 틀리면 근거를 영영 찾지 못한다.
+    ("근거 타입 정정", normalize_source_types),
+    # 되살린 캘린더 event 도 window·장소·정렬을 똑같이 거쳐야 하므로 여기서 채운다.
+    ("캘린더 일정 복원", ensure_calendar_events),
+    ("지속시간 복원", repair_durations),
+    ("근거 구간 정렬", align_location_events),
+    ("식사 시간", enforce_meal_duration),
+    ("수면 경계", enforce_sleep_boundary),
+    ("요청 시간 범위", _enforce_window),
+    # 겹침 정리가 장소로 중복을 판별하므로, 그 전에 place 를 확정한다.
+    ("장소 확정", resolve_places),
+    ("체류 병합", _merge_stays),
+    ("중복 정리", lambda draft, request: resolve_overlaps(draft)),
+    ("사진 단일 귀속", enforce_photo_assignment),
+    ("캘린더 장소 일치", reinforce_calendar_location),
+)
+
+#: v3 프롬프트가 정한 규칙으로 고치는 단계. v1·v2 세트에서는 돌리지 않는다.
+#:
+#: 대화 event 하루 3개는 Notification v3 가 정한 규칙이다(#116). 그 지시를 받은 적 없는
+#: 세트가 만든 event 를 같은 규칙으로 지우면 운영 결과가 달라진다.
+#:
+#: 수면과 겹친 event 제거(#134)도 v3 가 수면 event 를 다루기 시작하면서 생긴 규칙이다.
+#: v1·v2 는 수면을 그 세트대로 다루므로 건드리지 않는다. 사진 단일 귀속 뒤에 돌지만,
+#: 지우는 event 의 사진·캘린더 근거는 수면 event 로 옮기므로 사진이 빠지지 않는다.
+_EXTENDED_CORRECTION_STEPS: tuple[
+    tuple[str, Callable[[TimelineDraft, TimelineDraftRequest], object]], ...
+] = (
+    ("수면과 겹친 event 제거", remove_events_overlapping_sleep),
+    ("대화 개수 제한", enforce_conversation_limit),
+    # 문장을 바꾸는 단계라 event 를 지우거나 합치는 단계가 모두 끝난 뒤에 둔다(#138).
+    ("문장 주소 정리", replace_input_addresses),
+)
+
+#: v3 세트에서 `장소 확정` 바로 앞에 끼우는 단계(#138).
+#:
+#: 일정·사진 event 에 같은 시간의 체류를 위치 근거로 붙인다. 장소 확정보다 앞이어야 붙인
+#: 체류로 비어 있는 place·address 가 같은 확정에서 채워진다. 붙인 체류는 사진 단일 귀속이
+#: 그 event 의 근거로 치지 않으므로, 사진을 잃은 event 가 체류 카드로 살아남지 않는다.
+_LOCATION_LINK_STEP: tuple[
+    str, Callable[[TimelineDraft, TimelineDraftRequest], object]
+] = ("위치 근거 연결", link_location_evidence)
+
+
+def _resolve_places_without_filling(
+    draft: TimelineDraft, request: TimelineDraftRequest
+) -> None:
+    # v3 세트는 빈 place 를 후보로 채우지 않는다(#150). 고르는 것은 LLM 의 몫이다.
+    resolve_places(draft, request, fill_empty=False)
+
+
+def _correction_steps(
+    extended: bool,
+) -> tuple[tuple[str, Callable[[TimelineDraft, TimelineDraftRequest], object]], ...]:
+    if not extended:
+        return _CORRECTION_STEPS
+    names = [name for name, _ in _CORRECTION_STEPS]
+    position = names.index("장소 확정")
+    return (
+        *_CORRECTION_STEPS[:position],
+        _LOCATION_LINK_STEP,
+        ("장소 확정", _resolve_places_without_filling),
+        *_CORRECTION_STEPS[position + 1 :],
+        *_EXTENDED_CORRECTION_STEPS,
+    )
+
+
+def _inspect(
+    draft: TimelineDraft,
+    request: TimelineDraftRequest,
+    report: ConfirmReport,
+    *,
+    extended: bool,
+) -> None:
+    """고치지 않고 찾기만 하는 검사. 찾은 것은 warning 과 검사 결과로 남긴다.
+
+    모든 병합·문장 수정이 끝난 결과를 잰다(#61, #118, #119). 자기 warning 을 가진 guard 는
+    반복마다 이전 것을 지우고 현재 draft 로 다시 계산하므로, Repair 가 문장을 줄이거나
+    event 를 나누고 합친 뒤 stale warning 이 남지 않는다.
+
+    `extended` 가 거짓이면 #119 의 검사를 돌리지 않고 지속시간은 예전처럼 일괄 3시간,
+    event 개수는 예전처럼 24개로 잰다. 찾은 것은 warning 으로 draft 에 남고 Repair 가
+    그것을 읽기 때문이다. 나눌 도구도
+    그 warning 을 읽는 법도 없는 세트에 "나눠야 합니다"를 보이면 Timeline 재실행만 되풀이한다.
+    """
+
+    # 강제 뒤에도 어긋난 사진이 있으면 드러낸다. 있어서는 안 되는 일이라 있으면 버그다.
     verify_photo_assignment(draft, request)
     # Notification Agent 결과를 통과한 뒤에도 Timeline/Repair가 문장을 다시 조립하면서
     # 민감정보나 근거 없는 관계명을 만들 수 있어 최종 draft를 한 번 더 검사한다.
     verify_notification_draft(draft, request)
 
-    reinforce_calendar_location(draft, request)
+    verify_narrative_length(draft)
+    for finding in verify_event_duration(draft, request, by_type=extended):
+        report.add_finding("DURATION_OVER_LIMIT", finding.detail(), event=finding.event)
+    verify_event_count(
+        draft, limit=MAX_EVENT_COUNT if extended else LEGACY_MAX_EVENT_COUNT
+    )
+
+    if not extended:
+        return
+
+    for found in verify_movement_stay_boundary(draft, request):
+        # 나눌 자리는 event 의 시간 안으로 맞춘 값이라 최종 시간이 정해진 뒤에 만든다.
+        report.add_finding("LONG_STAY_BETWEEN_MOVEMENTS", found.detail, event=found.event)
+
+    # 겹치는 event 의 clientEventId 는 최종 id 가 매겨진 뒤에 굳힌다(#138).
+    for overlap in find_location_only_overlaps(draft, request):
+        report.add_finding("LOCATION_ONLY_OVERLAP", overlap.detail, event=overlap.event)
+    for meal in find_unsupported_meals(draft):
+        report.add_finding(
+            "UNSUPPORTED_MEAL",
+            {"sourceTypes": sorted({ref.source_type.value for ref in meal.source_refs})},
+            event=meal,
+        )
+    for label in find_narrative_labels(draft):
+        report.add_finding(label.kind, label.detail(), event=label.event)
+
+
+def repair_draft(
+    draft: TimelineDraft,
+    request: TimelineDraftRequest,
+    *,
+    report: ConfirmReport | None = None,
+    extended: bool = True,
+    issued_ids: set[str] | None = None,
+) -> TimelineDraft:
+    """LLM 이 만든 draft 를 코드로 확정한다(in-place, 같은 객체를 돌려준다).
+
+    `report` 를 주면 이번 확정에서 고친 것과 찾은 것을 거기에 적는다(#119). 주지 않아도
+    확정 자체는 똑같이 돈다.
+
+    `extended` 는 v3 프롬프트가 정한 규칙을 적용할지다. 거짓이면 #119 의 검사와 대화 개수
+    제한을 돌리지 않는다. 사진 단일 귀속은 이 값과 무관하게 어느 세트에서든 강제한다.
+    Repair Agent 가 프롬프트 세트를 보고 정해 넘긴다.
+
+    `issued_ids` 는 지금까지 준 `clientEventId` 의 장부다(#144). 주면 이미 준 번호는
+    그대로 두고 새 event 에만 쓴 적 없는 번호를 준다(`assign_event_ids`). Repair 가 반복마다
+    넘겨, 도구 로그와 쌓인 보정 기록의 번호가 끝까지 같은 event 를 가리키게 한다. 주지
+    않으면 1번부터 다시 매긴다.
+    """
+
+    report = report if report is not None else ConfirmReport()
+
+    for name, step in _correction_steps(extended):
+        report.run(name, draft, lambda step=step: step(draft, request))
+
     # source 하나를 여러 event가 근거로 사용할 수 있다. 현재는 timeline_items에
     # event별 source 스냅샷을 저장하고, 향후 N:M 연결 테이블이 이 관계를 맡는다.
 
-    # 모든 병합·문장 수정이 끝난 결과를 잰다(#61). 두 guard 다 Repair 반복에서
-    # 자기 이전 warning 을 지우고 현재 draft 로 다시 계산하므로, Repair 가 문장을
-    # 줄이거나 event 를 나눈 뒤 stale warning 이 남지 않는다.
-    verify_narrative_length(draft)
-    verify_event_duration(draft)
+    _inspect(draft, request, report, extended=extended)
 
-    # 병합으로 event 구성이 바뀌었을 수 있어 한 번 더 정렬한 뒤
-    # 최종 id 를 부여한다. renumber_events 는 제거된 event 의 질문 참조도 버린다.
+    # 병합으로 event 구성이 바뀌었을 수 있어 한 번 더 정렬한 뒤 id 를 부여한다.
+    # 번호는 여기서만 준다. 중간 guard 는 event 를 지워도 번호를 다시 매기지 않는다(#144).
     sort_events(draft)
-    renumber_events(draft)
-    _polish_questions(draft)
+    if issued_ids is None:
+        renumber_events(draft)
+    else:
+        assign_event_ids(draft, issued_ids)
+    report.finish(draft)
 
     logger.debug(
-        "draft repair 완료: events=%d, questions=%d, warnings=%d",
+        "draft repair 완료: events=%d, warnings=%d",
         len(draft.events),
-        len(draft.questions),
         len(draft.warnings),
     )
     return draft
+
+
+def enforce_final_photo_assignment(
+    draft: TimelineDraft, request: TimelineDraftRequest
+) -> None:
+    """저장으로 넘어가기 직전에 사진 단일 귀속을 한 번 더 강제한다(#119).
+
+    확정 pass 가 이미 강제했으므로 보통은 아무것도 하지 않는다. 확정 뒤에 draft 를 만지는
+    단계가 생겨 사진 참조가 어긋나더라도, 어긋난 채로 저장되지는 않게 하는 마지막 자리다.
+    저장을 실패시키지 않고 바로잡는다 — 실패로 막으면 사진 한 장 때문에 하루 기록 전체가
+    사라진다.
+    """
+
+    # 남아 있는 event 의 번호는 바꾸지 않고 새로 만든 사진 event 에만 번호를 준다(#144).
+    issued = {event.client_event_id for event in draft.events}
+    enforcement = enforce_photo_assignment(draft, request)
+    if enforcement.changed_composition:
+        sort_events(draft)
+        assign_event_ids(draft, issued)

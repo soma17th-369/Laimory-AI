@@ -2,7 +2,7 @@
 
 보는 것은 네 가지다.
 
-    1. 코드 확정은 LLM 이 무엇을 하든 항상 지나간다(정렬·clientEventId 재부여).
+    1. 코드 확정은 LLM 이 무엇을 하든 항상 지나간다(정렬·clientEventId 부여).
     2. LLM 이 낸 계획이 도구로 실행되어 draft 에 반영된다.
     3. 반복은 `done` 이나 상한에서 멈춘다.
     4. 실패해도 draft 를 잃지 않는다(직전 확정 draft + warning).
@@ -171,7 +171,7 @@ def test_applies_update_event_from_plan():
     assert result.events[0].start_time.hour == 9
 
 
-def test_applies_delete_event_and_renumbers():
+def test_applies_delete_event_and_keeps_the_remaining_ids():
     plan = _plan(
         [{"tool": "delete_event", "args": {"clientEventId": "event-001"}}],
         done=True,
@@ -184,9 +184,104 @@ def test_applies_delete_event_and_renumbers():
     result = RepairAgent(llm=FakeLLM([plan]), max_iterations=2).generate(_request(), draft)
 
     assert [event.title for event in result.events] == ["오후"]
-    # 삭제로 생긴 번호 구멍은 확정 단계가 메운다.
-    assert [event.client_event_id for event in result.events] == ["event-001"]
+    # 지운 번호는 비워 둔다. 남은 event 는 Repair 가 본 번호 그대로다(#144).
+    assert [event.client_event_id for event in result.events] == ["event-002"]
 
+
+
+# --- 반복 사이의 번호 (#144) ---------------------------------------------------
+#
+# 확정할 때마다 1번부터 다시 매기면 앞 차례에서 지운 event 만큼 뒤 번호가 당겨진다. 도구
+# 로그와 쌓인 보정 기록은 그때의 번호를 그대로 싣고, 모델이 그 번호로 부르면 다른 event 가
+# 고쳐진 채 성공으로 끝났다(trace-468057bd: 대구의 밤이 "서울역에서 보낸 밤" 이 됐다).
+
+
+def _three_stays_request():
+    return make_request(
+        stays=[
+            stay_item(1, raw_id="s-1", start="2026-06-20T09:00:00", end="2026-06-20T10:00:00",
+                      place="카페", places=["카페"]),
+            stay_item(2, raw_id="s-2", start="2026-06-20T12:00:00", end="2026-06-20T13:00:00",
+                      lat=37.55, lon=127.05, place="식당", places=["식당"]),
+            stay_item(3, raw_id="s-3", start="2026-06-20T15:00:00", end="2026-06-20T16:00:00",
+                      lat=37.6, lon=127.2, place="사무실", places=["사무실"]),
+        ]
+    )
+
+
+def _three_stays_draft():
+    return _draft(
+        _event("카페", "09:00", "10:00", raw_id="s-1", client_event_id="event-001"),
+        _event("식당", "12:00", "13:00", raw_id="s-2", client_event_id="event-002"),
+        _event("사무실", "15:00", "16:00", raw_id="s-3", client_event_id="event-003"),
+    )
+
+
+def test_a_number_from_an_earlier_turn_still_points_to_the_same_event():
+    """1차에 앞쪽 event 를 지운 뒤 2차가 그 전에 본 번호로 뒤쪽 event 를 고친다."""
+
+    first = _plan([{"tool": "delete_event", "args": {"clientEventId": "event-001"}}])
+    second = _plan(
+        [
+            {
+                "tool": "update_event",
+                "args": {"clientEventId": "event-003", "fields": {"title": "사무실에서 일함"}},
+            }
+        ],
+        done=True,
+    )
+
+    result = RepairAgent(llm=FakeLLM([first, second]), max_iterations=2).generate(
+        _three_stays_request(), _three_stays_draft()
+    )
+
+    assert [(event.client_event_id, event.title) for event in result.events] == [
+        ("event-002", "식당"),
+        ("event-003", "사무실에서 일함"),
+    ]
+
+
+def test_a_deleted_number_fails_instead_of_editing_another_event():
+    """지운 번호는 다시 쓰지 않는다. 그 번호로 부르면 실패가 남고 다른 event 는 그대로다."""
+
+    first = _plan([{"tool": "delete_event", "args": {"clientEventId": "event-002"}}])
+    second = _plan(
+        [
+            {
+                "tool": "update_event",
+                "args": {"clientEventId": "event-002", "fields": {"title": "엉뚱한 수정"}},
+            }
+        ],
+        done=True,
+    )
+    llm = FakeLLM([first, second])
+
+    result = RepairAgent(llm=llm, max_iterations=2).generate(
+        _three_stays_request(), _three_stays_draft()
+    )
+
+    assert [event.title for event in result.events] == ["카페", "사무실"]
+    assert [event.client_event_id for event in result.events] == ["event-001", "event-003"]
+    # 2차 프롬프트의 draft 와 도구 로그가 같은 번호 체계를 쓴다.
+    second_prompt = llm.calls[1].prompt
+    assert '"clientEventId": "event-003"' in second_prompt
+    assert "event-002(식당) 를 지웠습니다" in second_prompt
+
+
+def test_published_drafts_keep_the_numbers_repair_saw():
+    """확정 복사본도 Repair 가 본 번호 그대로다. 번호는 결과 저장 계약에 없다."""
+
+    published: list[TimelineDraft] = []
+    plan = _plan([{"tool": "delete_event", "args": {"clientEventId": "event-001"}}], done=True)
+
+    RepairAgent(llm=FakeLLM([plan]), max_iterations=2).generate(
+        _three_stays_request(), _three_stays_draft(), on_confirm=published.append
+    )
+
+    assert [[event.client_event_id for event in draft.events] for draft in published] == [
+        ["event-001", "event-002", "event-003"],
+        ["event-002", "event-003"],
+    ]
 
 def test_unknown_tool_is_reported_back_and_draft_survives():
     llm = FakeLLM(
@@ -522,7 +617,8 @@ def test_reruns_event_agent_and_timeline_agent():
     )
 
     assert [event.title for event in result.events] == ["다시 만든 초안"]
-    assert result.events[0].client_event_id == "event-001"
+    # 새 draft 의 event 는 옛 draft 가 쓴 번호를 다시 받지 않는다(#144).
+    assert result.events[0].client_event_id == "event-002"
 
     # Timeline Agent 는 "다시 돌린 Agent 의 새 결과" 로 병합해야 한다.
     timeline_prompt = timeline_agent.llm.calls[0].prompt
@@ -657,3 +753,99 @@ def test_on_confirm_is_optional():
     )
 
     assert result.events[0].title == "체류"
+
+
+# --- 장소 후보 다시 고르기 (#140) --------------------------------------------------
+
+
+def _campus_request():
+    """첫 후보가 동 이름인 대학 체류 하나와, 다른 장소의 체류 하나."""
+
+    return make_request(
+        stays=[
+            stay_item(
+                1,
+                raw_id="campus",
+                start="2026-06-20T09:00:00",
+                end="2026-06-20T12:00:00",
+                place="산격동",
+                address="대구광역시 북구 대학로 80",
+                places=["산격동", "경북대학교 IT대학", "경북대학교"],
+            ),
+            stay_item(
+                2,
+                raw_id="cafe",
+                start="2026-06-20T15:00:00",
+                end="2026-06-20T16:00:00",
+                lat=37.6,
+                lon=127.2,
+                place="카페 OO",
+                address="서울 카페 주소",
+                places=["카페 OO"],
+            ),
+        ]
+    )
+
+
+def _replace_place(place: str, *, refs: list[dict] | None = None) -> str:
+    fields = {
+        "place": place,
+        "eventType": "CLASS",
+        "title": f"{place}에서 수업과 공부",
+        "description": f"{place}에서 수업을 듣고 공부했어요.",
+        "inferenceLevel": "INFERRED",
+        "uncertainty": ["활동은 장소의 성격으로 추론함"],
+    }
+    if refs is not None:
+        fields["sourceRefs"] = refs
+    return _plan(
+        [{"tool": "update_event", "args": {"clientEventId": "event-001", "fields": fields}}],
+        done=True,
+    )
+
+
+def _campus_draft():
+    event = _event("산격동에서 보낸 시간", "09:00", "12:00", raw_id="campus")
+    event.event_type = EventType.UNKNOWN
+    event.place = "산격동"
+    return _draft(event)
+
+
+def test_a_place_replaced_by_another_candidate_survives_the_confirm_pass():
+    """같은 근거의 다른 후보로 바꾼 `place` 를 확정 단계가 되돌리지 않는다.
+
+    `resolve_places` 는 얼버무림이 아닌 `place` 를 덮어쓰지 않고, 근거의 후보 목록에 있는
+    이름이면 근거 없는 장소로 짚지 않는다. 주소는 같은 체류의 것이라 그대로다.
+    """
+
+    agent = RepairAgent(llm=FakeLLM([_replace_place("경북대학교")]), max_iterations=2, extended_input=True)
+
+    result = agent.generate(_campus_request(), _campus_draft())
+
+    (event,) = [e for e in result.events if e.place == "경북대학교"]
+    assert event.event_type is EventType.CLASS
+    assert event.title == "경북대학교에서 수업과 공부"
+    assert event.inference_level is InferenceLevel.INFERRED
+    assert event.address == "대구광역시 북구 대학로 80"
+    assert [ref.raw_id for ref in event.source_refs] == [fixture_raw_id("campus")]
+    assert not any("없는 장소명" in w.message for w in result.warnings)
+
+
+def test_a_place_taken_from_an_unreferenced_input_is_flagged_until_its_ref_is_added():
+    """다른 근거의 이름으로 바꾸면서 그 rawId 를 넣지 않으면 근거 없는 장소로 짚인다."""
+
+    flagged = RepairAgent(
+        llm=FakeLLM([_replace_place("카페 OO")]), max_iterations=2, extended_input=True
+    ).generate(_campus_request(), _campus_draft())
+
+    assert any("없는 장소명" in w.message for w in flagged.warnings)
+
+    refs = [
+        {"sourceType": "STAY", "rawId": fixture_raw_id("campus"), "reason": "체류"},
+        {"sourceType": "STAY", "rawId": fixture_raw_id("cafe"), "reason": "장소 근거"},
+    ]
+    supported = RepairAgent(
+        llm=FakeLLM([_replace_place("카페 OO", refs=refs)]), max_iterations=2, extended_input=True
+    ).generate(_campus_request(), _campus_draft())
+
+    assert not any("없는 장소명" in w.message for w in supported.warnings)

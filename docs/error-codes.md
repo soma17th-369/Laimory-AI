@@ -93,7 +93,7 @@ AI 서버가 밖으로 내보내는 실패는 **정수 하나로 식별**합니�
 | 1301 | `TIMELINE_STORAGE_VALIDATION_FAILED` | 저장 전 자체검증에서 계약 위반이 나왔습니다. | | |
 | 1302 | *(예약)* | AI 서버가 staging DB에 직접 붙던 시절의 `DATABASE_ERROR`입니다. **사용하지 않습니다.** | | |
 | 1303 | `TIMELINE_RESULT_SUBMIT_FAILED` | 결과 저장 API 호출이 재시도까지 실패했습니다(5xx/timeout). | | |
-| 1304 | `USER_MEMORY_LIMIT_EXCEEDED` | User Memory 갱신본이 재요청 뒤에도 크기·민감정보 검증을 통과하지 못했습니다. | | |
+| 1304 | `USER_MEMORY_LIMIT_EXCEEDED` | User Memory 갱신본이 크기·민감정보 검증을 통과하지 못했습니다. 다시 요청하지 않고 기존 값을 그대로 둡니다. `v3` 세트는 규칙을 어긴 변경만 빼고 나머지를 적용하므로, 받은 문서가 이미 규칙을 어긴 경우에만 나옵니다. | | |
 | 1305 | `USER_MEMORY_SUBMIT_FAILED` | User Memory 결과 저장 호출이 재시도까지 실패했습니다(5xx/timeout). | | |
 
 1210·1304는 **User Memory만** 실패한 것입니다. 하루 기록 저장(`DailyRecord`의
@@ -204,6 +204,10 @@ errorCode: 1301 and environment: "prod"
 `errorMessage`(마스킹한 원본), 최종 실패의 traceback까지 있습니다. 이 줄은 수집
 표식이 없어 Elasticsearch로 가지 않으므로 `docker logs laimory-ai`로 봅니다.
 
+같은 호출이 내는 `app.degraded` 이벤트에도 `errorMessage`·`errorStackTrace`가
+실립니다(#109 범위 확장). 길이 상한에서 잘릴 수 있고(`…(잘림)`), 진단 줄에는
+전문이 남습니다. prod는 컨테이너가 회수되므로 사실상 이벤트 쪽이 유일한 창입니다.
+
 ```json
 {"log.level":"WARNING","logger":"app.services.timeline_runner",
  "message":"타임라인 처리 실패","taskId":"task-1","stage":"STORAGE",
@@ -211,8 +215,9 @@ errorCode: 1301 and environment: "prod"
  "violationCodes":["SOURCE_RAW_ID_NOT_IN_TASK"],"violationCount":1}
 ```
 
-즉 **무엇이 얼마나 실패하는지는 Elasticsearch, 왜 실패했는지의 원문은 컨테이너
-로그, AI 실행 과정은 Langfuse**입니다. 세 곳을 잇는 상관키는 `taskId` 하나입니다.
+즉 **무엇이 얼마나 실패하는지와 왜 실패했는지는 Elasticsearch, 잘리지 않은 전문은
+컨테이너 로그, AI 실행 과정은 Langfuse**입니다. 세 곳을 잇는 상관키는 `taskId`
+하나입니다.
 
 조회 예시와 필드 계약은 [docs/operational-logging.md](operational-logging.md)에
 정리돼 있습니다.

@@ -13,6 +13,11 @@ endTime``) :meth:`TimelineInputResponse.to_snapshot` 한 곳에서 옮긴다. �
 ``taskToken`` 은 이 응답 body 로도 내려온다. 새 값이 오면 그 뒤의 모든 요청은
 갱신된 토큰을 쓴다(:class:`~app.services.app_server_client.TaskToken`). 토큰은
 계약상 body 로 받고 인증은 ``Task-Token`` 헤더로만 한다.
+
+계약은 두 겹이다(#102). :class:`TimelineInputPayload` 가 **입력 한 벌**(``taskId`` 포함)
+을 선언하고, :class:`TimelineInputResponse` 가 거기에 ``taskToken`` 만 더한다. 동기 테스트
+엔드포인트처럼 App Server 를 되부르지 않는 입구는 앞의 것을 상속해서 **같은 필드 선언을
+그대로 재사용한다** — 필드를 손으로 다시 적으면 한쪽만 고쳐져 두 입구가 갈린다.
 """
 
 from typing import Any
@@ -35,21 +40,25 @@ class TimelineInputWindow(CamelModel):
     end_at: str = Field(alias="endAt")
 
 
-class TimelineInputResponse(CamelModel):
-    """입력 조회 응답 전체.
+class TimelineInputPayload(CamelModel):
+    """타임라인 생성 입력 한 벌. **필드를 선언하는 유일한 자리다.**
 
-    ``taskToken`` 은 계약상 선택이다. 응답에 실려 오면 홀더를 갱신하고, 없으면
-    직전 토큰을 계속 쓴다 — 없다고 실패로 보지 않는다.
+    입력 조회 응답(:class:`TimelineInputResponse`)과 동기 테스트 요청
+    (:class:`~app.api.v1.timeline_testing.TimelineTestRequest`)이 이걸 상속해서 **같은
+    선언 하나**를 쓴다 — 필드를 손으로 다시 적으면 한쪽만 고쳐져 두 입구가 말없이 갈린다.
 
-    ``userMemory`` 도 선택이다(#65). 이 필드만 **원본 dict 로 느슨하게 받는다** —
-    여기서 :class:`~app.schemas.user_memory.UserMemory` 로 직접 선언하면 보조
-    context 필드 하나가 틀렸을 때 응답 전체가 계약 위반(1102)이 되어 타임라인이
-    죽는다. 검증은 :meth:`parse_user_memory` 가 따로 하고, 실패는 호출 경계가
-    흡수한다.
+    ``taskId`` 는 여기 있다. **App Server 가 발행하고 AI 서버가 받는 값**이라 두 입구에
+    공통이다. 갈리는 것은 ``taskToken`` 하나뿐이고, 그것만
+    :class:`TimelineInputResponse` 에 있다 — 토큰은 AI 서버가 App Server 를 **되부를
+    때** 쓰는 인증이라 되부르지 않는 입구에는 쓸 곳이 없다.
+
+    ``userMemory`` 는 선택이며 이 필드만 **원본 dict 로 느슨하게 받는다**(#65).
+    여기서 :class:`~app.schemas.user_memory.UserMemory` 로 직접 선언하면 보조 context
+    필드 하나가 틀렸을 때 입력 전체가 계약 위반(1102)이 되어 타임라인이 죽는다. 검증은
+    :meth:`parse_user_memory` 가 따로 하고, 실패는 호출 경계가 흡수한다.
     """
 
     task_id: str = Field(alias="taskId", min_length=1)
-    task_token: str | None = Field(default=None, alias="taskToken")
     record_date: str = Field(alias="recordDate")
     record_time_zone: str = Field(default="Asia/Seoul", alias="recordTimeZone")
     window: TimelineInputWindow | None = None
@@ -100,3 +109,16 @@ class TimelineInputResponse(CamelModel):
             timeline_window=window,
             source_items=list(self.source_items),
         )
+
+
+class TimelineInputResponse(TimelineInputPayload):
+    """입력 조회 응답 전체. 입력 한 벌에 ``taskToken`` 을 더한 것이다.
+
+    ``taskToken`` 은 계약상 선택이다. 응답에 실려 오면 홀더를 갱신하고, 없으면
+    직전 토큰을 계속 쓴다 — 없다고 실패로 보지 않는다.
+
+    이 필드만 여기 있는 이유는, 토큰이 **AI 서버가 App Server 를 되부를 때** 쓰는
+    인증이어서다. 되부르지 않는 입구에는 쓸 곳이 없다.
+    """
+
+    task_token: str | None = Field(default=None, alias="taskToken")

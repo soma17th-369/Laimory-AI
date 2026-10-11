@@ -21,6 +21,8 @@ from app.schemas import (
     TimelineWarningSeverity,
     UserMemory,
 )
+from app.services.confirm_report import ConfirmReport
+from app.services.draft_repair import repair_draft
 from app.services.place_resolver import (
     calendar_place_label,
     is_exact_address,
@@ -84,8 +86,11 @@ def _draft(*events) -> TimelineDraft:
 # --- 얼버무림 판정 -------------------------------------------------------------
 
 
-@pytest.mark.parametrize("label", ["한 곳", "한곳", "근처", "주변", "어떤 장소", "  ", None])
+@pytest.mark.parametrize(
+    "label", ["한 곳", "한곳", "근처", "주변", "일대", "어떤 장소", "  ", None]
+)
 def test_vague_labels_are_not_places(label):
+    # `일대` 는 #118 장소 선택 규칙이 명시한 얼버무림이다.
     assert is_vague_place_label(label)
 
 
@@ -125,6 +130,51 @@ def test_vague_place_is_replaced_by_the_evidence_place():
     assert draft.events[0].place == APARTMENT
 
 
+def test_v3_leaves_a_missing_place_empty_and_keeps_the_address():
+    """v3 는 후보만으로 place 를 채우지 않는다(#150). 비운 것도 정상 결과다.
+
+    체류 후보는 그 지점 근처의 역지오코딩 이름이라 채우면 `피자성찬` 같은 근처 가게가
+    그날의 장소가 된다. 주소는 계속 채운다 — 사용자 문장이 동·도로명으로 쓸 자리다.
+    """
+
+    draft = _draft(_event(STAY_REF))
+
+    resolve_places(draft, _request(), fill_empty=False)
+
+    assert draft.events[0].place is None
+    assert draft.events[0].address == HOME_ADDRESS
+
+
+def test_v3_still_clears_a_vague_place():
+    draft = _draft(_event(STAY_REF, place="근처"))
+
+    resolve_places(draft, _request(), fill_empty=False)
+
+    assert draft.events[0].place is None
+
+
+def test_v3_keeps_the_place_the_timeline_chose():
+    draft = _draft(_event(STAY_REF, place="집"))
+
+    resolve_places(draft, _request(), fill_empty=False)
+
+    assert draft.events[0].place == "집"
+
+
+@pytest.mark.parametrize(("extended", "expected"), [(True, None), (False, APARTMENT)])
+def test_confirm_fills_an_empty_place_only_outside_v3(extended, expected):
+    """v2 는 운영 세트라 예전처럼 채운다. 갈리는 기준은 확정 pass 의 `extended` 하나다."""
+
+    request = make_request(
+        stays=[stay_item(1, raw_id="stay-1", place=APARTMENT, address=HOME_ADDRESS, places=[])]
+    )
+    draft = _draft(_event(STAY_REF))
+
+    repair_draft(draft, request, report=ConfirmReport(), extended=extended)
+
+    assert draft.events[0].place == expected
+
+
 def test_vague_place_without_any_evidence_is_cleared_not_invented():
     draft = _draft(_event(PHOTO_REF, place="근처"))
 
@@ -157,6 +207,23 @@ def test_movement_prefers_its_destination_place():
     resolve_places(draft, _request())
 
     assert draft.events[0].place == "도착 공원"
+
+
+def test_movement_without_a_destination_name_is_not_filled_from_the_origin():
+    """장소 선택 규칙(#118): MOVEMENT 의 place 는 출발지가 아니라 도착지다.
+
+    도착지에 이름이 없다고 출발지 이름을 넣으면 `집` 에서 나온 이동이 집에 있었던
+    것처럼 읽힌다. 채울 것이 없으면 비운다.
+    """
+
+    request = _request()
+    request.movements[0].end = GeoPlace(place=None, address=None, places=[])
+    draft = _draft(_event(MOVE_REF))
+
+    resolve_places(draft, request)
+
+    assert draft.events[0].place is None
+    assert draft.events[0].address is None
 
 
 def test_calendar_supplies_the_friendly_label_when_no_location_evidence():
@@ -209,7 +276,7 @@ def test_exact_address_passes():
     assert is_exact_address(HOME_ADDRESS)
 
 
-def test_approximate_evidence_address_is_skipped_when_filling():
+def test_approximate_destination_address_is_left_empty_not_replaced_by_the_origin():
     # 수집 원본이 도착지 주소를 `... 90 인근` 으로 준다. 그것은 주소가 아니다.
     request = _request()
     request.movements[0].end = GeoPlace(place="도착 공원", address="경기도 오산시 운암로 90 인근")
@@ -217,8 +284,8 @@ def test_approximate_evidence_address_is_skipped_when_filling():
 
     resolve_places(draft, request)
 
-    # 도착지가 근사값이라 건너뛰고, 정확한 출발지 주소로 채운다.
-    assert draft.events[0].address == "경기도 오산시 운암로 90"
+    # 도착지가 근사값이면 비운다. 출발지 주소로 넘어가면 place(도착지)와 짝이 어긋난다.
+    assert draft.events[0].address is None
     assert draft.events[0].place == "도착 공원"  # place 은 근사여도 이름이다
 
 

@@ -36,6 +36,7 @@ from app.core.langfuse_tracing import trace_observation, update_observation
 from app.core.llm import ImageInput
 from app.core.logging import get_logger
 from app.core.execution_context import ExecutionStage
+from app.core.llm_stages import LLMStage
 from app.schemas import PhotoItem, StayItem
 from app.services.validator import parse_datetime
 
@@ -81,6 +82,9 @@ def parse_descriptions(text: str, valid_raw_ids: set[str]) -> dict[str, str]:
             "사진 description 응답에서 JSON 객체를 찾지 못했습니다",
             stage=ExecutionStage.EVENT_AGENT,
             context={"parser": "photo_description"},
+            # 파싱 시도마다 부른다. 설명이 비면 metadata fallback 이 받아 주고,
+            # 사진 Agent 가 통째로 실패하면 그쪽이 운영 이벤트를 낸다.
+            emit=False,
         )
         return {}
     try:
@@ -93,6 +97,7 @@ def parse_descriptions(text: str, valid_raw_ids: set[str]) -> dict[str, str]:
             exc=exc,
             stage=ExecutionStage.EVENT_AGENT,
             context={"parser": "photo_description"},
+            emit=False,
         )
         return {}
 
@@ -146,7 +151,7 @@ class LLMPhotoDescriber(PhotoDescriber):
     @property
     def llm(self) -> SupportsComplete:
         if self._llm is None:
-            self._llm = default_llm()
+            self._llm = default_llm(LLMStage.PHOTO_DESCRIBE)
         return self._llm
 
     def describe(self, photos: list[PhotoItem]) -> dict[str, str]:
@@ -293,7 +298,7 @@ class VisionPhotoDescriber(PhotoDescriber):
     @property
     def llm(self) -> SupportsVision:
         if self._llm is None:
-            self._llm = default_llm()
+            self._llm = default_llm(LLMStage.PHOTO_DESCRIBE)
         return self._llm
 
     @property

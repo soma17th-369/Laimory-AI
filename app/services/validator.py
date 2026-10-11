@@ -14,6 +14,7 @@ window 문자열은 `"20260630T000000"`(basic) 또는 `"2026-06-30T00:00:00"`(ex
 (데이터 한 건이 전체 흐름을 막지 않도록).
 """
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
 from zoneinfo import ZoneInfo
@@ -22,6 +23,7 @@ from app.core.error_codes import ErrorCode
 from app.core.exceptions import report_error
 from app.core.logging import get_logger
 from app.core.execution_context import ExecutionStage
+from app.core.operational_logging import DegradedComponent, emit_degraded
 from app.schemas import (
     AgentEventResult,
     TimelineDraft,
@@ -107,9 +109,13 @@ def resolve_window_bounds(request: TimelineDraftRequest) -> WindowBounds | None:
         # window 원문은 요청이 준 값이라 남기지 않는다. 파싱에 실패했다는 사실만으로
         # 어디를 봐야 하는지는 정해진다(요청 body 는 App Server 쪽에 있다).
         logger.warning("window 파싱 실패로 범위 검증을 건너뜁니다.")
+        # 범위 검증이 통째로 빠진 채 결과가 나간다. 작업은 성공으로 끝나므로 이
+        # 이벤트가 없으면 운영에서 구분할 방법이 없다(#101).
+        emit_degraded(DegradedComponent.WINDOW)
         return None
     if end < start:
         logger.warning("window.end 가 start 보다 앞서 범위 검증을 건너뜁니다.")
+        emit_degraded(DegradedComponent.WINDOW)
         return None
     return WindowBounds(start=start, end=end)
 
@@ -189,33 +195,62 @@ def filter_result_to_window(
 def renumber_events(draft: TimelineDraft) -> None:
     """남은 event 에 `clientEventId` 를 1번부터 다시 매긴다(in-place).
 
-    event 를 제거한 뒤에는 번호에 구멍이 생기므로 항상 이 함수로 다시 매긴다.
-    질문의 `relatedEventIds` 도 새 id 로 보정하고, 사라진 event 참조는 버린다.
-    draft 에서 event 를 제거하는 검증(window·sourceRef)이 공유한다.
+    번호를 지금 순서대로 새로 매긴다. Repair 안에서는 쓰지 않는다 — 반복 중에 번호가
+    바뀌면 로그에 남은 번호가 다른 event 를 가리킨다(#144). 그쪽은 `assign_event_ids` 다.
     """
 
-    id_map: dict[str, str] = {}
     for index, event in enumerate(draft.events, start=1):
-        new_id = f"event-{index:03d}"
-        id_map[event.client_event_id] = new_id
-        event.client_event_id = new_id
+        event.client_event_id = f"event-{index:03d}"
 
-    for question in draft.questions:
-        question.related_event_ids = [
-            id_map[old] for old in question.related_event_ids if old in id_map
-        ]
+
+_EVENT_ID_PATTERN = re.compile(r"event-(\d+)")
+
+
+def assign_event_ids(draft: TimelineDraft, issued: set[str]) -> None:
+    """이미 준 `clientEventId` 는 그대로 두고 새 event 에만 번호를 준다(in-place, #144).
+
+    `issued` 는 지금까지 준 번호의 장부이고 이 함수가 새로 준 번호를 더한다. Repair 는
+    반복마다 확정하면서 이 장부를 넘긴다. 확정할 때마다 1번부터 다시 매기면 앞 차례에서
+    event 가 빠질 때 뒤 event 의 번호가 당겨져, 도구 로그와 쌓인 보정 기록에 남은 번호가
+    다른 event 를 가리킨다. 그 번호로 부른 도구는 엉뚱한 event 를 고치고 성공으로 끝난다.
+
+    - 장부에 있는 번호는 유지한다. 같은 번호가 둘이면 앞 event 만 유지한다.
+    - 나머지(임시 id: 캘린더 복원·사진 event·split 조각·Timeline 재실행 결과)는 장부의
+      가장 큰 번호 다음부터 받는다. **지운 번호도 장부에 남아 다시 쓰지 않는다** — 다시
+      쓰면 로그의 "지웠습니다" 가 새 event 를 가리킨다.
+
+    장부가 비어 있으면 `renumber_events` 와 결과가 같다.
+    """
+
+    numbers = [
+        int(match.group(1))
+        for identifier in issued
+        if (match := _EVENT_ID_PATTERN.fullmatch(identifier))
+    ]
+    next_number = max(numbers, default=0) + 1
+    kept: set[str] = set()
+    for event in draft.events:
+        identifier = event.client_event_id
+        if identifier in issued and identifier not in kept:
+            kept.add(identifier)
+            continue
+        identifier = f"event-{next_number:03d}"
+        next_number += 1
+        event.client_event_id = identifier
+        issued.add(identifier)
+        kept.add(identifier)
 
 
 def validate_draft_to_window(draft: TimelineDraft, bounds: WindowBounds) -> None:
     """draft 의 event 시간을 검증한다(in-place).
 
-    - 완전히 window 밖인 event 는 제거하고, `clientEventId` 를 다시 매겨
-      `questions.relatedEventIds` 를 함께 보정한다.
+    - 완전히 window 밖인 event 는 제거한다. 남은 event 의 `clientEventId` 는 건드리지
+      않는다 — 번호는 확정 pass 끝에서만 준다(#144). 여기서 다시 매기면 Repair 가 이
+      검증을 도구로 부른 뒤 같은 계획의 다음 호출이 다른 event 를 가리킨다.
     - 경계에 걸친 event 는 유지하되 warning 을 남긴다.
 
     warning 은 `clientEventId` 대신 **제목**으로 event 를 가리킨다. 이 검증 뒤에
-    repair 가 event 를 다시 정렬하고 id 를 다시 매기므로, 여기서 적어 둔 id 는
-    사용자가 볼 때쯤이면 다른 event 를 가리킨다.
+    확정 pass 가 event 를 합치거나 지우고 새 event 에 번호를 주므로, 제목이 더 오래 맞는다.
     """
 
     kept = []
@@ -237,7 +272,6 @@ def validate_draft_to_window(draft: TimelineDraft, bounds: WindowBounds) -> None
         kept.append(event)
 
     draft.events = kept
-    renumber_events(draft)
 
     seq = len(draft.warnings)
     if dropped:

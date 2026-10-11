@@ -32,6 +32,7 @@ from langfuse.types import (
 
 from app.core.config import settings
 from app.core.logging import SERVICE_NAME, get_logger
+from app.core.operational_logging import DegradedComponent, emit_degraded
 from app.core.secrets import resolve_secret
 from app.core.redaction import (
     ContentCapture,
@@ -251,6 +252,10 @@ def get_langfuse_client() -> Langfuse | None:
         logger.warning(
             "Langfuse tracing 비활성화: LANGFUSE_PUBLIC_KEY/SECRET_KEY가 필요합니다."
         )
+        # 설정은 켜 뒀는데 키가 없어 trace 가 하나도 남지 않는 상태다. 요청은 정상
+        # 처리되므로 다른 어떤 이벤트도 이 사실을 말하지 않는다(#101).
+        # `lru_cache` 안이라 프로세스당 한 번이다.
+        emit_degraded(DegradedComponent.LANGFUSE)
         return None
 
     # OTel Resource 는 Langfuse client 를 만들 때 한 번 조립된다. service.name 을 주지

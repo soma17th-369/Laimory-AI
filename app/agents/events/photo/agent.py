@@ -33,6 +33,7 @@ from app.agents.parsing import (
 from app.agents.prompt_loader import load_prompt
 from app.core.langfuse_tracing import trace_observation, update_observation
 from app.core.logging import get_logger, log_fields
+from app.core.llm_stages import LLMStage
 from app.schemas import AgentEventResult, TimelineDraftRequest
 
 logger = get_logger(__name__)
@@ -62,7 +63,7 @@ class PhotoEventAgent(EventAgent):
     @property
     def llm(self) -> SupportsComplete:
         if self._llm is None:
-            self._llm = default_llm()
+            self._llm = default_llm(LLMStage.PHOTO)
         return self._llm
 
     def _build_describer(self, request: TimelineDraftRequest) -> PhotoDescriber:

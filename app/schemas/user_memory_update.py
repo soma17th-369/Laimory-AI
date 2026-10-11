@@ -45,8 +45,8 @@ class DailyTimelineEvent(CamelModel):
     """확정된 하루 타임라인의 event 하나.
 
     ``title``·``subtitle``·``question`` 은 **이 시스템의 타임라인 AI 가 쓴 문장**이고
-    ``memo`` 만 사용자가 직접 쓴 글이다. 이 구분은 갱신 프롬프트가 지키며, 근거는
-    :mod:`app.agents.user_memory.user_memory_agent` 에 적었다.
+    ``memo`` 만 사용자가 직접 쓴 글이다. 이 출처를 어떻게 다룰지는 갱신 프롬프트가
+    정하며 세트마다 다르다(:mod:`app.agents.user_memory.user_memory_agent`).
     """
 
     event_type: str = Field(alias="eventType", min_length=1)
@@ -64,7 +64,12 @@ class DailyTimeline(CamelModel):
 
     record_date: str = Field(alias="recordDate", min_length=1)
     record_time_zone: str = Field(default="Asia/Seoul", alias="recordTimeZone")
-    #: 현재 App Server 가 항상 ``null`` 로 보낸다. 받아만 두고 쓰지 않는다.
+    #: 사용자가 하루를 저장하며 고른 감정(#121). **하루에 하나**이고 event 별 감정은
+    #: 없다. App Server 는 ``VERY_HAPPY``·``HAPPY``·``NEUTRAL``·``UNHAPPY``·
+    #: ``VERY_UNHAPPY`` 를 보내며, 감정을 받기 전에 저장된 기록은 ``null`` 이다.
+    #:
+    #: enum 으로 좁히지 않는다. ``eventType`` 을 자유 문자열로 받는 것과 같은 이유다 —
+    #: App Server 가 값을 하나 더하면 그날의 갱신 요청 전체가 422 로 죽는다.
     emotion_type: str | None = Field(default=None, alias="emotionType")
     events: list[DailyTimelineEvent] = Field(default_factory=list)
 

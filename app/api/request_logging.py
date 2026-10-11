@@ -36,6 +36,7 @@ from typing import Any, Awaitable, Callable
 from starlette.requests import Request
 
 from app.core.error_codes import ErrorCode
+from app.core.exceptions import stack_trace_of
 from app.core.operational_logging import (
     OperationalEvent,
     emit_event,
@@ -65,11 +66,14 @@ def annotate_request_error(
     code: ErrorCode,
     *,
     error_type: str | None = None,
+    error_message: str | None = None,
+    error_stack_trace: str | None = None,
 ) -> None:
-    """요청 이벤트에 실을 오류 코드를 적어 둔다(응답 생성 **전**에 부른다).
+    """요청 이벤트에 실을 오류 정보를 적어 둔다(응답 생성 **전**에 부른다).
 
-    값이 아니라 코드와 예외 클래스명만 받는다. 예외 원문·검증 입력값은 여기로
-    넘어오지 않는다.
+    예외 원문과 traceback 도 받는다(#109 범위 확장). **검증 실패는 넘기지 않는다** —
+    그 예외의 문자열에는 사용자가 보낸 입력값이 그대로 들어 있어, 응답에서 막아 둔 값이
+    로그로 되돌아 나간다. 무엇을 넘길지는 처리기가 정하고 여기서는 받은 것만 적는다.
     """
 
     annotation = _annotation(request.scope)
@@ -78,6 +82,10 @@ def annotate_request_error(
     annotation["errorCode"] = int(code)
     if error_type is not None:
         annotation["errorType"] = error_type
+    if error_message is not None:
+        annotation["errorMessage"] = error_message
+    if error_stack_trace is not None:
+        annotation["errorStackTrace"] = error_stack_trace
 
 
 def annotate_request_task(request: Request, task_id: str) -> None:
@@ -124,7 +132,12 @@ class RequestLoggingMiddleware:
         started = perf_counter()
         logged = False
 
-        def emit(status_code: int, *, fallback_error: ErrorCode | None = None) -> None:
+        def emit(
+            status_code: int,
+            *,
+            fallback_error: ErrorCode | None = None,
+            exc: BaseException | None = None,
+        ) -> None:
             path = scope.get("path", "")
             if status_code < 400 and path in _QUIET_PATHS:
                 return
@@ -132,6 +145,15 @@ class RequestLoggingMiddleware:
             error_code = annotation.get("errorCode")
             if error_code is None and fallback_error is not None:
                 error_code = int(fallback_error)
+            error_type = annotation.get("errorType")
+            error_message = annotation.get("errorMessage")
+            stack_trace = annotation.get("errorStackTrace")
+            if exc is not None:
+                # 미처리 예외는 처리기의 주석이 도착하지 못한다(아래 except 참고).
+                # 이 자리가 그 실패의 원인을 남길 유일한 기회다(#109 범위 확장).
+                error_type = error_type or type(exc).__name__
+                error_message = error_message or str(exc)
+                stack_trace = stack_trace or stack_trace_of(exc)
             emit_event(
                 OperationalEvent.HTTP_REQUEST_COMPLETED,
                 outcome=http_outcome(status_code),
@@ -141,7 +163,9 @@ class RequestLoggingMiddleware:
                 httpStatus=status_code,
                 durationMs=round((perf_counter() - started) * 1000, 3),
                 errorCode=error_code,
-                errorType=annotation.get("errorType"),
+                errorType=error_type,
+                errorMessage=error_message,
+                errorStackTrace=stack_trace,
                 taskId=annotation.get("taskId"),
             )
 
@@ -154,11 +178,11 @@ class RequestLoggingMiddleware:
 
         try:
             await self.app(scope, receive, send_wrapper)
-        except Exception:
+        except Exception as exc:
             # 여기까지 올라온 예외는 응답을 시작하지도 못했다는 뜻이다. 500 응답은
             # 이 미들웨어 **바깥**의 ServerErrorMiddleware 가 만들므로, 그쪽 처리기의
             # 주석을 기다릴 수 없다. 코드를 여기서 확정해 요청 줄을 닫는다.
             if not logged:
                 logged = True
-                emit(500, fallback_error=ErrorCode.INTERNAL_ERROR)
+                emit(500, fallback_error=ErrorCode.INTERNAL_ERROR, exc=exc)
             raise

@@ -23,7 +23,7 @@ _TASK_ID = "task-langfuse-user-memory"
 
 
 class _StubAgent:
-    def generate(self, existing, digest, *, violations=()):
+    def generate(self, existing, digest):
         return UserMemory(basic_profile="30대 개발자입니다.")
 
 
@@ -99,7 +99,7 @@ def test_root_output_carries_shape_not_content(monkeypatch) -> None:
     )
 
     assert output["status"] == TaskStatus.SUCCESS.value
-    assert output["repairAttempts"] == 0
+    assert "repairAttempts" not in output
     # 본문이 아니라 모양만 남는다.
     assert output["userMemory"]["schemaVersion"] == "1.0"
     assert "30대 개발자입니다." not in json.dumps(output, ensure_ascii=False)

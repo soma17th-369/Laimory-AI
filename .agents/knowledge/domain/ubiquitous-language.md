@@ -35,27 +35,40 @@
 | Fragment | candidate로 확정하기에는 약하지만 다른 source와 결합할 수 있는 단서. 원본 단순 요약과 동의어가 아니다. |
 | SourceRef | candidate 또는 event가 어떤 source `rawId`를 왜 근거로 삼는지 나타내는 참조. `sourceType` label은 실제 입력 type으로 정정될 수 있다. |
 | Timeline Agent | 여러 candidate/fragment를 의미적으로 합쳐 넓은 `TimelineDraft`를 만드는 Agent. 결과는 아직 확정 전이다. |
-| Timeline draft | event, 내부 모호성 질문, warning과 판단 metadata를 담는 편집 가능한 내부 결과. App Server 저장 request보다 넓다. |
+| Timeline Agent 출력 계약 | `TimelineAgentOutput`. Timeline LLM이 쓰는 `events`(`TimelineAgentEvent`)와 `warnings`뿐이다(#118). 코드가 부여하는 `clientEventId`와 Question Agent가 채우는 `question`은 여기 없고, `TimelineEventDraft`가 `TimelineAgentEvent`를 상속해 그 둘을 더한다. |
+| Timeline draft | event, warning과 판단 metadata를 담는 편집 가능한 내부 결과. App Server 저장 request보다 넓다. |
 | Timeline event | 사용자가 읽는 하루의 사건 단위. source에 근거해야 하며 Repair 뒤 시간순 ID를 갖는다. |
-| `clientEventId` | 현재 draft 안에서만 쓰는 `event-NNN` 식별자. 병합·삭제 뒤 코드가 다시 부여하며 App Server result에는 보내지 않는다. |
-| Repair Agent | draft를 코드로 확정하고 남은 의미 문제를 LLM tool plan으로 제한 횟수 개선하는 Agent. |
+| `clientEventId` | AI 서버 안에서만 쓰는 `event-NNN` 식별자. 코드가 부여하며 App Server result에는 보내지 않는다. Repair가 도는 동안 한 번 준 번호는 그 event를 계속 가리키고, 지운 번호는 다시 쓰지 않는다(#144). 연속이거나 시간순이라는 보장은 없다. |
+| Repair Agent | draft를 코드로 확정하고 남은 의미 문제를 LLM tool plan으로 제한 횟수 개선하는 Agent. v3 세트에서는 코드가 이미 본 것을 다시 검증하지 않고 내용과 문장을 다듬는다(#119). |
 | Confirm/확정 pass | `repair_draft`와 fragment 검사를 실행해 source·시간·정렬·ID 등 결정론 규칙을 재적용하는 단계. |
-| Guard | 특정 불변식을 검사·보정하거나 warning으로 드러내는 결정론 service. 모든 guard가 값을 자동 수정하는 것은 아니다. |
-| Question Agent | Repair가 확정한 event에 사용자 회고 유도 질문을 선택적으로 붙이는 Agent. |
-| 내부 모호성 질문 | `TimelineDraft.questions`. 불확실한 시간·장소를 확인하는 내부 draft 정보이며 App Server로 보내지 않는다. |
-| 회고 유도 질문 | `TimelineEventDraft.question`/result event의 `question`. 사용자가 경험·감정·이유를 덧붙이도록 event에 중첩해 저장하는 질문. |
+| Guard | 특정 불변식을 검사·보정하거나 warning으로 드러내는 결정론 service. 모든 guard가 값을 자동 수정하는 것은 아니다. 무엇을 고칠지가 규칙으로 정해져 있으면 고치고, 의미 판단이 필요하면 찾기만 한다. |
+| 자동 검사 결과 (`ConfirmReport`) | 확정 pass 한 번이 고친 것(`corrected`), 지우거나 합친 것(`removed`), 새로 만든 것(`added`), 찾았지만 고치지 않은 것(`findings`)의 기록(#119). v3 Repair 프롬프트의 `[자동 검사 결과]` 절로 실린다. Warning과 다르다 — warning은 사람이 읽는 문장이고 이것은 event id·바뀐 값·경계를 담은 구조다. 저장하지 않는다. |
+| 대화 event | 근거가 전부 메신저 정책이 있는 앱의 알림이고 eventType이 `SOCIAL`·`WORK`·`MEETING`인 최종 event(#119). 하루 최대 3개이고, 넘으면 코드가 알림이 많은 3개만 남긴다. Notification Agent 입력의 대화 묶음(`conversations`)이나 출력의 대화 candidate와 다른 말이다 — 그것들이 Timeline을 지나 남은 결과다. |
+| 이동 사이 장시간 체류 | 하나의 candidate·event가 `MOVEMENT → 20분을 넘는 STAY → MOVEMENT`를 함께 품은 구조(#119). 20분 이하로 머문 짧은 체류(`shortStayRawIds`)와 같은 기준의 반대쪽이다. |
+| Question Agent | Repair가 확정한 모든 event에 사용자 회고 유도 질문을 하나씩 붙이는 Agent. |
+| 회고 유도 질문 | `TimelineEventDraft.question`/result event의 `question`. 사용자가 경험·감정·이유를 덧붙이도록 event에 중첩해 저장하는 질문. 예전의 내부 모호성 질문(`TimelineDraft.questions`)은 #118에서 제거됐다 — 읽어서 쓰는 곳이 없었고, 그 자리는 event `uncertainty`와 Timeline warning이 맡는다. |
 | `place` | 장소명. 파이프라인 전 구간이 이 한 이름을 쓴다 — 입력 `StayItem.place`/`GeoPlace.place`, draft event의 `place`, result event의 `place`. 예전 draft 필드명 `placeLabel`은 #72에서 통합됐고 back-compat alias로만 남는다. |
 | `places` | 한 지점을 가리킬 수 있는 장소명 **후보 목록**. 입력(`StayItem.places`)과 candidate에만 있다. 복수는 고를 후보(Timeline 입력), 단수 `place`는 고른 결과(Timeline 출력)라는 뜻이며, 그래서 candidate에는 단수 필드를 두지 않는다. |
 | `address` | 수집 원본에 실제로 있던 주소 문자열. 좌표에서 만들어 내지 않고, `인근`·`부근` 같은 근사 표현이 붙은 값은 주소로 쓰지 않는다. 근거로 뒷받침되지 않으면 확정 pass가 지운다. |
+| 이동 방식 (`mode`) | Location 파생 지표가 MOVEMENT마다 붙이는 두 갈래 구분(#114). `WALK`는 도보(걷기·달리기), `VEHICLE`은 이동수단 이용(자전거를 포함한 탈것 전부)이다. 어떤 탈것인지는 가르지 않는다. 산책 판정과 이동 정보 검증에만 쓰고 사용자 문장에는 싣지 않는다. 센서가 준 라벨 원본은 `transports`이며 둘을 같은 말로 쓰지 않는다. |
+| 알림 정책 (`policyId`) | 한 도메인(금융·결제, 쇼핑·택배, 예약·문화, 이동·여행, 배달·카페, 문자)의 앱에서 얻을 수 있는 정보(#116). `provides`는 `CONVERSATION`·`PAYMENT`·`RESERVATION` 중 그 앱에서 주로 오는 정보이고, 알림이 무엇인지를 그 셋으로 한정하지 않는다(#135). Notion 표의 앱은 결제·예약만 주고(문자를 뺀 결제·예약 앱은 사용자가 알림을 누르지 않아도 수집, 문자는 눌러야 수집), 표 밖의 메신저는 개인(카카오톡·Instagram·Discord, 대화·결제·예약)과 업무(Webex·Slack·Microsoft Teams, 대화·예약) 두 정책으로 갈린다. 사용 판단(candidate 여부·confidence)을 담지 않는다. |
+| 대화 묶음 (`conversations`) | 대화를 주는 앱(메신저)의 알림을 같은 앱·같은 대화 상대(`title`) 단위로 묶은 Notification Agent 입력(#116). 단체방 이름이 입력에 없어 방 단위가 아니다. 대부분 대화지만 예약·결제 안내나 회사·기관이 보낸 개인 소식일 수 있고, 판단은 prompt가 내용으로 한다(#135). Event Agent 출력 `candidate`와 다른 말이다. |
+| 미분류 알림 (`unclassified`) | 사전에 없는 앱의 알림을 정책도 묶음도 없이 시각순으로 실은 Notification Agent 입력(#116). 무엇인지는 prompt가 내용만 보고 정한다. |
 | Warning | 복구 가능한 누락·충돌·품질 문제를 드러내는 내부 진단. task 실패와 동의어가 아니다. |
 | Confidence | event/candidate 확신도를 0~1로 표현한 값. 불확실성을 문장에 헤지하는 대신 metadata로 전달한다. |
 | Inference level | DIRECT, EVIDENCE_BASED, INFERRED, UNCERTAIN으로 판단 근거 수준을 표현한다. |
-| User Memory | 사용자를 압축한 프로필 v1.0. 사건 데이터가 아니라 해석·표현을 돕는 보조 context다. 소유는 App Server, 소비는 Timeline·Question Agent, 생성은 User Memory Agent다. |
-| User Memory 갱신 task | 확정된 하루 타임라인으로 프로필 전체를 다시 쓰는 비동기 작업. Timeline task와 별개이며 callback이 없다. |
+| User Memory | 사용자를 압축한 프로필 v1.0. 사건 데이터가 아니라 해석·표현을 돕는 보조 context다. 소유는 App Server, 소비는 Timeline·Question Agent와 v3 세트의 Repair Agent, 생성은 User Memory Agent다. |
+| User Memory 갱신 task | 확정된 하루 타임라인으로 프로필을 갱신하는 비동기 작업. Timeline task와 별개이며 callback이 없다. |
 | Daily timeline | 갱신 입력의 하루치 확정 타임라인(`dailyTimelines[]`). `recordDate`와 `events`로 구성되며 수집 원본(source item)이 아니라 **이미 사용자에게 보인 결과**다. |
 | Daily timeline event | Daily timeline 안의 event 한 건. `title`·`subtitle`·`question`은 AI가 쓴 문장이고 `memo`만 사용자가 직접 쓴 글이다. |
-| `memo` | 사용자가 event에 직접 남긴 글. 성향 계열 필드의 **유일한** 근거이며 비어 있을 수 있다. |
-| 갱신본(rewrite) | 기존 프로필을 통째로 대체하는 새 User Memory 전체 문서. append가 아니다. |
+| `memo` | 사용자가 event에 직접 남긴 글. 비어 있을 수 있다. v1·v2 갱신에서는 성향 계열 필드의 **유일한** 근거이고, v3 갱신에서는 AI가 쓴 문장보다 앞서는 근거다(#121). |
+| 하루 감정 (`emotionType`) | 사용자가 하루를 저장하며 고른 감정. **Daily timeline에 하나**이며 event별 감정은 없다. `eventType`(활동의 종류)과 다른 값이다. `memo`와 함께 갱신 입력에서 사용자가 직접 남긴 둘뿐인 신호이고, digest에서는 `emotion` 키로 실린다. |
+| 갱신본 | 갱신을 마친 User Memory **문서 전체**. App Server로 나가는 것은 언제나 이것이고 기존 프로필을 통째로 대체한다. |
+| 부분 갱신 (`UserMemoryPatch`) | v3 세트에서 모델이 내는 출력. 변경 목록(`changes`)을 담는다. AI 서버 안의 계약이며 코드가 변경 목록을 기존 문서에 끼워 넣어 갱신본을 만든다. 저장·전송 형식이 아니다. |
+| 변경 목록 (`changes`) | 부분 갱신의 내용. 한 건은 `item`·`action`·`reason`·`text`다. 바꿀 항목만 담기고, 바꿀 것이 없으면 빈 목록이다. |
+| 항목 (`item`) | 변경 목록에서 바꾸는 단위. 고정 필드 하나(이름 그대로) 또는 `customAttributes`의 속성 하나(`customAttributes.<키>`)다. 문장 단위가 아니다. |
+| 동작 (`action`) | 항목을 어떻게 바꿀지. `추가`(없던 항목을 처음 채움)·`수정`(있는 항목을 전체 문장으로 바꿔 끼움)·`삭제`(항목을 비움, 속성은 키째로 지움) 셋이다. `삭제`는 기존 문서가 목표 크기를 넘어 줄여야 할 때만 적용되고, 그 밖에는 코드가 적용하지 않는다. |
+| 이유 (`reason`) | 변경 한 건을 왜 하는지. 모델이 `text`를 쓰기 전에 적는 판단 과정이며 `견준 결과: 이번 기록의 사실` 한 문장이다(견준 결과는 새로움·합침·반복·충돌). 코드는 읽지 않는다. Repair의 자동 검사 결과에 있는 `findings`(코드가 찾은 것)와 다른 것이다. |
 | App Server | source, Timeline 결과 persistence, User Memory, task 상태를 소유하는 외부 서버. AI 서버의 제품 데이터 경계다. |
 | TaskToken | 한 task의 App Server 서버간 인증 token holder. 값 자체가 아니라 최신 값과 갱신 횟수 개념을 구분한다. |
 | Callback | 결과 body 전달이 아니라 SUCCESS/FAILED terminal 상태 통보다. 결과는 그 전에 result API로 저장한다. **Timeline에만 있다** — User Memory 갱신은 결과 저장 한 번이 통보를 겸한다. |
@@ -64,7 +77,7 @@
 
 ## Invariants
 
-- “질문”을 쓸 때 내부 모호성 질문인지 회고 유도 질문인지 구분한다.
+- “질문”은 회고 유도 질문(`event.question`)을 뜻한다. 내부 모호성 질문은 #118 이후 없다.
 - “저장”은 App Server result 제출을 뜻하며 callback과 구분한다.
 - “source ID”는 특별한 설명이 없으면 rawId를 뜻한다.
 - “task 상태”와 프로세스 로컬 inflight/busy를 같은 것으로 부르지 않는다.

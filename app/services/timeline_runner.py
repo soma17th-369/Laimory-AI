@@ -488,7 +488,7 @@ async def _process_observed(
         # 아래 저장 블록으로 그대로 진행한다. 저장 경로를 한 벌로 두어야
         # 자체검증 실패(1301)·저장 실패(1303)와 #40 순서 계약이 두 벌로 갈라지지 않는다.
 
-        _reject_empty_structured_failure(request, draft)
+        reject_empty_structured_failure(request, draft)
 
         # 확정 결과를 App Server 결과 저장 API 로 보낸다. 저장/검증 실패는 아래
         # except 로 잡혀 FAILED 로 처리된다.
@@ -616,7 +616,7 @@ async def _process_observed(
     )
 
 
-def _reject_empty_structured_failure(
+def reject_empty_structured_failure(
     request: TimelineDraftRequest,
     draft: TimelineDraft,
 ) -> None:
@@ -629,6 +629,9 @@ def _reject_empty_structured_failure(
 
     세 조건이 **모두** 참일 때만 막는다. 입력이 0건이라 비는 것은 정상이고, event 가
     있으면 일부 Agent 가 실패했어도 저장할 가치가 있다.
+
+    이름이 공개인 것은 동기 테스트 경로(:mod:`app.services.timeline_testing`)가 같은
+    가드를 쓰기 때문이다(#102). 가드가 두 벌이 되면 한쪽만 고치는 사고가 난다.
     """
 
     if draft.events:

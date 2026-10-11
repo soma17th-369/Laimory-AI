@@ -171,9 +171,6 @@ def _result_texts(result: AgentEventResult) -> list[str]:
     for candidate in result.candidates:
         texts.extend([candidate.title, candidate.description])
         texts.extend(candidate.uncertainty)
-        if candidate.evidence_summary:
-            texts.append(candidate.evidence_summary)
-        texts.extend(candidate.semantic_tags)
     texts.extend(fragment.summary for fragment in result.fragments)
     return [text for text in texts if text]
 
@@ -188,8 +185,6 @@ def _draft_texts(draft: TimelineDraft) -> list[str]:
         texts.extend(event.tags)
         texts.extend(event.uncertainty)
         texts.extend(ref.reason or "" for ref in event.source_refs)
-    for question in draft.questions:
-        texts.extend([question.question, question.reason])
     return [text for text in texts if text]
 
 

@@ -46,7 +46,14 @@ def test_photo_payload_treats_taken_at_as_shooting_time() -> None:
     assert "photoMeaning" not in payload[0]
 
 
-def test_photo_description_semantics_are_accepted_in_candidate_contract() -> None:
+def test_photo_candidate_keeps_detail_in_description_and_drops_removed_fields() -> None:
+    """사진에서 읽은 자세한 묘사는 ``description`` 하나에 담는다(#114).
+
+    ``evidenceSummary``·``semanticTags`` 는 candidate 계약에서 빠졌다. v1·v2 프롬프트는
+    여전히 두 필드를 내라고 하므로, 롤백한 모델이 그 키를 내더라도 candidate 가 버려지지
+    않고 두 값만 빠져야 한다.
+    """
+
     response = json.dumps(
         {
             "candidates": [
@@ -57,7 +64,7 @@ def test_photo_description_semantics_are_accepted_in_candidate_contract() -> Non
                         "endTime": "2026-06-20T12:00:00+09:00",
                     },
                     "title": "점심 식사 사진",
-                    "description": "식탁 사진으로 보아 점심을 먹은 흔적이 있다.",
+                    "description": "음식이 놓인 식탁이 찍힌 점심 사진이에요.",
                     "evidenceSummary": "사진 description에 음식이 놓인 식탁이 보인다.",
                     "semanticTags": ["식사", "음식"],
                     "sourceRefs": [
@@ -90,8 +97,11 @@ def test_photo_description_semantics_are_accepted_in_candidate_contract() -> Non
 
     result = PhotoEventAgent(llm=llm).generate(request)
 
-    assert result.candidates[0].evidence_summary == "사진 description에 음식이 놓인 식탁이 보인다."
-    assert result.candidates[0].semantic_tags == ["식사", "음식"]
+    assert len(result.candidates) == 1
+    assert result.candidates[0].description == "음식이 놓인 식탁이 찍힌 점심 사진이에요."
+    dumped = result.candidates[0].model_dump(by_alias=True)
+    assert "evidenceSummary" not in dumped
+    assert "semanticTags" not in dumped
     assert (
         result.candidates[0].source_refs[0].reason
         == "같은 시간대에 해당 장소에서 촬영된 사진이며 음식 사진 설명이 포함됨"

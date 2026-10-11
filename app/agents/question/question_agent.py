@@ -55,6 +55,7 @@ from app.core.error_codes import ErrorCode
 from app.core.exceptions import report_error
 from app.core.logging import get_logger, log_fields
 from app.core.structured import StructuredOutputError
+from app.core.llm_stages import LLMStage
 from app.schemas import (
     CamelModel,
     TimelineDraft,
@@ -167,6 +168,8 @@ def parse_questions(text: str) -> list[EventQuestion]:
                 "질문 항목 검증 실패로 제외",
                 exc=exc,
                 context={"index": index, "action": "skipped"},
+                # 질문 항목마다 부른다. 빠진 질문은 재요청 뒤 warning 이 답한다.
+                emit=False,
             )
     return questions
 
@@ -182,7 +185,7 @@ class QuestionAgent(Agent):
     @property
     def llm(self) -> SupportsComplete:
         if self._llm is None:
-            self._llm = default_llm()
+            self._llm = default_llm(LLMStage.QUESTION)
         return self._llm
 
     def generate(

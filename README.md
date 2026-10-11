@@ -37,11 +37,15 @@ app/
 │   │                          #   requestType(TIMELINE/USER_MEMORY_UPDATE)으로 기존 핸들러에 위임
 │   └── v1/
 │       ├── router.py          # v1 라우터 취합
-│       └── timeline.py        # POST /v1/timeline (taskId+taskToken 접수 → 202)
+│       ├── timeline.py        # POST /v1/timeline (taskId+taskToken 접수 → 202)
+│       └── timeline_testing.py # POST /v1/timeline/test (#102). 저장·콜백 없이 동기로
+│                              #   결과만 돌려주는 테스트 전용 경로. local/dev 에서만 열림
 │
 ├── schemas/                   # Pydantic 계약(contract)
 │   ├── source_snapshot.py     # 수집 원본(taskId/sourceItems) 파이프라인 내부 계약
-│   ├── timeline_input.py      # App Server 입력 조회 응답 계약
+│   ├── timeline_input.py      # 입력 한 벌 계약(TimelineInputPayload, taskId 포함) + App Server
+│   │                          #   입력 조회 응답(=payload + taskToken). 동기 테스트 요청이
+│   │                          #   payload 를 상속해 같은 선언을 쓴다(#102)
 │   ├── timeline_result.py     # App Server 결과 저장 요청 계약
 │   ├── location.py/calendar.py/health.py/notification.py/photo.py
 │   ├── event_candidate.py     # AI 이벤트 후보 모델
@@ -64,27 +68,33 @@ app/
 │
 └── services/
     ├── app_server_client.py   # App Server API 클라이언트 (입력 조회/결과 저장/콜백 + taskToken)
-    ├── source_contract.py     # 입력 조회 응답 묶음 계약 검증
+    ├── source_contract.py     # 입력 조회 응답 묶음 계약 검증 + userMemory 위반 흡수(1106)
     ├── timeline_result.py     # draft → 결과 저장 요청 변환
     ├── timeline_validator.py  # 결과 저장 전 source 소속·시간 검증
     ├── normalizer.py          # 수집 스냅샷 분리·정규화
     ├── draft_repair.py        # draft 확정 repair
-    ├── draft_edit.py          # event 수정·삭제 (Repair 계획의 결정론 적용)
+    ├── confirm_report.py      # 확정 pass 가 고친 것·지운 것·찾은 것의 기록 (#119). Repair 입력
+    ├── draft_edit.py          # event 수정·삭제·나누기 (Repair 계획의 결정론 적용)
     ├── validator.py           # 요청 시간 범위(window) 강제
     ├── source_lookup.py       # sourceRef → 입력 항목 역참조, sourceType 정정
     ├── sleep_guard.py         # 수면 경계 강제 (기상 이전 event 제거)
     ├── stay_merge.py          # 이동 없이 이어진 STAY 묶기
     ├── calendar_guard.py      # 누락된 캘린더 일정 복원
     ├── calendar_location.py   # 캘린더와 STAY 장소 일치 보강
-    ├── meal_guard.py          # MEAL 지속시간 강제
-    ├── photo_guard.py         # 사진 단일 귀속 검사 (누락·중복 검출, 자동 해소는 안 함)
+    ├── meal_guard.py          # MEAL 지속시간 강제 + 시점 근거 없는 식사 confidence 상한
+    ├── duration_guard.py      # eventType 별 지속시간 상한 검사 (#119). 자르지 않고 warning
+    ├── event_count_guard.py   # 최종 event 개수 상한(v3 10, v1·v2 24) 검사 (#118). 자르지 않고 warning
+    ├── movement_stay_guard.py # 이동 사이에 낀 20분 초과 체류 검사 (#119). 찾기만 하고 나누지 않음
+    ├── conversation_guard.py  # 대화로 만든 event 개수(하루 3개) 제한 (#119). 알림이 많은 3개만 남김(v3)
+    ├── photo_guard.py         # 사진 단일 귀속 강제 (#119). 모든 사진이 정확히 한 event 에만 있게 만든다
     ├── location_metrics.py    # Location raw 파생 지표 계산 (속도·구간 공백·수집 공백)
     ├── location_guard.py      # Location 결과 검증 (상위 여정 누락·공백 표시·rawId 보존)
     ├── fragment_guard.py      # candidate·fragment 보존 검사
     ├── notification_guard.py  # 알림·최종 draft의 민감정보·근거 없는 관계명 검사
     ├── place_resolver.py      # 장소 확정
     ├── place_text.py          # 장소 문자열 정규화·비교
-    └── timeline_runner.py     # 백그라운드 파이프라인 (입력 조회→추론→결과 저장→콜백)
+    ├── timeline_runner.py     # 백그라운드 파이프라인 (입력 조회→추론→결과 저장→콜백)
+    └── timeline_testing.py    # 동기 파이프라인 (#102). App Server 호출 없이 결과만 만든다
 
 tests/
 ├── agents/                    # Event/Repair Agent 테스트 (live 입력 테스트는 opt-in)
@@ -119,9 +129,16 @@ LLM 이 `done` 을 내거나 `settings.repair_max_iterations`(기본 3)에서 �
 파싱이 실패하면 마지막으로 확정된 초안을 그대로 돌려주고 warning 을 남깁니다.
 
 Repair Agent 는 초안을 직접 다시 쓰지 않고 **결정론 서비스와 상류 Agent 를 도구로 호출**합니다
-(`lookup_source`, `update_event`/`delete_event`, `enforce_sleep_boundary` 같은 서비스 재적용,
-`rerun_event_agent`/`rerun_timeline_agent`). 정렬·`clientEventId` 재부여·window 강제는 도구가
-아니며, 매 반복 끝의 `repair_draft` 가 항상 코드로 확정합니다.
+(`lookup_source`, `update_event`/`delete_event`/`split_event`, `enforce_sleep_boundary` 같은 서비스
+재적용, `rerun_event_agent`/`rerun_timeline_agent`). 정렬·`clientEventId` 재부여·window 강제·사진
+단일 귀속은 도구가 아니며, 매 반복 끝의 `repair_draft` 가 항상 코드로 확정합니다.
+
+확정 pass 는 고치는 것과 찾는 것을 나눕니다(#119). 무엇을 고칠지가 규칙으로 정해져 있으면 코드가
+고치고, 어디서 끊고 무엇을 남길지가 의미 판단이면 찾아서 Repair 에 넘깁니다. 이동 사이에 낀
+20분 초과 체류와 상한을 넘긴 event 를 나누는 것은 Repair 가 합니다. 대화로 만든 event 를 하루
+3개로 줄이는 것은 코드가 알림 수로 합니다.
+`PROMPT_VERSION=v3` 에서 Repair 는 코드가 고친 것과 찾은 것, event 별 근거, User Memory 를 함께
+받아 코드가 이미 본 것을 다시 검증하지 않고 내용과 문장을 다듬습니다.
 
 ---
 
@@ -220,7 +237,7 @@ LOG_FORMAT=rich              # 운영은 json (stdout JSON → CloudWatch Logs I
 `.env` 파일은 민감 정보를 포함할 수 있으므로 Git에 올리지 않습니다.
 
 `PROMPT_VERSION`은 Event/Timeline/Repair Agent가 사용할 프롬프트 세트를 한 번에
-선택합니다. 현재 `v1`, `v2`를 지원하며 기본값은 `v1`입니다. 각 Agent의 프롬프트는
+선택합니다. 현재 `v1`, `v2`, `v3`를 지원하며 기본값은 `v1`입니다. 각 Agent의 프롬프트는
 `prompts/{version}/` 아래에 있습니다.
 지원하지 않는 버전이나 파일이 빠진 버전은 `v1`로 자동 대체하지 않고 기동 단계에서
 오류로 처리합니다. 새 버전을 추가할 때는 모든 Agent의 프롬프트 세트를 준비한 뒤
@@ -270,8 +287,14 @@ LLM 토큰 사용량: provider=bedrock, model=..., inputTokens=123, outputTokens
 `drop_event`로 버린다. 그래서 로그 호출을 새로 추가해도 수집 범위는 넓어지지 않는다.
 
 **애플리케이션은 Elasticsearch를 직접 호출하지 않는다.** ES URL도 자격증명도 앱 설정에
-없으며, 그 경계는 정적 검색 테스트가 지킨다. 프롬프트·LLM 응답·draft 전문·사용자 원문·
-예외 원문·traceback은 운영 이벤트에 남지 않는다.
+없으며, 그 경계는 정적 검색 테스트가 지킨다. 프롬프트·LLM 응답·draft 전문·사용자 원문은
+운영 이벤트에 남지 않는다.
+
+예외 원문과 traceback은 **실패 이벤트 2종에 한해 예외다**(#109 범위 확장).
+`app.degraded`·`http.request.completed`가 `errorMessage`·`errorStackTrace`를 싣는다 —
+prod는 AgentCore가 컨테이너를 회수해 `docker logs`라는 선택지가 없어, 이것 없이는
+Kibana에서 실패를 보고도 원인을 볼 수 없다. 마스킹·길이 상한·검증 오류(422) 제외가
+따라붙으며, 새 필드를 열 때 이 둘을 선례로 삼지 않는다.
 
 `event.action`으로 이벤트 종류를, `taskId`로 한 실행을, `errorCode`로 실패를 필터·집계한다.
 `POST /v1/timeline`의 202 응답시간과 이후 백그라운드 전체 처리시간은 서로 다른 이벤트

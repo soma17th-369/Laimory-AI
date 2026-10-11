@@ -82,6 +82,7 @@ Content-Type: application/json
 |---|---|---|
 | `POST` | `/v1/timeline` | 타임라인 생성 작업 접수 |
 | `POST` | `/v1/user-memory` | User Memory 갱신 작업 접수 |
+| `POST` | `/v1/timeline/test` | **테스트 전용.** 입력 JSON으로 타임라인을 동기 생성 (local/dev에서만 열림) |
 | `GET` | `/health` | AI 서버 상태 확인 |
 | `POST` | `/invocations` | AgentCore Runtime 호출 진입점. 타임라인 생성과 User Memory 갱신을 모두 접수 |
 | `GET` | `/ping` | AgentCore Runtime 헬스체크 |
@@ -262,7 +263,7 @@ AI → App Server   POST /user-memory/updates/{taskId}/result       (성공·실
 | `dailyTimelines` | `object[]` | O | 확정된 하루 타임라인입니다. 비어 있어도 되며 최대 5건입니다. |
 | `dailyTimelines[].recordDate` | `string` | O | 대상 날짜(`YYYY-MM-DD`)입니다. |
 | `dailyTimelines[].recordTimeZone` | `string` | | 시간대입니다. 기본값은 `Asia/Seoul`입니다. |
-| `dailyTimelines[].emotionType` | `string \| null` | | 현재 항상 `null`입니다. 받아만 두고 사용하지 않습니다. |
+| `dailyTimelines[].emotionType` | `string \| null` | | 사용자가 그 하루를 저장하며 고른 감정입니다(이슈 #121). **하루에 하나**이며 event별 감정은 없습니다. `VERY_HAPPY`, `HAPPY`, `NEUTRAL`, `UNHAPPY`, `VERY_UNHAPPY` 중 하나이고, 감정을 받기 전에 저장된 기록은 `null`입니다. enum으로 제한하지 않으며 다섯 값이 아닌 값은 갱신에 쓰지 않습니다. |
 | `dailyTimelines[].events[].eventType` | `string` | O | **자유 문자열**입니다. enum으로 제한하지 않습니다. |
 | `dailyTimelines[].events[].title` | `string` | | AI가 쓴 제목입니다. |
 | `dailyTimelines[].events[].subtitle` | `string \| null` | | AI가 쓴 부제입니다. |
@@ -282,7 +283,7 @@ AI → App Server   POST /user-memory/updates/{taskId}/result       (성공·실
     {
       "recordDate": "2026-08-04",
       "recordTimeZone": "Asia/Seoul",
-      "emotionType": null,
+      "emotionType": "HAPPY",
       "events": [
         {
           "eventType": "MEAL",
@@ -300,6 +301,38 @@ AI → App Server   POST /user-memory/updates/{taskId}/result       (성공·실
 ```
 
 전체 예시는 [docs/samples/user-memory-update.sample.json](samples/user-memory-update.sample.json)에 있습니다.
+
+### 갱신에 쓰는 값 (이슈 #121)
+
+AI 서버는 접수한 하루 타임라인을 아래처럼 줄여 갱신에 씁니다. 접수 계약은 바뀌지
+않으며, 이 표는 받은 값 가운데 무엇이 실제로 쓰이는지를 말합니다.
+
+| 접수 필드 | 갱신에 쓰는 형태 |
+|---|---|
+| `recordDate` | 그대로 씁니다. |
+| `emotionType` | 값이 있으면 그대로 씁니다. 없으면 싣지 않습니다. |
+| `events[].eventType`, `title`, `subtitle`, `memo` | 그대로 씁니다. 비어 있으면 싣지 않습니다. |
+| `events[].startAt`, `endAt` | **시 단위**로만 씁니다. 분은 버립니다. |
+| `events[].question` | 쓰지 않습니다. |
+
+하루에 event가 10개를 넘으면 `memo`가 있는 event를 먼저 남기고 나머지는 최근 것부터
+10개까지 남깁니다. 10개는 타임라인 생성이 하루를 구성하는 event의 최대 개수와 같습니다.
+
+무엇을 근거로 프로필을 쓰는지는 프롬프트 세트(`PROMPT_VERSION`)가 정합니다.
+
+| 세트 | 근거 |
+|---|---|
+| `v1`, `v2` | 성격·가치관·취향 계열은 `memo`만 근거로 씁니다. `memo`가 없는 날은 그 필드가 그대로입니다. 여러 날에 반복된 것만 남깁니다. |
+| `v3` | `title`·`subtitle`도 근거로 쓰고 폭넓게 모읍니다. 한 번 나온 정보도 남기며, 기존 내용과 겹치면 합치고 새 내용은 더하고 충돌하면 새 정보로 바꿉니다. `memo`·`emotionType`과 AI가 쓴 문장이 어긋나면 사용자가 직접 남긴 쪽을 따릅니다. 새로 쓰는 문장은 음슴체로 짧게 씁니다(`망원동 거주 직장인.`). 이미 `~합니다`로 적힌 문장은 말투만 바꾸려고 고쳐 쓰지 않으므로 한 문서에 두 말투가 섞일 수 있습니다. |
+
+`v3`에서 AI 서버는 문서 전체를 다시 쓰지 않습니다. 바꿀 항목(필드 하나 또는 `customAttributes`
+속성 하나)만 정해 기존 `userMemory`에 끼워 넣으며, 바꾸지 않은 항목은 받은 값 그대로
+돌려보냅니다. **App Server가 받는 결과는 어느 세트든 문서 전체**이므로 서버간 계약은 같습니다.
+`userMemory`가 `null`이면 빈 문서에 채워 넣습니다 — 빈 문서를 보내도 결과는 같습니다.
+
+`v3`에서 AI 서버는 **기존 내용을 지우지 않습니다.** 이번 기록에 나오지 않은 내용은 그대로
+두고, 달라진 내용은 지우는 대신 달라진 내용으로 고쳐 씁니다. 하나 있는 예외는 크기입니다 —
+받은 `userMemory`가 목표 크기(4,500자)를 넘었으면 긴 항목부터 짧게 다시 써서 돌려보냅니다.
 
 ### Success Response
 
@@ -337,6 +370,117 @@ AI → App Server   POST /user-memory/updates/{taskId}/result       (성공·실
 
 전체 처리에 `USER_MEMORY_TIMEOUT_SEC`(기본 120초) 예산을 둡니다. 초과해도 `FAILED`
 결과는 보냅니다.
+
+## 4-3. 동기 타임라인 테스트 요청 (이슈 #102)
+
+### `POST /v1/timeline/test`
+
+수집 원본 JSON을 그대로 받아 **요청 안에서** 타임라인 생성을 끝내고 결과를 돌려줍니다.
+만든 결과를 **어디에도 저장하지 않고** 응답으로만 내보냅니다 — App Server 입력 조회,
+결과 저장, 완료 콜백, `taskToken` 갱신을 전부 하지 않습니다.
+
+> **테스트 전용입니다.** 운영 호출 경로(`POST /v1/timeline`, `POST /invocations`)를
+> 대체하지 않으며, 그 두 경로의 동작은 이 기능으로 달라지지 않습니다.
+
+### 노출 제한
+
+`APP_ENV`가 `local` 또는 `dev`일 때만 열립니다. `TIMELINE_TEST_ENABLED`로 명시적으로
+덮어쓸 수 있으며, 지정하면 그 값이 항상 이깁니다. 닫혀 있으면 **없는 경로와 똑같이**
+`404`/`1003`으로 답하고 `/openapi.json`에도 나오지 않습니다.
+
+### Request Body
+
+[입력 조회 응답](#51-입력-조회)에서 **`taskToken`만 뺀 것**입니다.
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|:---:|---|
+| `taskId` | `string` | **O** | App Server가 발행한 값을 그대로 받습니다. 빈 문자열은 `1001`입니다. |
+| `recordDate` | `string` | O | 조회 응답과 같습니다. |
+| `recordTimeZone` | `string` | X | 생략하면 `Asia/Seoul`입니다. |
+| `window.startAt` / `window.endAt` | `string` | **O** | 조회 응답에서는 선택이지만 여기서는 필수입니다. 시간 창을 줄 다른 통로가 없습니다. |
+| `userMemory` | `object` | X | 조회 응답과 같습니다. 계약 위반은 같게 흡수합니다(`1106`, 값 없이 진행). |
+| `sourceItems[]` | `array` | X | 조회 응답과 같습니다. 다만 **0건이면 `1102`** 입니다. |
+
+위 필드는 조회 응답과 **같은 스키마 선언**을 씁니다. 코드에서 `TimelineInputPayload`가
+입력 한 벌을 선언하고 `TimelineInputResponse`가 거기에 `taskToken`만 더하는 구조라, 두
+입구의 계약이 갈릴 수 없습니다.
+
+`taskToken`은 **없습니다.** 토큰은 AI 서버가 App Server를 되부를 때 쓰는 인증인데 이
+경로는 조회도 저장도 콜백도 하지 않습니다. 보내더라도 무시하며 거절하지는 않습니다.
+
+`taskId`는 받습니다. 이 경로가 그것으로 무엇을 조회하거나 저장하지는 않지만, 같은
+`taskId`로 돌린 비동기 실행과 로그·Langfuse에서 이어 볼 수 있어야 합니다.
+
+### Request Example
+
+```json
+{
+  "taskId": "0198f2a1-7c3d-7000-8b2e-1f4a9c05d6e7",
+  "recordDate": "2026-06-20T22:00:00",
+  "recordTimeZone": "Asia/Seoul",
+  "window": {
+    "startAt": "2026-06-20T00:00:00",
+    "endAt": "2026-06-21T00:00:00"
+  },
+  "sourceItems": [
+    {
+      "rawId": "6b5f2d3e-9c1a-4f88-9a2b-2f0d5c7e1a34",
+      "itemType": "STAY",
+      "startAt": "2026-06-20T12:00:00",
+      "endAt": "2026-06-20T13:00:00",
+      "payload": { "latitude": 37.5, "longitude": 127.0, "places": ["회사"] }
+    }
+  ]
+}
+```
+
+### Success Response
+
+#### `200 OK`
+
+[결과 저장 요청](#52-결과-저장) 본문과 **같은 구조**입니다. 실제로 저장됐을 값을 그대로
+봅니다.
+
+```json
+{
+  "events": [
+    {
+      "eventType": "MEAL",
+      "title": "점심",
+      "subtitle": "근처 식당에서 식사했어요.",
+      "place": "회사",
+      "address": null,
+      "startAt": "2026-06-20T12:00:00+09:00",
+      "endAt": "2026-06-20T13:00:00+09:00",
+      "sourceRawIds": ["6b5f2d3e-9c1a-4f88-9a2b-2f0d5c7e1a34"],
+      "question": "점심 자리에서 어떤 이야기가 기억에 남았나요?"
+    }
+  ]
+}
+```
+
+| 헤더 | 조건 | 의미 |
+|---|---|---|
+| `X-Timeline-Timed-Out: true` | 제한 시간 초과 | 개선을 마치지 못한 채 마지막 확정본을 돌려줬습니다. 실패가 아니며, 비동기 경로가 저장하는 값과 같습니다(이슈 #76). |
+
+### Error Response
+
+[4. 타임라인 생성 요청](#error-response)의 공통 오류 형식과 코드를 그대로 씁니다.
+이 경로 전용 코드는 없습니다.
+
+| 상태 | `errorCode` | 발생 조건 |
+|---|---|---|
+| `422` | `1001` | 필수 필드 누락. `taskId`·`recordDate`·`window`가 없거나 `taskId`가 빈 문자열인 경우입니다. |
+| `404` | `1003` | 이 환경에서 엔드포인트가 닫혀 있습니다. |
+| `500` | `1102` | `sourceItems`가 0건이거나 `rawId`가 중복입니다. |
+| `500` | `1201` | 제한 시간 안에 확정된 결과가 하나도 없습니다. |
+| `500` | `1202` | 구조화 출력 실패로 event를 만들지 못했습니다. |
+| `500` | `1301` | 결과가 입력에 없는 `rawId`를 참조합니다. |
+
+### 처리 시간과 비용
+
+`PIPELINE_TIMEOUT_SEC`(기본 120초)을 그대로 적용합니다. **실제 LLM을 호출하므로** 응답이
+그만큼 걸릴 수 있고 토큰 사용 비용이 발생합니다.
 
 ## 5. AI 서버가 호출하는 App Server API
 
@@ -466,11 +610,49 @@ Task-Token: {taskToken}
 |---|---|---|
 | `schemaVersion` | `string` | `"1.0"`만 지원합니다. |
 | `updatedAt` | `string \| null` | 마지막 갱신 시각입니다. 프롬프트에는 싣지 않습니다. |
-| `basicProfile`, `lifeContext`, `relationships`, `personality`, `values`, `preferences`, `routines`, `currentFocus`, `emotionalPatterns`, `memoryStyle` | `string` | 자연어 필드이며 각 **최대 200자**입니다. 비어 있으면 프롬프트에서 생략합니다. |
-| `customAttributes` | `object` | 고정 필드로 담기지 않는 값입니다. **최대 5개**, 값당 **최대 150자**입니다. |
+| `basicProfile`, `lifeContext`, `relationships`, `personality`, `values`, `preferences`, `routines`, `currentFocus`, `emotionalPatterns`, `memoryStyle` | `string` | 자연어 필드이며 각 **최대 500자**입니다. 비어 있으면 프롬프트에서 생략합니다. |
+| `customAttributes` | `object` | 고정 필드로 담기지 않는 값입니다. 값당 **최대 500자**이며 **개수 제한은 없습니다**. |
 
 최상위 필드는 고정입니다. 위 목록에 없는 최상위 필드, 지원하지 않는
-`schemaVersion`, 길이·개수 초과는 계약 위반입니다.
+`schemaVersion`, 길이 초과는 계약 위반입니다.
+
+상한은 이슈 #121에서 넓어졌습니다(필드 200자 → 500자, `customAttributes` 값 150자 →
+500자, 개수 5개 → 제한 없음). `schemaVersion`은 `"1.0"` 그대로이며 예전 상한으로 쓴
+문서는 모두 그대로 읽힙니다. 문서 전체의 크기는 갱신 쪽이 5,000자로 제한합니다
+([5.4](#54-user-memory-결과-저장-이슈-64)).
+
+##### 빈 문서 (가입 시 만들어 두는 값)
+
+App Server가 가입 시점에 User Memory를 미리 만들어 둘 때는 아래 문서를 저장합니다. 모든
+필드가 비어 있는 v1.0 문서이며, AI 서버가 갱신 결과로 돌려주는 문서와 **같은 모양**입니다.
+
+```json
+{
+  "schemaVersion": "1.0",
+  "updatedAt": null,
+  "basicProfile": "",
+  "lifeContext": "",
+  "relationships": "",
+  "personality": "",
+  "values": "",
+  "preferences": "",
+  "routines": "",
+  "currentFocus": "",
+  "emotionalPatterns": "",
+  "memoryStyle": "",
+  "customAttributes": {}
+}
+```
+
+- 자연어 필드 10개는 **빈 문자열**입니다(`null`이 아닙니다). `customAttributes`는 빈 객체입니다.
+- `updatedAt`은 `null`입니다. 갱신이 성공하면 AI 서버가 시각을 채워 돌려줍니다.
+- 위 목록에 없는 최상위 필드를 더하지 않습니다. 계약 위반(`1106`)이 됩니다.
+- AI 서버는 빈 문서를 **User Memory가 없는 것과 같게** 다룹니다. 타임라인 생성은 프로필
+  없이 진행하고, 갱신은 이 문서에 채워 넣습니다.
+- `{}`나 `{"schemaVersion": "1.0"}`처럼 필드를 생략해도 같은 문서로 읽힙니다. 다만 저장값과
+  갱신 결과의 모양을 맞추려면 위 전체 형태를 권합니다.
+- 빈 문서를 만든 뒤에는 입력 조회 응답과 갱신 접수 요청의 `userMemory`가 `null`이 아니라 이
+  문서가 됩니다. AI 서버는 `null`도 계속 받으므로 기존 사용자에게 소급해 만들지 않아도 됩니다.
 
 **계약 위반은 타임라인을 실패시키지 않습니다.** 오류 코드 `1106`으로 기록하고
 User Memory 없이 생성을 계속합니다(흡수). 보조 context 하나 때문에 하루치 수집
@@ -670,6 +852,17 @@ Task-Token: {taskToken}
 - `schemaVersion`과 `updatedAt`은 **AI 서버가 확정**합니다. LLM이 만든 값을 쓰지 않습니다.
 - 응답은 상태 코드만 봅니다. `2xx`가 성공이고, 재시도·중단 규칙은 타임라인 경로와 같습니다.
 - `taskToken`은 갱신되지 않습니다. 접수 요청 body의 값을 끝까지 사용합니다.
+- `userMemory`는 프롬프트에 실리는 형태(빈 필드와 메타데이터를 뺀 JSON)로 **전체 5,000자
+  이하**입니다(이슈 #121, 이전 1,200자). 고정 필드 열 개의 상한을 더한 값(10 × 500자)입니다.
+  `customAttributes`는 개수 제한이 없어 필드별 상한만으로는 전체가 묶이지 않으므로 전체
+  검사가 따로 있고, 속성도 이 5,000자 안에서 자리를 씁니다. `v3` 세트는 문서를 5,000자 넘게
+  만드는 변경만 빼고 나머지를 적용하므로 이 이유로 실패하지 않습니다. `v1`·`v2` 세트는 넘으면 자르지도 다시 요청하지도 않고 `1304`로
+  실패합니다. 그때 기존 User Memory는 그대로 남고, 다시 시도하는 것은 App Server의 다음
+  갱신 요청입니다.
+- AI 서버는 문서가 **4,500자(상한에서 항목 하나의 몫 500자를 뺀 값)를 넘으면** 모델에게
+  먼저 줄이라고 알려 줍니다. 새 정보가 들어갈 자리를 남기기 위한 것이며 저장을 막는 값이
+  아닙니다. 가득 찬 문서는 대개 4,500자 안팎에 머뭅니다. App Server가 알아야 할 계약은 상한
+  5,000자뿐입니다.
 
 ##### `FAILED`의 의미 — `SAVED` 전이와 분리됩니다
 
@@ -685,7 +878,7 @@ Task-Token: {taskToken}
 | AI 응답 스키마 검증 실패 | `1202` |
 | LLM provider 호출 실패 | `1203` |
 | 갱신본 생성 실패(제한 시간 초과 포함) | `1210` |
-| 크기·민감정보 검증을 재요청 뒤에도 통과 못 함 | `1304` |
+| 크기·민감정보 검증을 통과 못 함(다시 요청하지 않음). `v3` 세트는 어긴 변경만 빼고 `SUCCESS`로 끝나므로, 받은 `userMemory`가 이미 규칙을 어긴 경우에만 나옵니다 | `1304` |
 
 기존 `userMemory`가 v1.0 계약을 어긴 경우는 실패가 아닙니다. 코드 `1106`으로 기록하고
 **새로 만들어** 대체합니다 — 여기서 멈추면 그 사용자는 이후 어떤 날도 갱신되지

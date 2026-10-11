@@ -60,8 +60,8 @@ def referenced_calendar_ids(draft: TimelineDraft) -> set[str]:
 def ensure_calendar_events(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
     """어느 event 도 참조하지 않은 캘린더 일정을 event 로 되살린다(in-place).
 
-    되살린 event 는 임시 `clientEventId` 를 갖는다. repair 마지막의 `renumber_events` 가
-    정렬 후 최종 id 를 다시 부여하므로 여기서는 유일하기만 하면 된다.
+    되살린 event 는 임시 `clientEventId` 를 갖는다. repair 마지막이 임시 id 에 정식 번호를
+    주므로 여기서는 이번 호출 안에서 유일하기만 하면 된다.
 
     호출 위치는 repair 앞쪽이다. 되살린 event 도 window 클램프·장소 확정·정렬을 똑같이
     거쳐야 하기 때문이다.

@@ -15,7 +15,6 @@ from app.schemas import (
     SourceRef,
     TimelineDraft,
     TimelineEventDraft,
-    TimelineQuestion,
     TimelineWarningSeverity,
 )
 from app.services.draft_repair import (
@@ -71,13 +70,12 @@ def _event(
     )
 
 
-def _draft(*events, questions=()) -> TimelineDraft:
+def _draft(*events) -> TimelineDraft:
     return TimelineDraft(
         user_id="u",
         date=DAY,
         timezone="Asia/Seoul",
         events=list(events),
-        questions=list(questions),
     )
 
 
@@ -166,27 +164,16 @@ def test_sorting_is_deterministic_for_fully_tied_events():
 # --- clientEventId 재부여 ------------------------------------------------------
 
 
-def test_client_event_ids_are_assigned_after_sorting_and_questions_follow():
+def test_client_event_ids_are_assigned_after_sorting():
     draft = _draft(
         _event("event-001", "15:00", "16:00", STAY_REF, title="오후"),
         _event("event-002", "09:00", "10:00", PHOTO_REF, title="오전"),
-        questions=[
-            TimelineQuestion(
-                question_id="question-001",
-                time_range={"startTime": _t("15:00"), "endTime": _t("16:00")},
-                question="오후 3시쯤 무엇을 했나요?",
-                reason="확인 필요",
-                related_event_ids=["event-001"],  # 정렬 전의 '오후' event
-            )
-        ],
     )
 
     repair_draft(draft, _request())
 
     assert _titles(draft) == ["오전", "오후"]
     assert _ids(draft) == ["event-001", "event-002"]
-    # 질문은 여전히 '오후' event 를 가리켜야 한다. 새 id 는 event-002 다.
-    assert draft.questions[0].related_event_ids == ["event-002"]
 
 
 # --- 지속시간 repair ----------------------------------------------------------
@@ -345,7 +332,12 @@ def test_an_unknown_raw_id_drops_the_unsupported_event():
     assert any("입력에 없는 rawId 참조" in warning.message for warning in draft.warnings)
 
 
-def test_repair_fills_place_and_drops_an_unsupported_address():
+@pytest.mark.parametrize(
+    ("extended", "expected_place"),
+    # v3 는 빈 place 를 후보로 채우지 않고 얼버무림만 지운다(#150). v2 는 예전처럼 채운다.
+    [(False, "두꺼비 감자탕 지산점"), (True, None)],
+)
+def test_repair_fills_place_and_drops_an_unsupported_address(extended, expected_place):
     request = make_request(
         stays=[
             stay_item(
@@ -365,10 +357,10 @@ def test_repair_fills_place_and_drops_an_unsupported_address():
     draft.events[0].place = "한 곳"
     draft.events[0].address = "서울특별시 강남구 테헤란로 152"
 
-    repair_draft(draft, request)
+    repair_draft(draft, request, extended=extended)
 
     event = draft.events[0]
-    assert event.place == "두꺼비 감자탕 지산점"  # 얼버무림 → 근거의 장소명
+    assert event.place == expected_place  # 얼버무림 → 근거의 장소명(v2) / 비움(v3)
     assert event.address == "경기도 오산시 운암로 90"  # 지어낸 주소 → 근거의 주소
     assert any("정확한 입력 근거가 없는 주소" in w.message for w in draft.warnings)
 

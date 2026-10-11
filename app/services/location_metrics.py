@@ -10,12 +10,18 @@ LLM 이 구간마다 거리÷시간을 암산해야 했고, 그건 조용히 틀
 실패 등)은 값을 지어내지 않고 ``None`` 으로 남긴다 — 없는 근거를 있는 것처럼 보이게 하면
 LLM 이 그 위에 추론을 쌓는다.
 
-이동수단 현실성 판정은 "그 속도로 그 이동수단이 가능한가" 만 본다. 라벨을 고쳐 주지
-않는다. 센서 라벨이 틀렸을 수 있다는 사실만 알려 주고, 최종 표현은 Agent 가 정한다.
+이동은 **도보(`WALK`)와 이동수단 이용(`VEHICLE`) 둘로만** 가른다(#114). 어떤 탈것을
+탔는지는 일기에 쓸 말이 아니고, 이 구분이 쓰이는 곳(산책 판정, 이동 정보 검증)도 그 이상을
+묻지 않는다. 자전거와 자동차를 나눠 봐야 그 차이를 쓰는 판단이 없다.
+
+분류는 센서 라벨이 먼저고, 라벨이 없거나 모르는 값일 때만 평균 속도로 정한다. 라벨과 속도가
+서로 다른 쪽을 가리켜도 라벨을 고쳐 주지 않는다. 어긋난다는 사실만 알려 주고, 그 이동을
+어떻게 다룰지는 Agent 가 정한다.
 """
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, tzinfo
+from enum import StrEnum
 from math import asin, cos, radians, sin, sqrt
 from typing import Any
 
@@ -30,21 +36,34 @@ SHORT_STAY_MAX = timedelta(minutes=20)
 #: 이 시간 이상 위치 기록이 없으면 수집이 끊긴 구간으로 본다.
 COVERAGE_GAP_MIN = timedelta(minutes=45)
 
-#: 이동수단별 현실적인 평균 속도 상한(km/h). 신호 대기·환승을 포함한 구간 평균이라
-#: 순간 최고 속도가 아니라 넉넉히 잡는다. 넘으면 라벨을 의심한다.
-_TRANSPORT_MAX_KMH: dict[str, float] = {
-    "WALKING": 8.0,
-    "ON_FOOT": 8.0,
-    "RUNNING": 20.0,
-    "ON_BICYCLE": 35.0,
-    "CYCLING": 35.0,
-    "IN_VEHICLE": 160.0,
+
+class MovementMode(StrEnum):
+    """이동 방식. 도보인지, 이동수단을 이용했는지만 가른다."""
+
+    WALK = "WALK"
+    VEHICLE = "VEHICLE"
+
+
+#: 센서 라벨 → 이동 방식. 달리기도 발로 움직인 것이라 도보다. 표에 없는 라벨(`STILL`,
+#: 자유 문자열 등)은 분류에 쓰지 않고 속도로 넘긴다.
+_LABEL_MODE: dict[str, MovementMode] = {
+    "WALKING": MovementMode.WALK,
+    "ON_FOOT": MovementMode.WALK,
+    "RUNNING": MovementMode.WALK,
+    "ON_BICYCLE": MovementMode.VEHICLE,
+    "CYCLING": MovementMode.VEHICLE,
+    "IN_VEHICLE": MovementMode.VEHICLE,
 }
 
-#: 이동수단별 현실적인 평균 속도 하한(km/h). 이보다 느리면 그 수단으로 보기 어렵다.
-_TRANSPORT_MIN_KMH: dict[str, float] = {
-    "IN_VEHICLE": 3.0,
-}
+#: 도보로 낼 수 있는 구간 평균 속도 상한(km/h). 넘으면 이동수단을 이용한 것으로 본다.
+#: 도보에 달리기가 들어가므로 걷기(4~6)만이 아니라 가벼운 달리기(8~11)까지 도보로 남기고,
+#: 도심 자전거 평균(15 안팎)부터 가르도록 잡았다. 이전 라벨별 표의 걷기 상한 8 은 달리기를
+#: 도보에 넣으면 달리기마다 라벨 불일치를 내므로 쓰지 않았다.
+ON_FOOT_MAX_KMH = 12.0
+
+#: 이동수단을 이용한 구간 평균 속도 하한(km/h). 이보다 느리면 탈것으로 보기 어렵다.
+#: 이전 라벨별 표의 `IN_VEHICLE` 하한을 이동수단 전체에 쓴다.
+VEHICLE_MIN_KMH = 3.0
 
 _EARTH_RADIUS_M = 6_371_000.0
 
@@ -59,9 +78,10 @@ class MovementMetric:
     duration_minutes: float | None
     distance_meters: float | None
     average_speed_kmh: float | None
-    transports: list[str] = field(default_factory=list)
-    #: 라벨과 평균 속도가 어긋나면 그 이유. 어긋나지 않으면 None.
-    transport_conflict: str | None = None
+    #: 도보인지 이동수단 이용인지. 라벨도 속도도 없으면 None.
+    mode: MovementMode | None = None
+    #: 라벨과 평균 속도가 서로 다른 이동 방식을 가리키면 그 이유. 어긋나지 않으면 None.
+    mode_conflict: str | None = None
 
     def as_prompt_dict(self) -> dict[str, Any]:
         return _compact(
@@ -70,8 +90,8 @@ class MovementMetric:
                 "durationMinutes": _round(self.duration_minutes, 1),
                 "distanceMeters": _round(self.distance_meters, 0),
                 "averageSpeedKmh": _round(self.average_speed_kmh, 1),
-                "transports": self.transports or None,
-                "transportConflict": self.transport_conflict,
+                "mode": self.mode.value if self.mode else None,
+                "modeConflict": self.mode_conflict,
             }
         )
 
@@ -208,7 +228,7 @@ def _movement_metric(
     if duration_minutes and distance is not None:
         speed_kmh = (distance / 1000.0) / (duration_minutes / 60.0)
 
-    transports = [str(value).upper() for value in item.transports]
+    label_mode = _label_mode(item.transports)
     return MovementMetric(
         raw_id=str(item.raw_id),
         start=start,
@@ -216,33 +236,56 @@ def _movement_metric(
         duration_minutes=duration_minutes,
         distance_meters=distance,
         average_speed_kmh=speed_kmh,
-        transports=transports,
-        transport_conflict=_transport_conflict(transports, speed_kmh),
+        mode=label_mode or _speed_mode(speed_kmh),
+        mode_conflict=_mode_conflict(label_mode, speed_kmh),
     )
 
 
-def _transport_conflict(transports: list[str], speed_kmh: float | None) -> str | None:
-    """센서 라벨이 계산된 평균 속도로 설명되는가.
+def _label_mode(transports: list[str]) -> MovementMode | None:
+    """센서 라벨이 가리키는 이동 방식.
+
+    한 이동에 도보와 탈것 라벨이 함께 있으면 이동수단 이용이다. 정류장까지 걸어가 버스를
+    탄 이동은 산책이 아니다.
+    """
+
+    modes = {
+        mode
+        for value in transports
+        if (mode := _LABEL_MODE.get(str(value).strip().upper())) is not None
+    }
+    if MovementMode.VEHICLE in modes:
+        return MovementMode.VEHICLE
+    if MovementMode.WALK in modes:
+        return MovementMode.WALK
+    return None
+
+
+def _speed_mode(speed_kmh: float | None) -> MovementMode | None:
+    """라벨이 없을 때 평균 속도만으로 정한 이동 방식."""
+
+    if speed_kmh is None:
+        return None
+    return MovementMode.WALK if speed_kmh <= ON_FOOT_MAX_KMH else MovementMode.VEHICLE
+
+
+def _mode_conflict(label_mode: MovementMode | None, speed_kmh: float | None) -> str | None:
+    """센서 라벨의 이동 방식이 계산된 평균 속도로 설명되는가.
 
     라벨을 고치지 않는다. 어긋난다는 사실만 돌려주고 판단은 Agent 에 맡긴다.
     """
 
-    if speed_kmh is None:
+    if label_mode is None or speed_kmh is None:
         return None
-
-    for label in transports:
-        upper = _TRANSPORT_MAX_KMH.get(label)
-        if upper is not None and speed_kmh > upper:
-            return (
-                f"{label} 라벨이지만 평균 {speed_kmh:.1f}km/h 로 "
-                f"{upper:.0f}km/h 상한을 넘습니다."
-            )
-        lower = _TRANSPORT_MIN_KMH.get(label)
-        if lower is not None and speed_kmh < lower:
-            return (
-                f"{label} 라벨이지만 평균 {speed_kmh:.1f}km/h 로 "
-                f"{lower:.0f}km/h 하한에 못 미칩니다."
-            )
+    if label_mode is MovementMode.WALK and speed_kmh > ON_FOOT_MAX_KMH:
+        return (
+            f"도보 라벨이지만 평균 {speed_kmh:.1f}km/h 로 "
+            f"도보 상한 {ON_FOOT_MAX_KMH:.0f}km/h 를 넘습니다."
+        )
+    if label_mode is MovementMode.VEHICLE and speed_kmh < VEHICLE_MIN_KMH:
+        return (
+            f"이동수단 라벨이지만 평균 {speed_kmh:.1f}km/h 로 "
+            f"이동수단 하한 {VEHICLE_MIN_KMH:.0f}km/h 에 못 미칩니다."
+        )
     return None
 
 

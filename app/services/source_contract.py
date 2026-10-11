@@ -13,9 +13,15 @@
 있게 쓴다. 이 문장은 로그에만 남고 외부로는 안전 메시지(1102)만 나간다.
 """
 
+from pydantic import ValidationError
+
 from app.core.error_codes import ErrorCode
-from app.core.exceptions import AppError
-from app.schemas import CollectedSnapshot
+from app.core.exceptions import AppError, report_error
+from app.core.logging import get_logger
+from app.schemas import CollectedSnapshot, UserMemory
+from app.schemas.timeline_input import TimelineInputPayload
+
+logger = get_logger(__name__)
 
 
 class SourceBatchError(AppError, ValueError):
@@ -54,6 +60,48 @@ def ensure_source_contract(task_id: str, snapshot: CollectedSnapshot) -> None:
             f"한 task 에 중복 rawId 가 있습니다: taskId={task_id}. rawId 는 원본의 정식 "
             f"식별자라 한 task 안에서 유일해야 합니다 — 중복 rawIds={duplicates}."
         )
+
+
+def resolve_user_memory(parsed: TimelineInputPayload) -> UserMemory | None:
+    """``userMemory`` 계약 위반을 흡수한다(#65).
+
+    User Memory 는 해석을 돕는 보조 context 다. 이것 하나가 계약을 어겼다고 하루치
+    수집 원본을 버리면 손해가 훨씬 크다. 그래서 코드 1106 으로 기록만 남기고 값 없이
+    진행한다 — 결과는 User Memory 가 애초에 없던 날과 같다.
+
+    본문은 어디에도 남기지 않는다. 진단으로 남는 것은 **어떤 필드가 어떤 규칙에
+    걸렸는지**(위치와 오류 종류)뿐이다.
+
+    예외 객체를 :func:`report_error` 에 넘기지 않는 것은 실수가 아니다.
+    ``str(ValidationError)`` 는 걸린 값을 ``input_value=...`` 로 그대로 인용해서, 그대로
+    넘기면 User Memory 본문이 운영 로그에 남는다.
+
+    입력 조회 응답(:mod:`app.services.app_server_client`)과 동기 테스트 요청
+    (:mod:`app.services.timeline_testing`)이 같은 계약을 받으므로 이 흡수도 한 곳에
+    둔다(#102). 두 벌이 되면 한쪽만 고쳐 흡수 정책이 갈린다.
+    """
+
+    try:
+        return parsed.parse_user_memory()
+    except ValidationError as exc:
+        errors = exc.errors()
+        report_error(
+            logger,
+            ErrorCode.USER_MEMORY_CONTRACT_VIOLATION,
+            "userMemory 계약 위반으로 User Memory 없이 진행합니다",
+            context={
+                "taskId": parsed.task_id,
+                "errorType": type(exc).__name__,
+                "userMemoryErrorCount": len(errors),
+                "userMemoryErrorFields": sorted(
+                    {".".join(str(part) for part in error["loc"]) for error in errors}
+                ),
+                "userMemoryErrorTypes": sorted(
+                    {str(error["type"]) for error in errors}
+                ),
+            },
+        )
+        return None
 
 
 def source_raw_ids(snapshot: CollectedSnapshot) -> set[str]:

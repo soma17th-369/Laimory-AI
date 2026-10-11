@@ -122,8 +122,9 @@ class ErrorCode(IntEnum):
     #: 결과 저장 API 호출이 실패했다(5xx/timeout 을 재시도까지 소진).
     TIMELINE_RESULT_SUBMIT_FAILED = 1303
 
-    #: User Memory 갱신본이 재요청 뒤에도 크기·민감정보 검증을 통과하지 못했다(#64).
-    #: 규칙을 어긴 프로필을 저장하지 않고 기존 값을 그대로 둔다.
+    #: User Memory 갱신본이 크기·민감정보 검증을 통과하지 못했다(#64). 규칙을 어긴
+    #: 프로필을 저장하지 않고 기존 값을 그대로 둔다. 같은 작업 안에서 다시 요청하지
+    #: 않는다(#121).
     USER_MEMORY_LIMIT_EXCEEDED = 1304
     #: User Memory 결과 저장 호출이 재시도까지 실패했다(#64). 콜백이 없는 계약이라
     #: 이 실패는 **App Server 에 알릴 방법이 없다** — 그쪽은 TTL 로 정리한다.

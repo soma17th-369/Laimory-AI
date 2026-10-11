@@ -14,6 +14,7 @@ from app.agents.parsing import (
 )
 from app.agents.prompt_loader import load_prompt
 from app.schemas import AgentEventResult, TimelineDraftRequest
+from app.core.llm_stages import LLMStage
 
 _SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
 
@@ -30,7 +31,7 @@ class CalendarEventAgent(EventAgent):
     @property
     def llm(self) -> SupportsComplete:
         if self._llm is None:
-            self._llm = default_llm()
+            self._llm = default_llm(LLMStage.CALENDAR)
         return self._llm
 
     def _generate(self, request: TimelineDraftRequest) -> AgentEventResult:

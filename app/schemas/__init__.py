@@ -37,14 +37,19 @@ from app.schemas.source_snapshot import (
 )
 from app.schemas.task import TaskStatus, TimelineCallbackPayload
 from app.schemas.timeline import (
+    TimelineAgentEvent,
+    TimelineAgentOutput,
     TimelineDraft,
     TimelineDraftEvent,
     TimelineEventDraft,
-    TimelineQuestion,
     TimelineWarning,
     TimelineWarningSeverity,
 )
-from app.schemas.timeline_input import TimelineInputResponse, TimelineInputWindow
+from app.schemas.timeline_input import (
+    TimelineInputPayload,
+    TimelineInputResponse,
+    TimelineInputWindow,
+)
 from app.schemas.timeline_request import TimelineDraftRequest, TimeWindow
 from app.schemas.timeline_result import TimelineResultEvent, TimelineResultRequest
 from app.schemas.user_memory import UserMemory
@@ -89,14 +94,16 @@ __all__ = [
     "StayItem",
     "TaskStatus",
     "TimeWindow",
+    "TimelineAgentEvent",
+    "TimelineAgentOutput",
     "TimelineCallbackPayload",
     "TimelineDraft",
     "TimelineDraftEvent",
     "TimelineDraftRequest",
     "TimelineEventDraft",
+    "TimelineInputPayload",
     "TimelineInputResponse",
     "TimelineInputWindow",
-    "TimelineQuestion",
     "TimelineResultEvent",
     "TimelineResultRequest",
     "TimelineWarning",

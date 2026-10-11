@@ -108,11 +108,12 @@ def test_provider_models_and_server_bindings_are_read_from_environment(
 def test_supported_prompt_versions_are_accepted() -> None:
     assert _settings(prompt_version="v2").prompt_version == "v2"
     assert _settings(prompt_version=" V2 ").prompt_version == "v2"
+    assert _settings(prompt_version="v3").prompt_version == "v3"
 
 
 def test_unknown_prompt_version_is_rejected() -> None:
     with pytest.raises(ValidationError):
-        _settings(prompt_version="v3")
+        _settings(prompt_version="v4")
 
 
 def test_app_server_max_attempts_must_be_at_least_one() -> None:
@@ -216,3 +217,30 @@ def test_langfuse_rejects_invalid_settings(overrides: dict[str, object]) -> None
 def test_app_server_api_url_rejects_invalid_base_url(value: str) -> None:
     with pytest.raises(ValidationError):
         _settings(app_server_api_url=value)
+
+
+@pytest.mark.parametrize(
+    ("app_env", "expected"),
+    [
+        ("local", True),
+        ("dev", True),
+        ("DEV", True),
+        ("prod", False),
+        ("", False),
+        ("stage", False),
+    ],
+)
+def test_timeline_test_endpoint_follows_app_env(app_env: str, expected: bool) -> None:
+    """설정을 비워 두면 실행 환경이 정한다(이슈 #102).
+
+    기본값이 "닫힘" 쪽이라 모르는 환경 이름이나 빈 값에서는 저절로 닫힌다.
+    """
+
+    assert _settings(app_env=app_env).timeline_test_endpoint_enabled is expected
+
+
+@pytest.mark.parametrize("app_env", ["local", "dev", "prod"])
+def test_explicit_timeline_test_enabled_always_wins(app_env: str) -> None:
+    configured = _settings(app_env=app_env, timeline_test_enabled=False)
+
+    assert configured.timeline_test_endpoint_enabled is False

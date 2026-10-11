@@ -18,6 +18,18 @@ from app.core.llm import OpenAIProvider
 _BUNDLE = "laimory/test"
 
 
+def _diagnostic(caplog) -> logging.LogRecord:
+    """`report_error` 가 남긴 **진단 줄**을 고른다(이슈 #101).
+
+    같은 호출이 표식 달린 `app.degraded` 운영 이벤트도 함께 내므로, `records[-1]` 은
+    이제 그쪽을 집는다. 여기서 보려는 것은 자유 필드가 남는 진단 줄이다.
+    """
+
+    records = [record for record in caplog.records if record.name != "app.operational"]
+    assert records, "진단 줄이 없습니다."
+    return records[-1]
+
+
 @pytest.fixture(autouse=True)
 def _clear_bundle_cache():
     secret_bundle.reset_cache()
@@ -135,7 +147,7 @@ def test_fetch_failure_falls_back_and_is_reported(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger=secrets_module.logger.name):
         secrets_module.prefetch_secrets()
 
-    record = caplog.records[-1]
+    record = _diagnostic(caplog)
     assert record.fields["errorCode"] == int(ErrorCode.SECRET_RESOLUTION_FAILED)
     assert record.fields["errorType"] == "RuntimeError"
 
@@ -152,7 +164,7 @@ def test_non_object_bundle_is_reported(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger=secrets_module.logger.name):
         secrets_module.prefetch_secrets()
 
-    assert caplog.records[-1].fields["errorCode"] == int(
+    assert _diagnostic(caplog).fields["errorCode"] == int(
         ErrorCode.SECRET_RESOLUTION_FAILED
     )
 
@@ -200,4 +212,4 @@ def test_bundle_values_never_appear_in_logs(monkeypatch, caplog):
         secrets_module.prefetch_secrets()
 
     assert "sk-bundle-secret" not in caplog.text
-    assert caplog.records[-1].fields["secretNameCount"] == 1
+    assert _diagnostic(caplog).fields["secretNameCount"] == 1

@@ -3,6 +3,7 @@
 import json
 from typing import Protocol
 
+from app.core.llm_stages import LLMStage
 from app.core.structured import StructuredOutputError
 from app.schemas import AgentEventResult, UserMemory
 
@@ -34,15 +35,24 @@ class SupportsComplete(Protocol):
     ): ...
 
 
-def default_llm() -> SupportsComplete:
-    """설정된 provider로 기본 LLM 클라이언트를 만든다.
+def default_llm(stage: LLMStage | None = None) -> SupportsComplete:
+    """설정된 provider로 그 단계에 맞는 LLM 클라이언트를 만든다 (#106).
+
+    `stage` 의 티어에 모델이 지정돼 있으면 그 모델로, 없으면 전역
+    `{PROVIDER}_MODEL` 로 만든다. `stage` 를 주지 않으면 언제나 전역 모델이다.
+
+    model 을 **주지 않는 경로를 남겨 둔 것이 중요하다.** `LLMClient()` 는 provider
+    싱글턴을 그대로 재사용하므로, 티어 설정이 없는 배포에서는 지금까지와 똑같이
+    provider 인스턴스가 하나만 생긴다.
 
     import 시점에 설정/자격 증명을 요구하지 않도록 함수 안에서 import 한다.
     """
 
     from app.core.llm import LLMClient
+    from app.core.llm_stages import model_for_stage
 
-    return LLMClient()
+    model = model_for_stage(stage)
+    return LLMClient() if model is None else LLMClient(model=model)
 
 
 def items_to_text(items: list) -> str:

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from app.agents.prompt_loader import load_prompt
+from app.agents.prompt_loader import load_prompt, uses_legacy_contract
 
 
 def _write_prompt(root: Path, version: str, content: str) -> Path:
@@ -32,3 +32,23 @@ def test_load_prompt_does_not_fallback_to_v1(tmp_path: Path) -> None:
 def test_load_prompt_rejects_nested_filename(tmp_path: Path, filename: str) -> None:
     with pytest.raises(ValueError):
         load_prompt(tmp_path / "agent.py", filename, version="v1")
+
+
+# --- 예전 계약으로 도는 세트 (#119) -----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("version", "legacy"),
+    [
+        ("v1", True),
+        ("v2", True),
+        ("V2", True),
+        ("v3", False),
+        # 문자열 대소 비교였다면 `"v10" < "v3"` 이 참이라 예전 세트로 잡힌다.
+        ("v10", False),
+    ],
+)
+def test_only_v1_and_v2_run_on_the_legacy_contract(version: str, legacy: bool) -> None:
+    """v2 는 운영 세트다. 확정 pass 의 새 검사와 Repair 의 새 입력·도구를 쓰지 않는다."""
+
+    assert uses_legacy_contract(version) is legacy
