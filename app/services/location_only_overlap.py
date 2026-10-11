@@ -17,8 +17,9 @@
 from dataclasses import dataclass
 from datetime import timedelta
 
-from app.schemas import TimelineDraft, TimelineDraftRequest, TimelineEventDraft
+from app.schemas import StayItem, TimelineDraft, TimelineDraftRequest, TimelineEventDraft
 from app.services.location_link import (
+    LINK_REASON,
     activity_notification_ids,
     collect_evidence,
     has_event_evidence,
@@ -72,6 +73,32 @@ def _touches(location: TimelineEventDraft, other: TimelineEventDraft) -> bool:
     return location.start_time < other.end_time and other.start_time < location.end_time
 
 
+def _event_place_texts(
+    event: TimelineEventDraft, evidence, stays: dict[str, StayItem]
+) -> list[str]:
+    """event 의 장소. 스스로 말하지 않으면 붙은 체류(그 시간에 가장 오래 머문 곳)다.
+
+    장소를 말하지 않는 일정은 `location_link` 가 가장 오래 머문 장소의 체류만 붙인다(#145).
+    예전에는 확정이 그 체류의 이름으로 `place` 를 채워 `own_place_texts` 에 실렸지만, v3 는
+    `place` 를 채우지 않는다(#150). 붙은 체류를 직접 읽지 않으면 이 일정이 어디서든 열린
+    것으로 보여, 저녁을 먹은 곳의 체류 카드까지 같은 방문 후보로 짚는다.
+    """
+
+    own = own_place_texts(event, evidence)
+    if own:
+        return own
+    texts: list[str] = []
+    for ref in event.source_refs:
+        stay = stays.get(ref.raw_id) if ref.reason == LINK_REASON else None
+        if stay is None:
+            continue
+        # 이름으로 대조한다. 주소는 이름이 없을 때만 — 같은 구의 다른 곳도 주소 앞부분이
+        # 같아 맞는 것으로 읽힌다.
+        names = [text for text in (stay.place, *stay.places) if text and text.strip()]
+        texts.extend(names or ([stay.address] if stay.address else []))
+    return texts
+
+
 def find_location_only_overlaps(
     draft: TimelineDraft, request: TimelineDraftRequest
 ) -> list[LocationOnlyOverlap]:
@@ -100,7 +127,7 @@ def find_location_only_overlaps(
             and (
                 not cited
                 or any(
-                    place_compatible(own_place_texts(other, evidence), stay)
+                    place_compatible(_event_place_texts(other, evidence, stays), stay)
                     for stay in cited
                 )
             )

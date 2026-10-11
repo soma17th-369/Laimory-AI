@@ -627,6 +627,13 @@ _LOCATION_LINK_STEP: tuple[
 ] = ("위치 근거 연결", link_location_evidence)
 
 
+def _resolve_places_without_filling(
+    draft: TimelineDraft, request: TimelineDraftRequest
+) -> None:
+    # v3 세트는 빈 place 를 후보로 채우지 않는다(#150). 고르는 것은 LLM 의 몫이다.
+    resolve_places(draft, request, fill_empty=False)
+
+
 def _correction_steps(
     extended: bool,
 ) -> tuple[tuple[str, Callable[[TimelineDraft, TimelineDraftRequest], object]], ...]:
@@ -637,7 +644,8 @@ def _correction_steps(
     return (
         *_CORRECTION_STEPS[:position],
         _LOCATION_LINK_STEP,
-        *_CORRECTION_STEPS[position:],
+        ("장소 확정", _resolve_places_without_filling),
+        *_CORRECTION_STEPS[position + 1 :],
         *_EXTENDED_CORRECTION_STEPS,
     )
 

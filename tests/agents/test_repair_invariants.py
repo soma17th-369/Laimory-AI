@@ -410,6 +410,8 @@ _SPLIT_JOURNEY = _plan(
                         "endTime": _t("18:00"),
                         "title": "회사에서 근무",
                         "eventType": "WORK",
+                        # v3 확정은 빈 place 를 채우지 않는다(#150). 조각의 장소는 Repair 가 준다.
+                        "place": "회사",
                     },
                     {"startTime": _t("18:00"), "endTime": _t("19:00"), "title": "집으로 귀가"},
                 ],

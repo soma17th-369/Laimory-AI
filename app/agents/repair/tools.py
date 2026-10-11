@@ -451,7 +451,8 @@ _TOOLS: dict[str, RepairTool] = {
         _service_tool(
             "resolve_places",
             "place 를 근거의 장소명으로 확정하고, 근거에 없는 address 를 지운다.",
-            lambda ctx: resolve_places(ctx.draft, ctx.request),
+            # 확정 pass 와 같은 기준이다. v3 는 빈 place 를 채우지 않는다(#150).
+            lambda ctx: resolve_places(ctx.draft, ctx.request, fill_empty=not ctx.extended),
         ),
         _service_tool(
             "ensure_calendar_events",

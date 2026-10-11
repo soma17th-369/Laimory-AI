@@ -275,6 +275,9 @@ def test_legacy_sets_get_none_of_the_new_checks():
                 (EventSourceType.STAY, "stay-office"),
                 (EventSourceType.MOVEMENT, "move-back"),
                 event_type=EventType.MOVEMENT,
+                # v2 는 빈 place 를 후보로 채우고 v3 는 비워 둔다(#150). 이 테스트가 보는
+                # 것은 검사이므로 place 를 미리 정해 두 확정의 차이를 검사로 좁힌다.
+                place="회사",
             )
         )
 

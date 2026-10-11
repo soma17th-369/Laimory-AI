@@ -15,6 +15,7 @@
 
     - `place`: 비어 있거나 얼버무림일 때만 근거의 `place` 로 채운다.
       채울 근거가 없으면 얼버무림을 그냥 지운다(없는 장소를 지어내는 것보다 낫다).
+      v3 세트는 채우지 않고 얼버무림만 지운다(#150, `resolve_places` 참고).
     - `address`  : 비어 있으면 근거의 주소로 채운다. 근거로 뒷받침되지 않는 주소는
       LLM 이 지어낸 것이므로 지우고 경고한다.
 
@@ -287,8 +288,20 @@ def _examples(items: list[str]) -> str:
     return shown
 
 
-def resolve_places(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
-    """event 의 `place` / `address` 를 근거로 확정한다(in-place)."""
+def resolve_places(
+    draft: TimelineDraft,
+    request: TimelineDraftRequest,
+    *,
+    fill_empty: bool = True,
+) -> None:
+    """event 의 `place` / `address` 를 근거로 확정한다(in-place).
+
+    `fill_empty` 가 거짓이면(v3 세트, #150) 비어 있거나 얼버무림인 `place` 를 후보로 채우지
+    않고 비우기만 한다. 체류·이동의 후보는 그 지점 근처의 역지오코딩 이름이라, 채우면 근처
+    가게·주차장·이동 중간 지점 이름(`피자성찬`, `주공아파트 108동`)이 그날의 장소가 된다.
+    v3 는 다른 근거가 그 이름을 가리킬 때만 LLM 이 고르고, 고르지 않은 것도 정상 결과다.
+    v1·v2 는 그 규칙을 모르므로 예전처럼 채운다.
+    """
 
     evidence = _collect(request)
     filled_labels: list[str] = []
@@ -302,7 +315,11 @@ def resolve_places(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
     for event in draft.events:
         refs = event.source_refs
         if is_vague_place_label(event.place):
-            label = _first(_place_label_candidates(refs, evidence), reject_vague=True)
+            label = (
+                _first(_place_label_candidates(refs, evidence), reject_vague=True)
+                if fill_empty
+                else None
+            )
             if label:
                 event.place = label
                 filled_labels.append(f"{event.title} → {label}")
