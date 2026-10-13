@@ -566,10 +566,11 @@ def test_timeline_v3_gives_one_sentence_format_per_situation() -> None:
     assert rows[0] == "| 상황 | `title` | `description` | 예 |"
     for situation in FORMAT_SITUATIONS:
         assert any(row.startswith(f"| {situation} |") for row in rows), situation
-    # 모든 description 뼈대는 해요체 과거형으로 끝난다.
+    # 모든 description 뼈대와 예는 평서형 과거형으로 끝난다(#158). 해요체가 하나라도 남으면 모델이 그쪽을 따른다.
     for row in rows[2:]:
         description = row.split(" | ")[2]
-        assert "요.`" in description, row
+        assert "다.`" in description, row
+        assert "요.`" not in row, row
     # 흩어진 예시와 좋은 예·나쁜 예는 표로 모았다.
     for gone in ("### 나쁜 예", "### 좋은 예", "**예시**", "**피할 문장**"):
         assert gone not in text, gone
@@ -597,11 +598,11 @@ def test_timeline_v3_writes_photos_as_what_they_show() -> None:
     text = _timeline_v3()
     table = "\n".join(format_table(text))
 
-    assert "`OO공원에서 노을을 봤어요.`" in table
+    assert "`OO공원에서 노을을 봤다.`" in table
     # 금지 문장을 두지 않는다. 활동 동사를 쓰라는 규칙과 예시만 둔다.
-    assert "사진으로 남겼어요" not in text
-    assert "사진은 그것이 보여 주는 활동으로 씁니다(음식 → `먹었어요`, 풍경 → `봤어요`)" in text
-    assert "`OO식당에서 순두부찌개와 만두를 먹었어요.`" in table
+    assert "사진으로 남겼다" not in text
+    assert "사진은 그것이 보여 주는 활동으로 씁니다(음식 → `먹었다`, 풍경 → `봤다`)" in text
+    assert "`OO식당에서 순두부찌개와 만두를 먹었다.`" in table
     assert "`튀김 또는 구운 음식`처럼 짐작해 헤지하는" in text
     assert "`식당`·`가게` 같은 말로도 장소를 지어내지 않습니다" in text
 
