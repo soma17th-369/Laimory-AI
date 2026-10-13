@@ -22,12 +22,15 @@ from app.core.execution_context import (
     execution_context,
     execution_scope,
 )
+from app.core import logging as logging_module
 from app.core.logging import (
+    INSTANCE_ID,
     SERVICE_NAME,
     JsonLogFormatter,
     log_fields,
     stage_span,
 )
+from app.core.operational_logging import EventOutcome, OperationalEvent, emit_event
 
 REQUIRED_FIELDS = (
     "timestamp",
@@ -200,6 +203,82 @@ def test_ordinary_log_line_has_no_collection_marker(formatter) -> None:
     assert "event.dataset" not in payload
     assert "event.action" not in payload
     assert "event.outcome" not in payload
+
+
+def _operational_record(caplog) -> logging.LogRecord:
+    with caplog.at_level(logging.INFO, logger="app.operational"):
+        with execution_context("task-instance"):
+            emit_event(
+                OperationalEvent.TIMELINE_TASK_COMPLETED,
+                outcome=EventOutcome.SUCCESS,
+                status="SUCCESS",
+            )
+    return caplog.records[-1]
+
+
+def test_prod_lines_carry_one_instance_id(formatter, caplog, monkeypatch) -> None:
+    """prod 에서는 운영 이벤트와 일반 로그가 같은 `instanceId` 를 갖는다 (이슈 #154).
+
+    AgentCore 는 여러 컨테이너의 줄을 한 log group 에 섞는다. `taskId` 를 찾고도
+    어느 컨테이너가 처리했는지 알려면 모든 줄에 같은 값이 있어야 한다.
+    """
+
+    monkeypatch.setattr(logging_module.settings, "app_env", "prod")
+
+    ordinary = _emitted(formatter, _record())
+    operational = _emitted(formatter, _operational_record(caplog))
+
+    assert operational["event.action"] == OperationalEvent.TIMELINE_TASK_COMPLETED.value
+    assert operational["taskId"] == "task-instance"
+    assert ordinary["instanceId"] == operational["instanceId"] == INSTANCE_ID
+    assert len(INSTANCE_ID) == 36
+
+
+@pytest.mark.parametrize("app_env", ["local", "dev", "test"])
+def test_non_prod_lines_have_no_instance_id(
+    formatter, caplog, monkeypatch, app_env: str
+) -> None:
+    monkeypatch.setattr(logging_module.settings, "app_env", app_env)
+
+    assert "instanceId" not in _emitted(formatter, _record())
+    assert "instanceId" not in _emitted(formatter, _operational_record(caplog))
+
+
+def test_caller_cannot_set_instance_id(formatter, caplog, monkeypatch) -> None:
+    """프로세스의 성질이라 호출부가 넘기거나 덮어쓸 값이 아니다."""
+
+    monkeypatch.setattr(logging_module.settings, "app_env", "local")
+    assert "instanceId" not in _emitted(
+        formatter, _record(fields={"instanceId": "spoofed"})
+    )
+    with caplog.at_level(logging.INFO, logger="app.operational"):
+        emit_event(OperationalEvent.SERVER_STARTED, instanceId="spoofed")
+    assert "instanceId" not in _emitted(formatter, caplog.records[-1])
+
+    monkeypatch.setattr(logging_module.settings, "app_env", "prod")
+    payload = _emitted(formatter, _record(fields={"instanceId": "spoofed"}))
+    assert payload["instanceId"] == INSTANCE_ID
+
+
+def test_other_processes_get_other_instance_ids() -> None:
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    code = "from app.core.logging import INSTANCE_ID; print(INSTANCE_ID)"
+    ids = {
+        subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=Path(__file__).resolve().parents[2],
+        ).stdout.strip().splitlines()[-1]
+        for _ in range(2)
+    }
+
+    assert len(ids) == 2
+    assert INSTANCE_ID not in ids
 
 
 def test_log_fields_drops_none_values() -> None:

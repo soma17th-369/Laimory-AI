@@ -109,7 +109,9 @@ app/
 │
 ├── core/                      # 공통 인프라
 │   ├── config.py              # 설정 (pydantic-settings, LLM_PROVIDER/API 키, APP_SERVER_*, OBS_*/ES_* 등)
-│   ├── logging.py             # 운영 로그 설정 (rich | stdout JSON→CloudWatch, LOG_FORMAT)
+│   ├── logging.py             # 운영 로그 설정 (rich | stdout JSON→CloudWatch, LOG_FORMAT).
+│   │                          #   `APP_ENV=prod` 일 때만 모든 JSON 줄에 프로세스 UUID `instanceId` 를
+│   │                          #   붙인다(#154). 이벤트 필드가 아니라 예약 고정 필드다
 │   ├── error_codes.py         # 오류 코드 카탈로그 (#42). 정수 코드·외부 안전 메시지·HTTP 상태의 유일한 정본. 값 중복은 import 시점에 차단
 │   ├── exceptions.py          # AppError 예외 계층(자기 ErrorCode 보유) + report_error: 로그와 관측을 같은 코드로 남기는 유일한 통로
 │   ├── llm.py                 # LLM provider 래퍼 (OpenAI/Gemini/Bedrock, 확장형) + LLM 관측/토큰 emit.
