@@ -660,7 +660,7 @@ Elasticsearch를 직접 호출하지 않도록 설계되어 있으므로 Runtime
    from app.core.logging import _RESERVED_FIELDS
    from app.core.operational_logging import _ALLOWED_FIELDS
 
-   names = set(_RESERVED_FIELDS) | {"instanceId"}
+   names = set(_RESERVED_FIELDS)  # instanceId 포함(#154)
    for allowed in _ALLOWED_FIELDS.values():
        names |= set(allowed)
    print(sorted(n for n in names if n.casefold() in LAMBDA_SENSITIVE_KEYS))
