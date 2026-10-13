@@ -49,8 +49,8 @@ laimory-ai 컨테이너 stdout (한 줄 JSON)
 | `event.action` | 언제 | 필드 |
 |---|---|---|
 | `http.request.completed` | HTTP 요청 하나가 끝날 때(요청당 1건) | `method`, `route`, `httpStatus`, `durationMs`, `errorCode`, `errorType`, `errorMessage`, `errorStackTrace`, `taskId` |
-| `server.started` | lifespan 시작 | `appEnv`, `logFormat`, `instanceId` |
-| `server.stopped` | lifespan 종료 | `appEnv`, `uptimeMs`, `instanceId` |
+| `server.started` | lifespan 시작 | `appEnv`, `logFormat` |
+| `server.stopped` | lifespan 종료 | `appEnv`, `uptimeMs` |
 | `timeline.task.completed` | 202 로 접수한 백그라운드 작업이 끝날 때(작업당 1건) | `taskId`, `status`, `durationMs`, `callbackSent`, `errorCode`, `failureStage`, `timedOut` |
 | `usermemory.task.completed` | User Memory 갱신 작업이 끝날 때(작업당 1건) | `taskId`, `status`, `durationMs`, `resultSent`, `errorCode`, `hasExistingMemory`, `dailyTimelineCount`, `eventCount`, `memoCount`, `emotionCount`, `droppedDailyTimelineCount`, `droppedEventCount`, `changedFieldCount`, `changedAttributeCount`, `schemaVersion`, `filledFieldCount`, `customAttributeCount`, `serializedChars` |
 | `dependency.request.completed` | App Server 논리 호출 하나가 끝날 때 | `dependency`, `operation`, `httpStatus`, `attempts`, `durationMs`, `errorCode`, `taskId`, `tokenRefreshCount` |
@@ -60,13 +60,18 @@ laimory-ai 컨테이너 stdout (한 줄 JSON)
 공통 필드는 `timestamp`, `log.level`, `logger`(`app.operational`), `message`,
 `service`, `environment`, `version`, 그리고 표식 3종(`event.dataset`,
 `event.action`, `event.outcome`)이다. `event.outcome` 은 `success` | `failure` 다.
+`APP_ENV=prod` 이면 `instanceId` 도 붙는다(아래).
 
 **`message` 로 집계하지 않는다.** 사람이 읽는 한 줄일 뿐이고, 계약은
 `event.action` 이다. 문구는 언제든 다듬을 수 있어야 한다.
 
-`instanceId` 는 프로세스당 하나이며 emitter 가 자동으로 채운다(호출부가 넘기지 않는다).
-AgentCore 는 유휴 컨테이너를 회수하고 필요할 때 새로 띄우므로 한 log group 에 여러 인스턴스의
-줄이 섞인다. 이 값이 cold start 를 세고 기동·종료를 짝짓는 유일한 수단이다.
+`instanceId` 는 프로세스당 하나인 UUID 문자열이다. **`APP_ENV=prod` 일 때만** JSON 포매터가
+운영 이벤트와 일반 로그 **모든 줄**에 붙인다(#154). 이벤트 필드가 아니라 공통 필드라 호출부도
+emitter 도 넘기지 않고, 넘겨도 버려진다(예약 필드). AgentCore 는 유휴 컨테이너를 회수하고
+필요할 때 새로 띄우므로 한 log group 에 여러 인스턴스의 줄이 섞인다. 이 값이 cold start 를
+세고, 기동·종료를 짝짓고, `timeline.task.completed` 의 `taskId` 를 처리한 컨테이너로 잇는
+유일한 수단이다. dev EC2 컨테이너도 `APP_ENV=prod` 로 돌아 같은 값이 붙는다. local·test
+줄에는 없다.
 
 > **`server.stopped` 가 없을 수 있다.** lifespan 의 `finally` 에서 나가므로 AgentCore 가
 > 컨테이너를 강제로 회수하면 기록되지 않는다. `uptimeMs` 를 가동시간의 정본으로 쓰지 않는다.
@@ -179,6 +184,7 @@ LLM 실패는 예외적으로 호출 단위여도 발행한다. `provider`·`mod
 | `service` | `laimory-ai` (Langfuse OTel `service.name`과 같은 값) |
 | `environment` | `APP_ENV` (`prod`/`dev`/`local`) |
 | `version` | `AGENT_VERSION`. EC2 배포는 이미지 태그가 들어간다 |
+| `instanceId` | 프로세스 UUID. **`APP_ENV=prod` 일 때만** 있다(#154). 운영 이벤트에도 붙는다 |
 
 ### 실행 컨텍스트가 자동으로 붙이는 필드 (일반 로그)
 

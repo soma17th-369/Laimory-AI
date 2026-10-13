@@ -38,7 +38,7 @@ event 필드는 값만이 아니라 **이름**도 수집 경로의 계약이다(
 
 발행은 `report_error`가 기본으로 한다. 항목 단위 loop(수집 항목마다·사진마다·도구 호출마다·응답 항목마다)는 한 task에서 수십 건이 되므로 `emit=False`로 빼고 잃은 양을 `droppedCount` 집계 1건으로 대신 낸다. LLM 실패(`llm.py`)는 호출 단위여도 발행한다 — `provider`·`model`·`stopReason`이 없으면 상위 흡수 경계에서 `EVENT_AGENT_FAILED`(1204)로 덮여 원인이 사라진다.
 
-`server.started`/`server.stopped`의 `instanceId`는 process당 하나이고 emitter가 자동으로 채운다. AgentCore는 유휴 container를 회수하므로 한 log group에 여러 instance의 줄이 섞이고, 이 값이 cold start를 세고 시작·종료를 짝짓는 유일한 수단이다. **`server.stopped`는 강제 회수 시 lifespan `finally`가 돌지 않아 남지 않을 수 있다** — `uptimeMs`를 가동시간의 정본으로 쓰지 않는다.
+`instanceId`는 process당 하나인 UUID이고 event field가 아니라 **JSON formatter의 고정 field**다(#154). `APP_ENV=prod`일 때만 운영 event와 일반 로그 모든 줄에 붙고, 예약 field라 호출부·emitter가 넘기거나 덮어쓸 수 없다. dev EC2 container도 `APP_ENV=prod`라 함께 붙고 local·test에는 없다. AgentCore는 유휴 container를 회수하므로 한 log group에 여러 instance의 줄이 섞이고, 이 값이 cold start를 세고 시작·종료를 짝짓고 `taskId`를 처리한 container로 잇는 유일한 수단이다. Filebeat `drop_fields`와 Lambda `_SENSITIVE_KEYS` 어디에도 없어 두 수집 경로가 보존한다. **`server.stopped`는 강제 회수 시 lifespan `finally`가 돌지 않아 남지 않을 수 있다** — `uptimeMs`를 가동시간의 정본으로 쓰지 않는다.
 
 HTTP request는 response start 시점에 요청당 한 건, Timeline·User Memory background task는 task당 한 건, App Server logical call은 retry 횟수와 무관하게 완료 한 건을 남긴다. 개별 retry는 별도 retry event다. 같은 `taskId`와 `errorCode`로 경계를 연결한다.
 
