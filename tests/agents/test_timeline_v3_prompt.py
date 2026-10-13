@@ -557,6 +557,26 @@ def test_timeline_v3_needs_evidence_beyond_the_place_for_an_activity_type(event_
     assert "장소까지만 쓴" in _event_type_section(event_type)
 
 
+def test_location_v3_leaves_a_stay_activity_unknown() -> None:
+    """운영 trace 에서 Location 이 경북대 체류를 `CLASS`, 아파트 체류를 `REST` 로 냈고
+    Timeline 이 그 타입을 그대로 옮겼다(#158). User Memory 도 다른 근거도 없었다."""
+
+    location = _read("agents/events/location/prompts/v3/prompt.md")
+
+    assert "**체류 candidate의 `eventType`은 `UNKNOWN`입니다.**" in location
+    assert "`CLASS`(대학교), `WORK`(회사), `REST`(아파트), `MEAL`(음식점)을 고르지 않습니다" in location
+
+
+def test_notification_v3_keeps_meal_for_food_payments() -> None:
+    """운영 trace 에서 Facebook Ads 토스페이 결제가 `MEAL` 이 됐다(#158). 알림 근거가 있어
+    `UNSUPPORTED_MEAL` 도 걸리지 않았다."""
+
+    notification = _read("agents/events/notification/prompts/v3/prompt.md")
+
+    assert "**`MEAL`은 가맹점이 음식점·카페·배달처럼 음식을 파는 곳일 때만입니다.**" in notification
+    assert "음식이 아닌 결제나 가맹점을 알 수 없는 결제는 `UNKNOWN`으로 두고" in notification
+
+
 def test_timeline_v3_gives_one_sentence_format_per_situation() -> None:
     """같은 상황이 실행마다 다르게 쓰였다. 뼈대 표 하나로 형식을 준다(#150)."""
 
