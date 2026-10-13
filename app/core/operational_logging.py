@@ -71,22 +71,16 @@ import logging
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any
-from uuid import uuid4
 
 from app.core.execution_context import ExecutionStage, current_execution_context
-from app.core.logging import OPERATIONAL_ATTR, get_logger
+# `INSTANCE_ID` 는 포매터가 prod 의 모든 줄에 붙인다(#154). 이벤트 필드가 아니라
+# 여기서는 기존 import 경로를 위해 다시 내보내기만 한다.
+from app.core.logging import INSTANCE_ID, OPERATIONAL_ATTR, get_logger  # noqa: F401
 from app.core.redaction import redact_text
 
 #: 수집 대상 표식. Filebeat 는 이 값이 정확히 일치하는 이벤트만 통과시킨다.
 #: 값을 바꾸면 수집기 설정(`docs/observability/filebeat.example.yml`)도 같이 바꿔야 한다.
 EVENT_DATASET = "laimory.api"
-
-#: 이 프로세스를 가리키는 값. 기동 때 한 번 만들어지고 죽을 때까지 같다.
-#:
-#: AgentCore 는 유휴 컨테이너를 회수하고 필요할 때 새로 띄우므로, 한 log group 에 여러
-#: 인스턴스의 줄이 섞여 들어온다. 이 값이 없으면 어느 컨테이너의 기록인지 가를 수 없고
-#: cold start 를 셀 수도 없다. EC2 는 컨테이너가 오래 살아 사실상 배포마다 하나다.
-INSTANCE_ID = str(uuid4())
 
 #: ECS 이름을 그대로 쓴다. 대시보드가 사람이 읽는 한국어 `message` 대신 이 세 필드로
 #: 이벤트를 고른다 — 문구는 언제든 다듬을 수 있지만 계약은 흔들리면 안 된다.
@@ -167,8 +161,9 @@ _ALLOWED_FIELDS: dict[OperationalEvent, frozenset[str]] = {
             "taskId",
         }
     ),
-    OperationalEvent.SERVER_STARTED: frozenset({"appEnv", "logFormat", "instanceId"}),
-    OperationalEvent.SERVER_STOPPED: frozenset({"appEnv", "uptimeMs", "instanceId"}),
+    # `instanceId` 는 이벤트 필드가 아니다. 포매터가 prod 의 모든 줄에 붙인다(#154).
+    OperationalEvent.SERVER_STARTED: frozenset({"appEnv", "logFormat"}),
+    OperationalEvent.SERVER_STOPPED: frozenset({"appEnv", "uptimeMs"}),
     OperationalEvent.TIMELINE_TASK_COMPLETED: frozenset(
         {
             "taskId",
@@ -571,9 +566,5 @@ def _build_payload(
         context = current_execution_context()
         if context is not None:
             payload["taskId"] = context.task_id
-
-    # 프로세스의 성질이라 호출부가 넘길 값이 아니다. `taskId` 와 같은 이유로 여기서 채운다.
-    if "instanceId" in allowed:
-        payload["instanceId"] = INSTANCE_ID
 
     return payload

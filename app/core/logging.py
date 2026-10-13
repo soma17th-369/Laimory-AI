@@ -20,7 +20,8 @@
 일반 로그 한 줄에 들어가는 필드는 세 층이다.
 
 1. 고정: ``timestamp``, ``log.level``, ``logger``, ``message``, ``service``,
-   ``environment``, ``version``
+   ``environment``, ``version``, 그리고 ``APP_ENV=prod`` 일 때만 ``instanceId``(#154).
+   이 층은 운영 이벤트에도 붙는다.
 2. 실행 컨텍스트(:mod:`app.core.execution_context`): ``taskId``, ``stage``, ``agent``,
    ``iteration``. 호출부가 넘기지 않아도 자동으로 붙는다.
 3. 호출부 지정: ``extra=log_fields(errorCode=..., durationMs=...)``
@@ -42,6 +43,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any, Iterator
+from uuid import uuid4
 
 from rich.logging import RichHandler
 
@@ -61,6 +63,17 @@ SERVICE_NAME = "laimory-ai"
 #: (:mod:`app.core.operational_logging` 이 이 이름으로 ``extra`` 를 넘긴다.)
 OPERATIONAL_ATTR = "operational_event"
 
+#: 이 프로세스를 가리키는 값. 기동 때 한 번 만들어지고 죽을 때까지 같다.
+#:
+#: AgentCore 는 유휴 컨테이너를 회수하고 필요할 때 새로 띄우므로, 한 log group 에 여러
+#: 인스턴스의 줄이 섞여 들어온다. 이 값이 없으면 어느 컨테이너의 기록인지 가를 수 없고
+#: cold start 를 셀 수도 없다. EC2 는 컨테이너가 오래 살아 사실상 배포마다 하나다.
+INSTANCE_ID = str(uuid4())
+
+#: ``instanceId`` 를 싣는 실행 환경(이슈 #154). 컨테이너가 여럿 뜨는 곳에서만 의미가 있다.
+#: dev EC2 컨테이너도 ``APP_ENV=prod`` 로 돌아 값이 붙는다.
+_INSTANCE_ID_APP_ENVS = frozenset({"prod"})
+
 #: 호출부 필드가 덮어쓸 수 없는 고정 필드. 이 이름들이 흔들리면 Elasticsearch 매핑과
 #: 저장된 검색이 통째로 깨진다. 수집 표식(``event.*``)도 여기 있다 — 일반 로그가
 #: ``log_fields(**{"event.dataset": ...})`` 같은 식으로 표식을 위조해 수집 대상이
@@ -74,6 +87,7 @@ _RESERVED_FIELDS = frozenset(
         "service",
         "environment",
         "version",
+        "instanceId",
         "error.type",
         "error.message",
         "error.stack_trace",
@@ -147,6 +161,10 @@ class JsonLogFormatter(logging.Formatter):
             "environment": settings.app_env,
             "version": settings.agent_version,
         }
+        # 프로세스의 성질이라 호출부나 emitter 가 넘길 값이 아니다. 운영 이벤트와 일반
+        # 로그에 같은 자리에서 붙여야 한 컨테이너의 줄이 모두 같은 값으로 묶인다(#154).
+        if settings.app_env.strip().lower() in _INSTANCE_ID_APP_ENVS:
+            payload["instanceId"] = INSTANCE_ID
         operational = _operational_fields(record)
         if operational is not None:
             # 운영 이벤트는 emitter 가 조립한 필드가 전부다. 주변 컨텍스트도,
