@@ -754,11 +754,21 @@ def test_repair_v3_turns_a_meal_without_a_photo_or_payment_back() -> None:
     assert "체류만 있으면 장소까지만 쓴 `UNKNOWN`으로, 식사 약속 일정이면 그 약속으로 되돌립니다" in section
 
 
+def test_repair_v3_writes_the_plain_diary_tone() -> None:
+    """최종 문장은 `~했다` 평서형 일기다(#158). 해요체로 남은 문장도 고친다."""
+
+    text = _repair_v3()
+
+    assert "**1인칭 평서형 과거형**(`~했다`)" in text
+    assert "해요체" not in text
+    assert all("요.`" not in row for row in format_table(text))
+
+
 def test_repair_v3_rewrites_a_photo_sentence_as_its_activity() -> None:
     text = _repair_v3()
 
-    assert "`공덕에서 사진을 남겼어요.`" not in text
-    assert any("`OO식당에서 순두부찌개와 만두를 먹었어요.`" in row for row in format_table(text))
-    assert "사진은 그것이 보여 주는 활동(음식 → `먹었어요`, 풍경 → `봤어요`)으로 씁니다" in text
+    assert "`공덕에서 사진을 남겼다.`" not in text
+    assert any("`OO식당에서 순두부찌개와 만두를 먹었다.`" in row for row in format_table(text))
+    assert "사진은 그것이 보여 주는 활동(음식 → `먹었다`, 풍경 → `봤다`)으로 씁니다" in text
     assert "`튀김 또는 구운 음식`처럼 짐작해 헤지하는" in text
     assert "`식당`·`가게` 같은 말로도 장소를 지어내지 않습니다" in text

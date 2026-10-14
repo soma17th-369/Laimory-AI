@@ -57,7 +57,7 @@ _SAMPLE_LIMIT = 3
 _CREATED_CONFIDENCE = 0.4
 
 _CREATED_TITLE = "사진으로 남긴 순간"
-_CREATED_DESCRIPTION = "사진을 남겼어요."
+_CREATED_DESCRIPTION = "사진을 남겼다."
 _CREATED_NOTE = (
     "사진을 담을 event 가 없어 촬영 시각으로 만든 기록이다. 사진 내용은 확인하지 못했다."
 )
