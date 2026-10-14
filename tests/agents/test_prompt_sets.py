@@ -146,6 +146,11 @@ def test_single_call_versions_have_no_review_prompt(agent_dir: str, version: str
 
 _QUALITY_VERSIONS = ("v2", "v3")
 
+#: 세트별 결과 문장 말투. v3 는 `~했다` 평서형 일기체로 바꿨고(#158) v2 는 해요체 그대로다.
+_TONE = {"v2": "1인칭 해요체 과거형", "v3": "1인칭 평서형 과거형"}
+#: 금지 대상으로 보여 주는 헤지 표현. 그 세트의 말투로 쓰여야 모델이 자기 문장에서 알아본다.
+_HEDGE = {"v2": "듯해요", "v3": "듯하다"}
+
 
 def _prompt(agent_dir: str, version: str, filename: str = "prompt.md") -> str:
     return (APP_ROOT / agent_dir / "prompts" / version / filename).read_text(
@@ -162,14 +167,15 @@ def _timeline(version: str) -> str:
     ("marker", "why"),
     [
         ("1인칭", "말투가 1인칭임을 명시해야 합니다."),
-        ("해요체", "종결어미를 해요체로 고정해야 합니다."),
+        ("tone", "종결어미를 그 세트의 말투로 고정해야 합니다."),
         ("100자", "description 길이 기준이 있어야 합니다."),
         ("30자", "title 길이 기준이 있어야 합니다."),
-        ("듯해요", "헤지 표현을 금지 대상으로 보여 줘야 합니다."),
+        ("hedge", "헤지 표현을 금지 대상으로 보여 줘야 합니다."),
         ("원본 수치", "분 단위 시각·걸음 수 같은 raw 값 금지가 있어야 합니다."),
     ],
 )
 def test_timeline_states_tone_and_length(version: str, marker: str, why: str) -> None:
+    marker = {"tone": _TONE[version], "hedge": _HEDGE[version]}.get(marker, marker)
     assert marker in _timeline(version), f"timeline {version} 에 '{marker}' 가 없습니다. {why}"
 
 
@@ -187,7 +193,7 @@ def test_timeline_tone_rules_have_one_home(version: str) -> None:
     """
 
     text = _timeline(version)
-    assert text.count("1인칭 해요체 과거형") == 1
+    assert text.count(_TONE[version]) == 1
 
     if version == "v3":
         inputs = text.index("## 입력 데이터의 의미")
@@ -228,7 +234,7 @@ def test_notification_separates_posted_at_from_schedule_date(version: str) -> No
 def test_repair_checks_tone_and_length(version: str) -> None:
     text = _prompt("agents/repair", version)
     assert "VERBOSE_NARRATION" in text, "문장 길이 초과를 잡는 문제 유형이 있어야 합니다."
-    assert "해요체" in text, "Repair 가 목표 말투를 알아야 다시 쓸 수 있습니다."
+    assert _TONE[version] in text, "Repair 가 목표 말투를 알아야 다시 쓸 수 있습니다."
     assert "헤지" in text, "추정 표현을 문제로 잡아야 합니다."
 
 
@@ -335,8 +341,9 @@ def test_v3_location_judges_walk_by_round_trip_and_duration() -> None:
     text = _event_prompt("location")
 
     assert "30분 이상" in text
-    assert "`EXERCISE`" in text
     assert "`WALK`" in text
+    # Location 은 `MOVEMENT`·`UNKNOWN` 만 낸다(#158). 산책은 문장으로 알리고 `EXERCISE` 는 Timeline 이 정한다.
+    assert "**출발지로 돌아온 도보 왕복**" in text
 
 
 def test_v3_location_keeps_transport_out_of_sentences() -> None:

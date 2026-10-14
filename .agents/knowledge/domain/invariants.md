@@ -115,7 +115,7 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 
 ### 최종 문장
 
-- 최종 Timeline·Repair title/description은 사용자가 읽는 1인칭 해요체 과거형 일기다.
+- 최종 Timeline·Repair title/description은 사용자가 읽는 1인칭 과거형 일기다. v3 description은 `~했다` 평서형, v1·v2는 해요체다(#158). 코드가 만드는 사진 event 문장은 평서형(`사진을 남겼다.`)이다.
 - title은 30자 이내 명사구, description은 1~2문장 100자 안팎을 목표로 하며 120자 초과는 warning이다.
 - 최종 문장에 `듯해요` 같은 hedge와 분 단위 시각·걸음 수 같은 원본 수치를 쓰지 않는다. `알 수 없어요`·`확인되지 않았어요`처럼 모른다고 밝히는 문장도 같은 규칙이다(#142). 모르는 내용은 빼고 uncertainty에 적으며, 확신 정도는 confidence·inferenceLevel로 표현한다. Event Agent v3도 근거 한계를 candidate `description`이 아니라 `uncertainty`에 둔다 — Timeline이 `description`의 한계 문장을 해요체로 옮겼다. 사진 근거는 사진 내용을 근거로 사용자가 한 일로 쓴다(음식→`먹었어요`, 풍경→`봤어요`, #148). Timeline·Repair는 Photo candidate 문장을 옮기므로 이 기준은 Photo v3가 candidate `description`을 사용자가 한 일로 정의하는 데서 나온다. 사진에 무엇이 보였는지는 `sourceRefs.reason`에 둔다.
 - 이 문장 규칙은 Event Agent의 정확한 사실 보고에는 적용하지 않는다.
@@ -154,7 +154,7 @@ Timeline 생성 결과가 의미와 근거를 보존하고 App Server·운영 �
 ## Known Gaps
 
 - Timeline trigger window의 역전은 endpoint에서 거절되지 않는다.
-- 최종 문체의 1인칭·해요체·문장 수는 코드가 의미적으로 판정하지 않고 prompt와 live 품질 검증에 의존한다.
+- 최종 문체의 1인칭·종결어미·문장 수는 코드가 의미적으로 판정하지 않고 prompt와 live 품질 검증에 의존한다.
 - 이동 사이 장시간 체류와 지속시간 초과는 Repair가 고쳐야 해소된다. Repair가 실패하거나 제한 시간이 끝나면 warning과 함께 그대로 저장된다.
 - App Server DB constraint와 callback/result idempotency는 이 저장소에서 확인할 수 없다.
 - inbound 인증·인가가 없어 호출 주체 불변식은 코드로 강제되지 않는다.

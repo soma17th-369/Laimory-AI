@@ -557,6 +557,55 @@ def test_timeline_v3_needs_evidence_beyond_the_place_for_an_activity_type(event_
     assert "장소까지만 쓴" in _event_type_section(event_type)
 
 
+def test_location_v3_outputs_only_movement_and_unknown() -> None:
+    """운영 trace 에서 Location 이 경북대 체류를 `CLASS`, 아파트 체류를 `REST` 로 냈고
+    Timeline 이 그 타입을 그대로 옮겼다(#158). User Memory 도 다른 근거도 없었다.
+
+    본문 규칙만 넣었을 때는 2회 중 1회 그대로 `CLASS` 를 냈다. 출력 예시의 enum 을
+    좁히자 6회 모두 지켰다. 활동은 Timeline 이 다른 근거로 채운다.
+    """
+
+    location = _read("agents/events/location/prompts/v3/prompt.md")
+    timeline = _timeline_v3()
+
+    assert '"eventType": "MOVEMENT|UNKNOWN"' in location
+    assert "**`eventType`은 `MOVEMENT`(이동)와 `UNKNOWN`(체류) 둘뿐입니다.**" in location
+    assert "Location은 `MOVEMENT`(이동)와 `UNKNOWN`(체류)만 냅니다" in timeline
+    # 산책은 Location 이 문장으로 알리고 Timeline 이 `EXERCISE` 로 정한다.
+    assert "도보 왕복이라고 적은 `MOVEMENT`는 산책 신호입니다" in timeline
+
+
+def test_location_v3_titles_a_stay_like_the_final_sentence() -> None:
+    """Location 예시가 `정보영재교육원 체류` 를 정답으로 보여 줘 candidate 제목이 `경북대학교
+    체류` 가 됐고, Timeline 이 그 제목을 그대로 옮겼다(#158). 옮겨도 맞도록 「문장 형식」
+    표의 `{장소}에서 보낸 시간` 꼴을 쓴다."""
+
+    location = _read("agents/events/location/prompts/v3/prompt.md")
+
+    assert "**제목에 `체류`를 쓰지 않습니다.**" in location
+    # `○○ 체류` 꼴의 제목 예시가 남지 않는다.
+    assert re.findall(r"`[^`\n]+ 체류`", location) == []
+    assert "`정보영재교육원에서 보낸 시간`" in location
+    assert "`{장소}에서 보낸 시간`" in _timeline_v3()
+
+
+def test_timeline_v3_does_not_read_a_notification_as_the_stay_activity() -> None:
+    """Location 을 좁힌 뒤 실제 LLM 이 체류 중 받은 결제·기사·메시지 알림으로
+    `쉬며 확인한 것들` 같은 활동을 지어냈다(#158, 3회 중 1회)."""
+
+    assert "체류 중에 알림이 왔다는 것도 그 체류의 활동이 아닙니다" in _timeline_v3()
+
+
+def test_notification_v3_keeps_meal_for_food_payments() -> None:
+    """운영 trace 에서 Facebook Ads 토스페이 결제가 `MEAL` 이 됐다(#158). 알림 근거가 있어
+    `UNSUPPORTED_MEAL` 도 걸리지 않았다."""
+
+    notification = _read("agents/events/notification/prompts/v3/prompt.md")
+
+    assert "**`MEAL`은 가맹점이 음식점·카페·배달처럼 음식을 파는 곳일 때만입니다.**" in notification
+    assert "음식이 아닌 결제나 가맹점을 알 수 없는 결제는 `UNKNOWN`으로 두고" in notification
+
+
 def test_timeline_v3_gives_one_sentence_format_per_situation() -> None:
     """같은 상황이 실행마다 다르게 쓰였다. 뼈대 표 하나로 형식을 준다(#150)."""
 
@@ -566,10 +615,11 @@ def test_timeline_v3_gives_one_sentence_format_per_situation() -> None:
     assert rows[0] == "| 상황 | `title` | `description` | 예 |"
     for situation in FORMAT_SITUATIONS:
         assert any(row.startswith(f"| {situation} |") for row in rows), situation
-    # 모든 description 뼈대는 해요체 과거형으로 끝난다.
+    # 모든 description 뼈대와 예는 평서형 과거형으로 끝난다(#158). 해요체가 하나라도 남으면 모델이 그쪽을 따른다.
     for row in rows[2:]:
         description = row.split(" | ")[2]
-        assert "요.`" in description, row
+        assert "다.`" in description, row
+        assert "요.`" not in row, row
     # 흩어진 예시와 좋은 예·나쁜 예는 표로 모았다.
     for gone in ("### 나쁜 예", "### 좋은 예", "**예시**", "**피할 문장**"):
         assert gone not in text, gone
@@ -597,11 +647,11 @@ def test_timeline_v3_writes_photos_as_what_they_show() -> None:
     text = _timeline_v3()
     table = "\n".join(format_table(text))
 
-    assert "`OO공원에서 노을을 봤어요.`" in table
+    assert "`OO공원에서 노을을 봤다.`" in table
     # 금지 문장을 두지 않는다. 활동 동사를 쓰라는 규칙과 예시만 둔다.
-    assert "사진으로 남겼어요" not in text
-    assert "사진은 그것이 보여 주는 활동으로 씁니다(음식 → `먹었어요`, 풍경 → `봤어요`)" in text
-    assert "`OO식당에서 순두부찌개와 만두를 먹었어요.`" in table
+    assert "사진으로 남겼다" not in text
+    assert "사진은 그것이 보여 주는 활동으로 씁니다(음식 → `먹었다`, 풍경 → `봤다`)" in text
+    assert "`OO식당에서 순두부찌개와 만두를 먹었다.`" in table
     assert "`튀김 또는 구운 음식`처럼 짐작해 헤지하는" in text
     assert "`식당`·`가게` 같은 말로도 장소를 지어내지 않습니다" in text
 
