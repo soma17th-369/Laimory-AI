@@ -575,7 +575,21 @@ def test_location_v3_outputs_only_movement_and_unknown() -> None:
     assert "도보 왕복이라고 적은 `MOVEMENT`는 산책 신호입니다" in timeline
 
 
-def test_location_v3_titles_a_stay_like_the_final_sentence() -> None:
+@pytest.mark.parametrize(
+    "path",
+    [
+        "agents/timeline/prompts/v3/timeline.md",
+        "agents/repair/prompts/v3/prompt.md",
+        "agents/events/location/prompts/v3/prompt.md",
+        "agents/events/notification/prompts/v3/prompt.md",
+    ],
+)
+def test_v3_prompt_keeps_every_list_item_on_its_own_line(path: str) -> None:
+    """문장을 지우며 줄바꿈까지 지워 `…씁니다.- **활동 종류 보강**` 처럼 다음 항목이 앞 줄에
+    붙었다(#158). 그러면 아래 하위 항목이 앞 항목의 것으로 읽힌다."""
+
+    joined = [line for line in _read(path).splitlines() if re.search(r"[^\s|`]- \*\*", line)]
+    assert joined == []
     """Location 예시가 `정보영재교육원 체류` 를 정답으로 보여 줘 candidate 제목이 `경북대학교
     체류` 가 됐고, Timeline 이 그 제목을 그대로 옮겼다(#158). 옮겨도 맞도록 「문장 형식」
     표의 `{장소}에서 보낸 시간` 꼴을 쓴다."""
