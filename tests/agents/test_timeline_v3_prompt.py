@@ -575,6 +575,20 @@ def test_location_v3_outputs_only_movement_and_unknown() -> None:
     assert "도보 왕복이라고 적은 `MOVEMENT`는 산책 신호입니다" in timeline
 
 
+def test_location_v3_titles_a_stay_like_the_final_sentence() -> None:
+    """Location 예시가 `정보영재교육원 체류` 를 정답으로 보여 줘 candidate 제목이 `경북대학교
+    체류` 가 됐고, Timeline 이 그 제목을 그대로 옮겼다(#158). 옮겨도 맞도록 「문장 형식」
+    표의 `{장소}에서 보낸 시간` 꼴을 쓴다."""
+
+    location = _read("agents/events/location/prompts/v3/prompt.md")
+
+    assert "**제목에 `체류`를 쓰지 않습니다.**" in location
+    # `○○ 체류` 꼴의 제목 예시가 남지 않는다.
+    assert re.findall(r"`[^`\n]+ 체류`", location) == []
+    assert "`정보영재교육원에서 보낸 시간`" in location
+    assert "`{장소}에서 보낸 시간`" in _timeline_v3()
+
+
 def test_timeline_v3_does_not_read_a_notification_as_the_stay_activity() -> None:
     """Location 을 좁힌 뒤 실제 LLM 이 체류 중 받은 결제·기사·메시지 알림으로
     `쉬며 확인한 것들` 같은 활동을 지어냈다(#158, 3회 중 1회)."""
