@@ -665,8 +665,13 @@ app/
 #   운영 trace(#158)에서 그 활동은 Event Agent 가 고른 타입이 그대로 옮겨진 것이었다 — Location
 #   v3 가 경북대 체류를 `CLASS`, 아파트 체류를 `REST` 로 냈고, Notification v3 가 Facebook Ads
 #   결제를 `MEAL` 로 냈다. Timeline·Repair 는 고치지 않았고 알림 근거가 있어 `UNSUPPORTED_MEAL`
-#   도 걸리지 않았다. 그래서 원천에서 막는다: Location 체류 candidate 의 `eventType` 은 `UNKNOWN`,
-#   Notification 의 `MEAL` 은 음식을 파는 가맹점의 결제일 때만이다. 새 guard 는 두지 않았다.
+#   도 걸리지 않았다. 그래서 원천에서 막는다: **v3 Location 은 `MOVEMENT`·`UNKNOWN` 만 낸다** —
+#   위치는 어디에 있었는지만 말하고, 무엇을 했는지는 Timeline 이 다른 근거로 정한다. 본문 규칙만
+#   두었을 때는 2회 중 1회 `CLASS` 를 그대로 냈고, 출력 예시의 enum 을 좁히자 6회 모두 지켰다.
+#   산책은 Location 이 `MOVEMENT` 의 `description` 에 도보 왕복이라고 적고 Timeline 이 `EXERCISE`
+#   로 둔다. Location 을 좁히자 Timeline 이 체류 중 받은 알림으로 활동을 지어내는 일이 생겨(3회 중
+#   1회) **알림이 왔다는 것은 그 체류의 활동이 아니다**라는 문장을 Timeline v3 에 두었다. Notification
+#   의 `MEAL` 은 음식을 파는 가맹점의 결제일 때만이다. 새 guard 는 두지 않았다.
 #   `place` 는 **다른 근거가 그 이름을 가리킬 때만** 고른다 — 사진·캘린더·결제/예약 알림·User
 #   Memory·하루 흐름의 생활 장소명. 체류·이동 후보에만 있는 이름은 고르지 않고 비운 채 `address`
 #   를 둔다. 예외는 역·터미널·공항 이름으로, `MOVEMENT` 와 그 앞뒤 대기 체류에서는 후보만으로
