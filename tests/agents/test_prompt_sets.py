@@ -341,8 +341,9 @@ def test_v3_location_judges_walk_by_round_trip_and_duration() -> None:
     text = _event_prompt("location")
 
     assert "30분 이상" in text
-    assert "`EXERCISE`" in text
     assert "`WALK`" in text
+    # Location 은 `MOVEMENT`·`UNKNOWN` 만 낸다(#158). 산책은 문장으로 알리고 `EXERCISE` 는 Timeline 이 정한다.
+    assert "**출발지로 돌아온 도보 왕복**" in text
 
 
 def test_v3_location_keeps_transport_out_of_sentences() -> None:

@@ -109,9 +109,8 @@ candidate는 하루를 시간순으로 나눈 조각입니다.
 
 - 연결된 이동의 출발지와 최종 도착지가 같고, 출발부터 최종 복귀까지 전체 시간이
   **30분 이상**이며, 그 이동이 모두 `mode`가 `WALK`이면 산책입니다. 이 candidate의
-  `eventType`은 **`EXERCISE`** 입니다.
-  `MOVEMENT`는 "어디로 갔다"는 원자료일 뿐 산책이라는 사건의 의미를 담지 못합니다.
-  Timeline Agent가 산책을 인식하는 신호가 이 값입니다.
+  `eventType`은 `MOVEMENT`이고, `description`에 **출발지로 돌아온 도보 왕복**이라고 적습니다.
+  Timeline Agent가 산책을 인식하는 신호가 이 문장입니다.
 - 연결된 이동은 사이에 다른 장소의 체류가 없거나 `derivedMetrics.shortStayRawIds`의 짧은
   체류만 끼어 있는 이동입니다. 전체 시간은 첫 이동의 시작부터 마지막 이동의 끝까지이며
   사이의 짧은 체류도 포함합니다. 그보다 오래 머문 곳이 끼면 산책이 아니라 그 장소 방문과
@@ -141,7 +140,7 @@ candidate는 하루를 시간순으로 나눈 조각입니다.
 - `집`, `학교`, `회사` 같은 생활 장소명은 Location raw만으로 확정하지 않습니다. 반복 체류 패턴과 출발·귀가 흐름은 관찰된 사실로 남기고, 생활 장소 라벨은 Timeline Agent가 확정합니다.
 - 좌표만 있는 입력은 좌표가 제공하는 이동 관계에 사용하고 상호명과 주소는 입력 근거가 제공하는 범위에서 사용합니다.
 - 위치만으로 활동 목적을 특정하기 어려운 체류는 장소와 시간 흐름을 중심으로 표현하고 낮은 confidence로 전달합니다.
-- **체류 candidate의 `eventType`은 `UNKNOWN`입니다.** 장소 이름만 보고 `CLASS`(대학교), `WORK`(회사), `REST`(아파트), `MEAL`(음식점)을 고르지 않습니다. 그곳에서 무엇을 했는지는 다른 source가 말합니다.
+- **`eventType`은 `MOVEMENT`(이동)와 `UNKNOWN`(체류) 둘뿐입니다.** 위치는 어디에 있었는지만 말합니다. 장소가 대학교·회사·아파트·음식점이어도 체류는 `UNKNOWN`이고, 그곳에서 무엇을 했는지는 Timeline Agent가 다른 source로 정합니다.
 - 식사 시간대의 체류는 식사 가능성을 그 체류 candidate의 `uncertainty`에 남깁니다. 따로 fragment를 만들지 않습니다.
 
 ## 제목과 설명
@@ -174,7 +173,7 @@ JSON 객체 하나를 출력합니다.
 {
   "candidates": [
     {
-      "eventType": "WAKE_UP|SLEEP|MOVEMENT|CALENDAR_EVENT|MEAL|PHOTO_MOMENT|MEETING|CLASS|WORK|EXERCISE|SOCIAL|REST|UNKNOWN",
+      "eventType": "MOVEMENT|UNKNOWN",
       "timeRange": {
         "startTime": "ISO-8601 timestamp",
         "endTime": "ISO-8601 timestamp"

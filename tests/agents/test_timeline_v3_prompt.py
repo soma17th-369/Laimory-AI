@@ -557,14 +557,29 @@ def test_timeline_v3_needs_evidence_beyond_the_place_for_an_activity_type(event_
     assert "장소까지만 쓴" in _event_type_section(event_type)
 
 
-def test_location_v3_leaves_a_stay_activity_unknown() -> None:
+def test_location_v3_outputs_only_movement_and_unknown() -> None:
     """운영 trace 에서 Location 이 경북대 체류를 `CLASS`, 아파트 체류를 `REST` 로 냈고
-    Timeline 이 그 타입을 그대로 옮겼다(#158). User Memory 도 다른 근거도 없었다."""
+    Timeline 이 그 타입을 그대로 옮겼다(#158). User Memory 도 다른 근거도 없었다.
+
+    본문 규칙만 넣었을 때는 2회 중 1회 그대로 `CLASS` 를 냈다. 출력 예시의 enum 을
+    좁히자 6회 모두 지켰다. 활동은 Timeline 이 다른 근거로 채운다.
+    """
 
     location = _read("agents/events/location/prompts/v3/prompt.md")
+    timeline = _timeline_v3()
 
-    assert "**체류 candidate의 `eventType`은 `UNKNOWN`입니다.**" in location
-    assert "`CLASS`(대학교), `WORK`(회사), `REST`(아파트), `MEAL`(음식점)을 고르지 않습니다" in location
+    assert '"eventType": "MOVEMENT|UNKNOWN"' in location
+    assert "**`eventType`은 `MOVEMENT`(이동)와 `UNKNOWN`(체류) 둘뿐입니다.**" in location
+    assert "Location은 `MOVEMENT`(이동)와 `UNKNOWN`(체류)만 냅니다" in timeline
+    # 산책은 Location 이 문장으로 알리고 Timeline 이 `EXERCISE` 로 정한다.
+    assert "도보 왕복이라고 적은 `MOVEMENT`는 산책 신호입니다" in timeline
+
+
+def test_timeline_v3_does_not_read_a_notification_as_the_stay_activity() -> None:
+    """Location 을 좁힌 뒤 실제 LLM 이 체류 중 받은 결제·기사·메시지 알림으로
+    `쉬며 확인한 것들` 같은 활동을 지어냈다(#158, 3회 중 1회)."""
+
+    assert "체류 중에 알림이 왔다는 것도 그 체류의 활동이 아닙니다" in _timeline_v3()
 
 
 def test_notification_v3_keeps_meal_for_food_payments() -> None:
