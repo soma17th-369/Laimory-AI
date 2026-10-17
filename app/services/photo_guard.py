@@ -27,11 +27,13 @@ App Server 로 나가는 `TimelineResultEvent` 에는 UI 표시 필드가 없다
 있는지 확인하고 Repair 도구가 상태를 조회하는 데 쓴다.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, tzinfo
 
 from app.core.logging import get_logger, log_fields
 from app.schemas import (
+    AiEventCandidate,
     EventSourceType,
     EventType,
     InferenceLevel,
@@ -52,18 +54,26 @@ logger = get_logger(__name__)
 #: warning 문구에 실을 rawId 예시 개수. 전부 나열하면 사용자에게 의미 없는 긴 목록이 된다.
 _SAMPLE_LIMIT = 3
 
-#: 담을 event 가 하나도 없어 코드가 만든 사진 event 의 confidence. 사진이 찍혔다는 것만
-#: 확실하고 무엇을 찍었는지는 모른다.
+#: 코드가 만든 사진 event 의 confidence. 사진이 찍혔다는 것만 확실하고 무엇을 찍었는지는
+#: 코드가 모른다.
 _CREATED_CONFIDENCE = 0.4
 
+#: 코드가 만든 사진 event 의 문장. candidate 에서 만들어도 이 틀을 쓴다(#163) — candidate
+#: 문장은 Event Agent 의 보고라 분 단위 시각·추정 표현·종결형 제목이 들어 있어 사용자에게
+#: 그대로 보일 수 없다. Repair 가 돌면 그 candidate 를 보고 다시 쓴다.
 _CREATED_TITLE = "사진으로 남긴 순간"
 _CREATED_DESCRIPTION = "사진을 남겼다."
 _CREATED_NOTE = (
     "사진을 담을 event 가 없어 촬영 시각으로 만든 기록이다. 사진 내용은 확인하지 못했다."
 )
+_RESTORED_NOTE = (
+    "어느 event 에도 쓰이지 않은 사진 candidate 로 만든 기록이다. 무엇을 했는지는 그 "
+    "candidate 에 있다."
+)
 
 _REASON_CONTAINS = "촬영 시각이 이 event 안에 있다."
-_REASON_NEAREST = "촬영 시각에 가장 가까운 event 다."
+_REASON_CREATED = "사진을 담을 event 가 없어 촬영 시각으로 기록했다."
+_REASON_RESTORED = "어느 event 에도 쓰이지 않은 사진 candidate 의 사진이다."
 
 
 @dataclass
@@ -190,7 +200,7 @@ class PhotoEnforcement:
     deduplicated: list[str] = field(default_factory=list)
     #: 어느 event 에도 없어 붙인 사진.
     attached: list[str] = field(default_factory=list)
-    #: 담을 event 가 없어 새로 만든 event.
+    #: 담을 event 가 없거나 Timeline 이 버린 사진 candidate 라 새로 만든 event.
     created: list[TimelineEventDraft] = field(default_factory=list)
     #: 사진을 빼고 나니 근거가 하나도 남지 않아 지운 event.
     removed: list[TimelineEventDraft] = field(default_factory=list)
@@ -295,38 +305,60 @@ def _created_time(
 
 
 def _create_event(
-    photo: PhotoItem,
-    taken: datetime | None,
-    request: TimelineDraftRequest,
-    tz: tzinfo,
+    photos: list[PhotoItem],
+    start: datetime,
+    end: datetime,
     sequence: int,
+    *,
+    reason: str,
+    note: str,
 ) -> TimelineEventDraft:
-    moment = _created_time(taken, request, tz)
+    first = photos[0]
     return TimelineEventDraft(
         # 임시 id 다. 확정 마지막이 정식 번호를 준다.
         client_event_id=f"event-photo-{sequence:03d}",
         event_type=EventType.PHOTO_MOMENT,
         title=_CREATED_TITLE,
         description=_CREATED_DESCRIPTION,
-        place=next((name for name in photo.places if name and name.strip()), None),
-        address=photo.address,
-        start_time=moment,
-        end_time=moment,
+        place=next((name for name in first.places if name and name.strip()), None),
+        address=first.address,
+        start_time=start,
+        end_time=max(start, end),
         confidence=_CREATED_CONFIDENCE,
         inference_level=InferenceLevel.UNCERTAIN,
         source_refs=[
-            SourceRef(
-                source_type=EventSourceType.PHOTO,
-                raw_id=photo.raw_id,
-                reason="사진을 담을 event 가 없어 촬영 시각으로 기록했다.",
-            )
+            SourceRef(source_type=EventSourceType.PHOTO, raw_id=photo.raw_id, reason=reason)
+            for photo in photos
         ],
-        uncertainty=[_CREATED_NOTE],
+        uncertainty=[note],
     )
 
 
+def _dropped_candidates(
+    candidates: Sequence[AiEventCandidate], photo_ids: set[str], missing: set[str]
+) -> list[tuple[AiEventCandidate, list[str]]]:
+    """사진이 하나도 event 에 쓰이지 않은 candidate 와 그 사진 rawId.
+
+    Timeline 이 candidate 를 통째로 버린 경우다. 사진 일부라도 event 에 있으면 Timeline 이
+    그 candidate 를 쓴 것이라 고르지 않는다. 사진은 candidate 하나에만 담는다.
+    """
+
+    dropped: list[tuple[AiEventCandidate, list[str]]] = []
+    claimed: set[str] = set()
+    for candidate in candidates:
+        raw_ids = list(
+            dict.fromkeys(ref.raw_id for ref in candidate.source_refs if ref.raw_id in photo_ids)
+        )
+        if raw_ids and all(raw_id in missing and raw_id not in claimed for raw_id in raw_ids):
+            dropped.append((candidate, raw_ids))
+            claimed.update(raw_ids)
+    return dropped
+
+
 def enforce_photo_assignment(
-    draft: TimelineDraft, request: TimelineDraftRequest
+    draft: TimelineDraft,
+    request: TimelineDraftRequest,
+    candidates: Sequence[AiEventCandidate] = (),
 ) -> PhotoEnforcement:
     """입력의 모든 사진이 정확히 한 event 에만 있게 만든다(in-place).
 
@@ -339,9 +371,15 @@ def enforce_photo_assignment(
         2. 사진을 빼서 근거가 하나도 남지 않은 event 는 지운다. 근거 없는 event 는 저장 전
            검증을 통과하지 못해 하루 전체가 실패한다. 확정 단계가 장소 근거로 붙인 체류만
            남은 event 도 지운다(#138) — 그 체류는 사진이 있어서 붙은 것이다.
-        3. 어느 event 에도 없는 사진은 촬영 시각을 포함하는(없으면 가장 가까운) event 에
-           붙인다. Timeline 프롬프트가 쓰는 규칙과 같다.
-        4. event 가 하나도 없으면 촬영 시각의 `PHOTO_MOMENT` 를 만들어 담는다.
+        3. 사진이 하나도 event 에 쓰이지 않은 candidate(Timeline 이 통째로 버린 사진
+           candidate)는 그 사진들을 담은 `PHOTO_MOMENT` 하나로 만든다. 시간은 candidate 의
+           시간이다(#163).
+        4. 남은 사진은 촬영 시각을 포함하는 event 에 붙이고, 그런 event 가 없으면 촬영
+           시각의 `PHOTO_MOMENT` 를 만들어 담는다.
+
+    **가장 가까운 event 에는 붙이지 않는다(#163).** 시각이 가깝다고 같은 사건이 아니다.
+    22:56 저녁 사진이 22:01 에 끝난 대화에 붙어 저녁이 하루에서 사라졌고, Repair 는 그
+    사진을 떼려다 실패했다.
 
     두 번 적용해도 결과가 같다.
     """
@@ -390,32 +428,50 @@ def enforce_photo_assignment(
         draft.events = [event for event in draft.events if id(event) not in gone]
         enforcement.removed.extend(emptied)
 
-    missing = sorted(raw_id for raw_id in photo_ids if not holders[raw_id])
-    if missing and not draft.events:
-        for raw_id in missing:
-            created = _create_event(
-                photos[raw_id],
-                taken_at[raw_id],
-                request,
-                tz,
-                len(enforcement.created) + 1,
-            )
-            draft.events.append(created)
-            enforcement.created.append(created)
-    else:
-        for raw_id in missing:
-            taken = taken_at[raw_id]
-            target = min(draft.events, key=lambda event: _by_time(event, taken))
-            contains = taken is not None and _gap(target, taken) == timedelta(0)
+    missing = {raw_id for raw_id in photo_ids if not holders[raw_id]}
+    for candidate, raw_ids in _dropped_candidates(candidates, photo_ids, missing):
+        created = _create_event(
+            [photos[raw_id] for raw_id in raw_ids],
+            _created_time(candidate.time_range.start_time, request, tz),
+            _created_time(candidate.time_range.end_time, request, tz),
+            len(enforcement.created) + 1,
+            reason=_REASON_RESTORED,
+            note=_RESTORED_NOTE,
+        )
+        draft.events.append(created)
+        enforcement.created.append(created)
+        missing.difference_update(raw_ids)
+
+    for raw_id in sorted(missing):
+        taken = taken_at[raw_id]
+        containing = (
+            [event for event in draft.events if _gap(event, taken) == timedelta(0)]
+            if taken is not None
+            else []
+        )
+        if containing:
+            target = min(containing, key=lambda event: _by_time(event, taken))
             target.source_refs = [
                 *target.source_refs,
                 SourceRef(
                     source_type=EventSourceType.PHOTO,
                     raw_id=raw_id,
-                    reason=_REASON_CONTAINS if contains else _REASON_NEAREST,
+                    reason=_REASON_CONTAINS,
                 ),
             ]
             enforcement.attached.append(raw_id)
+            continue
+        moment = _created_time(taken, request, tz)
+        created = _create_event(
+            [photos[raw_id]],
+            moment,
+            moment,
+            len(enforcement.created) + 1,
+            reason=_REASON_CREATED,
+            note=_CREATED_NOTE,
+        )
+        draft.events.append(created)
+        enforcement.created.append(created)
 
     if not enforcement.acted:
         return enforcement
@@ -433,14 +489,16 @@ def enforce_photo_assignment(
             )
         )
     if enforcement.attached or enforcement.created:
+        placed = len(enforcement.attached) + sum(
+            len(event.source_refs) for event in enforcement.created
+        )
         draft.warnings.append(
             TimelineWarning(
                 warning_id=f"warning-photo-enforced-{len(draft.warnings) + 1:03d}",
                 severity=TimelineWarningSeverity.LOW,
                 message=(
-                    "어느 event 에도 없던 사진 "
-                    f"{len(enforcement.attached) + len(enforcement.created)}장을 촬영 "
-                    "시각 기준으로 event 에 연결했습니다."
+                    f"어느 event 에도 없던 사진 {placed}장을 촬영 시각을 품는 event 에 "
+                    "붙이거나 사진 event 로 새로 담았습니다."
                 ),
             )
         )

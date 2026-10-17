@@ -22,7 +22,9 @@ from app.services.meal_guard import (
     MEAL_MIN_DURATION,
     enforce_meal_duration,
     find_unsupported_meals,
+    is_stay_meal,
 )
+from app.services.location_link import LINK_REASON
 from tests.fixtures.requests import (
     calendar_item,
     fixture_raw_id,
@@ -315,3 +317,92 @@ def test_only_the_v3_confirm_reports_an_unsupported_meal():
     (finding,) = [item for item in run(True).findings if item["kind"] == "UNSUPPORTED_MEAL"]
     assert finding["sourceTypes"] == ["STAY"]
     assert not any(item["kind"] == "UNSUPPORTED_MEAL" for item in run(False).findings)
+
+
+# --- 식당에 머문 식사 (#163, v3 세트) ------------------------------------------------
+#
+# 식당 한 번의 방문이 체류·식사·결제 카드 셋으로 쪼개졌다. 식당에 계속 있었고 그 안에 사진이나
+# 결제가 있으면 식사는 체류 시간만큼(최대 3시간) 이어질 수 있다. 식당인지는 Timeline·Repair 가
+# 체류를 식사에 합쳐 판단하고, 코드는 그 판단을 뒷받침하는 근거가 있는지만 본다.
+
+
+def _restaurant_request(*, stay_end=STAY_END, notifications=()):
+    return make_request(
+        stays=[stay_item(1, raw_id="stay-1", start=STAY_START, end=stay_end)],
+        photos=[photo_item(2, taken=PHOTO_TAKEN, raw_id="photo-1")],
+        notifications=list(notifications),
+    )
+
+
+def test_a_meal_spanning_its_own_stay_with_a_photo_inside_is_kept_in_v3():
+    meal = _event(STAY_REF, PHOTO_REF)  # 12:00~15:00, 체류와 같다
+    draft = _draft(meal)
+
+    enforce_meal_duration(draft, _request(), allow_stay_meal=True)
+
+    assert _duration(meal) == timedelta(hours=3)
+    assert not any(w.warning_id.startswith("warning-meal-") for w in draft.warnings)
+
+
+def test_legacy_sets_still_shrink_the_same_meal():
+    meal = _event(STAY_REF, PHOTO_REF)
+
+    enforce_meal_duration(_draft(meal), _request())
+
+    assert _duration(meal) <= MEAL_MAX_DURATION
+
+
+def test_a_stay_the_confirm_pass_linked_does_not_count():
+    # 확정 단계는 사진 event 에 같은 시간의 체류를 장소 근거로 붙인다. 그것까지 세면 두 번째
+    # 확정부터 모든 사진 식사가 조건을 통과한다.
+    meal = _event(PHOTO_REF)
+    meal.source_refs.append(
+        SourceRef(source_type=EventSourceType.STAY, raw_id=fixture_raw_id("stay-1"), reason=LINK_REASON)
+    )
+
+    enforce_meal_duration(_draft(meal), _request(), allow_stay_meal=True)
+
+    assert _duration(meal) <= MEAL_MAX_DURATION
+    assert not is_stay_meal(meal, _request())
+
+
+def test_a_payment_inside_the_stay_also_counts():
+    request = make_request(
+        stays=[stay_item(1, raw_id="stay-1", start=STAY_START, end=STAY_END)],
+        notifications=[notification_item(3, "토스", "결제", posted="2026-06-20T14:50:00", raw_id="noti-1")],
+    )
+    meal = _event(STAY_REF, NOTIFICATION_REF)
+
+    enforce_meal_duration(_draft(meal), request, allow_stay_meal=True)
+
+    assert _duration(meal) == timedelta(hours=3)
+
+
+def test_a_messenger_message_inside_the_stay_does_not_count():
+    # 식당에서 받은 메신저 메시지 한 통으로 3시간 식사를 인정하지 않는다.
+    request = make_request(
+        stays=[stay_item(1, raw_id="stay-1", start=STAY_START, end=STAY_END)],
+        notifications=[notification_item(3, "카카오톡", "친구", posted="2026-06-20T14:50:00", raw_id="noti-1")],
+    )
+    meal = _event(STAY_REF, NOTIFICATION_REF)
+
+    enforce_meal_duration(_draft(meal), request, allow_stay_meal=True)
+
+    assert _duration(meal) <= MEAL_MAX_DURATION
+
+
+def test_more_than_three_hours_is_shrunk():
+    request = _restaurant_request(stay_end="2026-06-20T15:30:00")
+    meal = _event(STAY_REF, PHOTO_REF, end="2026-06-20T15:30:00")  # 3시간 30분
+
+    enforce_meal_duration(_draft(meal), request, allow_stay_meal=True)
+
+    assert _duration(meal) <= MEAL_MAX_DURATION
+
+
+def test_a_meal_reaching_outside_its_stay_is_shrunk():
+    meal = _event(STAY_REF, PHOTO_REF, start="2026-06-20T11:30:00")  # 체류보다 30분 먼저 시작
+
+    enforce_meal_duration(_draft(meal), _request(), allow_stay_meal=True)
+
+    assert _duration(meal) <= MEAL_MAX_DURATION

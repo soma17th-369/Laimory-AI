@@ -226,12 +226,18 @@ def test_lunch_keeps_its_photo_and_the_photo_card_is_removed():
 
 
 def test_photo_contract_holds_after_repair_deletes_the_event_holding_a_photo():
-    draft = _draft(_morning(), _lunch((PHOTO, LUNCH_PHOTO)), _evening((PHOTO, EVENING_PHOTO)))
+    # 점심은 사진만 근거로 둔다. 회사 체류를 장소 근거로 함께 들면 그 30분의 위치를 말하는
+    # 유일한 event 라 v3 Repair 가 지울 수 없다(#163).
+    lunch = _event("event-002", "12:20", "12:50", (PHOTO, LUNCH_PHOTO), event_type=EventType.MEAL, title="점심")
+    draft = _draft(_morning(), lunch, _evening((PHOTO, EVENING_PHOTO)))
     plan = _plan([{"tool": "delete_event", "args": {"clientEventId": "event-002"}}])
 
     result, published = _run(draft, [plan])
 
-    assert [event.title for event in result.events] == ["오전 근무", "카페"]
+    # 지운 점심의 사진(12:30)은 품는 event 가 없어 사진 event 로 남는다. 가장 가까운 event 에
+    # 붙이지 않는다(#163).
+    assert [event.title for event in result.events] == ["오전 근무", "사진으로 남긴 순간", "카페"]
+    assert result.events[1].event_type is EventType.PHOTO_MOMENT
     assert_photo_contract(result, _request())
     for confirmed in published:
         assert_photo_contract(confirmed, _request())
@@ -345,10 +351,70 @@ def test_photo_contract_holds_after_timeline_is_rerun_and_drops_the_photos():
         timeline_agent=TimelineAgent(llm=FakeLLM([_timeline_response_without_photos()])),
     )
 
-    assert [event.title for event in result.events] == ["다시 만든 근무"]
+    # 재실행한 Timeline 이 버린 사진(12:30, 20:00)은 다시 만든 근무(09:00~12:00) 밖이라 사진
+    # event 로 남는다(#163).
+    assert [event.title for event in result.events] == [
+        "다시 만든 근무",
+        "사진으로 남긴 순간",
+        "사진으로 남긴 순간",
+    ]
     assert_photo_contract(result, _request())
     for confirmed in published:
         assert_photo_contract(confirmed, _request())
+
+
+def test_v3_repair_cannot_delete_the_only_event_saying_where_the_user_was():
+    # #163: 알림 대화와 겹친다는 이유로 9.5시간 체류를 지운 일이 있었다.
+    afternoon = _event("event-002", "12:00", "18:00", (STAY, OFFICE), event_type=EventType.UNKNOWN, title="회사에서 보낸 시간")
+    draft = _draft(_morning(), afternoon)
+    plan = _plan([{"tool": "delete_event", "args": {"clientEventId": "event-002"}}])
+
+    result, _ = _run(draft, [plan])
+
+    assert "회사에서 보낸 시간" in [event.title for event in result.events]
+
+
+def test_legacy_repair_still_deletes_as_before():
+    afternoon = _event("event-002", "12:00", "18:00", (STAY, OFFICE), event_type=EventType.UNKNOWN, title="회사에서 보낸 시간")
+    draft = _draft(_morning(), afternoon)
+    plan = _plan([{"tool": "delete_event", "args": {"clientEventId": "event-002"}}])
+
+    result = RepairAgent(llm=FakeLLM([plan]), max_iterations=3, extended_input=False).generate(
+        _request(), draft
+    )
+
+    assert "회사에서 보낸 시간" not in [event.title for event in result.events]
+
+
+def test_a_photo_candidate_the_timeline_dropped_is_restored_in_the_confirm_pass():
+    # #163: Timeline 이 저녁 사진 candidate 를 통째로 버리면, 확정이 그 candidate 의 시간으로
+    # 사진 event 를 되살린다. 촬영 시각을 품는 카페 event 가 있어도 그 근거로 묻지 않는다.
+    draft = _draft(_morning(), _evening())
+    dinner = AiEventCandidate(
+        event_type=EventType.SOCIAL,
+        time_range=CandidateTimeRange(start_time=_t("20:00"), end_time=_t("20:05")),
+        title="한식당에서 함께 저녁을 먹었다",
+        description="20시경 한식당에서 함께 식사하는 장면으로 보인다.",
+        source_refs=[SourceRef(source_type=PHOTO, raw_id=EVENING_PHOTO)],
+        confidence=0.8,
+        inference_level=InferenceLevel.EVIDENCE_BASED,
+    )
+
+    result, _ = _run(
+        draft,
+        [_plan([])],
+        max_iterations=0,
+        event_results={"photo": AgentEventResult(candidates=[dinner])},
+    )
+
+    holder = next(
+        event
+        for event in result.events
+        if EVENING_PHOTO in [ref.raw_id for ref in event.source_refs]
+    )
+    assert holder.title == "사진으로 남긴 순간"  # candidate 문장은 쓰지 않는다
+    assert (holder.start_time.isoformat(), holder.end_time.isoformat()) == (_t("20:00"), _t("20:05"))
+    assert_photo_contract(result, _request())
 
 
 def test_photo_is_kept_when_the_day_has_no_event_at_all():

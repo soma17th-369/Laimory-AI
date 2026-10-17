@@ -12,6 +12,11 @@ event 를 따로 만든다" 를 안내하고, 이 모듈이 draft repair 단계�
     - 60분을 넘는 `MEAL` 은 **시점 근거**(음식 사진 촬영 시각, 결제 알림 시각)를
       기준으로 최대 60분 창으로 줄인다.
     - 시점 근거가 없으면 event 시작부터 60분으로 줄인다.
+    - 예외(v3 세트, #163): **식당에 머문 식사**는 그 체류 시간만큼, 최대 3시간까지 둔다
+      (`is_stay_meal`). 식당 한 번의 방문이 체류·식사·결제 카드 셋으로 쪼개졌고, Repair 가
+      체류를 식사에 합치려 하자 60분 상한이 막았다. 식당인지는 코드가 모른다 — Timeline·
+      Repair 가 체류를 식사에 합쳐 그렇다고 판단하고, 코드는 그 판단을 뒷받침하는 근거가
+      있는지만 본다.
     - 20분보다 짧은 `MEAL`(예: 사진 한 장이 만든 순간 event)은 20분으로 늘린다.
     - 시점 근거가 없는 `MEAL` 은 **길이와 무관하게** `confidence` 를 0.6 이하로 묶는다
       (#118). 식사 시각을 특정할 근거가 없다는 뜻이기 때문이다. 캘린더만 근거인
@@ -33,6 +38,7 @@ from app.schemas import (
     TimelineWarning,
     TimelineWarningSeverity,
 )
+from app.services.location_link import LINK_REASON, activity_notification_ids
 from app.services.source_lookup import raw_id_of
 from app.services.validator import parse_datetime, resolve_timezone
 
@@ -41,6 +47,13 @@ logger = get_logger(__name__)
 #: 식사 event 로 인정하는 지속시간 범위.
 MEAL_MIN_DURATION = timedelta(minutes=20)
 MEAL_MAX_DURATION = timedelta(minutes=60)
+
+#: 식당에 머문 식사(`is_stay_meal`)에 허용하는 최대 지속시간(#163, v3 세트).
+MEAL_STAY_MAX_DURATION = timedelta(hours=3)
+
+#: 식사 시간이 체류 안인지 볼 때 허용하는 어긋남. LLM 이 체류 시각을 분 단위로 옮겨 적어
+#: 초 단위로 어긋나는 것까지 체류 밖이라고 보지 않는다.
+_STAY_TOLERANCE = timedelta(minutes=1)
 
 #: 시점 근거 없이 길이만 줄인 식사에 허용하는 confidence 상한.
 _UNANCHORED_MAX_CONFIDENCE = 0.6
@@ -149,10 +162,67 @@ def _limit_unanchored_confidence(event: TimelineEventDraft) -> None:
     event.uncertainty.append(_UNANCHORED_CONFIDENCE_NOTE)
 
 
-def enforce_meal_duration(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
+def is_stay_meal(event: TimelineEventDraft, request: TimelineDraftRequest) -> bool:
+    """60분을 넘어도 그대로 둘 식당에 머문 식사인가(#163, v3 세트). 모두 만족해야 한다.
+
+        1. `MEAL` 이고 3시간(`MEAL_STAY_MAX_DURATION`) 이하다.
+        2. **자기** 체류 근거가 있고, 식사 시간이 그 체류 안이다. 확정 단계가 사진 event 에
+           장소 근거로 붙인 체류(`LINK_REASON`)는 세지 않는다 — 세면 두 번째 확정부터 모든
+           사진 식사가 이 조건을 통과한다.
+        3. 그 체류 안에 식사가 근거로 댄 사진이나 결제·예약 앱의 알림이 있다. 식당에서 받은
+           메신저 메시지 한 통으로 3시간 식사를 인정하지 않는다. 사진이 음식인지는 코드가
+           알 수 없어 가리지 않는다.
+    """
+
+    if event.event_type is not EventType.MEAL:
+        return False
+    if event.end_time - event.start_time > MEAL_STAY_MAX_DURATION:
+        return False
+
+    tz = resolve_timezone(request.timezone)
+    stays = {
+        identifier: (start, end)
+        for stay in request.stays
+        if (identifier := raw_id_of(stay))
+        and (start := parse_datetime(stay.start_at, tz)) is not None
+        and (end := parse_datetime(stay.end_at, tz)) is not None
+    }
+    own_stays = [
+        stays[ref.raw_id]
+        for ref in event.source_refs
+        if ref.source_type is EventSourceType.STAY
+        and ref.reason != LINK_REASON
+        and ref.raw_id in stays
+    ]
+
+    anchors = _anchor_times(request)
+    activity = activity_notification_ids(request)
+    moments = [
+        moment
+        for ref in event.source_refs
+        if (ref.source_type is EventSourceType.PHOTO or ref.raw_id in activity)
+        and (raw := anchors.get(ref.source_type, {}).get(ref.raw_id)) is not None
+        and (moment := parse_datetime(raw, tz)) is not None
+    ]
+
+    return any(
+        start - _STAY_TOLERANCE <= event.start_time
+        and event.end_time <= end + _STAY_TOLERANCE
+        and any(start <= moment <= end for moment in moments)
+        for start, end in own_stays
+    )
+
+
+def enforce_meal_duration(
+    draft: TimelineDraft,
+    request: TimelineDraftRequest,
+    *,
+    allow_stay_meal: bool = False,
+) -> None:
     """draft 의 `MEAL` event 지속시간을 20~60분으로 강제한다(in-place).
 
-    시점 근거가 없는 식사는 길이가 범위 안이어도 confidence 를 묶는다(#118).
+    `allow_stay_meal` 이면(v3 세트) 식당에 머문 식사(`is_stay_meal`)는 60분을 넘어도
+    그대로 둔다. 시점 근거가 없는 식사는 길이가 범위 안이어도 confidence 를 묶는다(#118).
     """
 
     tz = resolve_timezone(request.timezone)
@@ -165,7 +235,9 @@ def enforce_meal_duration(draft: TimelineDraft, request: TimelineDraftRequest) -
 
         moments = _event_anchors(event, anchors, tz)
         before = event.end_time - event.start_time
-        if before > MEAL_MAX_DURATION:
+        if before > MEAL_MAX_DURATION and not (
+            allow_stay_meal and is_stay_meal(event, request)
+        ):
             _shrink(event, moments)
             adjusted.append((event, before))
         elif before < MEAL_MIN_DURATION:

@@ -5,7 +5,8 @@
 사용자가 읽는 일기에 그대로 남는다.
 
 관계명도 같다. 알림 `title` 은 보낸 사람이나 대화방 이름이지 관계가 아니다.
-`엄마` 같은 호칭은 User Memory 에 등록돼 있을 때만 쓸 수 있다.
+`엄마` 같은 호칭은 User Memory 에 등록돼 있거나 입력 이름 그대로일 때만 쓸 수 있다.
+호칭은 어절로 찾는다 — `이모티콘` 은 `이모` 가 아니다(#163).
 """
 
 import pytest
@@ -16,7 +17,7 @@ from app.services.notification_guard import (
     verify_notification_result,
 )
 from tests.fixtures.fake_llm import candidate, fragment
-from tests.fixtures.requests import fixture_raw_id, make_request
+from tests.fixtures.requests import fixture_raw_id, make_request, notification_item
 
 NOTI_1 = fixture_raw_id("noti-1")
 
@@ -60,6 +61,58 @@ def test_relation_term_without_user_memory_is_flagged():
     result = _result_with_title("엄마와 통화")
 
     verify_notification_result(result, make_request())
+
+    assert "관계 호칭" in _messages(result)
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # #163: 글자가 들어 있다고 호칭이 아니다. 잘못 잡으면 Repair 가 멀쩡한 문장을 고친다.
+        "이모티콘 반응",
+        "이모지만 보낸 답장",
+        "형태가 바뀐 계획",
+        "대형 마트에서 장보기",
+        "원형 테이블 회의",
+        "형제갈비에서 점심",
+        "성형외과 진료",
+        "전형선과 대화",
+        "울동생과 대화",
+    ],
+)
+def test_a_word_that_merely_contains_a_relation_term_is_not_flagged(title: str) -> None:
+    result = _result_with_title(title)
+
+    verify_notification_result(result, make_request())
+
+    assert "관계 호칭" not in _messages(result)
+
+
+@pytest.mark.parametrize("title", ["엄마와 통화", "동생이랑 저녁", "누나가 보낸 사진", "팀장님께 보고"])
+def test_a_relation_term_with_a_particle_is_flagged(title: str) -> None:
+    result = _result_with_title(title)
+
+    verify_notification_result(result, make_request())
+
+    assert "관계 호칭" in _messages(result)
+
+
+def test_relation_term_that_is_the_input_room_name_is_allowed():
+    # 대화방 이름이 `엄마` 면 `엄마와 대화` 는 입력 이름을 그대로 쓴 것이다.
+    request = make_request(notifications=[notification_item(1, "카카오톡", "엄마")])
+    result = _result_with_title("엄마와 안부 대화")
+
+    verify_notification_result(result, request)
+
+    assert "관계 호칭" not in _messages(result)
+
+
+def test_an_input_name_that_merely_contains_a_term_does_not_allow_it():
+    # `전형선` 이라는 이름이 있다고 `형` 을 써도 되는 것은 아니다.
+    request = make_request(notifications=[notification_item(1, "카카오톡", "전형선")])
+    result = _result_with_title("형과 저녁")
+
+    verify_notification_result(result, request)
 
     assert "관계 호칭" in _messages(result)
 
@@ -143,3 +196,36 @@ def test_unsupported_relation_in_final_event_is_warned():
 
     assert len(draft.warnings) == 1
     assert "최종 event에 User Memory 근거가 없는 관계 호칭" in draft.warnings[0].message
+
+
+def test_final_draft_checks_relation_terms_only_in_what_the_user_reads():
+    # 장소·근거 설명은 입력 이름이거나 사용자에게 나가지 않는 값이다.
+    draft = _draft("식당에서 점심")
+    event = draft.events[0]
+    event.place = "이모네 식당"
+    event.uncertainty = ["엄마와의 관계는 알 수 없다"]
+
+    verify_notification_draft(draft, make_request())
+
+    assert draft.warnings == []
+
+
+def test_final_draft_warning_is_measured_again_on_every_confirm():
+    # Repair 가 고친 뒤에도 앞 확정의 warning 이 남으면 이미 고친 문장을 또 고치려 든다.
+    draft = _draft("엄마와 통화")
+    verify_notification_draft(draft, make_request())
+    assert len(draft.warnings) == 1
+
+    draft.events[0].title = "가족과 통화"
+    verify_notification_draft(draft, make_request())
+
+    assert draft.warnings == []
+
+
+def test_final_draft_does_not_pile_up_the_same_warning():
+    draft = _draft("엄마와 통화")
+
+    verify_notification_draft(draft, make_request())
+    verify_notification_draft(draft, make_request())
+
+    assert len(draft.warnings) == 1

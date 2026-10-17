@@ -418,6 +418,22 @@ def test_v3_notification_conversation_limit_does_not_count_news() -> None:
     )
 
 
+def test_v3_notification_groups_news_by_topic_but_conversations_by_bundle() -> None:
+    """같은 일 묶기는 소식·결제·예약에만 적용한다(#163).
+
+    같은 일 묶기가 대화에도 걸리자 실제 LLM 이 엄마의 10:28·22:01 메시지를 "출발·귀가" 라는
+    같은 일로, 우승민·심서후의 메시지를 "지인들과" 로 묶었다. 대화는 코드가 나눈 묶음 하나가
+    대화 하나다.
+    """
+
+    text = _event_prompt("notification")
+
+    assert "같은 일을 가리키는 소식·결제·예약 알림" in text
+    assert "사람과 주고받은 대화는 이 규칙으로 묶지 않습니다" in text
+    assert "같은 사람의 다른 묶음도, 같은 이야기를 한 다른 사람도 따로입니다" in text
+    assert "메시지 사이가 60분 이상 벌어지면 다른 묶음" in text
+
+
 def test_v3_notification_drops_code_made_guidance() -> None:
     """코드가 알림을 읽기 전에 내리던 판단은 입력에서 사라졌다. 설명이 남으면 모델이 찾는다."""
 

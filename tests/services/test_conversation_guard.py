@@ -165,15 +165,22 @@ def test_event_with_location_evidence_is_a_real_event_not_a_conversation():
     assert conversation_events(draft, _request()) == []
 
 
-@pytest.mark.parametrize(
-    "event_type", [EventType.MEAL, EventType.MOVEMENT, EventType.UNKNOWN]
-)
+@pytest.mark.parametrize("event_type", [EventType.MEAL, EventType.MOVEMENT])
 def test_payment_or_reservation_notice_from_a_messenger_is_not_counted(event_type):
     """메신저로 온 결제·예약 안내로 만든 event 는 대화 타입이 아니다."""
 
     draft = _draft(_event("안내", _ref("notification-kakao-1"), event_type=event_type))
 
     assert conversation_events(draft, _request()) == []
+
+
+@pytest.mark.parametrize("event_type", [EventType.UNKNOWN, EventType.CLASS, EventType.SOCIAL])
+def test_a_messenger_only_event_counts_whatever_its_type(event_type):
+    # #163: 이모티콘 반응·인스타그램 반응 같은 대화가 `UNKNOWN` event 가 되어 하루 3개 제한을
+    # 빠져나갔다. 결제·예약 타입만 빼고 근거가 메신저 알림뿐이면 대화로 센다.
+    draft = _draft(_event("이모티콘 반응", _ref("notification-kakao-1"), event_type=event_type))
+
+    assert _titles_of(conversation_events(draft, _request())) == ["이모티콘 반응"]
 
 
 def test_the_same_notification_cited_twice_counts_once():
