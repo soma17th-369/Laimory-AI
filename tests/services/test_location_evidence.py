@@ -8,7 +8,7 @@ Repair 가 판단해 `absorb_location_event` 로 흡수한다.
 체류(근무 체류 안의 회의·점심)는 남아 하루에 빈칸이 생기지 않는다.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -486,7 +486,8 @@ def test_absorbing_does_not_duplicate_an_already_cited_stay() -> None:
         ("event-002", "event-001", "체류뿐인 event 가 아닙니다"),  # 일정 event 는 흡수되지 않는다
         ("event-001", "event-003", "일정이나 사진 근거가 있는 event 가 아닙니다"),
         ("event-001", "event-004", "겹치지 않습니다"),
-        ("event-001", "event-005", "60분을 넘습니다"),
+        # 요청에 그 체류가 없어 식당에 머문 식사로 볼 근거가 없다(#163).
+        ("event-001", "event-005", "60분을 넘는데"),
     ],
 )
 def test_absorbing_refuses_what_would_lose_an_event_or_time(
@@ -503,6 +504,41 @@ def test_absorbing_refuses_what_would_lose_an_event_or_time(
     with pytest.raises(DraftEditError, match=message):
         absorb_location_event(draft, make_request(), source, into)
     assert len(draft.events) == 5
+
+
+def _restaurant_request():
+    return make_request(
+        stays=[stay_item(1, raw_id="stay-restaurant", start=_local("17:50"), end=_local("19:37"))],
+        photos=[
+            photo_item("1", taken=_local("18:04"), raw_id="photo-beef-1"),
+            photo_item("2", taken=_local("18:25"), raw_id="photo-beef-2"),
+        ],
+    )
+
+
+def test_a_restaurant_stay_is_absorbed_into_the_meal_it_holds() -> None:
+    # #163: 복산식당 체류(17:50~19:37)를 그 안의 소고기 구이 사진 식사에 흡수하려다 60분 상한에
+    # 막혔다. 그 체류 안에 식사의 사진이 있고 3시간 이하라 받는다. 확정 단계가 붙인 장소 근거는
+    # 흡수한 체류의 근거로 바뀌어야 다음 확정이 식사를 60분으로 자르지 않는다.
+    meal = _event(
+        "event-002", "18:04", "18:25", (PHOTO, "photo-beef-1"), (PHOTO, "photo-beef-2"),
+        event_type=EventType.MEAL,
+    )
+    meal.source_refs.append(
+        SourceRef(source_type=STAY, raw_id=fixture_raw_id("stay-restaurant"), reason=LINK_REASON)
+    )
+    draft = _draft(_event("event-001", "17:50", "19:37", (STAY, "stay-restaurant")), meal)
+    request = _restaurant_request()
+
+    target = absorb_location_event(draft, request, "event-001", "event-002")
+
+    assert (target.start_time.isoformat(), target.end_time.isoformat()) == (_t("17:50"), _t("19:37"))
+    stays = [ref for ref in target.source_refs if ref.raw_id == fixture_raw_id("stay-restaurant")]
+    assert len(stays) == 1 and stays[0].reason != LINK_REASON
+    assert [event.client_event_id for event in draft.events] == ["event-002"]
+
+    repair_draft(draft, request)
+    assert draft.events[0].end_time - draft.events[0].start_time > timedelta(hours=1)
 
 
 def test_the_absorb_tool_is_only_offered_to_the_v3_set() -> None:

@@ -1,20 +1,28 @@
-"""최종 event 개수 상한 검사 (#118).
+"""최종 event 개수 상한 (#118, #163).
 
 프롬프트는 하루를 최대 10개 event 로 구성하라고 지시한다. 지켰는지 재는 코드가 없으면
 잘게 쪼개진 하루가 그대로 저장돼도 모른다.
 
-**재기만 한다.** 무엇을 합칠지는 의미 판단이라 코드가 고르지 않는다. 그래서 이 테스트는
-event 가 잘리지 않는 것도 함께 확인한다.
+넘으면 v3 세트는 **근거가 알림뿐인 event 만** 코드가 지운다. 사진·위치·캘린더 근거가 있는
+event 는 무엇을 합칠지가 의미 판단이라 코드가 고르지 않는다. 그래서 이 테스트는 그런 event 가
+잘리지 않는 것도 함께 확인한다.
 """
 
-from app.schemas import TimelineDraft, TimelineWarningSeverity
+from app.schemas import TimelineDraft, TimelineEventDraft, TimelineWarningSeverity
+from app.services.confirm_report import ConfirmReport
 from app.services.draft_repair import repair_draft
 from app.services.event_count_guard import (
     LEGACY_MAX_EVENT_COUNT,
     MAX_EVENT_COUNT,
+    enforce_event_count,
     verify_event_count,
 )
-from tests.fixtures.requests import fixture_raw_id, make_request, photo_item
+from tests.fixtures.requests import (
+    fixture_raw_id,
+    make_request,
+    notification_item,
+    photo_item,
+)
 
 DAY = "2026-06-20"
 
@@ -170,3 +178,99 @@ def test_confirm_pass_does_not_warn_legacy_sets_at_the_new_limit():
 
 def test_confirm_pass_warns_legacy_sets_at_the_old_limit():
     assert _count_warnings(_confirm(LEGACY_MAX_EVENT_COUNT + 1, extended=False))
+
+
+# --- 알림만 근거인 event 정리 (#163) -------------------------------------------------
+
+
+def _notification_event(client_event_id: str, clock: str, *labels: str) -> TimelineEventDraft:
+    return TimelineEventDraft.model_validate(
+        {
+            "clientEventId": client_event_id,
+            "eventType": "UNKNOWN",
+            "title": client_event_id,
+            "description": "알림을 받았다.",
+            "startTime": f"{DAY}T{clock}:00+09:00",
+            "endTime": f"{DAY}T{clock}:00+09:00",
+            "confidence": 0.8,
+            "inferenceLevel": "DIRECT",
+            "sourceRefs": [
+                {"sourceType": "NOTIFICATION", "rawId": fixture_raw_id(label)} for label in labels
+            ],
+        }
+    )
+
+
+def test_over_the_limit_notification_only_events_go_first():
+    draft = _draft(MAX_EVENT_COUNT)
+    draft.events += [
+        _notification_event("ICPC 안내", "16:56", "n-1", "n-2", "n-3"),
+        _notification_event("이모티콘 반응", "16:38", "n-4"),
+        _notification_event("인스타그램 반응", "20:36", "n-5"),
+    ]
+
+    removed = enforce_event_count(draft)
+
+    # 알림이 적은 것부터, 같으면 늦게 시작한 것부터 지운다.
+    assert [event.title for event in removed] == ["인스타그램 반응", "이모티콘 반응", "ICPC 안내"]
+    assert len(draft.events) == MAX_EVENT_COUNT
+    [warning] = [w for w in draft.warnings if w.warning_id.startswith("warning-event-trim-")]
+    assert warning.severity is TimelineWarningSeverity.LOW
+
+
+def test_only_as_many_as_the_excess_are_dropped():
+    draft = _draft(MAX_EVENT_COUNT - 1)
+    draft.events += [
+        _notification_event("ICPC 안내", "16:56", "n-1", "n-2"),
+        _notification_event("이모티콘 반응", "16:38", "n-4"),
+    ]
+
+    removed = enforce_event_count(draft)
+
+    assert [event.title for event in removed] == ["이모티콘 반응"]
+    assert "ICPC 안내" in [event.title for event in draft.events]
+
+
+def test_events_with_other_evidence_are_never_dropped():
+    draft = _draft(MAX_EVENT_COUNT + 2)
+
+    assert enforce_event_count(draft) == []
+    assert len(draft.events) == MAX_EVENT_COUNT + 2
+
+
+def _confirm_with_notifications(*, extended: bool, report: ConfirmReport | None = None):
+    labels = [f"n-{index}" for index in range(3)]
+    request = make_request(
+        photos=[
+            photo_item(index, taken=f"{DAY}T{8 + index // 6:02d}:{(index % 6) * 10:02d}:00", raw_id=f"photo-{index}")
+            for index in range(MAX_EVENT_COUNT)
+        ],
+        # 사전에 없는 앱이라 대화 개수 제한에는 걸리지 않는다.
+        notifications=[
+            notification_item(index, "Gmail", "안내", posted=f"{DAY}T{20 + index:02d}:00:00", raw_id=label)
+            for index, label in enumerate(labels)
+        ],
+    )
+    draft = _draft(MAX_EVENT_COUNT)
+    draft.events += [
+        _notification_event(f"안내 {index}", f"{20 + index:02d}:00", label)
+        for index, label in enumerate(labels)
+    ]
+    repair_draft(draft, request, extended=extended, report=report)
+    return draft
+
+
+def test_confirm_pass_trims_notification_only_events_in_v3_and_records_them():
+    report = ConfirmReport()
+
+    draft = _confirm_with_notifications(extended=True, report=report)
+
+    assert len(draft.events) == MAX_EVENT_COUNT
+    assert _count_warnings(draft) == []
+    assert [entry["step"] for entry in report.removed] == ["event 개수 정리"] * 3
+
+
+def test_confirm_pass_does_not_trim_legacy_sets():
+    draft = _confirm_with_notifications(extended=False)
+
+    assert len(draft.events) == MAX_EVENT_COUNT + 3

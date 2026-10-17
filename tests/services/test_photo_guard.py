@@ -10,13 +10,14 @@
 
 import pytest
 
-from app.schemas import EventType, TimelineDraft
+from app.schemas import AiEventCandidate, EventType, TimelineDraft
 from app.services.photo_guard import (
     enforce_photo_assignment,
     inspect_photo_assignment,
     verify_photo_assignment,
 )
 from app.services.timeline_validator import validate_timeline_for_storage
+from tests.fixtures.fake_llm import candidate
 from tests.fixtures.requests import (
     fixture_raw_id,
     make_request,
@@ -382,7 +383,9 @@ def test_missing_photo_goes_to_the_event_containing_its_capture_time():
     assert "안에 있다" in attached.reason
 
 
-def test_missing_photo_goes_to_the_nearest_event_when_none_contains_it():
+def test_missing_photo_gets_its_own_event_when_none_contains_it():
+    # #163: 가장 가까운 event 에 붙이지 않는다. 22:56 저녁 사진이 22:01 에 끝난 대화에 붙어
+    # 저녁이 하루에서 사라졌다.
     request = _photo_request("20:00")
     draft = _draft(
         [
@@ -391,10 +394,80 @@ def test_missing_photo_goes_to_the_nearest_event_when_none_contains_it():
         ]
     )
 
-    enforce_photo_assignment(draft, request)
+    enforcement = enforce_photo_assignment(draft, request)
 
-    assert _holders(draft, PHOTO_1) == ["evening"]
-    assert "가장 가까운" in draft.events[1].source_refs[-1].reason
+    assert enforcement.attached == []
+    (created,) = enforcement.created
+    assert _holders(draft, PHOTO_1) == [created.client_event_id]
+    assert created.event_type is EventType.PHOTO_MOMENT
+    assert created.start_time.hour == 20
+    assert_every_photo_is_in_exactly_one_event(draft, request)
+
+
+def test_photos_of_a_dropped_candidate_become_one_event_at_the_candidate_time():
+    # Timeline 이 사진 candidate 를 통째로 버리면 그 사진들을 candidate 하나의 시간으로 담는다.
+    # 문장은 코드 틀이다 — candidate 문장은 분 단위 시각·추정 표현이 든 보고라 그대로 쓸 수 없다.
+    request = _photo_request("22:56", "22:58")
+    dinner = AiEventCandidate.model_validate(
+        candidate(
+            "SOCIAL",
+            [("PHOTO", PHOTO_1), ("PHOTO", PHOTO_2)],
+            start="2026-06-20T22:56:00+09:00",
+            end="2026-06-20T22:58:00+09:00",
+        )
+    )
+    draft = _draft(
+        [_timed_event("chat", [("STAY", STAY_1)], start="10:28", end="22:01", event_type="SOCIAL")]
+    )
+
+    enforcement = enforce_photo_assignment(draft, request, [dinner])
+
+    (created,) = enforcement.created
+    assert sorted(ref.raw_id for ref in created.source_refs) == sorted([PHOTO_1, PHOTO_2])
+    assert created.event_type is EventType.PHOTO_MOMENT
+    assert (created.title, created.description) == ("사진으로 남긴 순간", "사진을 남겼다.")
+    assert created.start_time.isoformat() == "2026-06-20T22:56:00+09:00"
+    assert created.end_time.isoformat() == "2026-06-20T22:58:00+09:00"
+    assert _holders(draft, PHOTO_1) == _holders(draft, PHOTO_2) == [created.client_event_id]
+
+
+def test_a_dropped_candidate_is_restored_even_inside_another_event():
+    # 버려진 사진 candidate 는 다른 event 의 시간 안이어도 따로 되살린다. 긴 체류 안의 저녁이
+    # 체류의 근거로 묻히지 않게 한다.
+    request = _photo_request("19:00")
+    dinner = AiEventCandidate.model_validate(
+        candidate("MEAL", [("PHOTO", PHOTO_1)], start="2026-06-20T19:00:00+09:00", end="2026-06-20T19:00:00+09:00")
+    )
+    draft = _draft(
+        [_timed_event("stay", [("STAY", STAY_1)], start="12:30", end="22:00", event_type="UNKNOWN")]
+    )
+
+    enforcement = enforce_photo_assignment(draft, request, [dinner])
+
+    assert enforcement.attached == []
+    assert len(enforcement.created) == 1
+    assert _holders(draft, PHOTO_1) == [enforcement.created[0].client_event_id]
+
+
+def test_a_candidate_whose_photo_is_already_used_is_not_restored():
+    # 사진 일부라도 event 에 있으면 Timeline 이 그 candidate 를 쓴 것이다.
+    request = _photo_request("12:30", "12:35")
+    lunch = AiEventCandidate.model_validate(
+        candidate(
+            "MEAL",
+            [("PHOTO", PHOTO_1), ("PHOTO", PHOTO_2)],
+            start="2026-06-20T12:30:00+09:00",
+            end="2026-06-20T12:35:00+09:00",
+        )
+    )
+    draft = _draft(
+        [_timed_event("lunch", [("PHOTO", PHOTO_1)], start="12:20", end="12:50", event_type="MEAL")]
+    )
+
+    enforcement = enforce_photo_assignment(draft, request, [lunch])
+
+    assert enforcement.created == []
+    assert _holders(draft, PHOTO_2) == ["lunch"]
 
 
 def test_without_any_event_a_photo_moment_is_created():
@@ -431,7 +504,8 @@ def test_unreadable_capture_time_still_gets_an_event():
     assert_every_photo_is_in_exactly_one_event(draft, request)
 
 
-def test_unreadable_capture_time_is_attached_when_events_exist():
+def test_unreadable_capture_time_gets_its_own_event_even_when_events_exist():
+    # 촬영 시각을 읽을 수 없으면 어느 event 가 품는지 알 수 없다. 아무 event 에나 붙이지 않는다.
     request = make_request(
         photos=[photo_item("1", taken="알 수 없음")],
         stays=[stay_item(1, raw_id="stay-1")],
@@ -440,9 +514,11 @@ def test_unreadable_capture_time_is_attached_when_events_exist():
         [_timed_event("only", [("STAY", STAY_1)], start="09:00", end="10:00", event_type="REST")]
     )
 
-    enforce_photo_assignment(draft, request)
+    enforcement = enforce_photo_assignment(draft, request)
 
-    assert _holders(draft, PHOTO_1) == ["only"]
+    (created,) = enforcement.created
+    assert _holders(draft, PHOTO_1) == [created.client_event_id]
+    assert created.start_time.isoformat() == "2026-06-20T00:00:00+09:00"
 
 
 def test_same_photo_twice_in_one_event_is_reduced_to_one():

@@ -25,7 +25,8 @@ repair 순서와 이유:
     9. `겹침 정리`       : 중복 event 를 병합하고, 모순되는 부분 겹침은 경고로 남긴다.
    10. `사진 단일 귀속`  : 입력의 모든 사진이 정확히 한 event 에만 있게 만든다(#119).
    11. `confidence 보강` : 캘린더 장소와 체류 장소가 일치하면 confidence 를 올린다.
-   11.5 (v3) 수면과 겹친 event 제거, 대화 개수 제한, 문장의 입력 주소 원문 정리(#138).
+   11.5 (v3) 수면과 겹친 event 제거, 대화 개수 제한, event 개수 정리(#163), 문장의 입력
+        주소 원문 정리(#138).
    12. `검사`            : 고치지 않고 찾기만 한다. 사진·알림 안전성, 문장 길이, 타입별
                            지속시간, event 개수, 이동 사이 장시간 체류, (v3) 일정·사진과
                            겹치는 위치만 있는 event, 제목의 체류·시각과 문장의 주소 모양.
@@ -34,8 +35,9 @@ repair 순서와 이유:
 
 1~11 은 draft 를 고치고 12 는 고치지 않는다. **무엇을 고칠지가 규칙으로 정해져 있으면
 코드가 고치고, 어디서 끊고 무엇을 남길지가 의미 판단이면 찾아서 Repair 에 넘긴다.**
-이동 사이의 장시간 체류를 나누는 것과 대화 event 를 3개로 줄이는 것이 뒤쪽이다 — 나눈
-조각마다 무엇을 했는지 다시 써야 하고, 어느 대화가 중요한지는 내용을 봐야 안다.
+이동 사이의 장시간 체류를 나누는 것이 뒤쪽이다 — 나눈 조각마다 무엇을 했는지 다시 써야
+한다. 대화 event 를 3개로 줄이는 것과 10개를 넘을 때 알림만 근거인 event 부터 지우는 것은
+기준이 알림 수 하나라 코드가 한다.
 
 단계마다 직전·직후의 event 를 비교해 무엇이 바뀌었는지 적는다(`confirm_report`). Repair
 는 그 기록을 받아 코드가 이미 본 것을 다시 검증하지 않고, 보정으로 어색해진 내용과
@@ -61,18 +63,21 @@ rawId 참조는 제거하고, 그 결과 유효한 근거가 하나도 남지 �
 겹침에 대하여: **포함 관계는 겹침이 아니다.** 긴 카페 체류(`REST`) 안에 짧은 식사
 (`MEAL`)가 들어 있는 구조는 우리가 프롬프트로 요구한 정상적인 모양이다. 여기서
 병합하는 것은 *같은 종류 + 같은 장소 + 시간이 겹치는* 중복 event 뿐이고, 서로 다른
-장소를 동시에 가리키는 부분 겹침은 시간을 건드리지 않고 경고로만 남긴다.
+장소를 동시에 가리키는 부분 겹침은 시간을 건드리지 않고 경고로만 남긴다. 장소가 비어
+있는 event 끼리는 같은 근거를 함께 가질 때만 중복으로 본다(#163).
 
 일정·사진 event 와 같은 방문을 그린 체류 카드(#138)도 코드가 합치지 않는다. 같은 방문인지
 더 긴 다른 시간(근무 체류 안의 회의)인지는 의미 판단이라, v3 에서는 찾아서 Repair 에 넘기고
 Repair 가 `absorb_location_event` 로 흡수한다. 일정·사진 event 는 어떤 단계도 지우지 않는다.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, tzinfo
+from functools import partial
 
 from app.core.logging import get_logger, log_fields
 from app.schemas import (
+    AiEventCandidate,
     EventSourceType,
     EventType,
     HealthMetric,
@@ -91,6 +96,7 @@ from app.services.duration_guard import verify_event_duration
 from app.services.event_count_guard import (
     LEGACY_MAX_EVENT_COUNT,
     MAX_EVENT_COUNT,
+    enforce_event_count,
     verify_event_count,
 )
 from app.services.location_link import link_location_evidence
@@ -400,12 +406,23 @@ def _contains(outer: TimelineEventDraft, inner: TimelineEventDraft) -> bool:
 
 
 def _is_duplicate(left: TimelineEventDraft, right: TimelineEventDraft) -> bool:
-    """같은 종류 + 같은 장소 + 시간이 겹치면 같은 사건을 두 번 쓴 것으로 본다."""
+    """같은 종류 + 같은 장소 + 시간이 겹치면 같은 사건을 두 번 쓴 것으로 본다.
 
-    return (
-        left.event_type is right.event_type
-        and _place_key(left) == _place_key(right)
-        and _overlaps(left, right)
+    장소가 비어 있으면 장소로는 같은 곳인지 알 수 없다. 그때는 같은 근거(rawId)를 하나
+    이상 함께 가질 때만 같은 사건으로 본다(#163). 빈 키를 같은 장소로 치면 근거가 알림뿐인
+    event 들이 시간만 겹쳐도 합쳐진다 — 서로 다른 상대와의 대화 셋이 11시간짜리 대화
+    하나가 됐다.
+    """
+
+    if left.event_type is not right.event_type or not _overlaps(left, right):
+        return False
+    place = _place_key(left)
+    if place != _place_key(right):
+        return False
+    if any(place):
+        return True
+    return not {ref.raw_id for ref in left.source_refs}.isdisjoint(
+        ref.raw_id for ref in right.source_refs
     )
 
 
@@ -613,6 +630,8 @@ _EXTENDED_CORRECTION_STEPS: tuple[
 ] = (
     ("수면과 겹친 event 제거", remove_events_overlapping_sleep),
     ("대화 개수 제한", enforce_conversation_limit),
+    # 대화를 3개로 줄인 뒤에도 10개를 넘으면 근거가 알림뿐인 event 부터 지운다(#163).
+    ("event 개수 정리", lambda draft, request: enforce_event_count(draft)),
     # 문장을 바꾸는 단계라 event 를 지우거나 합치는 단계가 모두 끝난 뒤에 둔다(#138).
     ("문장 주소 정리", replace_input_addresses),
 )
@@ -636,16 +655,24 @@ def _resolve_places_without_filling(
 
 def _correction_steps(
     extended: bool,
+    candidates: Sequence[AiEventCandidate] = (),
 ) -> tuple[tuple[str, Callable[[TimelineDraft, TimelineDraftRequest], object]], ...]:
+    # 사진 단일 귀속은 Timeline 이 버린 사진 candidate 를 되살려야 해서 candidate 를 받는다(#163).
+    overrides: dict[str, Callable[[TimelineDraft, TimelineDraftRequest], object]] = {
+        "사진 단일 귀속": partial(enforce_photo_assignment, candidates=candidates),
+    }
+    if extended:
+        # v3 세트는 식당에 머문 식사를 3시간까지 두고(#163), 빈 place 를 채우지 않는다(#150).
+        overrides["식사 시간"] = partial(enforce_meal_duration, allow_stay_meal=True)
+        overrides["장소 확정"] = _resolve_places_without_filling
+    steps = tuple((name, overrides.get(name, step)) for name, step in _CORRECTION_STEPS)
     if not extended:
-        return _CORRECTION_STEPS
-    names = [name for name, _ in _CORRECTION_STEPS]
-    position = names.index("장소 확정")
+        return steps
+    position = [name for name, _ in steps].index("장소 확정")
     return (
-        *_CORRECTION_STEPS[:position],
+        *steps[:position],
         _LOCATION_LINK_STEP,
-        ("장소 확정", _resolve_places_without_filling),
-        *_CORRECTION_STEPS[position + 1 :],
+        *steps[position:],
         *_EXTENDED_CORRECTION_STEPS,
     )
 
@@ -709,6 +736,7 @@ def repair_draft(
     report: ConfirmReport | None = None,
     extended: bool = True,
     issued_ids: set[str] | None = None,
+    candidates: Sequence[AiEventCandidate] = (),
 ) -> TimelineDraft:
     """LLM 이 만든 draft 를 코드로 확정한다(in-place, 같은 객체를 돌려준다).
 
@@ -723,11 +751,14 @@ def repair_draft(
     그대로 두고 새 event 에만 쓴 적 없는 번호를 준다(`assign_event_ids`). Repair 가 반복마다
     넘겨, 도구 로그와 쌓인 보정 기록의 번호가 끝까지 같은 event 를 가리키게 한다. 주지
     않으면 1번부터 다시 매긴다.
+
+    `candidates` 는 Event Agent 들의 candidate 다. 사진 단일 귀속이 Timeline 이 통째로 버린
+    사진 candidate 를 사진 event 로 되살리는 데 쓴다(#163).
     """
 
     report = report if report is not None else ConfirmReport()
 
-    for name, step in _correction_steps(extended):
+    for name, step in _correction_steps(extended, candidates):
         report.run(name, draft, lambda step=step: step(draft, request))
 
     # source 하나를 여러 event가 근거로 사용할 수 있다. 현재는 timeline_items에
@@ -753,7 +784,9 @@ def repair_draft(
 
 
 def enforce_final_photo_assignment(
-    draft: TimelineDraft, request: TimelineDraftRequest
+    draft: TimelineDraft,
+    request: TimelineDraftRequest,
+    candidates: Sequence[AiEventCandidate] = (),
 ) -> None:
     """저장으로 넘어가기 직전에 사진 단일 귀속을 한 번 더 강제한다(#119).
 
@@ -765,7 +798,7 @@ def enforce_final_photo_assignment(
 
     # 남아 있는 event 의 번호는 바꾸지 않고 새로 만든 사진 event 에만 번호를 준다(#144).
     issued = {event.client_event_id for event in draft.events}
-    enforcement = enforce_photo_assignment(draft, request)
+    enforcement = enforce_photo_assignment(draft, request, candidates)
     if enforcement.changed_composition:
         sort_events(draft)
         assign_event_ids(draft, issued)

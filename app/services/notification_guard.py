@@ -6,8 +6,13 @@
 한 번 새면 최종 일기에 그대로 남는다.
 
 관계명도 같다. 알림 `title` 은 보낸 사람이나 대화방 이름이지 관계가 아니다.
-`엄마`, `팀장님` 같은 호칭은 User Memory 에 등록돼 있을 때만 쓸 수 있다. 근거 없이
-관계를 붙이면 사용자가 읽는 일기에 없던 사람이 생긴다.
+`엄마`, `팀장님` 같은 호칭은 User Memory 에 등록돼 있거나 입력의 이름 그대로일 때(대화방
+이름이 `엄마`)만 쓸 수 있다. 근거 없이 관계를 붙이면 사용자가 읽는 일기에 없던 사람이 생긴다.
+
+호칭은 **어절로** 찾는다(#163). 어절이 호칭 그 자체이거나 호칭 뒤에 조사만 붙은 것일 때만
+호칭이다. 글자가 들어 있는지로 찾으면 `이모티콘` 이 `이모` 로, `성형외과`·`형제갈비`·사람
+이름 `전형선` 이 `형` 으로 걸린다. 틀린 경고도 Repair 는 고칠 것으로 읽어 멀쩡한 문장을
+고친다 — `울동생과 대화` 가 `동생` 으로 걸리자 Repair 가 제목을 `💛울동생💛와 대화` 로 바꿨다.
 
 여기서는 **검출만** 한다. 문자열을 지우면 문장이 깨지고, 어떻게 바꿔 쓸지는 의미 판단이다.
 Agent·Timeline warning 으로 알려 Timeline 과 Repair 가 다시 판단하게 한다.
@@ -71,6 +76,27 @@ _RELATION_TERMS: tuple[str, ...] = (
     "교수님",
 )
 
+#: 호칭 뒤에 붙어도 호칭으로 보는 조사. 여기 없는 글자가 붙은 어절은 다른 낱말이다
+#: (`이모티콘`, `형태`). 놓치는 쪽(`엄마표`)은 경고가 빠질 뿐이지만, 잘못 잡는 쪽은 Repair 가
+#: 멀쩡한 문장을 고친다.
+_RELATION_PARTICLES: tuple[str, ...] = (
+    "와", "과", "랑", "이랑", "하고", "한테", "한테서", "에게", "에게서", "께", "께서",
+    "의", "가", "이", "는", "은", "를", "을", "도", "만", "님", "네",
+)
+
+#: 호칭으로 읽는 어절 → 그 호칭.
+_RELATION_WORDS: dict[str, str] = {
+    term + particle: term
+    for term in _RELATION_TERMS
+    for particle in ("", *_RELATION_PARTICLES)
+}
+
+#: 어절을 나누는 기준. 한글·영숫자가 아닌 글자(공백·문장부호·이모지)에서 끊는다.
+_WORD = re.compile(r"[0-9A-Za-z가-힣]+")
+
+#: 이 모듈이 최종 draft 에 남기는 warning. 확정할 때마다 지우고 다시 잰다.
+_DRAFT_WARNING_PREFIXES = ("warning-privacy-exposure-", "warning-unsupported-relation-")
+
 
 def verify_notification_result(
     result: AgentEventResult, request: TimelineDraftRequest
@@ -125,11 +151,21 @@ def verify_notification_draft(
     Event Agent 결과가 깨끗해도 Timeline/Repair가 문장을 다시 조립하는 과정에서 값이
     노출될 수 있다. 최종 확정 패스마다 draft를 다시 검사해 Repair가
     ``PRIVACY_EXPOSURE``로 처리할 결정론적 근거를 제공한다.
+
+    앞 확정이 남긴 warning 은 지우고 지금 draft 로 다시 잰다. Repair 가 고친 뒤에도 옛
+    warning 이 남으면 이미 고친 문장을 또 고치려 든다.
+
+    관계 호칭은 사용자가 읽는 `title`·`description` 에서만 찾는다. 장소·주소·근거 설명은
+    입력 이름이거나 사용자에게 나가지 않는 값이라 호칭을 물을 자리가 아니다.
     """
 
-    texts = _draft_texts(draft)
-    leaked = sorted({label for label, text in _find_sensitive(texts)})
-    invented = sorted(_find_unsupported_relations(texts, request))
+    draft.warnings = [
+        warning
+        for warning in draft.warnings
+        if not warning.warning_id.startswith(_DRAFT_WARNING_PREFIXES)
+    ]
+    leaked = sorted({label for label, text in _find_sensitive(_draft_texts(draft))})
+    invented = sorted(_find_unsupported_relations(_draft_narration(draft), request))
 
     if leaked:
         draft.warnings.append(
@@ -188,6 +224,17 @@ def _draft_texts(draft: TimelineDraft) -> list[str]:
     return [text for text in texts if text]
 
 
+def _draft_narration(draft: TimelineDraft) -> list[str]:
+    """최종 결과에서 사용자가 읽는 문장(`title`·`description`)."""
+
+    return [
+        text
+        for event in draft.events
+        for text in (event.title, event.description)
+        if text
+    ]
+
+
 def _find_sensitive(texts: list[str]) -> list[tuple[str, str]]:
     return [
         (label, text)
@@ -200,20 +247,27 @@ def _find_sensitive(texts: list[str]) -> list[tuple[str, str]]:
 def _find_unsupported_relations(
     texts: list[str], request: TimelineDraftRequest
 ) -> set[str]:
-    """User Memory 가 뒷받침하지 않는 관계 호칭을 찾는다."""
+    """User Memory 와 입력 이름이 뒷받침하지 않는 관계 호칭을 찾는다."""
 
-    known = _user_memory_text(request)
+    return _relations_in(texts) - _relations_in(_known_texts(request))
+
+
+def _relations_in(texts: list[str]) -> set[str]:
+    """문자열에 어절로 나오는 관계 호칭."""
+
     return {
-        term
-        for term in _RELATION_TERMS
-        if term not in known and any(term in text for text in texts)
+        _RELATION_WORDS[word]
+        for text in texts
+        for word in _WORD.findall(text)
+        if word in _RELATION_WORDS
     }
 
 
-def _user_memory_text(request: TimelineDraftRequest) -> str:
-    """User Memory 를 한 덩어리 문자열로. 등록된 관계명을 찾기 위한 용도다."""
+def _known_texts(request: TimelineDraftRequest) -> list[str]:
+    """호칭을 쓸 근거가 되는 문자열: User Memory 와 입력 알림의 이름(대화방·보낸 사람)."""
 
+    texts = [notification.title for notification in getattr(request, "notifications", None) or []]
     memory = getattr(request, "user_memory", None)
-    if memory is None:
-        return ""
-    return str(memory.model_dump(by_alias=True))
+    if memory is not None:
+        texts.append(str(memory.model_dump(by_alias=True)))
+    return texts

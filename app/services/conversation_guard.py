@@ -7,8 +7,9 @@
 대화 event 는 다음을 모두 만족하는 event 다.
 
 - 근거가 전부 알림이다. 위치·사진·캘린더 근거가 함께 있으면 대화가 아니라 실제 사건이다.
-- eventType 이 `SOCIAL`·`WORK`·`MEETING` 이다. 메신저로 온 결제·예약 안내로 만든 event 는
-  다른 타입이 되므로 세지 않는다.
+- eventType 이 `MEAL`·`MOVEMENT` 가 아니다. 메신저로 온 결제·예약 안내로 만든 event 는 그
+  타입이 되므로 세지 않는다. 예전에는 `SOCIAL`·`WORK`·`MEETING` 만 셌는데, 반응·짧은 답장
+  같은 대화가 `UNKNOWN` event 가 되어 제한을 빠져나갔다(#163).
 - 근거 알림이 전부 **메신저 정책이 있는 앱**에서 왔다.
 
 **사전에 없는 앱의 알림은 대화로 세지 않는다.** 그 앱이 무엇인지 코드는 모른다. Telegram
@@ -41,10 +42,8 @@ logger = get_logger(__name__)
 #: 하루에 남길 수 있는 대화 event 수.
 MAX_CONVERSATION_EVENTS = 3
 
-#: 대화로 만든 event 가 갖는 타입. 결제·예약 안내로 만든 event 는 여기 들지 않는다.
-_CONVERSATION_EVENT_TYPES = frozenset(
-    {EventType.SOCIAL, EventType.WORK, EventType.MEETING}
-)
+#: 메신저로 온 결제·예약 안내로 만든 event 의 타입. 대화가 아니라 세지 않는다.
+_TRANSACTION_EVENT_TYPES = frozenset({EventType.MEAL, EventType.MOVEMENT})
 
 _WARNING_ID_PREFIX = "warning-conversation-limit-"
 
@@ -85,7 +84,7 @@ def conversation_events(
     found: list[TimelineEventDraft] = []
 
     for event in draft.events:
-        if event.event_type not in _CONVERSATION_EVENT_TYPES:
+        if event.event_type in _TRANSACTION_EVENT_TYPES:
             continue
         if not event.source_refs or any(
             ref.source_type is not EventSourceType.NOTIFICATION

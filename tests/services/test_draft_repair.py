@@ -306,6 +306,51 @@ def test_touching_boundaries_are_not_an_overlap():
     assert draft.warnings == []
 
 
+def test_place_less_events_with_different_evidence_are_not_merged():
+    # #163: 근거가 알림뿐인 event 는 장소가 비어 있다. 빈 장소를 같은 장소로 치면 서로 다른
+    # 상대와의 대화가 시간만 겹쳐도 하나가 된다(운영에서 대화 셋이 11시간짜리 하나가 됐다).
+    draft = _draft(
+        _event(
+            "event-001", "10:28", "22:01", (EventSourceType.NOTIFICATION, "note-mom"),
+            event_type=EventType.SOCIAL, title="엄마와 대화",
+        ),
+        _event(
+            "event-002", "14:55", "18:09", (EventSourceType.NOTIFICATION, "note-friend"),
+            event_type=EventType.SOCIAL, title="우승민과 대화",
+        ),
+        _event(
+            "event-003", "17:45", "18:20", (EventSourceType.NOTIFICATION, "note-other"),
+            event_type=EventType.SOCIAL, title="심서후와 대화",
+        ),
+    )
+
+    resolve_overlaps(draft)
+
+    assert _titles(draft) == ["엄마와 대화", "우승민과 대화", "심서후와 대화"]
+    assert not any("중복 event" in w.message for w in draft.warnings)
+    assert any("서로 겹치는 event" in w.message for w in draft.warnings)
+
+
+def test_place_less_events_sharing_evidence_are_still_merged():
+    draft = _draft(
+        _event(
+            "event-001", "14:55", "16:00", (EventSourceType.NOTIFICATION, "note-1"),
+            event_type=EventType.SOCIAL, title="우승민과 대화",
+        ),
+        _event(
+            "event-002", "15:30", "18:09",
+            (EventSourceType.NOTIFICATION, "note-1"), (EventSourceType.NOTIFICATION, "note-2"),
+            event_type=EventType.SOCIAL, title="우승민과 이어진 대화",
+        ),
+    )
+
+    resolve_overlaps(draft)
+
+    assert len(draft.events) == 1
+    assert len(draft.events[0].source_refs) == 2
+    assert any("중복 event" in w.message for w in draft.warnings)
+
+
 # --- 전체 repair 파이프라인 ----------------------------------------------------
 
 
@@ -327,8 +372,9 @@ def test_an_unknown_raw_id_drops_the_unsupported_event():
 
     repair_draft(draft, _request())
 
-    assert _titles(draft) == ["정상"]
-    assert _ids(draft) == ["event-001"]
+    # 요청의 사진(13:20)은 품는 event 가 없어 사진 event 로 남는다(#163).
+    assert _titles(draft) == ["정상", "사진으로 남긴 순간"]
+    assert _ids(draft) == ["event-001", "event-002"]
     assert any("입력에 없는 rawId 참조" in warning.message for warning in draft.warnings)
 
 
@@ -394,13 +440,13 @@ def test_window_warning_names_the_event_by_title_not_a_stale_id():
     assert "event-0" not in boundary.message
 
 
-def test_repair_shrinks_an_over_long_meal_and_keeps_everything_sorted():
+def test_legacy_repair_shrinks_an_over_long_meal_and_keeps_everything_sorted():
     draft = _draft(
         _event("event-001", "12:00", "15:00", STAY_REF, PHOTO_REF, event_type=EventType.MEAL, title="점심"),
         _event("event-002", "09:00", "10:00", STAY_REF, title="오전"),
     )
 
-    repair_draft(draft, _request())
+    repair_draft(draft, _request(), extended=False)
 
     assert _titles(draft) == ["오전", "점심"]
     assert _ids(draft) == ["event-001", "event-002"]
@@ -408,6 +454,19 @@ def test_repair_shrinks_an_over_long_meal_and_keeps_everything_sorted():
     assert meal.end_time - meal.start_time < timedelta(hours=1)
     # 식사는 음식 사진 시각(13:20)에 붙는다.
     assert meal.start_time.isoformat() == f"{DAY}T13:20:00+09:00"
+
+
+def test_v3_keeps_a_meal_that_spans_its_restaurant_stay():
+    # #163: 체류(12:00~15:00)를 자기 근거로 갖고 그 안에 사진(13:20)이 있으면 식당에 머문
+    # 식사다. 식당인지는 Timeline·Repair 가 체류를 식사에 합쳐 판단했다.
+    draft = _draft(
+        _event("event-001", "12:00", "15:00", STAY_REF, PHOTO_REF, event_type=EventType.MEAL, title="점심"),
+    )
+
+    repair_draft(draft, _request())
+
+    meal = draft.events[0]
+    assert (meal.start_time.isoformat(), meal.end_time.isoformat()) == (_t("12:00"), _t("15:00"))
 
 
 # --- 근거 구간 정렬(align) -----------------------------------------------------

@@ -343,6 +343,8 @@ def test_repair_v3_leaves_the_conversation_limit_to_the_code() -> None:
     # 코드가 지운 대화를 Repair 가 되살리면 다음 확정에서 다시 지워진다.
     section = _between(text, "### 2단계.", "### 3단계.")
     assert "대화로 만든 event는 코드가 하루 3개로 맞춥니다" in section
+    # 10개를 넘을 때 알림만 근거인 event 를 지우는 것도 코드다(#163).
+    assert f"그래도 {MAX_EVENT_COUNT}개를 넘으면 근거가 알림뿐인 event부터 코드가 지웁니다" in section
     assert "되살리지 않습니다" in section
 
 
@@ -681,6 +683,19 @@ def test_repair_v3_decides_whether_a_stay_card_is_the_same_visit() -> None:
     assert "일정·사진 event끼리는 합치지 않습니다" in section
     for example in ("`치과 검진`", "`회사` 체류"):
         assert example in section
+
+
+def test_repair_v3_rewrites_a_restaurant_meal_and_folds_its_payment_card() -> None:
+    """식당 체류를 식사에 흡수한 뒤 문장을 다시 쓰지 않았고 결제 카드도 남았다(#163)."""
+
+    section = _between(
+        _repair_v3(), "#### `LOCATION_ONLY_OVERLAP`", "#### `STAY_WORD_IN_TITLE`"
+    )
+
+    assert "식당에 머문 체류와 그 안의 식사는 덮는 비율과 무관하게 같은 방문입니다" in section
+    assert "장소와 머문 시간을 말하는지 봅니다" in section
+    assert "`먹으며 시간을 보냈다`로 씁니다" in section
+    assert "결제 카드를 `delete_event`로 지웁니다" in section
 
 
 def test_repair_v3_keeps_stay_words_times_and_addresses_out_of_titles() -> None:
