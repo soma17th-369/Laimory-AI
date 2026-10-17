@@ -343,6 +343,8 @@ def test_repair_v3_leaves_the_conversation_limit_to_the_code() -> None:
     # 코드가 지운 대화를 Repair 가 되살리면 다음 확정에서 다시 지워진다.
     section = _between(text, "### 2단계.", "### 3단계.")
     assert "대화로 만든 event는 코드가 하루 3개로 맞춥니다" in section
+    # 10개를 넘을 때 알림만 근거인 event 를 지우는 것도 코드다(#163).
+    assert f"그래도 {MAX_EVENT_COUNT}개를 넘으면 근거가 알림뿐인 event부터 코드가 지웁니다" in section
     assert "되살리지 않습니다" in section
 
 

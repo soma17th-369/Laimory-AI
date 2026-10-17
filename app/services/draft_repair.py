@@ -25,7 +25,8 @@ repair 순서와 이유:
     9. `겹침 정리`       : 중복 event 를 병합하고, 모순되는 부분 겹침은 경고로 남긴다.
    10. `사진 단일 귀속`  : 입력의 모든 사진이 정확히 한 event 에만 있게 만든다(#119).
    11. `confidence 보강` : 캘린더 장소와 체류 장소가 일치하면 confidence 를 올린다.
-   11.5 (v3) 수면과 겹친 event 제거, 대화 개수 제한, 문장의 입력 주소 원문 정리(#138).
+   11.5 (v3) 수면과 겹친 event 제거, 대화 개수 제한, event 개수 정리(#163), 문장의 입력
+        주소 원문 정리(#138).
    12. `검사`            : 고치지 않고 찾기만 한다. 사진·알림 안전성, 문장 길이, 타입별
                            지속시간, event 개수, 이동 사이 장시간 체류, (v3) 일정·사진과
                            겹치는 위치만 있는 event, 제목의 체류·시각과 문장의 주소 모양.
@@ -34,8 +35,9 @@ repair 순서와 이유:
 
 1~11 은 draft 를 고치고 12 는 고치지 않는다. **무엇을 고칠지가 규칙으로 정해져 있으면
 코드가 고치고, 어디서 끊고 무엇을 남길지가 의미 판단이면 찾아서 Repair 에 넘긴다.**
-이동 사이의 장시간 체류를 나누는 것과 대화 event 를 3개로 줄이는 것이 뒤쪽이다 — 나눈
-조각마다 무엇을 했는지 다시 써야 하고, 어느 대화가 중요한지는 내용을 봐야 안다.
+이동 사이의 장시간 체류를 나누는 것이 뒤쪽이다 — 나눈 조각마다 무엇을 했는지 다시 써야
+한다. 대화 event 를 3개로 줄이는 것과 10개를 넘을 때 알림만 근거인 event 부터 지우는 것은
+기준이 알림 수 하나라 코드가 한다.
 
 단계마다 직전·직후의 event 를 비교해 무엇이 바뀌었는지 적는다(`confirm_report`). Repair
 는 그 기록을 받아 코드가 이미 본 것을 다시 검증하지 않고, 보정으로 어색해진 내용과
@@ -94,6 +96,7 @@ from app.services.duration_guard import verify_event_duration
 from app.services.event_count_guard import (
     LEGACY_MAX_EVENT_COUNT,
     MAX_EVENT_COUNT,
+    enforce_event_count,
     verify_event_count,
 )
 from app.services.location_link import link_location_evidence
@@ -627,6 +630,8 @@ _EXTENDED_CORRECTION_STEPS: tuple[
 ] = (
     ("수면과 겹친 event 제거", remove_events_overlapping_sleep),
     ("대화 개수 제한", enforce_conversation_limit),
+    # 대화를 3개로 줄인 뒤에도 10개를 넘으면 근거가 알림뿐인 event 부터 지운다(#163).
+    ("event 개수 정리", lambda draft, request: enforce_event_count(draft)),
     # 문장을 바꾸는 단계라 event 를 지우거나 합치는 단계가 모두 끝난 뒤에 둔다(#138).
     ("문장 주소 정리", replace_input_addresses),
 )
