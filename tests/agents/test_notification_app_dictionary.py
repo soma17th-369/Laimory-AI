@@ -268,6 +268,36 @@ def test_same_room_messages_become_one_conversation() -> None:
     assert (dm["title"], dm["messageCount"], dm["maxGapMinutes"]) == ("김민수", 1, None)
 
 
+def test_messages_an_hour_apart_are_separate_conversations() -> None:
+    # #163: 10:28 `출발했니?` 와 22:01 `언제와~~` 를 한 묶음으로 넘기자 모델이 하루 대부분을
+    # 덮는 대화 하나로 썼다. 같은 상대라도 60분 이상 벌어지면 이어진 대화가 아니다.
+    items = [
+        _item("mom-1", "카카오톡", "엄마", "출발했니?", "2026-06-20T10:28:00+09:00"),
+        _item("mom-2", "카카오톡", "엄마", "응", "2026-06-20T10:30:00+09:00"),
+        _item("mom-3", "카카오톡", "엄마", "언제와~~", "2026-06-20T22:01:00+09:00"),
+    ]
+
+    morning, night = build_notification_payload(items)["conversations"]
+
+    assert [m["text"] for m in morning["messages"]] == ["출발했니?", "응"]
+    assert morning["maxGapMinutes"] == 2.0
+    assert [m["text"] for m in night["messages"]] == ["언제와~~"]
+    assert night["firstPostedAt"] == night["lastPostedAt"] == "2026-06-20T22:01:00+09:00"
+
+
+def test_messages_under_an_hour_apart_stay_one_conversation() -> None:
+    items = [
+        _item("a", "카카오톡", "우승민", posted="2026-06-20T14:55:00+09:00"),
+        _item("b", "카카오톡", "우승민", posted="2026-06-20T15:54:00+09:00"),
+        _item("c", "카카오톡", "우승민", posted="2026-06-20T16:53:00+09:00"),
+    ]
+
+    (conversation,) = build_notification_payload(items)["conversations"]
+
+    assert conversation["messageCount"] == 3
+    assert conversation["maxGapMinutes"] == 59.0
+
+
 def test_conversations_with_equal_count_keep_earlier_first() -> None:
     items = [
         _item("late", "카카오톡", "나중 방", posted="2026-06-20T15:00:00+09:00"),

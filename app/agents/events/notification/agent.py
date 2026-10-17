@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.agents.events.base_event_agent import EventAgent
 from app.agents.events.notification.app_dictionary import (
@@ -29,6 +29,10 @@ from app.services.validator import parse_datetime
 from app.core.llm_stages import LLMStage
 
 _SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
+
+#: 같은 상대의 메시지라도 이만큼 벌어지면 이어진 대화가 아니다(#163). 프롬프트가 묶은 알림의
+#: 시간을 정할 때 쓰는 기준(60분 이상이면 긴 구간을 만들지 않는다)과 같은 값이다.
+CONVERSATION_GAP_MINUTES = 60
 
 
 class NotificationEventAgent(EventAgent):
@@ -69,7 +73,9 @@ def build_notification_payload(items: list[NotificationItem]) -> dict:
     - ``policies``: 이번에 받은 알림에 걸린 정책만, 본문 한 번씩.
     - ``notifications``: 결제·예약 계열 앱의 알림. 각 알림은 ``policyIds`` 로 정책을 가리킨다.
     - ``conversations``: 대화를 주는 앱(메신저)의 알림을 앱과 대화 상대(``title``) 단위로
-      묶은 것. 메시지 수가 많은 순서다. 단체방 이름은 입력에 없어 방 단위로는 묶지 않는다.
+      묶은 것. 메시지 사이가 ``CONVERSATION_GAP_MINUTES`` 이상 벌어지면 다른 묶음이라 같은
+      상대가 여러 묶음으로 올 수 있다. 메시지 수가 많은 순서다. 단체방 이름은 입력에 없어
+      방 단위로는 묶지 않는다.
     - ``unclassified``: 사전에 없는 앱의 알림. 그 앱이 무엇을 주는지 모르므로 묶지도 정책을
       달지도 않고 시각순으로 그대로 싣는다. 대화로 묶으면 코드가 "대화다" 라고 먼저 정하는
       셈이라 그러지 않는다 — 무엇인지는 모델이 내용을 읽고 정한다.
@@ -104,16 +110,26 @@ def build_notification_payload(items: list[NotificationItem]) -> dict:
 
 
 def _conversations(items: list[NotificationItem]) -> list[dict]:
-    """같은 앱·같은 ``title``(대화 상대)의 알림을 하나로 묶는다."""
+    """같은 앱·같은 ``title``(대화 상대)의 이어진 알림을 하나로 묶는다.
+
+    같은 상대라도 메시지 사이가 ``CONVERSATION_GAP_MINUTES`` 이상 벌어지면 다른 묶음이다
+    (#163). 한 묶음으로 넘기면 모델이 첫 메시지부터 마지막 메시지까지를 대화 하나로 쓴다
+    — 10:28 `출발했니?` 와 22:01 `언제와~~` 가 하루 대부분을 덮는 대화가 됐고, 그 대화와
+    겹친다는 이유로 그 시간의 체류가 지워졌다.
+    """
 
     groups: dict[tuple[str, str], list[NotificationItem]] = {}
     for item in items:
         key = (normalize_app_name(item.app_name), item.title.strip())
         groups.setdefault(key, []).append(item)
 
-    conversations = []
+    sessions: list[list[NotificationItem]] = []
     for members in groups.values():
         members.sort(key=lambda m: _posted_sort_value(m.posted_at))
+        sessions.extend(_split_at_gaps(members))
+
+    conversations = []
+    for members in sessions:
         first = members[0]
         conversations.append(
             {
@@ -138,6 +154,25 @@ def _conversations(items: list[NotificationItem]) -> list[dict]:
         key=lambda c: (-c["messageCount"], _posted_sort_value(c["firstPostedAt"]))
     )
     return conversations
+
+
+def _split_at_gaps(members: list[NotificationItem]) -> list[list[NotificationItem]]:
+    """시각순으로 정렬된 메시지를 ``CONVERSATION_GAP_MINUTES`` 이상 벌어진 자리에서 나눈다.
+
+    시각을 읽을 수 없는 메시지는 간격을 잴 수 없으므로 앞 묶음에 남긴다.
+    """
+
+    gap = timedelta(minutes=CONVERSATION_GAP_MINUTES)
+    sessions: list[list[NotificationItem]] = []
+    previous: datetime | None = None
+    for member in members:
+        posted = parse_datetime(member.posted_at, timezone.utc)
+        if not sessions or (posted and previous and posted - previous >= gap):
+            sessions.append([member])
+        else:
+            sessions[-1].append(member)
+        previous = posted or previous
+    return sessions
 
 
 def _posted_sort_value(posted_at: str) -> tuple[int, datetime | str]:

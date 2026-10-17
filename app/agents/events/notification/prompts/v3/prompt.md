@@ -32,7 +32,7 @@ Timeline Agent는 서로 다른 source의 candidate와 fragment를 결합해 최
   - `policyId`, `domain`(앱이 속한 분야), `provides`(그 앱에서 주로 오는 정보 — `CONVERSATION`(대화)·`PAYMENT`(결제)·`RESERVATION`(예약) 중), `information`(얻을 수 있는 정보), `titleMeaning`·`textMeaning`(두 필드의 의미)
 - `notifications`: 사전에 정책이 있는 결제·예약·문자 앱의 알림입니다.
   - `rawId`, `postedAt`(수신 시각), `appName`, `title`, `text`, `policyIds`(이 알림에 해당하는 정책. 값은 `policies`의 `policyId`입니다)
-- `conversations`: 메신저 알림을 같은 앱·같은 대화 상대(`title`) 단위로 묶은 것입니다. 메시지 수가 많은 순서로 옵니다.
+- `conversations`: 메신저 알림을 같은 앱·같은 대화 상대(`title`) 단위로 묶은 것입니다. 메시지 사이가 60분 이상 벌어지면 다른 묶음이라, 같은 상대가 여러 묶음으로 올 수 있습니다. 메시지 수가 많은 순서로 옵니다.
   - `appName`, `title`, `policyIds`(해당 정책의 `policyId`), `messageCount`, `firstPostedAt`·`lastPostedAt`, `maxGapMinutes`(메시지 사이 최대 간격, 한 건이면 `null`), `messages`(`rawId`·`postedAt`·`text`)
 - `unclassified`: 사전에 없는 앱의 알림입니다. 정책도 묶음도 없이 시각순으로 옵니다.
   - `rawId`, `postedAt`, `appName`, `title`, `text`
@@ -81,7 +81,7 @@ candidate인지는 정해진 분류에 들어맞는지가 아니라 그 내용�
 
 대화 candidate를 쓸 때는 다음을 지킵니다.
 
-- 묶음은 대화 상대 단위입니다. 같은 상대와의 메시지로 candidate를 만들면 그 메시지의 rawId를 모두 `sourceRefs`에 넣습니다.
+- 묶음은 대화 상대 단위입니다. 묶음 하나로 candidate를 만들면 그 묶음의 rawId를 모두 `sourceRefs`에 넣습니다.
 - `title`은 대화 상대입니다. 1:1 대화면 상대 이름이고, 단체 대화방이면 대개 **메시지를 보낸 사람**입니다. 단체방 이름은 입력에 없으므로 방 단위로 묶지 않습니다.
 - 대화 참여자 목록은 입력에 없습니다. 입력에 보이지 않는 참여자를 만들지 않습니다.
 - 약속한 날이 대상 날짜가 아니면 `MEETING` candidate를 만들지 않습니다.
@@ -138,7 +138,7 @@ candidate인지는 정해진 분류에 들어맞는지가 아니라 그 내용�
 candidate의 시각은 근거 알림의 실제 시각입니다.
 
 - 알림 하나로 만든 candidate는 그 `postedAt` 한 시점입니다(`startTime`과 `endTime`이 같습니다).
-- 여러 알림을 묶은 candidate는 첫 알림부터 마지막 알림까지입니다. 60분 이상 벌어진 경우는 「알림 읽기」 4번을 따릅니다. 대화 묶음은 `maxGapMinutes`가 60 이상이면 이어진 대화가 아니므로 하나의 긴 구간으로 묶지 말고 가까운 메시지끼리의 시각을 씁니다.
+- 여러 알림을 묶은 candidate는 첫 알림부터 마지막 알림까지입니다. 60분 이상 벌어진 경우는 「알림 읽기」 4번을 따릅니다. 대화 묶음 하나가 이어진 대화 하나입니다. 같은 상대의 다른 묶음과 합쳐 대화 하나로 쓰지 않습니다.
 
 ## Confidence와 inferenceLevel
 
