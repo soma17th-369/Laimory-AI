@@ -27,6 +27,7 @@ from tests.fixtures.requests import (
     fixture_raw_id,
     make_request,
     movement_item,
+    notification_item,
     photo_item,
     stay_item,
 )
@@ -127,6 +128,85 @@ def test_delete_event_does_not_renumber_remaining_events():
 
     assert [event.client_event_id for event in draft.events] == ["event-002", "event-003"]
     assert find_event(draft, "event-003").title == "체류"
+
+
+def _cited(client_event_id, start, end, *refs, event_type=EventType.UNKNOWN):
+    return TimelineEventDraft(
+        client_event_id=client_event_id,
+        event_type=event_type,
+        title=client_event_id,
+        description="설명",
+        start_time=f"2026-06-20T{start}:00+09:00",
+        end_time=f"2026-06-20T{end}:00+09:00",
+        confidence=0.8,
+        inference_level=InferenceLevel.EVIDENCE_BASED,
+        source_refs=[
+            SourceRef(source_type=source_type, raw_id=fixture_raw_id(raw_id))
+            for source_type, raw_id in refs
+        ],
+    )
+
+
+def _day_request():
+    return make_request(
+        stays=[
+            stay_item(1, raw_id="stay-long", start="2026-06-20T12:33:00", end="2026-06-20T22:00:00"),
+            stay_item(2, raw_id="stay-short", start="2026-06-20T11:40:00", end="2026-06-20T11:55:00"),
+        ],
+        notifications=[
+            notification_item(1, "카카오톡", "엄마", posted="2026-06-20T10:28:00", raw_id="mom-1"),
+        ],
+    )
+
+
+def test_delete_event_refuses_the_only_event_saying_where_the_user_was():
+    # #163: Repair 가 알림 대화와 겹친다는 이유로 9.5시간 체류를 지워, 그 시간에는 알림 event
+    # 만 남았다. 다른 event 와 겹친다는 것은 위치 근거를 지울 이유가 아니다.
+    draft = _draft(
+        _cited("event-001", "10:28", "22:01", (EventSourceType.NOTIFICATION, "mom-1"), event_type=EventType.SOCIAL),
+        _cited("event-002", "12:33", "22:00", (EventSourceType.STAY, "stay-long")),
+    )
+
+    with pytest.raises(DraftEditError, match="12:33~22:00 에 어디 있었는지를 말하는 유일한 event"):
+        delete_event(draft, "event-002", _day_request())
+
+    assert [event.client_event_id for event in draft.events] == ["event-001", "event-002"]
+
+
+def test_delete_event_allows_a_stay_card_another_located_event_covers():
+    draft = _draft(
+        _cited("event-001", "12:33", "22:00", (EventSourceType.STAY, "stay-long")),
+        _cited("event-002", "12:33", "22:00", (EventSourceType.STAY, "stay-long")),
+    )
+
+    delete_event(draft, "event-002", _day_request())
+
+    assert [event.client_event_id for event in draft.events] == ["event-001"]
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        _cited("event-001", "10:28", "22:01", (EventSourceType.NOTIFICATION, "mom-1"), event_type=EventType.SOCIAL),
+        _cited("event-001", "11:40", "11:55", (EventSourceType.STAY, "stay-short")),
+    ],
+    ids=["알림만 있는 event", "20분 이하 체류"],
+)
+def test_delete_event_allows_what_does_not_hold_a_long_stretch_of_location(event):
+    draft = _draft(event)
+
+    delete_event(draft, "event-001", _day_request())
+
+    assert draft.events == []
+
+
+def test_delete_event_without_a_request_keeps_the_old_contract():
+    # v1·v2 세트는 요청을 넘기지 않아 예전처럼 지운다.
+    draft = _draft(_cited("event-001", "12:33", "22:00", (EventSourceType.STAY, "stay-long")))
+
+    delete_event(draft, "event-001")
+
+    assert draft.events == []
 
 
 # --- 나누기 (#119) --------------------------------------------------------------

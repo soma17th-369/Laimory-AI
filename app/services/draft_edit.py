@@ -25,6 +25,7 @@ from app.core.error_codes import ErrorCode
 from app.core.exceptions import AppError
 from app.core.logging import get_logger
 from app.schemas import (
+    EventSourceType,
     EventType,
     SourceRef,
     TimelineDraft,
@@ -32,14 +33,19 @@ from app.schemas import (
     TimelineEventDraft,
 )
 from app.services.location_link import (
+    LINK_REASON,
     activity_notification_ids,
     has_event_evidence,
     is_location_only,
 )
+from app.services.location_metrics import SHORT_STAY_MAX
 from app.services.meal_guard import MEAL_MAX_DURATION
 from app.services.validator import parse_datetime, resolve_timezone
 
 logger = get_logger(__name__)
+
+#: 하루의 어디에 있었는지를 말하는 근거.
+_LOCATION_SOURCES = frozenset({EventSourceType.STAY, EventSourceType.MOVEMENT})
 
 #: Repair Agent 가 바꿀 수 있는 event 필드(입력 JSON 의 camelCase 이름).
 _EDITABLE_FIELDS = frozenset(
@@ -117,16 +123,80 @@ def update_event(
     return updated
 
 
-def delete_event(draft: TimelineDraft, client_event_id: str) -> TimelineEventDraft:
-    """event 한 건을 지운다(in-place). 지워진 event 를 돌려준다."""
+def delete_event(
+    draft: TimelineDraft,
+    client_event_id: str,
+    request: TimelineDraftRequest | None = None,
+) -> TimelineEventDraft:
+    """event 한 건을 지운다(in-place). 지워진 event 를 돌려준다.
+
+    `request` 를 주면(v3 세트) 그 시간에 어디 있었는지를 말하는 유일한 event 는 지우지
+    않는다(#163). 지우려는 event 가 자기 체류·이동 근거를 가질 때만 본다 — 그 근거의 시간 중
+    `SHORT_STAY_MAX` 를 넘는 구간을 위치 근거가 있는 다른 event 가 덮지 않으면 거절한다.
+    Repair 가 알림 대화와 겹친다는 이유로 9.5시간 체류를 지웠고, 그 시간에는 알림 event 만
+    남았다. 다른 event 와 겹친다는 것은 위치 근거를 지울 이유가 아니다.
+    """
 
     event = find_event(draft, client_event_id)
+    if request is not None:
+        sole = _sole_location_span(event, draft, request)
+        if sole is not None:
+            raise DraftEditError(
+                f"{client_event_id} 는 {sole[0]:%H:%M}~{sole[1]:%H:%M} 에 어디 있었는지를 "
+                "말하는 유일한 event 라 지울 수 없습니다. 다른 event 와 시간이 겹친다는 것은 "
+                "지울 이유가 아닙니다. 같은 방문을 그린 체류 카드면 absorb_location_event 로 "
+                "흡수하고, 내용이 틀렸으면 update_event 로 고칩니다."
+            )
     draft.events.remove(event)
 
     # 제목은 사용자 콘텐츠라 남기지 않는다. 무엇이 지워졌는지는 Langfuse 의 도구
     # 실행 기록에서 본다.
     logger.debug("Repair: event 삭제 clientEventId=%s", client_event_id)
     return event
+
+
+def _sole_location_span(
+    event: TimelineEventDraft, draft: TimelineDraft, request: TimelineDraftRequest
+) -> tuple[datetime, datetime] | None:
+    """event 의 자기 위치 근거 가운데 다른 위치 근거 event 가 덮지 않는 가장 긴 구간.
+
+    `SHORT_STAY_MAX` 이하이면 `None` 이다. 확정 단계가 장소 근거로 붙인 체류(`LINK_REASON`)는
+    그 event 가 댄 근거가 아니라 세지 않는다. 덮는 쪽은 붙인 체류여도 그 시간의 위치를 말한다.
+    """
+
+    times = _source_times(request)
+    evidence = [
+        (max(span[0], event.start_time), min(span[1], event.end_time))
+        for ref in event.source_refs
+        if ref.source_type in _LOCATION_SOURCES
+        and ref.reason != LINK_REASON
+        and (span := times.get(ref.raw_id)) is not None
+    ]
+    covers = sorted(
+        (other.start_time, other.end_time)
+        for other in draft.events
+        if other is not event
+        and any(ref.source_type in _LOCATION_SOURCES for ref in other.source_refs)
+    )
+
+    longest: tuple[datetime, datetime] | None = None
+    for start, end in evidence:
+        cursor = start
+        gaps: list[tuple[datetime, datetime]] = []
+        for cover_start, cover_end in covers:
+            if cover_end <= cursor or cover_start >= end:
+                continue
+            if cover_start > cursor:
+                gaps.append((cursor, cover_start))
+            cursor = max(cursor, cover_end)
+        if cursor < end:
+            gaps.append((cursor, end))
+        for gap in gaps:
+            if gap[1] - gap[0] > SHORT_STAY_MAX and (
+                longest is None or gap[1] - gap[0] > longest[1] - longest[0]
+            ):
+                longest = gap
+    return longest
 
 
 # --- 위치만 있는 event 흡수 (#138) ---------------------------------------------

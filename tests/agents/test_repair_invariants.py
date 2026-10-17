@@ -226,7 +226,10 @@ def test_lunch_keeps_its_photo_and_the_photo_card_is_removed():
 
 
 def test_photo_contract_holds_after_repair_deletes_the_event_holding_a_photo():
-    draft = _draft(_morning(), _lunch((PHOTO, LUNCH_PHOTO)), _evening((PHOTO, EVENING_PHOTO)))
+    # 점심은 사진만 근거로 둔다. 회사 체류를 장소 근거로 함께 들면 그 30분의 위치를 말하는
+    # 유일한 event 라 v3 Repair 가 지울 수 없다(#163).
+    lunch = _event("event-002", "12:20", "12:50", (PHOTO, LUNCH_PHOTO), event_type=EventType.MEAL, title="점심")
+    draft = _draft(_morning(), lunch, _evening((PHOTO, EVENING_PHOTO)))
     plan = _plan([{"tool": "delete_event", "args": {"clientEventId": "event-002"}}])
 
     result, published = _run(draft, [plan])
@@ -358,6 +361,29 @@ def test_photo_contract_holds_after_timeline_is_rerun_and_drops_the_photos():
     assert_photo_contract(result, _request())
     for confirmed in published:
         assert_photo_contract(confirmed, _request())
+
+
+def test_v3_repair_cannot_delete_the_only_event_saying_where_the_user_was():
+    # #163: 알림 대화와 겹친다는 이유로 9.5시간 체류를 지운 일이 있었다.
+    afternoon = _event("event-002", "12:00", "18:00", (STAY, OFFICE), event_type=EventType.UNKNOWN, title="회사에서 보낸 시간")
+    draft = _draft(_morning(), afternoon)
+    plan = _plan([{"tool": "delete_event", "args": {"clientEventId": "event-002"}}])
+
+    result, _ = _run(draft, [plan])
+
+    assert "회사에서 보낸 시간" in [event.title for event in result.events]
+
+
+def test_legacy_repair_still_deletes_as_before():
+    afternoon = _event("event-002", "12:00", "18:00", (STAY, OFFICE), event_type=EventType.UNKNOWN, title="회사에서 보낸 시간")
+    draft = _draft(_morning(), afternoon)
+    plan = _plan([{"tool": "delete_event", "args": {"clientEventId": "event-002"}}])
+
+    result = RepairAgent(llm=FakeLLM([plan]), max_iterations=3, extended_input=False).generate(
+        _request(), draft
+    )
+
+    assert "회사에서 보낸 시간" not in [event.title for event in result.events]
 
 
 def test_a_photo_candidate_the_timeline_dropped_is_restored_in_the_confirm_pass():

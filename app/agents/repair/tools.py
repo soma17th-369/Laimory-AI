@@ -227,7 +227,10 @@ def _delete_event(ctx: RepairContext, args: dict) -> str:
     if not client_event_id:
         raise RepairToolError("clientEventId 인자가 필요합니다.")
 
-    event = delete_event(ctx.draft, str(client_event_id))
+    # 그 시간의 유일한 위치 근거 event 를 지우지 않는 것은 v3 세트의 계약이다(#163).
+    event = delete_event(
+        ctx.draft, str(client_event_id), ctx.request if ctx.extended else None
+    )
     return f"{client_event_id}({event.title}) 를 지웠습니다. 남은 event={len(ctx.draft.events)}건"
 
 
@@ -391,7 +394,10 @@ _TOOLS: dict[str, RepairTool] = {
         RepairTool(
             name="delete_event",
             usage='delete_event(clientEventId="event-003")',
-            description="근거가 없거나 사실이 아닌 event 를 지운다.",
+            description=(
+                "근거가 없거나 사실이 아닌 event 를 지운다. 그 시간에 어디 있었는지를 말하는 "
+                "유일한 event(체류·이동 근거를 다른 event 가 덮지 않음)는 지우지 못한다."
+            ),
             run=_delete_event,
         ),
         RepairTool(
@@ -404,10 +410,13 @@ _TOOLS: dict[str, RepairTool] = {
             description=(
                 "event 한 건을 둘 이상으로 나눈다. 조각마다 startTime, endTime, title 은 "
                 "반드시 주고 eventType, description, place, address, confidence, "
-                "inferenceLevel, uncertainty, tags 는 바꿀 때만 준다. 조각은 원래 event 의 "
-                "시간 안에 있어야 하고 서로 겹치면 안 되며, 원래 event 가 근거로 댄 "
-                "체류·이동·일정마다 그 시간과 겹치는 조각이 있어야 한다. sourceRefs 는 "
-                "주지 않는다 — 원래 event 의 근거를 코드가 각 조각의 시간에 맞춰 나눠 담는다."
+                "inferenceLevel, uncertainty, tags 는 바꿀 때만 준다. 원래 event 의 시간 밖으로 "
+                "나간 조각은 안쪽만 남기고, 안에 남는 조각이 둘보다 적으면 거절한다. 조각끼리 "
+                "겹치면 안 되고, 원래 event 가 근거로 댄 체류·이동·일정마다 그 시간과 겹치는 "
+                "조각이 있어야 하며, 조각마다 그 시간의 근거가 하나 이상 있어야 한다. "
+                "sourceRefs 는 주지 않는다 — 원래 event 의 근거를 코드가 각 조각의 시간에 맞춰 "
+                "나눠 담는다. 사진은 가장 가까운 조각에 담기므로 split 으로 사진을 떼어 낼 수 "
+                "없다(사진은 update_event 로 옮긴다)."
             ),
             run=_split_event,
             extended_only=True,
