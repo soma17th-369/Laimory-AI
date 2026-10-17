@@ -372,8 +372,9 @@ def test_an_unknown_raw_id_drops_the_unsupported_event():
 
     repair_draft(draft, _request())
 
-    assert _titles(draft) == ["정상"]
-    assert _ids(draft) == ["event-001"]
+    # 요청의 사진(13:20)은 품는 event 가 없어 사진 event 로 남는다(#163).
+    assert _titles(draft) == ["정상", "사진으로 남긴 순간"]
+    assert _ids(draft) == ["event-001", "event-002"]
     assert any("입력에 없는 rawId 참조" in warning.message for warning in draft.warnings)
 
 

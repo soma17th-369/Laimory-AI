@@ -293,6 +293,17 @@ def test_timeline_v3_states_the_limit_the_code_measures() -> None:
     assert "24개" not in timeline
 
 
+def test_timeline_v3_never_attaches_a_photo_to_the_nearest_event() -> None:
+    """22:56 저녁 사진이 22:01 에 끝난 대화에 붙어 저녁이 사라졌다(#163)."""
+
+    text = _timeline_v3()
+
+    assert "가장 가까운" not in text
+    assert "의미를 알 수 없" not in text
+    section = _between(text, "### fragment와 사진", "### sourceRefs")
+    assert "그 사진의 candidate로 독립 event를 둡니다" in section
+
+
 def test_timeline_v3_keeps_time_expressions_out_of_descriptions() -> None:
     """언제는 startTime·endTime 이 담는다. description 은 어디서·무엇을이다."""
 

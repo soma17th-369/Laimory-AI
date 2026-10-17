@@ -69,11 +69,13 @@ rawId 참조는 제거하고, 그 결과 유효한 근거가 하나도 남지 �
 Repair 가 `absorb_location_event` 로 흡수한다. 일정·사진 event 는 어떤 단계도 지우지 않는다.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, tzinfo
+from functools import partial
 
 from app.core.logging import get_logger, log_fields
 from app.schemas import (
+    AiEventCandidate,
     EventSourceType,
     EventType,
     HealthMetric,
@@ -648,16 +650,23 @@ def _resolve_places_without_filling(
 
 def _correction_steps(
     extended: bool,
+    candidates: Sequence[AiEventCandidate] = (),
 ) -> tuple[tuple[str, Callable[[TimelineDraft, TimelineDraftRequest], object]], ...]:
+    # 사진 단일 귀속은 Timeline 이 버린 사진 candidate 를 되살려야 해서 candidate 를 받는다(#163).
+    overrides: dict[str, Callable[[TimelineDraft, TimelineDraftRequest], object]] = {
+        "사진 단일 귀속": partial(enforce_photo_assignment, candidates=candidates),
+    }
+    if extended:
+        # v3 세트는 빈 place 를 채우지 않는다(#150).
+        overrides["장소 확정"] = _resolve_places_without_filling
+    steps = tuple((name, overrides.get(name, step)) for name, step in _CORRECTION_STEPS)
     if not extended:
-        return _CORRECTION_STEPS
-    names = [name for name, _ in _CORRECTION_STEPS]
-    position = names.index("장소 확정")
+        return steps
+    position = [name for name, _ in steps].index("장소 확정")
     return (
-        *_CORRECTION_STEPS[:position],
+        *steps[:position],
         _LOCATION_LINK_STEP,
-        ("장소 확정", _resolve_places_without_filling),
-        *_CORRECTION_STEPS[position + 1 :],
+        *steps[position:],
         *_EXTENDED_CORRECTION_STEPS,
     )
 
@@ -721,6 +730,7 @@ def repair_draft(
     report: ConfirmReport | None = None,
     extended: bool = True,
     issued_ids: set[str] | None = None,
+    candidates: Sequence[AiEventCandidate] = (),
 ) -> TimelineDraft:
     """LLM 이 만든 draft 를 코드로 확정한다(in-place, 같은 객체를 돌려준다).
 
@@ -735,11 +745,14 @@ def repair_draft(
     그대로 두고 새 event 에만 쓴 적 없는 번호를 준다(`assign_event_ids`). Repair 가 반복마다
     넘겨, 도구 로그와 쌓인 보정 기록의 번호가 끝까지 같은 event 를 가리키게 한다. 주지
     않으면 1번부터 다시 매긴다.
+
+    `candidates` 는 Event Agent 들의 candidate 다. 사진 단일 귀속이 Timeline 이 통째로 버린
+    사진 candidate 를 사진 event 로 되살리는 데 쓴다(#163).
     """
 
     report = report if report is not None else ConfirmReport()
 
-    for name, step in _correction_steps(extended):
+    for name, step in _correction_steps(extended, candidates):
         report.run(name, draft, lambda step=step: step(draft, request))
 
     # source 하나를 여러 event가 근거로 사용할 수 있다. 현재는 timeline_items에
@@ -765,7 +778,9 @@ def repair_draft(
 
 
 def enforce_final_photo_assignment(
-    draft: TimelineDraft, request: TimelineDraftRequest
+    draft: TimelineDraft,
+    request: TimelineDraftRequest,
+    candidates: Sequence[AiEventCandidate] = (),
 ) -> None:
     """저장으로 넘어가기 직전에 사진 단일 귀속을 한 번 더 강제한다(#119).
 
@@ -777,7 +792,7 @@ def enforce_final_photo_assignment(
 
     # 남아 있는 event 의 번호는 바꾸지 않고 새로 만든 사진 event 에만 번호를 준다(#144).
     issued = {event.client_event_id for event in draft.events}
-    enforcement = enforce_photo_assignment(draft, request)
+    enforcement = enforce_photo_assignment(draft, request, candidates)
     if enforcement.changed_composition:
         sort_events(draft)
         assign_event_ids(draft, issued)

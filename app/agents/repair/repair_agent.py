@@ -59,6 +59,7 @@ from app.core.structured import StructuredOutputError
 from app.core.llm_stages import LLMStage
 from app.schemas import (
     AgentEventResult,
+    AiEventCandidate,
     RepairPlan,
     TimelineDraft,
     TimelineDraftRequest,
@@ -192,6 +193,16 @@ def _fragment_raw_ids(ctx: RepairContext) -> set[str]:
     }
 
 
+def _candidates(ctx: RepairContext) -> list[AiEventCandidate]:
+    """Event Agent 들의 candidate 전체. 사진 단일 귀속이 버려진 사진 candidate 를 찾는다."""
+
+    return [
+        candidate
+        for result in ctx.event_results.values()
+        for candidate in result.candidates
+    ]
+
+
 def _confirm(ctx: RepairContext) -> None:
     """코드 확정 패스. 매 반복의 끝이자 다음 분석의 시작 상태를 만든다.
 
@@ -216,6 +227,7 @@ def _confirm(ctx: RepairContext) -> None:
         report=report,
         extended=ctx.extended,
         issued_ids=ctx.issued_ids,
+        candidates=_candidates(ctx),
     )
     ctx.reports.append(report)
     # 확정된 event 를 대상으로 본다. 병합·삭제로 구성이 바뀐 뒤라야 "이 event 의 근거가
