@@ -293,6 +293,22 @@ def test_timeline_v3_states_the_limit_the_code_measures() -> None:
     assert "24개" not in timeline
 
 
+def test_timeline_v3_does_not_turn_every_candidate_and_fragment_into_an_event() -> None:
+    """운영에서 알림 candidate 9건과 fragment 8건이 모두 event 가 되어 초안이 23건이었다(#163)."""
+
+    text = _timeline_v3()
+
+    # candidate 는 Event Agent 의 제안이다. "근거가 충분하다" 고 읽으면 그대로 옮긴다.
+    assert "근거가 충분하다고 판단한 후보" not in text
+    # fragment 는 Event Agent 가 독립 사건이 되기에 부족하다고 본 단서다. 사진만 예외다.
+    section = _between(text, "### fragment와 사진", "### sourceRefs")
+    assert "fragment는 새 event로 승격하지 않습니다" in section
+    assert "승격할 수 있습니다" not in text
+    # 10개를 넘으면 알림만 근거인 event 부터 뺀다. 코드도 같은 순서로 지운다.
+    limit = _between(text, "**최종 event는", "### 장소")
+    assert limit.index("근거가 알림뿐인 event부터 뺍니다") < limit.index("병합 기준을 만족하는 조각부터 합칩니다")
+
+
 def test_timeline_v3_never_attaches_a_photo_to_the_nearest_event() -> None:
     """22:56 저녁 사진이 22:01 에 끝난 대화에 붙어 저녁이 사라졌다(#163)."""
 
