@@ -39,7 +39,7 @@ from app.services.location_link import (
     is_location_only,
 )
 from app.services.location_metrics import SHORT_STAY_MAX
-from app.services.meal_guard import MEAL_MAX_DURATION
+from app.services.meal_guard import MEAL_MAX_DURATION, is_stay_meal
 from app.services.validator import parse_datetime, resolve_timezone
 
 logger = get_logger(__name__)
@@ -221,8 +221,13 @@ def absorb_location_event(
       event 는 코드가 지우지 않는다(`is_location_only`).
     - 대상이 일정·사진 event 가 아니다.
     - 둘의 시간이 겹치지 않는다.
-    - 대상이 `MEAL` 인데 넓힌 시간이 60분을 넘는다. 다음 확정에서 `meal_guard` 가 잘라
-      체류의 나머지 시간이 하루에서 사라진다.
+    - 대상이 `MEAL` 인데 넓힌 시간이 60분을 넘고, 흡수한 결과가 식당에 머문 식사
+      (`is_stay_meal`: 그 체류 안에 사진이나 결제 알림이 있고 3시간 이하)가 아니다. 다음
+      확정에서 `meal_guard` 가 잘라 체류의 나머지 시간이 하루에서 사라진다(#163).
+
+    대상이 같은 체류를 확정 단계가 붙인 장소 근거(`LINK_REASON`)로 이미 갖고 있으면, 그 근거를
+    흡수한 체류의 근거로 바꾼다. 표지가 남으면 그 체류가 식사의 근거로 세지지 않아 다음
+    확정이 식사를 60분으로 자른다.
     """
 
     if client_event_id == into_client_event_id:
@@ -247,15 +252,30 @@ def absorb_location_event(
 
     start = min(source.start_time, target.start_time)
     end = max(source.end_time, target.end_time)
-    if target.event_type is EventType.MEAL and end - start > MEAL_MAX_DURATION:
+    absorbed_ids = {ref.raw_id for ref in source.source_refs}
+    kept = [
+        ref
+        for ref in target.source_refs
+        if not (ref.reason == LINK_REASON and ref.raw_id in absorbed_ids)
+    ]
+    cited = {ref.raw_id for ref in kept}
+    refs = [*kept, *(ref for ref in source.source_refs if ref.raw_id not in cited)]
+
+    absorbed = target.model_copy(
+        update={"start_time": start, "end_time": end, "source_refs": refs}
+    )
+    if (
+        target.event_type is EventType.MEAL
+        and end - start > MEAL_MAX_DURATION
+        and not is_stay_meal(absorbed, request)
+    ):
         raise DraftEditError(
-            "흡수하면 MEAL 이 60분을 넘습니다. 식사 시간은 다음 확정에서 60분으로 잘려 "
-            "나머지 체류 시간이 사라지므로, 이 체류는 흡수하지 말고 그대로 둡니다."
+            "흡수하면 MEAL 이 60분을 넘는데, 그 체류 안에 식사의 사진이나 결제 알림이 없거나 "
+            "3시간을 넘습니다. 식사 시간은 다음 확정에서 60분으로 잘려 나머지 체류 시간이 "
+            "사라지므로, 이 체류는 흡수하지 말고 그대로 둡니다."
         )
 
-    cited = {ref.raw_id for ref in target.source_refs}
-    moved = [ref for ref in source.source_refs if ref.raw_id not in cited]
-    target.source_refs = [*target.source_refs, *moved]
+    target.source_refs = refs
     target.start_time, target.end_time = start, end
     draft.events.remove(source)
 

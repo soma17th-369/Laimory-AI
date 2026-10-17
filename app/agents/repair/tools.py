@@ -432,7 +432,8 @@ _TOOLS: dict[str, RepairTool] = {
                 "된다)를 같은 방문을 그린 일정·사진 event(intoClientEventId)에 흡수한다. "
                 "체류 근거와 그 알림을 옮기고 대상의 시간을 "
                 "체류까지 넓힌 뒤 체류 event 를 지운다. 대상의 제목·본문·eventType 은 "
-                "바꾸지 않는다. 흡수하면 MEAL 이 60분을 넘으면 거절한다."
+                "바꾸지 않는다. 흡수하면 MEAL 이 60분을 넘을 때는 그 체류 안에 식사의 사진이나 "
+                "결제 알림이 있고 3시간 이하일 때(식당에 머문 식사)만 받고, 아니면 거절한다."
             ),
             run=_absorb_location_event,
             extended_only=True,
@@ -450,7 +451,10 @@ _TOOLS: dict[str, RepairTool] = {
         _service_tool(
             "enforce_meal_duration",
             "MEAL event 의 지속시간을 20~60분으로 되돌린다.",
-            lambda ctx: enforce_meal_duration(ctx.draft, ctx.request),
+            # 확정 pass 와 같은 기준이어야 한다. v3 는 식당에 머문 식사를 3시간까지 둔다(#163).
+            lambda ctx: enforce_meal_duration(
+                ctx.draft, ctx.request, allow_stay_meal=ctx.extended
+            ),
         ),
         _service_tool(
             "enforce_sleep_boundary",

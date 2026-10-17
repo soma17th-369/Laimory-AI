@@ -23,6 +23,7 @@ import pytest
 from app.schemas import EventSourceType, EventType, InferenceLevel, TimelineWarningSeverity
 from app.schemas.user_memory import NARRATIVE_FIELDS
 from app.services.event_count_guard import MAX_EVENT_COUNT
+from app.services.meal_guard import MEAL_STAY_MAX_DURATION
 
 APP_ROOT = Path(__file__).resolve().parents[2] / "app"
 
@@ -259,7 +260,7 @@ def test_timeline_v3_splits_by_change_not_by_length() -> None:
     assert "가깝다는 것만으로는 합치지 않습니다" in section
 
     assert "자르는 상한이 아닙니다" in timing
-    assert "`MEAL`의 20~60분뿐입니다" in timing
+    assert "`MEAL`의 20~60분(식당에 머문 식사는 체류 시간, 3시간 이내)뿐입니다" in timing
     assert "길이를 맞추려는 분할보다 먼저입니다" in timing
     assert "오전·오후처럼 나" not in text
 
@@ -307,6 +308,23 @@ def test_timeline_v3_does_not_turn_every_candidate_and_fragment_into_an_event() 
     # 10개를 넘으면 알림만 근거인 event 부터 뺀다. 코드도 같은 순서로 지운다.
     limit = _between(text, "**최종 event는", "### 장소")
     assert limit.index("근거가 알림뿐인 event부터 뺍니다") < limit.index("병합 기준을 만족하는 조각부터 합칩니다")
+
+
+def test_timeline_v3_keeps_one_restaurant_visit_as_one_meal() -> None:
+    """식당 한 번의 방문이 체류·식사·결제 카드 셋으로 쪼개졌다(#163)."""
+
+    text = _timeline_v3()
+    meal = _between(text, "### `MEAL` —", "### `PHOTO_MOMENT` —")
+
+    assert "식당에 머문 체류는 그 식사와 하나입니다" in meal
+    # 코드(`meal_guard`)가 받는 상한과 같아야 한다.
+    hours = int(MEAL_STAY_MAX_DURATION.total_seconds() // 3600)
+    assert f"그 체류 시간({hours}시간 이내)" in meal
+    assert "식당에 머문 체류와 그 안의 식사는 체류가 더 길어도 하나입니다" in _between(
+        text, "### 합치는 경우와 나누는 경우", "### fragment와 사진"
+    )
+    # 체류 전체를 "식사했다" 고 쓰지 않는다.
+    assert "`{장소}에서 {음식}을 먹으며 시간을 보냈다.`" in _between(text, "### 문장 형식", "## confidence")
 
 
 def test_timeline_v3_never_attaches_a_photo_to_the_nearest_event() -> None:

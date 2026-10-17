@@ -662,7 +662,8 @@ def _correction_steps(
         "사진 단일 귀속": partial(enforce_photo_assignment, candidates=candidates),
     }
     if extended:
-        # v3 세트는 빈 place 를 채우지 않는다(#150).
+        # v3 세트는 식당에 머문 식사를 3시간까지 두고(#163), 빈 place 를 채우지 않는다(#150).
+        overrides["식사 시간"] = partial(enforce_meal_duration, allow_stay_meal=True)
         overrides["장소 확정"] = _resolve_places_without_filling
     steps = tuple((name, overrides.get(name, step)) for name, step in _CORRECTION_STEPS)
     if not extended:

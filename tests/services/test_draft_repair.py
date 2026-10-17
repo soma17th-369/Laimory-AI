@@ -440,13 +440,13 @@ def test_window_warning_names_the_event_by_title_not_a_stale_id():
     assert "event-0" not in boundary.message
 
 
-def test_repair_shrinks_an_over_long_meal_and_keeps_everything_sorted():
+def test_legacy_repair_shrinks_an_over_long_meal_and_keeps_everything_sorted():
     draft = _draft(
         _event("event-001", "12:00", "15:00", STAY_REF, PHOTO_REF, event_type=EventType.MEAL, title="점심"),
         _event("event-002", "09:00", "10:00", STAY_REF, title="오전"),
     )
 
-    repair_draft(draft, _request())
+    repair_draft(draft, _request(), extended=False)
 
     assert _titles(draft) == ["오전", "점심"]
     assert _ids(draft) == ["event-001", "event-002"]
@@ -454,6 +454,19 @@ def test_repair_shrinks_an_over_long_meal_and_keeps_everything_sorted():
     assert meal.end_time - meal.start_time < timedelta(hours=1)
     # 식사는 음식 사진 시각(13:20)에 붙는다.
     assert meal.start_time.isoformat() == f"{DAY}T13:20:00+09:00"
+
+
+def test_v3_keeps_a_meal_that_spans_its_restaurant_stay():
+    # #163: 체류(12:00~15:00)를 자기 근거로 갖고 그 안에 사진(13:20)이 있으면 식당에 머문
+    # 식사다. 식당인지는 Timeline·Repair 가 체류를 식사에 합쳐 판단했다.
+    draft = _draft(
+        _event("event-001", "12:00", "15:00", STAY_REF, PHOTO_REF, event_type=EventType.MEAL, title="점심"),
+    )
+
+    repair_draft(draft, _request())
+
+    meal = draft.events[0]
+    assert (meal.start_time.isoformat(), meal.end_time.isoformat()) == (_t("12:00"), _t("15:00"))
 
 
 # --- 근거 구간 정렬(align) -----------------------------------------------------
