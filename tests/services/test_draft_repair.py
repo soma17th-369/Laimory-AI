@@ -306,6 +306,51 @@ def test_touching_boundaries_are_not_an_overlap():
     assert draft.warnings == []
 
 
+def test_place_less_events_with_different_evidence_are_not_merged():
+    # #163: 근거가 알림뿐인 event 는 장소가 비어 있다. 빈 장소를 같은 장소로 치면 서로 다른
+    # 상대와의 대화가 시간만 겹쳐도 하나가 된다(운영에서 대화 셋이 11시간짜리 하나가 됐다).
+    draft = _draft(
+        _event(
+            "event-001", "10:28", "22:01", (EventSourceType.NOTIFICATION, "note-mom"),
+            event_type=EventType.SOCIAL, title="엄마와 대화",
+        ),
+        _event(
+            "event-002", "14:55", "18:09", (EventSourceType.NOTIFICATION, "note-friend"),
+            event_type=EventType.SOCIAL, title="우승민과 대화",
+        ),
+        _event(
+            "event-003", "17:45", "18:20", (EventSourceType.NOTIFICATION, "note-other"),
+            event_type=EventType.SOCIAL, title="심서후와 대화",
+        ),
+    )
+
+    resolve_overlaps(draft)
+
+    assert _titles(draft) == ["엄마와 대화", "우승민과 대화", "심서후와 대화"]
+    assert not any("중복 event" in w.message for w in draft.warnings)
+    assert any("서로 겹치는 event" in w.message for w in draft.warnings)
+
+
+def test_place_less_events_sharing_evidence_are_still_merged():
+    draft = _draft(
+        _event(
+            "event-001", "14:55", "16:00", (EventSourceType.NOTIFICATION, "note-1"),
+            event_type=EventType.SOCIAL, title="우승민과 대화",
+        ),
+        _event(
+            "event-002", "15:30", "18:09",
+            (EventSourceType.NOTIFICATION, "note-1"), (EventSourceType.NOTIFICATION, "note-2"),
+            event_type=EventType.SOCIAL, title="우승민과 이어진 대화",
+        ),
+    )
+
+    resolve_overlaps(draft)
+
+    assert len(draft.events) == 1
+    assert len(draft.events[0].source_refs) == 2
+    assert any("중복 event" in w.message for w in draft.warnings)
+
+
 # --- 전체 repair 파이프라인 ----------------------------------------------------
 
 

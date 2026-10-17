@@ -61,7 +61,8 @@ rawId 참조는 제거하고, 그 결과 유효한 근거가 하나도 남지 �
 겹침에 대하여: **포함 관계는 겹침이 아니다.** 긴 카페 체류(`REST`) 안에 짧은 식사
 (`MEAL`)가 들어 있는 구조는 우리가 프롬프트로 요구한 정상적인 모양이다. 여기서
 병합하는 것은 *같은 종류 + 같은 장소 + 시간이 겹치는* 중복 event 뿐이고, 서로 다른
-장소를 동시에 가리키는 부분 겹침은 시간을 건드리지 않고 경고로만 남긴다.
+장소를 동시에 가리키는 부분 겹침은 시간을 건드리지 않고 경고로만 남긴다. 장소가 비어
+있는 event 끼리는 같은 근거를 함께 가질 때만 중복으로 본다(#163).
 
 일정·사진 event 와 같은 방문을 그린 체류 카드(#138)도 코드가 합치지 않는다. 같은 방문인지
 더 긴 다른 시간(근무 체류 안의 회의)인지는 의미 판단이라, v3 에서는 찾아서 Repair 에 넘기고
@@ -400,12 +401,23 @@ def _contains(outer: TimelineEventDraft, inner: TimelineEventDraft) -> bool:
 
 
 def _is_duplicate(left: TimelineEventDraft, right: TimelineEventDraft) -> bool:
-    """같은 종류 + 같은 장소 + 시간이 겹치면 같은 사건을 두 번 쓴 것으로 본다."""
+    """같은 종류 + 같은 장소 + 시간이 겹치면 같은 사건을 두 번 쓴 것으로 본다.
 
-    return (
-        left.event_type is right.event_type
-        and _place_key(left) == _place_key(right)
-        and _overlaps(left, right)
+    장소가 비어 있으면 장소로는 같은 곳인지 알 수 없다. 그때는 같은 근거(rawId)를 하나
+    이상 함께 가질 때만 같은 사건으로 본다(#163). 빈 키를 같은 장소로 치면 근거가 알림뿐인
+    event 들이 시간만 겹쳐도 합쳐진다 — 서로 다른 상대와의 대화 셋이 11시간짜리 대화
+    하나가 됐다.
+    """
+
+    if left.event_type is not right.event_type or not _overlaps(left, right):
+        return False
+    place = _place_key(left)
+    if place != _place_key(right):
+        return False
+    if any(place):
+        return True
+    return not {ref.raw_id for ref in left.source_refs}.isdisjoint(
+        ref.raw_id for ref in right.source_refs
     )
 
 
