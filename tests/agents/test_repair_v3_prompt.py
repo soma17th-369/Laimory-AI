@@ -685,6 +685,19 @@ def test_repair_v3_decides_whether_a_stay_card_is_the_same_visit() -> None:
         assert example in section
 
 
+def test_repair_v3_rewrites_a_restaurant_meal_and_folds_its_payment_card() -> None:
+    """식당 체류를 식사에 흡수한 뒤 문장을 다시 쓰지 않았고 결제 카드도 남았다(#163)."""
+
+    section = _between(
+        _repair_v3(), "#### `LOCATION_ONLY_OVERLAP`", "#### `STAY_WORD_IN_TITLE`"
+    )
+
+    assert "식당에 머문 체류와 그 안의 식사는 덮는 비율과 무관하게 같은 방문입니다" in section
+    assert "장소와 머문 시간을 말하는지 봅니다" in section
+    assert "`먹으며 시간을 보냈다`로 씁니다" in section
+    assert "결제 카드를 `delete_event`로 지웁니다" in section
+
+
 def test_repair_v3_keeps_stay_words_times_and_addresses_out_of_titles() -> None:
     text = _repair_v3()
     section = _between(text, "#### 문장에 쓰지 않는 것", "#### 문장 형식")
