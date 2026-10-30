@@ -8,8 +8,8 @@ v4 문장은 장소 자리를 `{place}` 칸으로 남긴다. 칸에 들어갈 �
    풀을 만들고, 다른 근거가 풀의 이름을 가리키면 확정하고, 아니면 Timeline 이 고른 후보를
    풀 안의 것만 남긴다.
 2. **문장 장소 칸**(`fill_place_slots`) — v3 의 `문장 주소 정리` 자리. event 를 지우거나
-   합치는 단계가 끝난 뒤 문장을 맞춘다. 이동 문장을 주소로 쓰고, 칸을 쓸 수 없는 event 의 칸을
-   주소로 바꾼다.
+   합치는 단계가 끝난 뒤 문장을 맞춘다. 이동 제목·문장의 장소명과 주소 원문을 고치고, 칸을 쓸 수
+   없는 event 의 칸을 주소로 바꾼다.
 
 규칙(사용자 결정 2026-10-29).
 
@@ -20,7 +20,11 @@ v4 문장은 장소 자리를 `{place}` 칸으로 남긴다. 칸에 들어갈 �
 - **주소 대체**: 근거에 장소 이름이 하나도 없을 때만 `{place}` 를 대표 지점의 주소 원문으로 바꾼다. 동네 이름으로
   바꾸지 않는다. 주소도 없으면 칸과 그 조사를 지운다 — 칸이 남은 채 장소가 없으면 App Server
   가 하루치 결과 전체를 400 으로 거절한다.
-- **이동**: 장소명을 쓰지 않는다. 문장은 출발·도착 지명(구 + 동)으로 코드가 쓰고, 후보는 없다.
+- **이동**: 장소명을 쓰지 않고 후보도 없다. 제목과 문장은 Timeline·Repair 가 같은 출발·도착
+  지명(구 + 동)으로 쓴다(사용자 결정 2026-10-30 — 제목은 Timeline, 문장은 코드가 따로 쓰자 둘의
+  출발지가 갈렸다). 출발·도착 지명은 기록이 정하는 값이라 코드가 맞춘다 — 글에 기록의 경로가 없으면
+  경로를 다시 쓰고 LLM 이 고른 목적(`출근`·`이동했다.`)은 둔다. 장소명은 뺀다. 제목과 문장에 같은
+  규칙을 써서 둘이 갈라지지 않는다.
 """
 
 import re
@@ -40,7 +44,7 @@ from app.schemas import (
 )
 from app.schemas.clues import NotificationClueKind
 from app.schemas.timeline_result import PLACE_SLOT
-from app.services.base_events import AreaNamer, toward_particle
+from app.services.base_events import AreaNamer, movement_route, toward_particle
 from app.services.calendar_clues import split_location_text
 from app.services.clue_bundles import TimelineClues
 from app.services.place_resolver import (
@@ -141,20 +145,16 @@ def fill_place_slots(
     index = _Index.build(request)
     same_place = same_place_addresses(request, tz)
     names_by_place = _names_by_place(request, same_place, tz)
-    day_addresses = _address_forms(
-        [
-            *(stay.address for stay in request.stays),
-            *(m.end.address for m in request.movements if m.end is not None),
-            *(m.start.address for m in request.movements if m.start is not None),
-            *(photo.address for photo in request.photos),
-        ]
-    )
+    raw_addresses = _day_raw_addresses(request)
+    day_addresses = _address_forms(raw_addresses)
+    areas = clues.areas if clues else AreaNamer()
+    movement_names = _place_names_outside_areas(request, raw_addresses, same_place, areas)
     for event in draft.events:
         evidence = index.evidence(event, tz)
         if event.event_type is EventType.MOVEMENT:
-            event.description = _movement_sentence(
-                evidence.movements, tz, same_place, clues.areas if clues else AreaNamer()
-            )
+            route = _movement_route(evidence.movements, tz, same_place, areas)
+            event.title = _movement_text(event.title, route, movement_names, "이동")
+            event.description = _movement_text(event.description, route, movement_names, "이동했다.")
             continue
 
         names = unique_place_names(
@@ -264,11 +264,11 @@ def fix_title_places(
     # 제목 어디에든 들어간 그날의 장소명을 뺀다. Timeline 은 위치·사진의 장소 후보나 사진 설명의
     # 상호를 제목 가운데에도 넣는다(`해녀밥상 점심`). 지명(`area`)은 장소명이 아니라 남긴다.
     # 이동 제목도 같다 — `동백호수공원 두산위브더제니스에서 도화동으로 이동` 이 나온 적이 있다.
-    names = sorted(_day_place_names(request), key=len, reverse=True)
+    names = _place_names_outside_areas(
+        request, _day_raw_addresses(request), clues.same_place, clues.areas
+    )
     for event in draft.events:
-        title = event.title
-        for name in names:
-            title = re.sub(rf"(?:(?<=\s)|^){re.escape(name)}(?:에서|의|에)?(?=\s|$)\s*", "", title)
+        title = _without_place_names(event.title, names)
         # 가게 종류도 장소다(`한식당 식사`). 음식 종류가 붙은 말은 음식만 남기고(`한식당` → `한식`),
         # 장소만 말하는 말은 뺀다. 입력에 없는 말이라 위의 장소명 검사에 걸리지 않는다.
         title = _CUISINE_VENUE.sub(lambda m: f"{m.group(1)}식", title)
@@ -285,6 +285,64 @@ _VENUE_WORD = re.compile(
     r"(?:(?<=\s)|^)(?:식당|음식점|레스토랑|카페|커피숍|가게|편의점|마트|술집|주점|빵집|베이커리)"
     r"(?:에서|의|에)?(?=\s|$)\s*"
 )
+
+
+def _without_place_names(text: str, names: list[str]) -> str:
+    """글에서 장소명을 뒤의 조사와 함께 뺀다. 어절 하나로 쓰인 이름만 본다."""
+
+    for name in names:
+        text = re.sub(rf"(?:(?<=\s)|^){re.escape(name)}(?:에서|으로|로|의|에)?(?=\s|$)\s*", "", text)
+    return text
+
+
+def _day_raw_addresses(request: TimelineDraftRequest) -> list[str | None]:
+    return [
+        *(stay.address for stay in request.stays),
+        *(m.end.address for m in request.movements if m.end is not None),
+        *(m.start.address for m in request.movements if m.start is not None),
+        *(photo.address for photo in request.photos),
+    ]
+
+
+def _place_names_outside_areas(
+    request: TimelineDraftRequest,
+    raw_addresses: list[str | None],
+    same_place: dict[str, str],
+    areas: AreaNamer,
+) -> list[str]:
+    """그날의 장소명 중 지명의 어절과 겹치지 않는 것. 겹치는 이름을 빼면 지명이 반쯤 지워진다."""
+
+    area_words = {
+        word
+        for address in raw_addresses
+        if (area := areas.name(_same(same_place, address)))
+        for word in area.split()
+    }
+    return [
+        name
+        for name in sorted(_day_place_names(request), key=len, reverse=True)
+        if name not in area_words
+    ]
+
+
+def _movement_text(text: str | None, route: str, names: list[str], default: str) -> str:
+    """이동 제목·문장. 출발·도착 지명은 기록이 정하므로 코드가 맞추고, 목적은 LLM 이 쓴 것을 둔다.
+
+    제목과 문장은 `{경로} {목적}` / `{경로} {목적}했다.` 꼴이다(「문장 형식」). 장소명을 뺀 글에
+    기록의 경로가 그대로 있으면 둔다. 없으면(앞 체류를 출발지로 쓴 것, 조사가 틀린 것, 주소 원문을
+    옮긴 것) 마지막 어절을 목적으로 보고 경로를 다시 붙인다. 실제 Timeline 은 기록되지 않은 열차
+    구간 앞의 체류를 출발지로 썼다(8번 중 1번).
+    """
+
+    words = " ".join(_without_place_names(text or "", names).split())
+    if not route:
+        return words or default
+    if route in words:
+        return words
+    last = words.split()[-1] if words else default
+    if last.endswith(("에서", "로")):
+        last = default
+    return f"{route} {last}"
 
 
 def _day_place_names(request: TimelineDraftRequest) -> set[str]:
@@ -502,13 +560,13 @@ def _arrival_address(movements: list[MovementItem], tz: tzinfo) -> str | None:
     return address.strip() if is_exact_address(address) else None
 
 
-def _movement_sentence(
+def _movement_route(
     movements: list[MovementItem],
     tz: tzinfo,
     same_place: dict[str, str] | None = None,
     areas: AreaNamer | None = None,
 ) -> str:
-    """이동 문장: 출발·도착의 지명(구 + 동)으로 쓴다(사용자 결정). 장소명도 주소 원문도 넣지 않는다.
+    """이동 경로: 출발·도착의 지명(구 + 동)이다(사용자 결정). 장소명도 주소 원문도 넣지 않는다.
 
     주소 원문(`경기도 용인시 기흥구 동백죽전대로 455-11`)을 그대로 쓰면 시·도부터 번지까지 늘어져
     사용자가 읽는 문장이 아니다(사용자: 확실한 오류). 제목과 같은 지명을 쓰고, 주소는 같은 장소의
@@ -519,17 +577,10 @@ def _movement_sentence(
     ordered = _ordered(movements, tz)
     origin = ordered[0].start.address if ordered and ordered[0].start else None
     destination = ordered[-1].end.address if ordered and ordered[-1].end else None
-    origin = namer.name(_same(same_place or {}, origin))
-    destination = namer.name(_same(same_place or {}, destination))
-    if origin == destination:
-        origin = None
-    if origin and destination:
-        return f"{origin}에서 {destination}{toward_particle(destination)} 이동했다."
-    if destination:
-        return f"{destination}{toward_particle(destination)} 이동했다."
-    if origin:
-        return f"{origin}에서 이동했다."
-    return "이동했다."
+    return movement_route(
+        namer.name(_same(same_place or {}, origin)),
+        namer.name(_same(same_place or {}, destination)),
+    )
 
 
 def _ordered(movements: list[MovementItem], tz: tzinfo) -> list[MovementItem]:

@@ -41,7 +41,12 @@ from app.schemas import (
     TimelineWarning,
     TimelineWarningSeverity,
 )
-from app.services.clue_bundles import TimelineClues, expand_evidence, timeline_input_sections
+from app.services.clue_bundles import (
+    TimelineClues,
+    expand_evidence,
+    misplaced_clues,
+    timeline_input_sections,
+)
 
 logger = get_logger(__name__)
 
@@ -160,6 +165,24 @@ def parse_timeline_clue_draft(
         ]
         for event in parsed
     ]
+    # `from` 을 비운 사진 event 는 그 사진이 붙은 위치 구간에서 온 것이다(사용자 결정 2026-10-31 — 단서를
+    # 위치에 잇는 것은 코드가 한다). 사진 입력에서 장소를 뺀 뒤, Timeline 이 꺼낸 식사의 `from` 을 비우자
+    # 그 식사가 장소도 지명도 없는 `점심을 먹었다` 가 됐다. 사진이 붙은 구간 중 event 시간과 겹치는 것만 쓴다.
+    photo_bases = {
+        photo.clue_id: [b.base_event.base_id for b in clues.bundles if b.base_event and photo in b.photos]
+        for photo in clues.photos
+    }
+    for event, bases in zip(parsed, bases_by_event):
+        if bases:
+            continue
+        bases.extend(
+            base
+            for base in dict.fromkeys(
+                base for clue_id in event.evidence for base in photo_bases.get(clue_id.strip(), [])
+            )
+            if segments[base].start - edge <= event.end_time
+            and event.start_time <= segments[base].end + edge
+        )
     refs_by_event = expand_evidence(
         clues, [event.evidence for event in parsed], request, bases_by_event
     )
@@ -167,6 +190,20 @@ def parse_timeline_clue_draft(
     for index, (event, refs, bases) in enumerate(
         zip(parsed, refs_by_event, bases_by_event), start=1
     ):
+        # 시간·장소가 맞지 않는 사진·일정은 그 event 의 근거가 아니다(사용자 결정 2026-10-30·31).
+        misplaced = misplaced_clues(clues, event.start_time, event.end_time, refs)
+        if misplaced:
+            refs = [ref for ref in refs if ref.raw_id not in misplaced]
+            skipped.append(
+                TimelineWarning(
+                    warning_id=f"warning-misplaced-evidence-{index:03d}",
+                    severity=TimelineWarningSeverity.LOW,
+                    message=(
+                        f"LLM 응답의 event 항목({index}번)이 시간·장소가 맞지 않는 근거 "
+                        f"{', '.join(sorted(misplaced.values()))} 를 적어 뺐습니다."
+                    ),
+                )
+            )
         if not refs:
             skipped.append(
                 TimelineWarning(

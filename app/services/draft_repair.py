@@ -103,6 +103,7 @@ from app.services.event_count_guard import (
 )
 from app.services.location_link import link_location_evidence
 from app.services.location_only_overlap import find_location_only_overlaps
+from app.services.location_skeleton import LocationSkeleton
 from app.services.meal_guard import enforce_meal_duration, find_unsupported_meals
 from app.services.movement_stay_guard import verify_movement_stay_boundary
 from app.services.narrative_guard import verify_narrative_length
@@ -128,9 +129,11 @@ from app.services.skeleton_guard import (
     remove_calendar_events_without_calendar,
     remove_stays_without_location,
     ensure_skeleton_segments,
+    keep_calendar_base_events,
     remove_events_outside_evidence,
     remove_unrecorded_movements,
     separate_movement_segments,
+    spares_from_sleep,
 )
 from app.services.sleep_guard import (
     enforce_sleep_boundary,
@@ -232,9 +235,14 @@ def sort_events(draft: TimelineDraft) -> None:
 
 
 def _source_spans(
-    request: TimelineDraftRequest, tz: tzinfo
+    request: TimelineDraftRequest, tz: tzinfo, skeleton: LocationSkeleton | None = None
 ) -> dict[tuple[EventSourceType, str], tuple[datetime, datetime]]:
-    """구간을 갖는 입력 항목의 (sourceType, rawId) → (시작, 종료) 표."""
+    """구간을 갖는 입력 항목의 (sourceType, rawId) → (시작, 종료) 표.
+
+    `skeleton` 을 주면(v4) 체류·이동은 원래 시각이 아니라 뼈대 구간 안의 시간이다
+    (`LocationSkeleton.record_spans`). 원래 시각을 쓰면 뼈대가 정리한 이동 시간이 원본으로
+    되늘어나 앞 체류와 겹쳤다.
+    """
 
     spans: dict[tuple[EventSourceType, str], tuple[datetime, datetime]] = {}
 
@@ -256,6 +264,11 @@ def _source_spans(
         EventSourceType.SLEEP,
         [item for item in request.healths if item.metric is HealthMetric.SLEEP],
     )
+    if skeleton is not None:
+        for raw_id, span in skeleton.record_spans().items():
+            for source_type in (EventSourceType.STAY, EventSourceType.MOVEMENT):
+                if (source_type, raw_id) in spans:
+                    spans[(source_type, raw_id)] = span
     return spans
 
 
@@ -277,7 +290,9 @@ def _referenced_span(
     return min(start for start, _ in found), max(end for _, end in found)
 
 
-def repair_durations(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
+def repair_durations(
+    draft: TimelineDraft, request: TimelineDraftRequest, *, skeleton: LocationSkeleton | None = None
+) -> None:
     """비정상 지속시간을 고친다(in-place).
 
     - 반드시 순간이어야 하는 event(기상)가 구간으로 나오면 시작 시각으로 되돌린다.
@@ -288,7 +303,7 @@ def repair_durations(draft: TimelineDraft, request: TimelineDraftRequest) -> Non
     """
 
     tz = resolve_timezone(request.timezone)
-    spans = _source_spans(request, tz)
+    spans = _source_spans(request, tz, skeleton)
 
     collapsed: list[str] = []
     restored: list[str] = []
@@ -339,7 +354,9 @@ def repair_durations(draft: TimelineDraft, request: TimelineDraftRequest) -> Non
 # --- 근거 구간 스냅 -----------------------------------------------------------
 
 
-def align_location_events(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
+def align_location_events(
+    draft: TimelineDraft, request: TimelineDraftRequest, *, skeleton: LocationSkeleton | None = None
+) -> None:
     """위치 근거만 가진 event 의 시간을 근거와 어긋나지 않게 맞춘다(in-place).
 
     LLM 은 체류·이동만 근거로 대 놓고 그 근거에 없는 시각을 적는다. 실제 출력에서
@@ -366,7 +383,7 @@ def align_location_events(draft: TimelineDraft, request: TimelineDraftRequest) -
     """
 
     tz = resolve_timezone(request.timezone)
-    spans = _source_spans(request, tz)
+    spans = _source_spans(request, tz, skeleton)
     aligned: list[str] = []
 
     for event in draft.events:
@@ -720,8 +737,13 @@ def _clue_correction_steps(
     overrides = {
         **overrides,
         "장소 확정": partial(_confirm_place_slots, clues=clues),
+        # 체류·이동의 시간은 뼈대 구간 안의 시간이다 — 원래 시각으로 맞추면 정리한 이동이 되늘어난다.
+        "지속시간 복원": partial(repair_durations, skeleton=clues.skeleton),
+        "근거 구간 정렬": partial(align_location_events, skeleton=clues.skeleton),
         # 사진 candidate 가 없어, 되살리는 사진은 이어 찍은 것끼리 묶고 같은 장면은 한 event 로 모은다.
         "사진 단일 귀속": enforce_photo_scenes,
+        # 수면 일정은 계획이다 — 이동과 다른 장소의 체류는 겹쳐도 남긴다.
+        "수면과 겹친 event 제거": partial(remove_events_overlapping_sleep, spare=spares_from_sleep(clues)),
         # v4 는 대화를 Notification 단서로 센다 — 앱 사전으로 세면 대화로 쓴 문자가 빠진다.
         "대화 개수 제한": partial(
             enforce_conversation_limit,
@@ -739,9 +761,13 @@ def _clue_correction_steps(
         if name not in _CLUE_SKIPPED_STEPS
     )
     # 위치 구간 복원은 캘린더 일정 복원 바로 뒤다. 되살린 event 도 시간·장소·정렬을 똑같이 거친다.
+    # 일정 기본 event 지키기는 캘린더 일정 복원 바로 앞이다 — Timeline 이 일정 근거를 빠뜨린 일정
+    # event 에 먼저 일정을 붙여야 복원이 같은 일정을 하나 더 만들지 않는다.
     position = [name for name, _ in steps].index("캘린더 일정 복원") + 1
     steps = (
-        *steps[:position],
+        *steps[: position - 1],
+        ("일정 기본 event 지키기", partial(_skeleton_step, keep_calendar_base_events, clues=clues)),
+        *steps[position - 1 : position],
         # 뼈대가 정한 구조를 Timeline 이 어긴 것을 바로잡은 뒤에 빠진 구간을 복원한다.
         ("근거 없는 이동 정리", partial(_skeleton_step, remove_unrecorded_movements, clues=clues)),
         ("일정 근거 없는 일정 정리", partial(_skeleton_step, remove_calendar_events_without_calendar, clues=clues)),
@@ -756,6 +782,11 @@ def _clue_correction_steps(
         if name == "문장 주소 정리":
             # 캘린더 일정은 절대 빠지지 않는다(사용자 결정). 앞 단계가 일정 event 를 지웠으면 다시
             # 되살리고, 되살린 event 도 장소 후보를 받게 장소를 한 번 더 정한다.
+            # 위치 구간도 같다 — 복원 뒤에 도는 식사 시간·수면 단계가 체류를 줄이거나 지우면 그 시간이
+            # 빈다. 실제 재실행에서 407분 체류를 채운 식사가 20분으로 줄어 오후 체류가 통째로 비었다.
+            extended.append(
+                ("위치 구간 다시 확인", partial(_skeleton_step, ensure_skeleton_segments, clues=clues))
+            )
             extended.append(("캘린더 일정 다시 확인", ensure_calendar_events))
             extended.append(("장소 다시 확정", partial(_confirm_place_slots, clues=clues)))
             extended.append(("문장 장소 칸", partial(fill_place_slots, clues=clues)))
@@ -823,7 +854,9 @@ def _inspect(
         report.add_finding("LONG_STAY_BETWEEN_MOVEMENTS", found.detail, event=found.event)
 
     # 겹치는 event 의 clientEventId 는 최종 id 가 매겨진 뒤에 굳힌다(#138).
-    for overlap in find_location_only_overlaps(draft, request):
+    # v4 는 돌리지 않는다(사용자 결정 2026-10-31). 일정은 위치 구간에 넣었고 체류 안의 식사는 정상
+    # 구조인데, 이 검사를 받은 Repair 가 7시간 체류를 식사로 고쳐 썼다.
+    for overlap in [] if clue_contract else find_location_only_overlaps(draft, request):
         report.add_finding("LOCATION_ONLY_OVERLAP", overlap.detail, event=overlap.event)
     for meal in find_unsupported_meals(draft):
         report.add_finding(
@@ -905,6 +938,8 @@ def enforce_final_photo_assignment(
     draft: TimelineDraft,
     request: TimelineDraftRequest,
     candidates: Sequence[AiEventCandidate] = (),
+    *,
+    prefer_extracted: bool = False,
 ) -> None:
     """저장으로 넘어가기 직전에 사진 단일 귀속을 한 번 더 강제한다(#119).
 
@@ -916,7 +951,9 @@ def enforce_final_photo_assignment(
 
     # 남아 있는 event 의 번호는 바꾸지 않고 새로 만든 사진 event 에만 번호를 준다(#144).
     issued = {event.client_event_id for event in draft.events}
-    enforcement = enforce_photo_assignment(draft, request, candidates)
+    enforcement = enforce_photo_assignment(
+        draft, request, candidates, prefer_extracted=prefer_extracted
+    )
     if enforcement.changed_composition:
         sort_events(draft)
         assign_event_ids(draft, issued)

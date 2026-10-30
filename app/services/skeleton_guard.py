@@ -18,12 +18,14 @@ Timeline v4 는 코드가 만든 기본 event(뼈대 구간마다 하나) 위에
 """
 
 import re
+from collections.abc import Callable
 from datetime import timedelta
 
 from app.core.logging import get_logger
 from app.schemas import (
     EventSourceType,
     EventType,
+    SourceRef,
     TimelineDraft,
     TimelineDraftRequest,
     TimelineEventDraft,
@@ -49,6 +51,75 @@ _MINUTE = timedelta(minutes=1)
 _MIN_OVERLAP = timedelta(minutes=30)
 
 
+#: 일정 기본 event 의 주인이 될 수 없는 종류. 식사·사진은 일정 안의 다른 일이다.
+_NOT_CALENDAR_OWNER = frozenset({EventType.UNKNOWN, EventType.MEAL, EventType.PHOTO_MOMENT})
+
+
+def keep_calendar_base_events(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """일정이 주인인 기본 event 는 event 하나다(in-place, 사용자 결정 2026-10-30).
+
+    "캘린더의 경우 Timeline이 처리하기 전에 Location 의 결과물에다가 박아넣어버려". 코드가 일정을
+    기본 event 에 넣어도 Timeline 이 같은 체류로 `보낸 시간` 을 따로 쓰거나(4번 중 1번), 일정 event 에
+    일정 근거를 빠뜨려 캘린더 복원이 일정을 하나 더 만들었다(4번 중 1번).
+
+    그 기본 event 에서 온 event 중 체류 구간을 덮는 것(구간 중 event 밖 시간이 20분 이하)은 같은
+    사건이다. 일정을 가진 event 가 주인이고, 없으면 활동을 쓴 event 에 일정을 붙이고, 그것도 없으면
+    일정 틀 문장으로 바꾼다. 나머지는 주인의 근거로 합친다. 시간은 일정 시간이다. 체류 일부에서
+    끝나는 event(그 안의 식사)는 그대로다.
+    """
+
+    merged: set[int] = set()
+    for bundle in clues.bundles:
+        base = bundle.base_event
+        if base is None or base.calendar is None:
+            continue
+        segment = base.segment
+        covering = [
+            event
+            for event in draft.events
+            if id(event) not in merged
+            and base.base_id in event.base_event_ids
+            and max(timedelta(0), event.start_time - segment.start)
+            + max(timedelta(0), segment.end - event.end_time)
+            <= SHORT_STAY_MAX
+        ]
+        if not covering:
+            continue
+        calendar_id = base.calendar.raw_id
+        owner = next(
+            (e for e in covering if any(ref.raw_id == calendar_id for ref in e.source_refs)),
+            None,
+        ) or next((e for e in covering if e.event_type not in _NOT_CALENDAR_OWNER), None)
+        # 일정을 가진 event 라도 식사·사진·`보낸 시간` 이면 일정 event 로 되돌린다. Repair 가 회의 event 를
+        # 식사로 바꾸며 묶음 id 로 일정을 다시 담자, 식사 시간이 그 event 를 20분으로 줄여 회의 일정이
+        # 17:24~17:44 가 됐고 일정이 참조되고 있어 캘린더 복원도 돌지 않았다.
+        if owner is None or owner.event_type in _NOT_CALENDAR_OWNER:
+            owner = owner or covering[0]
+            frame = base_event_draft(base, places=bundle.places)
+            owner.event_type, owner.title, owner.description = (
+                frame.event_type,
+                frame.title,
+                frame.description,
+            )
+        if not any(ref.raw_id == calendar_id for ref in owner.source_refs):
+            owner.source_refs.append(
+                SourceRef(source_type=EventSourceType.CALENDAR, raw_id=calendar_id, reason="일정")
+            )
+        owner.start_time, owner.end_time = base.start, base.end
+        held = {ref.raw_id for ref in owner.source_refs}
+        for other in covering:
+            if other is owner:
+                continue
+            owner.source_refs.extend(ref for ref in other.source_refs if ref.raw_id not in held)
+            held |= {ref.raw_id for ref in other.source_refs}
+            merged.add(id(other))
+    if merged:
+        draft.events = [event for event in draft.events if id(event) not in merged]
+        logger.debug("일정 기본 event 지키기: %d건 합침", len(merged))
+
+
 def ensure_skeleton_segments(
     draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
 ) -> None:
@@ -60,7 +131,9 @@ def ensure_skeleton_segments(
         if base is None:
             continue
         segment = base.segment
-        segment_ids = set(segment.raw_ids)
+        # 일정 기본 event 는 그 일정을 가진 event 도 구간을 덮는다 — 일정이 빠져 캘린더 복원이 되살린
+        # 일정 event 는 기본 event 도 체류 기록도 갖지 않는다.
+        segment_ids = set(segment.raw_ids) | ({base.calendar.raw_id} if base.calendar else set())
         covering = [
             (max(event.start_time, segment.start), min(event.end_time, segment.end))
             for event in draft.events
@@ -69,10 +142,19 @@ def ensure_skeleton_segments(
         ]
         for start, end in _uncovered(segment.start, segment.end, covering):
             whole = start == segment.start and end == segment.end
+            # 기록이 덮는 시간만 되살린다. 구간 안에서 기록이 없는 틈(같은 장소로 묶인 수집 공백)은
+            # 비워 둔다 — 그 틈을 채운 조각은 근거 기록과 겹치지 않아 지명도 장소 후보도 없는
+            # `보낸 시간` 이 됐다(실제 재실행).
+            recorded = [r for r in segment.records if r.start < end and start < r.end]
+            if not recorded:
+                continue
+            start = max(start, min(r.start for r in recorded))
+            end = min(end, max(r.end for r in recorded))
             if not whole and end - start <= SHORT_STAY_MAX:
                 continue
             event = base_event_draft(
-                base,
+                # 일정 event 가 체류 일부만 덮었으면 나머지는 일정이 아니라 체류다.
+                base if whole or base.stay is None else base.stay,
                 start=start,
                 end=end,
                 places=bundle.places,
@@ -161,6 +243,11 @@ def separate_movement_segments(
     이동 구간을 통째로 품은 event 도 같다 — 실제 Timeline 은 40km 떨어진 집과 사무실 체류를
     `이어진다` 며 06:00~22:00 하나로 합쳤다. 그 event 는 이동 앞뒤 중 위치 근거가 더 긴 쪽만
     남기고, 다른 쪽의 체류 근거와 기본 event 를 뺀다. 뺀 쪽은 되살리는 단계가 틀 문장으로 덮는다.
+
+    이동 기록이 없어도 **다른 장소는 한 event 에 두지 않는다**(사용자 결정 2026-10-30, "위치가
+    서로 다르면 무조건 … 끊어내야"). 장소가 같은지는 체류 구간의 주소로 본다 — 코드가 250m
+    묶음마다 하나로 맞춘 주소라 장소 이름 후보와 달리 판단 기준이 된다. 주소가 다른 체류 구간을
+    함께 가진 event 는 그 event 시간과 가장 오래 겹치는 장소만 남긴다(`_keep_one_place`).
     """
 
     movement_segments = {
@@ -169,7 +256,13 @@ def separate_movement_segments(
         if segment.kind is not SegmentKind.STAY
         for raw_id in segment.raw_ids
     }
+    base_segments = {
+        bundle.base_event.base_id: bundle.base_event.segment
+        for bundle in clues.bundles
+        if bundle.base_event
+    }
     if not movement_segments:
+        _keep_one_place(draft, clues, base_segments)
         return
     movement_bases = {
         bundle.base_event.base_id
@@ -178,11 +271,6 @@ def separate_movement_segments(
     }
     tz = resolve_timezone(request.timezone)
     spans = _source_spans(request, tz)
-    base_segments = {
-        bundle.base_event.base_id: bundle.base_event.segment
-        for bundle in clues.bundles
-        if bundle.base_event
-    }
     kept: list[TimelineEventDraft] = []
     for event in draft.events:
         if event.event_type in (EventType.MOVEMENT, EventType.EXERCISE):
@@ -223,6 +311,121 @@ def separate_movement_segments(
             event.end_time = event.start_time
         kept.append(event)
     draft.events = kept
+    _keep_one_place(draft, clues, base_segments)
+
+
+def _keep_one_place(draft: TimelineDraft, clues: TimelineClues, base_segments) -> None:
+    """주소가 다른 체류 구간을 함께 가진 event 를 한 장소로 줄인다(in-place).
+
+    남기는 장소는 event 시간과 가장 오래 겹치는 장소이고, 같으면 `from` 에 먼저 적힌 쪽이다.
+    다른 장소의 체류 근거와 기본 event 를 빼고, 그 장소 쪽으로 걸친 끝을 남기는 장소의 구간까지
+    자른다. 뺀 장소는 `ensure_skeleton_segments` 가 틀 문장으로 되살린다.
+
+    일정 event 는 시간을 자르지 않는다(사용자 결정) — 다른 장소의 근거만 뺀다. "일정을 그렇게
+    등록해놔도 잠깐 바깥에 나가서 카페에 있을 수도 있고 그렇기 때문에 위치 뼈대는 살리는 게 맞다."
+    """
+
+    stay_segments = {
+        raw_id: segment
+        for segment in clues.skeleton.segments
+        if segment.kind is SegmentKind.STAY
+        for raw_id in segment.raw_ids
+    }
+    if not stay_segments:
+        return
+
+    def place_of(segment) -> str:
+        return clues.address(segment.address) or segment.segment_id
+
+    for event in draft.events:
+        if event.event_type in (EventType.MOVEMENT, EventType.EXERCISE):
+            continue
+        touched = {
+            segment.segment_id: segment
+            for segment in (
+                *(stay_segments.get(ref.raw_id) for ref in event.source_refs),
+                *(base_segments.get(base) for base in event.base_event_ids),
+            )
+            if segment is not None and segment.kind is SegmentKind.STAY
+        }
+        places: dict[str, list] = {}
+        for segment in touched.values():
+            places.setdefault(place_of(segment), []).append(segment)
+        if len(places) < 2:
+            continue
+
+        def overlap(segments) -> timedelta:
+            return sum(
+                (
+                    max(min(event.end_time, s.end) - max(event.start_time, s.start), timedelta(0))
+                    for s in segments
+                ),
+                timedelta(0),
+            )
+
+        first_base = next(
+            (place_of(seg) for base in event.base_event_ids if (seg := base_segments.get(base))),
+            None,
+        )
+        keep = max(places, key=lambda place: (overlap(places[place]), place == first_base))
+        dropped = [segment for place, group in places.items() if place != keep for segment in group]
+        dropped_ids = {raw_id for segment in dropped for raw_id in segment.raw_ids}
+        dropped_segments = {segment.segment_id for segment in dropped}
+        event.source_refs = [ref for ref in event.source_refs if ref.raw_id not in dropped_ids]
+        event.base_event_ids = [
+            base
+            for base in event.base_event_ids
+            if not ((seg := base_segments.get(base)) and seg.segment_id in dropped_segments)
+        ]
+        if _has_calendar(event):
+            continue
+        keep_start = min(segment.start for segment in places[keep])
+        keep_end = max(segment.end for segment in places[keep])
+        if any(segment.end <= keep_start for segment in dropped):
+            event.start_time = max(event.start_time, keep_start)
+        if any(segment.start >= keep_end for segment in dropped):
+            event.end_time = min(event.end_time, keep_end)
+        if event.end_time < event.start_time:
+            event.end_time = event.start_time
+
+
+def spares_from_sleep(clues: TimelineClues) -> Callable[[TimelineEventDraft, TimelineEventDraft], bool]:
+    """수면 event 와 겹쳐도 남길 event 를 고르는 함수(v4, `remove_events_overlapping_sleep`).
+
+    수면 일정은 계획이고 위치는 기록이다. 실제 재실행에서 수면 일정(00:30~08:30)과 21분 겹친다고
+    08:09 에 출발한 이동이 지워졌다. 이동 구간을 가진 event 와, 수면 장소와 주소가 다른 체류를 가진
+    event 는 남긴다(사용자 결정 2026-10-30: 일정은 그대로, 위치 뼈대도 살린다). 수면 장소의 체류는
+    예전처럼 수면이 설명하는 시간이라 지운다.
+    """
+
+    segments = {raw_id: segment for segment in clues.skeleton.segments for raw_id in segment.raw_ids}
+
+    def place_of(segment) -> str:
+        return clues.address(segment.address) or segment.segment_id
+
+    def sleep_places(sleep: TimelineEventDraft) -> set[str]:
+        held = {
+            place_of(segments[ref.raw_id])
+            for ref in sleep.source_refs
+            if ref.raw_id in segments and segments[ref.raw_id].kind is SegmentKind.STAY
+        }
+        if held:
+            return held
+        overlapping = [
+            (min(sleep.end_time, s.end) - max(sleep.start_time, s.start), s)
+            for s in clues.skeleton.segments
+            if s.kind is SegmentKind.STAY and s.start < sleep.end_time and sleep.start_time < s.end
+        ]
+        return {place_of(max(overlapping, key=lambda pair: pair[0])[1])} if overlapping else set()
+
+    def spare(event: TimelineEventDraft, sleep: TimelineEventDraft) -> bool:
+        held = [segments[ref.raw_id] for ref in event.source_refs if ref.raw_id in segments]
+        if any(segment.kind is not SegmentKind.STAY for segment in held):
+            return True
+        stays = {place_of(segment) for segment in held}
+        return bool(stays - sleep_places(sleep))
+
+    return spare
 
 
 def _keep_one_side(event: TimelineEventDraft, segment, spans, base_segments) -> None:

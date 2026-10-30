@@ -41,6 +41,7 @@ from app.core.execution_context import ExecutionStage, execution_scope
 from app.schemas import (
     AgentEventResult,
     EventSourceType,
+    EventType,
     HealthMetric,
     RepairToolCall,
     RepairToolResult,
@@ -48,8 +49,14 @@ from app.schemas import (
     TimelineDraft,
     TimelineDraftRequest,
 )
+from app.schemas.clues import NotificationClueKind
 from app.services.calendar_guard import ensure_calendar_events
-from app.services.clue_bundles import TimelineClues, expand_evidence, timeline_input_sections
+from app.services.clue_bundles import (
+    TimelineClues,
+    expand_evidence,
+    misplaced_clues,
+    timeline_input_sections,
+)
 from app.services.calendar_location import reinforce_calendar_location
 from app.services.confirm_report import ConfirmReport, reports_to_prompt
 from app.services.draft_edit import (
@@ -65,7 +72,7 @@ from app.services.draft_repair import (
     resolve_overlaps,
     sort_events,
 )
-from app.services.meal_guard import enforce_meal_duration
+from app.services.meal_guard import MEAL_STAY_MAX_DURATION, enforce_meal_duration
 from app.services.photo_guard import inspect_photo_assignment
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import AppError, code_of, report_error
@@ -73,6 +80,7 @@ from app.services.place_resolver import resolve_places
 from app.services.place_slots import confirm_place_slots
 from app.services.sleep_guard import enforce_sleep_boundary
 from app.services.source_lookup import raw_id_of
+from app.services.validator import parse_datetime, resolve_timezone
 
 logger = get_logger(__name__)
 
@@ -223,18 +231,118 @@ def _update_event(ctx: RepairContext, args: dict) -> str:
     fields = args.get("fields")
     if not isinstance(fields, dict):
         raise RepairToolError("fields 인자(바꿀 필드만 담은 객체)가 필요합니다.")
+    named_photos: set[str] = set()
     if "evidence" in fields:
-        fields = _with_expanded_evidence(ctx, fields)
+        identifiers = fields["evidence"]
+        fields = _with_expanded_evidence(ctx, fields, str(client_event_id))
+        named_photos = _named_photos(ctx, identifiers)
+        fields = _without_misplaced(ctx, str(client_event_id), fields, named_photos)
 
+    if ctx.clues is not None and fields.get("eventType") == EventType.MEAL.value:
+        _require_meal_evidence(ctx, str(client_event_id), fields)
     event = update_event(ctx.draft, str(client_event_id), fields)
+    # Repair 가 사진을 직접 적은 event 가 그 사진의 주인이다(사용자 결정 2026-10-30 — 코드는 Repair 를
+    # 따른다). 다른 event 에서 빼 두면 확정 pass 의 사진 단일 귀속이 자기 순서로 Repair 의 선택을 뒤집지
+    # 않는다. 회의·식사 실행에서 그 순서가 일정이 있는 회의를 골라 식사가 지워졌다.
+    for other in ctx.draft.events:
+        if other is not event:
+            other.source_refs = [ref for ref in other.source_refs if ref.raw_id not in named_photos]
     return f"{client_event_id} 를 수정했습니다: {event.title} ({', '.join(sorted(fields))})"
 
 
-def _with_expanded_evidence(ctx: RepairContext, fields: dict) -> dict:
+def _require_meal_evidence(ctx: RepairContext, client_event_id: str, fields: dict) -> None:
+    """근거 없이 식사로 바꾸지 않는다(v4, 사용자 결정 2026-10-31).
+
+    식사는 시간이 맞는 사진이나 알림(결제)이 있어야 하고 3시간을 넘지 않는다(식당에 머문 식사 상한).
+    Repair 가 없는 사진을 근거로("B3 안에 점심처럼 보이는 사진") 아침 체류를 `점심 식사` 로, 검사 결과를
+    따라 7시간 체류를 식사로 바꿨다 — 둘 다 근거는 그대로 두고 eventType·문장만 바꿨다.
+    """
+
+    current = next((e for e in ctx.draft.events if e.client_event_id == client_event_id), None)
+    if current is None:
+        return  # 없는 event 는 update_event 가 거절한다
+    tz = resolve_timezone(ctx.request.timezone)
+    start = parse_datetime(fields["startTime"], tz) if fields.get("startTime") else current.start_time
+    end = parse_datetime(fields["endTime"], tz) if fields.get("endTime") else current.end_time
+    refs = (
+        [SourceRef.model_validate(ref) for ref in fields["sourceRefs"]]
+        if "sourceRefs" in fields
+        else current.source_refs
+    )
+    _require_meal_evidence_of(ctx, start, end, refs)
+
+
+def _require_meal_evidence_of(ctx: RepairContext, start, end, refs: list[SourceRef]) -> None:
+    if end - start > MEAL_STAY_MAX_DURATION:
+        raise RepairToolError(
+            "3시간이 넘는 event 는 식사가 아닙니다. 그 안의 식사는 split_event 로 따로 꺼냅니다."
+        )
+    # 알림은 결제·예약만 식사의 근거다. 대화 알림만 가진 아침 체류가 `09:06 식사` 가 됐다.
+    paid = {
+        raw_id
+        for clue in ctx.clues.notifications
+        if clue.kind in (NotificationClueKind.PAYMENT, NotificationClueKind.RESERVATION)
+        for raw_id in clue.raw_ids
+    }
+    misplaced = misplaced_clues(ctx.clues, start, end, refs)
+    if not any(
+        (ref.source_type is EventSourceType.PHOTO and ref.raw_id not in misplaced) or ref.raw_id in paid
+        for ref in refs
+    ):
+        raise RepairToolError(
+            "식사로 바꾸려면 이 event 가 시간이 맞는 음식 사진이나 결제 알림을 근거로 가져야 합니다. "
+            "다른 묶음·다른 event 의 단서는 이 event 의 근거가 아닙니다."
+        )
+
+
+def _without_misplaced(
+    ctx: RepairContext, client_event_id: str, fields: dict, named_photos: set[str]
+) -> dict:
+    """시간·장소가 맞지 않는 사진·일정 근거를 막는다(사용자 결정 2026-10-30·31).
+
+    직접 적은 사진이 맞지 않으면 거절해 Repair 가 다시 고르게 한다. 묶음 id 로 딸려 온 것은 조용히 뺀다.
+    """
+
+    current = next((e for e in ctx.draft.events if e.client_event_id == client_event_id), None)
+    if current is None:
+        return fields  # 없는 event 는 update_event 가 거절한다
+    tz = resolve_timezone(ctx.request.timezone)
+    start = parse_datetime(fields["startTime"], tz) if fields.get("startTime") else current.start_time
+    end = parse_datetime(fields["endTime"], tz) if fields.get("endTime") else current.end_time
+    refs = [SourceRef.model_validate(ref) for ref in fields["sourceRefs"]]
+    misplaced = misplaced_clues(ctx.clues, start or current.start_time, end or current.end_time, refs)
+    named = sorted(clue for raw_id, clue in misplaced.items() if raw_id in named_photos)
+    if named:
+        raise RepairToolError(
+            f"{', '.join(named)} 는 이 event 의 시간·장소에서 찍힌 사진이 아니라 근거가 될 수 없습니다. "
+            "근거는 시간과 장소가 모두 맞는 event 에만 넣습니다."
+        )
+    if not misplaced:
+        return fields
+    kept = [ref for ref in fields["sourceRefs"] if ref.get("rawId") not in misplaced]
+    if not kept:
+        raise RepairToolError("evidence 가 이 event 의 시간·장소와 맞는 근거를 하나도 가리키지 않습니다.")
+    return {**fields, "sourceRefs": kept}
+
+
+def _named_photos(ctx: RepairContext, identifiers: list) -> set[str]:
+    """`evidence` 에 Repair 가 직접 적은 사진의 rawId(단서 id `P2` 나 rawId). 묶음 id 로 딸려 온 사진은 아니다."""
+
+    owners = _source_index(ctx.request)
+    named = [str(i) for i in identifiers if ctx.clues.bundle(str(i)) is None]
+    [refs] = expand_evidence(ctx.clues, [[i for i in named if i not in owners]], ctx.request)
+    return {ref.raw_id for ref in refs if ref.source_type is EventSourceType.PHOTO} | {
+        i for i in named if i in owners and owners[i][0] is EventSourceType.PHOTO
+    }
+
+
+def _with_expanded_evidence(ctx: RepairContext, fields: dict, client_event_id: str) -> dict:
     """v4 의 `evidence`(묶음·단서 id 와 rawId)를 `sourceRefs` 로 펼친다(#169).
 
     도구 인자의 근거를 펼치는 자리는 여기 하나다. 묶음 id 는 그 구간과 붙은 단서 전부이고,
-    rawId 는 그대로 근거가 된다. 펼친 근거가 하나도 없으면 고치지 않는다.
+    rawId 는 그대로 근거가 된다. 펼친 근거가 하나도 없으면 고치지 않는다. 다른 event 가 이미
+    가진 사진·대화는 묶음을 펼칠 때 빼고 단서 id 로 직접 적은 것만 담는다 — Timeline 출력을
+    펼칠 때와 같은 규칙이다.
     """
 
     if ctx.clues is None:
@@ -244,7 +352,13 @@ def _with_expanded_evidence(ctx: RepairContext, fields: dict) -> dict:
         raise RepairToolError("evidence 는 묶음·단서 id 나 rawId 의 목록이어야 합니다.")
     raw_ids = [str(i) for i in identifiers if str(i) in _source_index(ctx.request)]
     ids = [str(i) for i in identifiers if str(i) not in raw_ids]
-    [refs] = expand_evidence(ctx.clues, [ids], ctx.request)
+    held = {
+        ref.raw_id
+        for event in ctx.draft.events
+        if event.client_event_id != client_event_id
+        for ref in event.source_refs
+    }
+    [refs] = expand_evidence(ctx.clues, [ids], ctx.request, held_elsewhere=held)
     known = {ref.raw_id for ref in refs}
     owners = _source_index(ctx.request)
     for raw_id in raw_ids:
@@ -283,6 +397,13 @@ def _split_event(ctx: RepairContext, args: dict) -> str:
     if not isinstance(parts, list):
         raise RepairToolError("parts 인자(조각을 둘 이상 담은 목록)가 필요합니다.")
 
+    if ctx.clues is not None:
+        # 근거 없는 식사 조각을 만들지 않는다(사용자 결정 2026-10-31). 나눠 본 결과로 확인하고, 맞으면
+        # 실제 draft 를 나눈다 — 근거는 코드가 원본 시각을 보고 조각마다 담는다.
+        trial = ctx.draft.model_copy(deep=True)
+        for piece in split_event(trial, str(client_event_id), parts, ctx.request):
+            if piece.event_type is EventType.MEAL:
+                _require_meal_evidence_of(ctx, piece.start_time, piece.end_time, piece.source_refs)
     pieces = split_event(ctx.draft, str(client_event_id), parts, ctx.request)
     titles = ", ".join(piece.title for piece in pieces)
     message = f"{client_event_id} 를 {len(pieces)}개로 나눴습니다: {titles}"
@@ -582,7 +703,9 @@ _CLUE_TOOLS: dict[str, RepairTool] = {
                 "event 한 건의 지정한 필드만 고친다. 바꿀 수 있는 필드: eventType, title, "
                 "description, startTime, endTime, confidence, inferenceLevel, uncertainty, "
                 "placeCandidates, evidence. evidence 는 근거 묶음·단서 id(B3·P2·C1·N5)나 "
-                "rawId 의 목록이고 event 의 근거를 통째로 바꾼다. 장소(place·address)는 "
+                "rawId 의 목록이고 event 의 근거를 통째로 바꾼다. 사진은 한 event 에만 있으므로 "
+                "단서 id 로 직접 적은 사진은 이 event 로 옮겨지고 다른 event 에서 빠진다. 묶음 id 는 "
+                "다른 event 가 가진 사진·대화를 가져오지 않는다. 장소(place·address)는 "
                 "코드가 근거로 정하므로 고치지 않는다."
             ),
             run=_update_event,

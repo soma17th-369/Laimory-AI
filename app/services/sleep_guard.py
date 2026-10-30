@@ -24,6 +24,7 @@ event 를 다섯 시간 앞으로 당긴 것이다.
 통째로 지워지지 않게 하기 위함이다. 낮잠 구간 자체는 별도의 금지 구간으로 남는다.
 """
 
+from collections.abc import Callable
 from datetime import datetime, timedelta, tzinfo
 
 from app.core.logging import get_logger
@@ -33,6 +34,7 @@ from app.schemas import (
     HealthMetric,
     TimelineDraft,
     TimelineDraftRequest,
+    TimelineEventDraft,
     TimelineWarning,
     TimelineWarningSeverity,
 )
@@ -206,7 +208,10 @@ _KEPT_SOURCE_TYPES = frozenset({EventSourceType.PHOTO, EventSourceType.CALENDAR}
 
 
 def remove_events_overlapping_sleep(
-    draft: TimelineDraft, request: TimelineDraftRequest
+    draft: TimelineDraft,
+    request: TimelineDraftRequest,
+    *,
+    spare: Callable[[TimelineEventDraft, TimelineEventDraft], bool] | None = None,
 ) -> None:
     """`SLEEP` event 와 시간이 겹치는 다른 event 를 모두 지운다(in-place, #134).
 
@@ -218,6 +223,9 @@ def remove_events_overlapping_sleep(
     일부로 보고 통째로 없앤다. 수면 기록 자체가 실제로 들어올 일이 드물어 이 단순한 쪽을
     골랐다. `SLEEP` 끼리, 그리고 수면이 끝난 순간인 `WAKE_UP` 은 지우지 않는다. 지운
     event 의 사진·캘린더 근거는 겹친 수면 event 로 옮긴다.
+
+    `spare(event, sleep)` 가 참인 event 는 겹쳐도 남긴다. v4 는 이동과 수면 장소가 아닌 곳의
+    체류를 남긴다(`skeleton_guard.spares_from_sleep`) — 수면 일정은 계획이고 위치는 기록이다.
     """
 
     sleeps = [event for event in draft.events if event.event_type is EventType.SLEEP]
@@ -238,7 +246,7 @@ def remove_events_overlapping_sleep(
             ),
             None,
         )
-        if host is None:
+        if host is None or (spare is not None and spare(event, host)):
             kept.append(event)
             continue
         held = {(ref.source_type, ref.raw_id) for ref in host.source_refs}

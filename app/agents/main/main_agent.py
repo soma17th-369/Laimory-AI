@@ -609,6 +609,7 @@ async def run_main_agent(
                 for result in final_state.get("event_results", {}).values()
                 for candidate in result.candidates
             ],
+            prefer_extracted=uses_clue_contract(),
         )
         update_observation(
             langfuse_observation,

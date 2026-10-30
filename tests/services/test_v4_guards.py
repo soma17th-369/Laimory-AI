@@ -16,6 +16,7 @@ from app.schemas import (
     SourceRef,
     TimelineDraft,
     TimelineEventDraft,
+    TimeWindow,
 )
 from app.schemas.clues import NotificationClue, NotificationClueKind, PhotoClue
 from app.services.clue_bundles import build_timeline_clues
@@ -344,3 +345,257 @@ def test_movement_title_never_carries_a_place_name():
     fix_title_places(_draft(move), request, _clues(request))
 
     assert move.title == "도화동으로 이동"
+
+
+# --- 뼈대 구간 시간과 다른 장소 -------------------------------------------------------------------
+
+
+def _office_cafe_request(*, calendars=()):
+    """사무실(09~13시)과 이동 기록 없이 2km 넘게 떨어진 카페(14~18시). 13~14시는 빈 시간이다."""
+
+    office = stay_item("office", lat=37.5446, lon=126.9520, start="2026-06-20T09:00:00", end="2026-06-20T13:00:00",
+                       places=["OO타워"], address="서울 마포구 도화동 2")
+    cafe = stay_item("cafe", lat=37.5650, lon=126.9370, start="2026-06-20T14:00:00", end="2026-06-20T18:00:00",
+                     places=["연희카페"], address="서울 서대문구 연희동 5")
+    request = make_request(stays=[office, cafe], calendars=list(calendars))
+    return request, office, cafe
+
+
+def test_v4_confirm_keeps_the_movement_where_the_skeleton_put_it():
+    """체류 09~12시와 이동 원본 11~13시. 뼈대는 이동을 12~13시로 정리하는데, 예전 근거 구간 정렬이
+    원본 전체로 되늘려 체류와 한 시간 겹쳤다(외부 검토 지적). 빈 초안에서도 재현됐다."""
+
+    home = stay_item("home", lat=37.5446, lon=126.9520, start="2026-06-20T09:00:00", end="2026-06-20T12:00:00")
+    trip = MovementItem(
+        raw_id=fixture_raw_id("movement-trip"), start_at="2026-06-20T11:00:00", end_at="2026-06-20T13:00:00",
+        start=GeoPlace(latitude=37.5446, longitude=126.9520), end=GeoPlace(latitude=37.60, longitude=127.0),
+        transports=["IN_VEHICLE"], distance_meters=8000,
+    )
+    request = make_request(stays=[home], movements=[trip])
+    clues = _clues(request)
+    draft = _draft()
+
+    repair_draft(draft, request, extended=True, clues=clues)
+
+    movement = next(e for e in draft.events if e.event_type is EventType.MOVEMENT)
+    assert (movement.start_time, movement.end_time) == (_at(12), _at(13))
+    stay = next(e for e in draft.events if e.event_type is not EventType.MOVEMENT)
+    assert stay.end_time <= movement.start_time
+
+
+def test_v4_confirm_separates_two_places_merged_across_an_empty_time():
+    """Timeline 이 사무실과 카페를 09~18시 한 event 로 합치면 다른 장소라 끊는다(사용자 결정).
+
+    이동 기록이 없어 이동 구간 분리가 닿지 않던 자리다. 근거가 긴 쪽만 남기고 다른 쪽은 틀 문장으로
+    되살린다. 13~14시 빈 시간은 어느 event 도 덮지 않는다.
+    """
+
+    request, office, cafe = _office_cafe_request()
+    clues = _clues(request)
+    merged = _event(
+        [(EventSourceType.STAY, office.raw_id), (EventSourceType.STAY, cafe.raw_id)],
+        start=_at(9), end=_at(18), event_type=EventType.WORK, title="업무", description="{place}에서 일했다.",
+        base=["E1", "E2"],
+    )
+    draft = _draft(merged)
+
+    repair_draft(draft, request, extended=True, clues=clues)
+
+    holders = {
+        raw_id: [e for e in draft.events if any(r.raw_id == raw_id for r in e.source_refs)]
+        for raw_id in (office.raw_id, cafe.raw_id)
+    }
+    assert len(holders[office.raw_id]) == 1 and len(holders[cafe.raw_id]) == 1
+    assert holders[office.raw_id][0] is not holders[cafe.raw_id][0], "다른 장소는 한 event 에 있지 않다."
+    assert not [e for e in draft.events if e.start_time < _at(14) and _at(13) < e.end_time], "빈 시간은 비워 둔다."
+
+
+def test_v4_calendar_spanning_two_places_keeps_its_time_and_the_other_place_comes_back():
+    """일정은 그대로 두되, 일정 시간 안에 다른 곳에 있었으면 그 위치 구간도 따로 남긴다(사용자 결정).
+
+    "일정을 그렇게 등록해놔도 잠깐 바깥에 나가서 카페에 있을 수도 있고 그렇기 때문에 위치 뼈대는
+    살리는 게 맞다."
+    """
+
+    meeting = calendar_item("m", "업무", start="2026-06-20T10:00:00", end="2026-06-20T16:00:00")
+    request, office, cafe = _office_cafe_request(calendars=[meeting])
+    clues = _clues(request)
+    work = _event(
+        [(EventSourceType.CALENDAR, meeting.raw_id), (EventSourceType.STAY, office.raw_id), (EventSourceType.STAY, cafe.raw_id)],
+        start=_at(10), end=_at(16), event_type=EventType.WORK, title="업무", description="{place}에서 일했다.",
+        base=["E1", "E2"],
+    )
+    draft = _draft(work)
+
+    repair_draft(draft, request, extended=True, clues=clues)
+
+    calendar_event = next(e for e in draft.events if any(r.raw_id == meeting.raw_id for r in e.source_refs))
+    assert (calendar_event.start_time, calendar_event.end_time) == (_at(10), _at(16))
+    assert not any(r.raw_id == cafe.raw_id for r in calendar_event.source_refs)
+    assert [e for e in draft.events if e is not calendar_event and any(r.raw_id == cafe.raw_id for r in e.source_refs)]
+
+
+def test_v4_movement_that_starts_inside_a_sleep_plan_is_kept():
+    """수면 일정(00:30~08:30)은 계획이고 08:09 에 실제로 이동했다. 실제 재실행에서 수면과 겹친다고
+    출근 이동이 지워졌다. 이동과 다른 장소의 체류는 수면 계획보다 기록이 맞다(사용자 결정: 일정은 그대로,
+    위치 뼈대도 살린다)."""
+
+    home = stay_item("home", lat=35.8275, lon=128.6283, start="2026-06-20T00:00:00", end="2026-06-20T08:09:00",
+                     address="대구 수성구 지범로17길 85")
+    school = stay_item("school", lat=35.8880, lon=128.6110, start="2026-06-20T08:54:00", end="2026-06-20T10:22:00",
+                       address="대구 북구 대현동 1")
+    trip = MovementItem(
+        raw_id=fixture_raw_id("movement-trip"), start_at="2026-06-20T08:09:00", end_at="2026-06-20T08:54:00",
+        start=GeoPlace(latitude=35.8275, longitude=128.6283), end=GeoPlace(latitude=35.8880, longitude=128.6110),
+        transports=["IN_VEHICLE"], distance_meters=8000,
+    )
+    sleep_plan = calendar_item("sleep", "수면 zzz", start="2026-06-20T00:30:00", end="2026-06-20T08:30:00")
+    request = make_request(stays=[home, school], movements=[trip], calendars=[sleep_plan])
+    clues = _clues(request)
+    draft = _draft(
+        _event([(EventSourceType.CALENDAR, sleep_plan.raw_id), (EventSourceType.STAY, home.raw_id)],
+               start=_at(0, 30), end=_at(8, 30), event_type=EventType.SLEEP, title="잠", description="{place}에서 잠을 잤다.", base=["E1"]),
+        _event([(EventSourceType.MOVEMENT, trip.raw_id)], start=_at(8, 9), end=_at(8, 54),
+               event_type=EventType.MOVEMENT, title="이동", base=["E2"]),
+        _event([(EventSourceType.STAY, school.raw_id)], start=_at(8, 54), end=_at(10, 22), title="학교", base=["E3"]),
+    )
+
+    repair_draft(draft, request, extended=True, clues=clues)
+
+    movements = [e for e in draft.events if e.event_type is EventType.MOVEMENT]
+    assert [(m.start_time, m.end_time) for m in movements] == [(_at(8, 9), _at(8, 54))]
+    sleep = next(e for e in draft.events if e.event_type is EventType.SLEEP)
+    assert (sleep.start_time, sleep.end_time) == (_at(0, 30), _at(8, 30)), "수면 일정 시간은 그대로다."
+
+
+def test_v4_restore_does_not_fill_a_gap_without_records_inside_a_stay():
+    """같은 집 구간 안에서 기록이 없는 00:02~00:46 을 틀 문장으로 채우자 근거 기록과 겹치지 않아
+    지명도 장소 후보도 없는 `보낸 시간` 이 남았다(실제 재실행). 되살리는 것은 기록이 덮는 시간이다."""
+
+    late = stay_item("late", lat=35.8275, lon=128.6283, start="2026-06-20T18:49:00", end="2026-06-21T00:02:00",
+                     places=["화성파크드림"], address="대구 수성구 지범로17길 85")
+    night = stay_item("night", lat=35.8275, lon=128.6283, start="2026-06-21T00:46:00", end="2026-06-21T05:00:00",
+                      places=["화성파크드림"], address="대구 수성구 지범로17길 85")
+    sleep_plan = calendar_item("sleep", "수면 zzz", start="2026-06-21T00:30:00", end="2026-06-21T05:00:00")
+    request = make_request(stays=[late, night], calendars=[sleep_plan],
+                           window=TimeWindow(start="2026-06-20T18:00:00", end="2026-06-21T05:00:00"))
+    clues = _clues(request)
+    day2 = lambda h, m=0: _at(h, m, day=21)
+    draft = _draft(
+        _event([(EventSourceType.STAY, late.raw_id)], start=_at(18, 49), end=day2(0, 2), title="집", base=["E1"]),
+        _event([(EventSourceType.CALENDAR, sleep_plan.raw_id), (EventSourceType.STAY, late.raw_id), (EventSourceType.STAY, night.raw_id)],
+               start=day2(0, 30), end=day2(5), event_type=EventType.SLEEP, title="잠", description="{place}에서 잠을 잤다.", base=["E1"]),
+    )
+
+    repair_draft(draft, request, extended=True, clues=clues)
+
+    in_gap = [e for e in draft.events if e.start_time < day2(0, 30) and day2(0, 2) < e.end_time and e.event_type is not EventType.SLEEP]
+    assert not in_gap, [(e.title, e.start_time, e.end_time) for e in in_gap]
+
+
+def test_v4_stay_time_cut_by_a_later_step_comes_back():
+    """Timeline 이 대현동 체류 전체(10:57~17:45, 407분)를 점심 `MEAL` 로 채웠고, 위치 구간 복원 뒤에 도는
+    식사 시간 단계가 20분으로 줄여 오후 체류가 통째로 비었다(실제 재실행). 시간을 바꾸는 단계가 모두
+    끝난 뒤 위치 구간을 다시 확인한다."""
+
+    campus = stay_item("campus", lat=35.8880, lon=128.6110, start="2026-06-20T10:57:00", end="2026-06-20T17:45:00",
+                       places=["경북대학교"], address="대구 북구 대현동 1")
+    lunch = photo_item("lunch", taken="2026-06-20T12:49:00", lat=35.8880, lon=128.6110)
+    request = make_request(stays=[campus], photos=[lunch])
+    clues = build_timeline_clues(
+        build_location_skeleton(request), [],
+        [PhotoClue(id="P1", rawId=lunch.raw_id, takenAt=_at(12, 49), latitude=35.8880, longitude=128.6110, activity="점심을 먹었다")], []
+    )
+    draft = _draft(
+        _event([(EventSourceType.STAY, campus.raw_id), (EventSourceType.PHOTO, lunch.raw_id)],
+               start=_at(10, 57), end=_at(17, 45), event_type=EventType.MEAL, title="점심 식사",
+               description="{place}에서 점심을 먹었다.", base=["E1"]),
+    )
+
+    repair_draft(draft, request, extended=True, clues=clues)
+
+    covered = sorted((e.start_time, e.end_time) for e in draft.events)
+    assert covered[0][0] == _at(10, 57) and covered[-1][1] == _at(17, 45), covered
+    meal = next(e for e in draft.events if e.event_type is EventType.MEAL)
+    assert meal.end_time - meal.start_time <= timedelta(hours=1)
+
+
+
+# --- 꺼낸 event 가 사진을 갖는다 ------------------------------------------------------------
+
+
+def test_v4_photo_stays_with_the_event_extracted_from_it():
+    """Timeline 이 음식 사진으로 식사를 꺼내고 같은 사진을 회의 근거에도 남긴 실제 출력.
+
+    다른 근거(일정·체류)가 있는 회의가 사진을 가져가 사진뿐이던 식사가 지워졌다. 꺼냈으면 원래 event
+    에서 뺀다(사용자 결정 2026-10-30, "꺼냈으면 원래거는 지워야지") — 회의와 식사 둘 다 남는다.
+    """
+
+    from app.services.photo_guard import enforce_photo_scenes
+
+    office = stay_item("office", start="2026-06-20T12:08:00", end="2026-06-20T20:36:00")
+    meeting_cal = calendar_item("meeting", "팀 정기 회의", start="2026-06-20T12:00:00", end="2026-06-20T23:00:00")
+    food = photo_item("food", taken="2026-06-20T17:24:00")
+    request = make_request(stays=[office], calendars=[meeting_cal], photos=[food])
+    meeting = _event(
+        [(EventSourceType.CALENDAR, meeting_cal.raw_id), (EventSourceType.STAY, office.raw_id), (EventSourceType.PHOTO, food.raw_id)],
+        start=_at(12), end=_at(23), event_type=EventType.MEETING, title="회의",
+    )
+    meal = _event(
+        [(EventSourceType.PHOTO, food.raw_id)], start=_at(17, 24), end=_at(18, 4), event_type=EventType.MEAL, title="식사",
+    )
+    draft = _draft(meeting, meal)
+
+    enforce_photo_scenes(draft, request)
+
+    assert [e.title for e in draft.events] == ["회의", "식사"], "둘 다 남는다."
+    assert food.raw_id in [r.raw_id for r in meal.source_refs]
+    assert food.raw_id not in [r.raw_id for r in meeting.source_refs], "꺼냈으면 원래 event 에서 뺀다."
+
+
+def test_v4_same_scene_photos_gather_in_the_extracted_event():
+    """같은 장면(12:49)의 음식 사진은 식사에, 두 사람 사진은 체류에 있을 때 짧은 식사 쪽으로 모은다 —
+    체류 쪽으로 모으면 음식 사진이 7시간 체류를 `점심을 먹으며` 로 만든다."""
+
+    from app.services.photo_guard import merge_photo_scenes
+
+    stay = stay_item("campus", start="2026-06-20T10:57:00", end="2026-06-20T17:45:00")
+    food = photo_item("food", taken="2026-06-20T12:49:00", lat=35.89, lon=128.61)
+    together = photo_item("together", taken="2026-06-20T12:49:30", lat=35.89, lon=128.61)
+    request = make_request(stays=[stay], photos=[food, together])
+    stayed = _event(
+        [(EventSourceType.STAY, stay.raw_id), (EventSourceType.PHOTO, together.raw_id)],
+        start=_at(10, 57), end=_at(17, 45), title="보낸 시간",
+    )
+    meal = _event(
+        [(EventSourceType.STAY, stay.raw_id), (EventSourceType.PHOTO, food.raw_id)],
+        start=_at(12, 49), end=_at(13, 9), event_type=EventType.MEAL, title="식사",
+    )
+    draft = _draft(stayed, meal)
+
+    merge_photo_scenes(draft, request)
+
+    assert {r.raw_id for r in meal.source_refs} >= {food.raw_id, together.raw_id}
+    assert together.raw_id not in [r.raw_id for r in stayed.source_refs]
+    assert [e.title for e in draft.events] == ["보낸 시간", "식사"]
+
+
+def test_v4_does_not_send_location_only_overlap_to_repair():
+    """v4 는 `LOCATION_ONLY_OVERLAP` 을 돌리지 않는다(사용자 결정 2026-10-31). 체류 안의 식사는 정상 구조인데,
+    이 검사를 받은 Repair 가 7시간 체류를 식사로 고쳐 썼다."""
+
+    from app.services.confirm_report import ConfirmReport
+
+    stay = stay_item("campus", start="2026-06-20T10:57:00", end="2026-06-20T17:45:00")
+    food = photo_item("food", taken="2026-06-20T12:49:00")
+    request = make_request(stays=[stay], photos=[food])
+    stayed = _event([(EventSourceType.STAY, stay.raw_id)], start=_at(10, 57), end=_at(17, 45), title="보낸 시간", base=["E1"])
+    meal = _event(
+        [(EventSourceType.STAY, stay.raw_id), (EventSourceType.PHOTO, food.raw_id)],
+        start=_at(12, 49), end=_at(13, 9), event_type=EventType.MEAL, title="점심", base=["E1"],
+    )
+    report = ConfirmReport()
+
+    repair_draft(_draft(stayed, meal), request, report=report, clues=_clues(request))
+
+    assert [item for item in report.findings if item["kind"] == "LOCATION_ONLY_OVERLAP"] == []

@@ -208,6 +208,23 @@ class LocationSkeleton:
 
         return bool(self.segments or self.isolated)
 
+    def record_spans(self) -> dict[str, tuple[datetime, datetime]]:
+        """구간에 담긴 기록의 rawId → 그 기록이 구간 안에서 차지하는 시간.
+
+        기록의 원래 시각을 구간의 시간(window 로 자르고 겹침을 정리한 값)으로 자른 것이다. 원본이
+        겹친 이동(11~13시)은 앞 체류(~12시) 뒤인 12~13시가 된다. 확정 단계가 시간을 맞출 때 원래
+        시각 대신 이 값을 써야 뼈대가 정리한 시간이 되돌아가지 않는다. 구간 안에 남는 시간이 없는
+        기록은 구간의 시작 한 점이다. 단독 기록과 배치하지 못한 기록은 싣지 않는다.
+        """
+
+        spans: dict[str, tuple[datetime, datetime]] = {}
+        for segment in self.segments:
+            for record in segment.records:
+                start = max(record.start, segment.start)
+                end = min(record.end, segment.end)
+                spans[record.raw_id] = (start, end) if start < end else (segment.start, segment.start)
+        return spans
+
     def raw_ids(self) -> list[str]:
         """뼈대가 담은 모든 rawId. 입력의 STAY·MOVEMENT 가 정확히 한 번씩 나온다."""
 

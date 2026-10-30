@@ -177,20 +177,16 @@ def test_v4_pipeline_does_not_call_the_v3_event_agents():
     assert draft.events
 
 
-def test_lineage_to_a_base_event_at_another_time_is_ignored():
-    """오전 사진 event 에 저녁 체류의 기본 event 를 적은 실제 출력. 그 체류 기록을 근거로 붙이지 않는다."""
-
+def _clues_with_lunch_photo(request):
     from datetime import datetime, timedelta, timezone
 
-    from app.agents.timeline.timeline_agent import parse_timeline_clue_draft
     from app.schemas.clues import PhotoClue
     from app.services.calendar_clues import build_calendar_clues
     from app.services.clue_bundles import build_timeline_clues
     from app.services.location_skeleton import build_location_skeleton
 
-    request = _day()
     photo = request.photos[0]
-    clues = build_timeline_clues(
+    return build_timeline_clues(
         build_location_skeleton(request),
         build_calendar_clues(request),
         [
@@ -198,18 +194,23 @@ def test_lineage_to_a_base_event_at_another_time_is_ignored():
                 clue_id="P1",
                 raw_id=photo.raw_id,
                 taken_at=datetime(2026, 6, 20, 12, 30, tzinfo=timezone(timedelta(hours=9))),
+                latitude=photo.latitude,
+                longitude=photo.longitude,
             )
         ],
         [],
     )
-    text = json.dumps(
+
+
+def _one_event(event_type, title, from_, evidence, at):
+    return json.dumps(
         {
             "events": [
                 {
-                    "eventType": "WORK", "title": "보수 작업", "description": "보수 작업을 했다.",
-                    "from": ["E3"], "evidence": ["P1"],
-                    "startTime": "2026-06-20T07:00:00+09:00", "endTime": "2026-06-20T07:00:00+09:00",
-                    "confidence": 0.7, "inferenceLevel": "DIRECT", "mergeReason": "사진",
+                    "eventType": event_type, "title": title, "description": f"{title}.",
+                    "from": from_, "evidence": evidence,
+                    "startTime": f"2026-06-20T{at}:00+09:00", "endTime": f"2026-06-20T{at}:00+09:00",
+                    "confidence": 0.7, "inferenceLevel": "DIRECT", "mergeReason": "근거",
                 },
             ],
             "warnings": [],
@@ -217,7 +218,58 @@ def test_lineage_to_a_base_event_at_another_time_is_ignored():
         ensure_ascii=False,
     )
 
-    [event] = parse_timeline_clue_draft(text, request, clues).events
+
+def test_lineage_to_a_base_event_at_another_time_is_ignored():
+    """오전 event 에 저녁 체류의 기본 event 를 적은 실제 출력. 그 체류 기록을 근거로 붙이지 않는다."""
+
+    from app.agents.timeline.timeline_agent import parse_timeline_clue_draft
+
+    request = _day()
+    text = _one_event("UNKNOWN", "아침", ["E3"], ["B1"], "07:00")
+
+    [event] = parse_timeline_clue_draft(text, request, _clues_with_lunch_photo(request)).events
 
     assert event.base_event_ids == []
     assert request.stays[1].raw_id not in {r.raw_id for r in event.source_refs}
+
+
+def test_evidence_taken_at_another_time_is_not_an_events_evidence():
+    """12:30 점심 사진을 07:00 event 의 근거로 적으면 뺀다 — 근거는 시간과 장소가 모두 맞아야 한다
+    (사용자 결정 2026-10-30·31). 같은 곳에 두 번 간 날 점심 사진이 아침 체류의 근거로 적혔고, Repair 가
+    그 말을 믿고 아침 체류를 식사로 바꿨다. 근거가 남지 않으면 event 를 만들지 않고 알린다(사진은 확정
+    pass 가 촬영 시각으로 되살린다).
+    """
+
+    from app.agents.timeline.timeline_agent import parse_timeline_clue_draft
+
+    request = _day()
+    draft = parse_timeline_clue_draft(
+        _one_event("WORK", "보수 작업", [], ["P1"], "07:00"), request, _clues_with_lunch_photo(request)
+    )
+
+    assert draft.events == []
+    assert any("P1" in w.message and "맞지 않는" in w.message for w in draft.warnings)
+
+    kept = parse_timeline_clue_draft(
+        _one_event("MEAL", "점심", ["E3"], ["P1"], "12:30"), request, _clues_with_lunch_photo(request)
+    )
+    assert request.photos[0].raw_id in {r.raw_id for r in kept.events[0].source_refs}, "시간·장소가 맞으면 둔다."
+
+
+def test_a_photo_event_without_lineage_gets_the_segment_its_photo_is_in():
+    """`from` 을 비운 식사 event 는 그 사진이 붙은 위치 구간에서 온 것으로 본다(사용자 결정 2026-10-31).
+
+    사진 입력에서 장소를 뺀 뒤 Timeline 이 꺼낸 식사의 `from` 을 비우자, 그 식사가 장소도 지명도 없는
+    `점심을 먹었다` 가 됐다. 구간의 체류 기록이 근거로 붙어야 장소 후보와 지명이 생긴다.
+    """
+
+    from app.agents.timeline.timeline_agent import parse_timeline_clue_draft
+
+    request = _day()
+    draft = parse_timeline_clue_draft(
+        _one_event("MEAL", "점심", [], ["P1"], "12:30"), request, _clues_with_lunch_photo(request)
+    )
+
+    [meal] = draft.events
+    assert meal.base_event_ids == ["E3"]
+    assert request.stays[1].raw_id in {r.raw_id for r in meal.source_refs}

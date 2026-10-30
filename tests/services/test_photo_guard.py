@@ -527,6 +527,28 @@ def test_v4_joins_a_photo_into_a_card_made_in_an_earlier_confirm():
     assert {ref.raw_id for ref in cards[0].source_refs} == {first.raw_id, second.raw_id}
 
 
+def test_v4_does_not_join_photos_taken_far_apart_into_one_created_event():
+    """10분 간격이어도 11km 떨어져 찍은 사진은 다른 장면이다(외부 검토 지적).
+
+    누락 사진을 되살릴 때 촬영 시각만 보고 이어 붙였다. 뒤 단계는 이미 합쳐진 event 를 나누지 않는다.
+    """
+
+    from datetime import timedelta
+
+    request = make_request(
+        photos=[
+            photo_item("1", taken="2026-06-20T12:00:00", lat=37.5446, lon=126.9520),
+            photo_item("2", taken="2026-06-20T12:10:00", lat=37.5446, lon=127.0770),
+        ]
+    )
+    draft = _draft([])
+
+    enforcement = enforce_photo_assignment(draft, request, join_created_within=timedelta(minutes=20))
+
+    assert len(enforcement.created) == 2
+    assert_every_photo_is_in_exactly_one_event(draft, request)
+
+
 def test_created_event_stays_inside_the_window():
     request = make_request(photos=[photo_item("1", taken="2026-06-19T23:00:00")])
     draft = _draft([])

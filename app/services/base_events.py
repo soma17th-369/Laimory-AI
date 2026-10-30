@@ -15,6 +15,15 @@
 그날 시·도가 둘 이상일 때만 짧게 앞에 붙인다(`서울 마포구 도화동`).
 
 기본 event 의 제목은 Timeline 이 빠뜨린 구간을 되살릴 때만 쓰는 틀이다(`{지명}에서 보낸 시간`).
+
+**일정은 Timeline 보다 먼저 기본 event 에 넣는다**(사용자 결정 2026-10-30 — "캘린더의 경우 Timeline이
+처리하기 전에 Location 의 결과물에다가 박아넣어버려"). 일정이 체류 구간을 덮으면 그 구간의 기본 event 는
+일정 기본 event 다(`with_calendar`) — eventType 은 `CALENDAR_EVENT`, 시간은 일정 시간이고 체류는 그 일정의
+위치 근거다. 일정은 중요한 일정이라 일정이 주인이고 위치가 근거다. 프롬프트로만 맡기면 Timeline 이 회의와
+같은 체류의 `보낸 시간` 을 따로 썼다(4번 중 1번).
+이동은 제목과 문장 모두 출발·도착 지명으로 쓴다(`도화동에서 역삼동으로 이동` / `…이동했다.`). 이동도
+제목과 문장은 Timeline 이 쓰고, 이 틀은 Timeline 입력에 실리고 빠진 이동을 되살릴 때 쓰인다(사용자
+결정 2026-10-30 — 제목은 Timeline, 문장은 코드가 따로 쓰자 둘의 출발지가 갈렸다).
 """
 
 import re
@@ -29,6 +38,7 @@ from app.schemas import (
     SourceRef,
     TimelineEventDraft,
 )
+from app.services.calendar_clues import CalendarClue
 from app.services.location_skeleton import SegmentKind, SkeletonSegment
 
 #: 기본 event 근거의 `sourceRefs.reason`.
@@ -122,6 +132,17 @@ def toward_particle(word: str) -> str:
     return "로"
 
 
+def movement_route(origin: str | None, destination: str | None) -> str:
+    """이동의 출발·도착 지명 구절(`마포구 도화동에서 강남구 역삼동으로`). 같은 지명이면 도착만 쓴다."""
+
+    if origin == destination:
+        origin = None
+    parts = [f"{origin}에서"] if origin else []
+    if destination:
+        parts.append(f"{destination}{toward_particle(destination)}")
+    return " ".join(parts)
+
+
 @dataclass(frozen=True)
 class BaseEvent:
     """뼈대 구간 하나의 기본 event."""
@@ -131,20 +152,43 @@ class BaseEvent:
     event_type: EventType
     title: str
     description: str
+    #: 이 기본 event 의 주인인 일정. 있으면 시간은 일정 시간이다.
+    calendar: CalendarClue | None = None
+    #: 일정이 들어오기 전 체류의 틀. 일정 event 가 체류 일부만 덮었을 때 나머지를 이 틀로 되살린다.
+    stay: "BaseEvent | None" = None
+
+    @property
+    def start(self) -> datetime:
+        return self.calendar.start if self.calendar and self.calendar.start else self.segment.start
+
+    @property
+    def end(self) -> datetime:
+        return self.calendar.end if self.calendar and self.calendar.end else self.segment.end
 
     def as_prompt_dict(self) -> dict[str, object]:
         # 제목은 싣지 않는다. Timeline 이 근거의 주소로 쓴다.
-        return {
+        payload: dict[str, object] = {
             "id": self.base_id,
             "eventType": self.event_type.value,
             "description": self.description,
         }
+        if self.calendar is not None:
+            payload["calendar"] = self.calendar.clue_id
+            payload["startAt"] = self.start.isoformat()
+            payload["endAt"] = self.end.isoformat()
+        return payload
 
 
 def build_base_event(
-    segment: SkeletonSegment, number: int, area: str | None = None
+    segment: SkeletonSegment,
+    number: int,
+    area: str | None = None,
+    route: tuple[str | None, str | None] = (None, None),
 ) -> BaseEvent:
-    """구간의 기본 event. `area` 는 그 구간 장소의 지명이다(되살릴 때 쓰는 틀 제목에만 쓴다)."""
+    """구간의 기본 event. `area` 는 그 구간 장소의 지명이다(되살릴 때 쓰는 틀 제목에만 쓴다).
+
+    `route` 는 이동의 출발·도착 지명이다.
+    """
 
     if segment.kind is SegmentKind.STAY:
         title = f"{area}에서 보낸 시간" if area else "머문 시간"
@@ -154,8 +198,28 @@ def build_base_event(
             f"E{number}", segment, EventType.EXERCISE, f"{area} 산책" if area else "산책",
             "{place}에서 산책했다.",
         )
-    # 이동 문장은 확정 pass 가 출발·도착 지명(구 + 동)으로 쓴다(`place_slots.fill_place_slots`).
-    return BaseEvent(f"E{number}", segment, EventType.MOVEMENT, "이동", "")
+    phrase = movement_route(*route)
+    return BaseEvent(
+        f"E{number}", segment, EventType.MOVEMENT,
+        f"{phrase} 이동" if phrase else "이동", f"{phrase} 이동했다." if phrase else "이동했다.",
+    )
+
+
+def with_calendar(base: BaseEvent, calendar: CalendarClue, area: str | None = None) -> BaseEvent:
+    """일정이 덮은 체류의 기본 event. 일정이 주인이고 체류는 그 위치 근거다(사용자 결정 2026-10-30).
+
+    문장은 「문장 형식」의 일정 뼈대다. 참석했는지는 모르므로 `일정이 있었다` 로 둔다.
+    """
+
+    return BaseEvent(
+        base.base_id,
+        base.segment,
+        EventType.CALENDAR_EVENT,
+        f"{area}에서 {calendar.title}" if area else calendar.title,
+        f"{{place}}에서 {calendar.title} 일정이 있었다.",
+        calendar,
+        base,
+    )
 
 
 def base_event_draft(
@@ -166,10 +230,10 @@ def base_event_draft(
     places: list[str] | None = None,
     client_event_id: str | None = None,
 ) -> TimelineEventDraft:
-    """기본 event 를 틀 문장 그대로 draft event 로 만든다. 시간은 구간이나 그 일부다."""
+    """기본 event 를 틀 문장 그대로 draft event 로 만든다. 시간은 구간(일정 기본 event 는 일정)이나 그 일부다."""
 
-    start = start or base.segment.start
-    end = end or base.segment.end
+    start = start or base.start
+    end = end or base.end
     refs = [
         SourceRef(
             source_type=EventSourceType.STAY if record.is_stay else EventSourceType.MOVEMENT,
@@ -186,6 +250,10 @@ def base_event_draft(
         )
         for record in base.segment.records
     ]
+    if base.calendar is not None:
+        refs.append(
+            SourceRef(source_type=EventSourceType.CALENDAR, raw_id=base.calendar.raw_id, reason="일정")
+        )
     return TimelineEventDraft(
         client_event_id=client_event_id or f"base-{base.base_id}",
         event_type=base.event_type,

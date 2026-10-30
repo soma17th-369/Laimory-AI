@@ -346,6 +346,61 @@ def test_movement_direction_particle_follows_the_last_sound(destination, particl
     assert f"{particle} 이동했다." in event.description, "도착지는 지명이고 조사는 그 받침에 맞는다."
 
 
+def test_movement_title_and_sentence_written_by_the_llm_are_kept():
+    """이동 제목·문장은 Timeline·Repair 가 같은 지명으로 쓰고 코드는 덮어쓰지 않는다(사용자 결정 2026-10-30).
+
+    제목은 Timeline, 문장은 코드가 따로 쓰자 기록되지 않은 열차 구간 때문에 둘의 출발지가 갈렸다.
+    코드가 문장을 쓰는 것은 비었을 때뿐이다(위 두 테스트).
+    """
+
+    movement = _movement("1", "2026-06-20T08:00:00", "2026-06-20T08:40:00", "서울 성동구 아차산로 100", "서울 강남구 강남대로 396")
+    request = make_request(movements=[movement])
+    event = _event(
+        [_ref(movement, EventSourceType.MOVEMENT)],
+        event_type=EventType.MOVEMENT,
+        title="성동구 아차산로에서 강남구 강남대로로 출근",
+        description="성동구 아차산로에서 강남구 강남대로로 출근했다.",
+    )
+
+    fill_place_slots(_draft(event), request)
+
+    assert event.title == "성동구 아차산로에서 강남구 강남대로로 출근"
+    assert event.description == "성동구 아차산로에서 강남구 강남대로로 출근했다."
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        # 기록되지 않은 구간 앞의 체류를 출발지로 썼다(실제 재실행 8번 중 1번).
+        "중구 세종대로에서 성동구 아차산로로 출근",
+        # 받침과 맞지 않는 조사(실제 재실행 `지범로17길으로`).
+        "성동구 아차산로에서 강남구 강남대로으로 출근",
+        # 장소명과 주소 원문은 이동에 쓰지 않는다(사용자 결정).
+        "서울 성동구 아차산로 100에서 도착지 이름으로 출근",
+        "출근",
+    ],
+)
+def test_movement_route_follows_the_records_in_title_and_sentence_alike(written):
+    """출발·도착 지명은 기록이 정하므로 코드가 맞추고, LLM 이 고른 목적은 둔다. 제목과 문장에 같은 규칙을
+    써서 둘이 갈라지지 않는다(사용자 결정 2026-10-30 "title 이랑 description 이 안 맞으면 안되잖아")."""
+
+    fixed = "성동구 아차산로에서 강남구 강남대로로 출근"
+
+    movement = _movement("1", "2026-06-20T08:00:00", "2026-06-20T08:40:00", "서울 성동구 아차산로 100", "서울 강남구 강남대로 396")
+    request = make_request(movements=[movement])
+    event = _event(
+        [_ref(movement, EventSourceType.MOVEMENT)],
+        event_type=EventType.MOVEMENT,
+        title=written,
+        description=f"{written}했다.",
+    )
+
+    fill_place_slots(_draft(event), request)
+
+    assert event.title == fixed
+    assert event.description == f"{fixed}했다."
+
+
 def test_place_name_in_title_is_found():
     request = make_request(stays=[_LUNCH])
     event = _event([_ref(_LUNCH, EventSourceType.STAY)], title="OO식당에서 점심", place_candidates=["OO식당"])
