@@ -13,6 +13,11 @@
 정렬이나 `clientEventId` 처럼 반드시 맞아야 하는 것은 그 안에서도 여전히 코드가 한다
 (`app/agents/repair/` 참고).
 
+v4 세트(#167~#171)는 1·2번이 다르다. Event Agent 다섯 대신 **사진·알림 단서 호출만** 병렬로
+돌리고(위치·일정은 코드가 만들고, 수면·걸음은 더 수집하지 않는다), `merge_results` 자리에서
+위치 뼈대·일정 단서와 함께 **근거 묶음**을 만든다. Timeline·Repair 는 그 묶음을 읽는다.
+분기 기준은 `prompt_loader.uses_clue_contract` 하나이고 v1~v3 경로는 그대로다.
+
 5번이 Repair 뒤인 것은 순서 취향이 아니다. Repair 가 event 를 병합·삭제하고
 `clientEventId` 를 다시 매기므로, 그전에 만든 질문은 사라진 event 를 가리키게 된다.
 
@@ -37,6 +42,12 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agents.events import default_event_agents, merge_event_results
 from app.agents.events.base_event_agent import EventAgent
+from app.agents.events.notification.clue_agent import (
+    NotificationClueAgent,
+    NotificationClueResult,
+)
+from app.agents.events.photo.clue_agent import PhotoClueAgent, PhotoClueResult
+from app.agents.prompt_loader import uses_clue_contract
 from app.agents.question.question_agent import QuestionAgent
 from app.agents.repair.repair_agent import RepairAgent
 from app.agents.timeline.timeline_agent import TimelineAgent
@@ -58,13 +69,25 @@ from app.schemas import (
     TimelineWarning,
     TimelineWarningSeverity,
 )
+from app.services.calendar_clues import build_calendar_clues
+from app.services.clue_bundles import TimelineClues, build_timeline_clues
 from app.services.draft_repair import enforce_final_photo_assignment
+from app.services.location_skeleton import build_location_skeleton
+from app.services.place_resolver import same_place_addresses
+from app.services.validator import resolve_timezone
 
 logger = get_logger(__name__)
 
 
 class _MainAgentState(TypedDict, total=False):
     request: TimelineDraftRequest
+    #: v4 세트의 단서 계약으로 도는가(#169).
+    clue_contract: bool
+    photo_clue_agent: PhotoClueAgent
+    notification_clue_agent: NotificationClueAgent
+    photo_clues: PhotoClueResult
+    notification_clues: NotificationClueResult
+    clues: TimelineClues
     event_agents: dict[str, EventAgent]
     timeline_agent: TimelineAgent
     repair_agent: RepairAgent
@@ -145,11 +168,72 @@ def _run_event_agent_traced(
         return result
 
 
+def _run_clue_agent_traced(name: str, agent, request: TimelineDraftRequest):
+    """사진·알림 단서 호출을 agent 관측으로 감싼다(v4)."""
+
+    started = perf_counter()
+    with (
+        token_usage_scope() as token_usage,
+        trace_observation(
+            f"clue-agent-{name}",
+            as_type="agent",
+            input=_request_trace_input(request),
+            metadata={"agent": name, "sourceStage": "clue"},
+        ) as observation,
+    ):
+        result = agent.generate(request)
+        update_observation(
+            observation,
+            output={
+                "clueCount": len(result.clues),
+                "warningCount": len(result.warnings),
+                "durationMs": (perf_counter() - started) * 1000,
+                "tokenUsage": token_usage.summary(),
+                "clues": [clue.model_dump(by_alias=True, mode="json") for clue in result.clues],
+            },
+            level="WARNING" if result.warnings else "DEFAULT",
+        )
+        return result
+
+
+def _build_clues(state: _MainAgentState) -> TimelineClues:
+    """위치 뼈대·일정 단서를 코드로 만들고, 사진·알림 단서와 묶는다(v4)."""
+
+    request = state["request"]
+    photos = state.get("photo_clues") or PhotoClueResult()
+    notifications = state.get("notification_clues") or NotificationClueResult()
+    return build_timeline_clues(
+        build_location_skeleton(request),
+        build_calendar_clues(request),
+        photos.clues,
+        notifications.clues,
+        warnings=[*photos.warnings, *notifications.warnings],
+        same_place=same_place_addresses(request, resolve_timezone(request.timezone)),
+    )
+
+
 def _build_graph():
     """타임라인 초안 생성 LangGraph 를 구성한다."""
 
     async def run_event_agents_node(state: _MainAgentState) -> _MainAgentState:
         request = state["request"]
+        if state.get("clue_contract"):
+            photo_result, notification_result = await asyncio.gather(
+                asyncio.to_thread(
+                    _run_clue_agent_traced, "photo", state["photo_clue_agent"], request
+                ),
+                asyncio.to_thread(
+                    _run_clue_agent_traced,
+                    "notification",
+                    state["notification_clue_agent"],
+                    request,
+                ),
+            )
+            return {
+                "photo_clues": photo_result,
+                "notification_clues": notification_result,
+                "event_results": {},
+            }
         agents = state["event_agents"]
 
         # Agent.generate 는 내부에서 실패를 warning 으로 흡수하므로 예외로 새지 않는다.
@@ -163,6 +247,25 @@ def _build_graph():
 
     def merge_results_node(state: _MainAgentState) -> _MainAgentState:
         started = perf_counter()
+        if state.get("clue_contract"):
+            with trace_observation(
+                "build-clue-bundles",
+                as_type="chain",
+                metadata={"contract": "clue"},
+            ) as observation:
+                clues = _build_clues(state)
+                update_observation(
+                    observation,
+                    output={
+                        "durationMs": (perf_counter() - started) * 1000,
+                        "hasLocation": clues.skeleton.has_location,
+                        "segmentCount": len(clues.skeleton.segments),
+                        "bundleCount": len(clues.bundles),
+                        "dayNotificationCount": len(clues.day_notifications),
+                    },
+                    level="WARNING" if clues.warnings else "DEFAULT",
+                )
+            return {"clues": clues, "merged_result": AgentEventResult()}
         event_results = {
             name: result.model_dump(by_alias=True, mode="json")
             for name, result in state["event_results"].items()
@@ -229,11 +332,18 @@ def _build_graph():
             # 실패는 흡수하지도, 여기서 기록하지도 않고 그대로 올린다. 다시 던지는
             # 경계마다 남기면 실패 하나가 여러 건으로 집계된다 — 코드 부여와 최종
             # 기록은 timeline_runner 가 소유한다(이슈 #53).
-            draft = await asyncio.to_thread(
-                state["timeline_agent"].generate,
-                state["request"],
-                state["merged_result"],
-            )
+            if state.get("clue_contract"):
+                draft = await asyncio.to_thread(
+                    state["timeline_agent"].generate_from_clues,
+                    state["request"],
+                    state["clues"],
+                )
+            else:
+                draft = await asyncio.to_thread(
+                    state["timeline_agent"].generate,
+                    state["request"],
+                    state["merged_result"],
+                )
             update_observation(
                 langfuse_observation,
                 output={
@@ -292,6 +402,7 @@ def _build_graph():
                     event_agents=state["event_agents"],
                     timeline_agent=state["timeline_agent"],
                     on_confirm=state.get("on_confirm"),
+                    clues=state.get("clues"),
                 )
             )
             update_observation(
@@ -404,6 +515,8 @@ async def run_main_agent(
     repair_agent: RepairAgent | None = None,
     question_agent: QuestionAgent | None = None,
     on_confirm: Callable[[TimelineDraft], None] | None = None,
+    photo_clue_agent: PhotoClueAgent | None = None,
+    notification_clue_agent: NotificationClueAgent | None = None,
 ) -> TimelineDraft:
     """요청을 받아 확정된 `TimelineDraft` 를 생성한다.
 
@@ -416,6 +529,9 @@ async def run_main_agent(
         on_confirm: Repair 가 draft 를 확정할 때마다 그 복사본을 받을 콜백(이슈 #76).
             호출자가 `asyncio.wait_for` 로 이 실행을 취소해도 마지막 확정본이 호출자
             손에 남는다. 취소된 뒤에는 반환값이 없으므로 결과를 건네는 통로가 이것뿐이다.
+        photo_clue_agent: v4 세트의 사진 단서 Agent. 기본값은 새 `PhotoClueAgent()`.
+        notification_clue_agent: v4 세트의 알림 단서 Agent. 기본값은 새
+            `NotificationClueAgent()`.
 
     Event Agent 들은 각각 블로킹 LLM 호출을 하므로 `asyncio.to_thread` 로
     스레드에 올려 동시에 실행한다. Timeline/Repair Agent 역시 블로킹이라 스레드에서
@@ -471,6 +587,10 @@ async def run_main_agent(
         final_state = await _build_graph().ainvoke(
             {
                 "request": request,
+                "clue_contract": uses_clue_contract(),
+                "photo_clue_agent": photo_clue_agent or PhotoClueAgent(),
+                "notification_clue_agent": notification_clue_agent
+                or NotificationClueAgent(),
                 "event_agents": agents,
                 "timeline_agent": timeline,
                 "repair_agent": repair,
