@@ -102,7 +102,7 @@ def test_v1_runs_infer_then_review(
 ) -> None:
     modules = _reload_agents(monkeypatch, "v1")
     module = modules[agent_name]
-    assert module._REVIEW_PROMPT is not None
+    assert module._review_prompt() is not None
 
     # 1) infer 의 자유 텍스트 초안, 2) review 의 구조화 응답.
     llm = FakeLLM(["초안 텍스트", result_json()])
@@ -126,7 +126,7 @@ def test_single_call_versions_run_one_structured_call(
 ) -> None:
     modules = _reload_agents(monkeypatch, version)
     module = modules[agent_name]
-    assert module._REVIEW_PROMPT is None, f"{version} 는 review 프롬프트를 읽지 않습니다."
+    assert module._review_prompt() is None, f"{version} 는 review 프롬프트를 읽지 않습니다."
 
     llm = FakeLLM([result_json()])
     getattr(module, attr)(llm=llm).generate(build_request())

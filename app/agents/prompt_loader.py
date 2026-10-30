@@ -25,6 +25,21 @@ def uses_legacy_contract(version: str | None = None) -> bool:
     return selected in LEGACY_PROMPT_VERSIONS
 
 
+#: 데이터별 단서 계약(#167~#171)보다 앞선 세트. v4 부터는 Event Agent 가 공통 candidate
+#: 대신 데이터별 단서를 내고, 위치·일정은 코드가 뼈대와 단서로 만든다.
+#:
+#: v3 는 운영 세트다. v4 에서만 바꿀 동작은 이 판정으로 가르고 v3 경로는 그대로 둔다.
+#: v4 는 `uses_legacy_contract()` 가 거짓이라 v3 의 #119 이후 계약도 그대로 이어받는다.
+PRE_CLUE_PROMPT_VERSIONS = frozenset({"v1", "v2", "v3"})
+
+
+def uses_clue_contract(version: str | None = None) -> bool:
+    """이 프롬프트 세트가 데이터별 단서 계약(v4~)으로 도는가."""
+
+    selected = str(version or settings.prompt_version).strip().lower()
+    return selected not in PRE_CLUE_PROMPT_VERSIONS
+
+
 def load_prompt(
     module_file: str | Path,
     filename: str,

@@ -14,6 +14,7 @@ v2 부터는 review 를 두지 않는다(#56). v2 의 목표가 상위 여정 �
 """
 
 import json
+from functools import cache
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -32,11 +33,20 @@ from app.schemas import AgentEventResult, TimelineDraftRequest
 from app.services.location_guard import verify_location_result
 from app.services.location_metrics import build_location_metrics
 
-_SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
+#: 프롬프트는 import 때가 아니라 처음 부를 때 읽는다. v4 세트에는 이 Agent 의
+#: 프롬프트가 없다 — v4 는 위치 뼈대 코드가 대신한다(#167). import 때 읽으면 v4 로
+#: 기동조차 못 한다. v1~v3 은 읽는 시점만 늦어질 뿐 같은 파일을 읽는다.
+@cache
+def _system_prompt() -> str:
+    return load_prompt(__file__, "prompt.md")
 
 #: review 단계는 v1 프롬프트 세트 전용이다. v2 세트에는 `review.md` 가 없다.
 _USE_REVIEW = settings.prompt_version == "v1"
-_REVIEW_PROMPT = load_prompt(__file__, "review.md") if _USE_REVIEW else None
+
+
+@cache
+def _review_prompt() -> str | None:
+    return load_prompt(__file__, "review.md") if _USE_REVIEW else None
 
 #: 이동 사이의 장시간 체류 검사(#119)를 돌리는가. 그 warning 을 읽고 event 를 나누는 것은
 #: v3 Repair 다. 나눌 도구가 없는 세트에 보이면 Timeline 재실행만 되풀이한다.
@@ -74,11 +84,11 @@ class LocationEventAgent(EventAgent):
             window_start=request.window.start if request.window else None,
             window_end=request.window.end if request.window else None,
         )
-        if _REVIEW_PROMPT is None:
+        if _review_prompt() is None:
             result = self.llm.complete_structured(
                 infer_prompt,
                 AgentEventResult,
-                system=_SYSTEM_PROMPT,
+                system=_system_prompt(),
                 temperature=0.2,
             )
         else:
@@ -91,13 +101,13 @@ class LocationEventAgent(EventAgent):
         llm = self.llm
 
         def infer_node(state: _State) -> _State:
-            draft = llm.complete(infer_prompt, system=_SYSTEM_PROMPT, temperature=0.2)
+            draft = llm.complete(infer_prompt, system=_system_prompt(), temperature=0.2)
             return {"draft": draft}
 
         def review_node(state: _State) -> _State:
-            prompt = _REVIEW_PROMPT.replace("{{DRAFT}}", state["draft"])
+            prompt = _review_prompt().replace("{{DRAFT}}", state["draft"])
             result = llm.complete_structured(
-                prompt, AgentEventResult, system=_SYSTEM_PROMPT, temperature=0.0
+                prompt, AgentEventResult, system=_system_prompt(), temperature=0.0
             )
             return {"result": result}
 
