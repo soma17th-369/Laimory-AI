@@ -33,8 +33,31 @@ from app.services.validator import parse_datetime, resolve_timezone
 #: 요구사항 §12 가 20분을 기준으로 못 박았다.
 SHORT_STAY_MAX = timedelta(minutes=20)
 
-#: 이 시간 이상 위치 기록이 없으면 수집이 끊긴 구간으로 본다.
+#: 이 시간 이상 위치 기록이 없으면 수집이 끊긴 구간으로 본다. 판정은 `is_continuous` 하나로 한다.
 COVERAGE_GAP_MIN = timedelta(minutes=45)
+
+#: 도보 왕복이 이 시간 이상이면 산책이다(v3 Location 프롬프트의 30분, #167).
+WALK_MIN_DURATION = timedelta(minutes=30)
+
+#: 두 지점이 이 거리 이내면 같은 장소다(사용자 결정, #167). 처음 300m 였다가 너무 크다고 해 줄였고,
+#: 같은 아파트 체류가 212m 까지 벌어진 실측을 담으려고 250m 로 정했다(2026-10-30). 같은 건물이 서로
+#: 다른 주소로 44~68m 흩어져 들어오는 실측도 이 안에 든다.
+SAME_PLACE_MAX_METERS = 250.0
+
+#: 두 지점이 이 거리보다 멀면 언제나 다른 장소다(사용자 결정, #167). 이동 기록이 없어도
+#: 그 사이에 기록되지 않은 이동이 있었던 것이다.
+DIFFERENT_PLACE_MIN_METERS = 1000.0
+
+
+def is_continuous(gap: timedelta) -> bool:
+    """앞 기록의 끝과 뒤 기록의 시작 사이가 이 공백이면 두 기록이 이어졌는가.
+
+    `COVERAGE_GAP_MIN` **미만**이면 이어진 것이다. 이동 사이 체류 검사와 수집 공백 계산,
+    위치 뼈대가 모두 이 판정을 쓴다. v3 Location 프롬프트는 "45분 이하" 라고 적었지만 코드는
+    처음부터 정확히 45분에서 끊었고(#119), 코드 쪽을 기준으로 삼았다(#167).
+    """
+
+    return gap < COVERAGE_GAP_MIN
 
 
 class MovementMode(StrEnum):
@@ -307,7 +330,7 @@ def _segment_gaps(
                 after_raw_id=str(prev.raw_id),
                 before_raw_id=str(nxt.raw_id),
                 gap_minutes=(next_start - prev_end).total_seconds() / 60.0,
-                endpoint_distance_meters=_distance_between(
+                endpoint_distance_meters=distance_between(
                     _point_of(prev.end), _point_of(nxt.start)
                 ),
                 has_stay_between=_has_stay_between(stays, prev_end, next_start),
@@ -352,7 +375,7 @@ def _coverage_gap_minutes(
     if window_end is None or window_end <= last_observed_at:
         return None
     gap = window_end - last_observed_at
-    if gap < COVERAGE_GAP_MIN:
+    if is_continuous(gap):
         return None
     return gap.total_seconds() / 60.0
 
@@ -415,10 +438,39 @@ def _label_of(place: Any) -> str | None:
 
 
 def _endpoint_distance(item: MovementItem) -> float | None:
-    return _distance_between(_point_of(item.start), _point_of(item.end))
+    return distance_between(_point_of(item.start), _point_of(item.end))
 
 
-def _distance_between(
+#: 같은 장면으로 보는 사진 사이의 최대 간격. 짧은 체류 기준과 같은 값을 쓴다(내 선택, #167).
+PHOTO_SCENE_GAP = SHORT_STAY_MAX
+
+
+def same_photo_scene(
+    taken_a: datetime | None,
+    point_a: tuple[float | None, float | None],
+    taken_b: datetime | None,
+    point_b: tuple[float | None, float | None],
+) -> bool:
+    """두 사진이 같은 장면인가. 촬영 간격이 20분 이내이고 같은 곳(둘 다 좌표가 없거나 250m 이내)이다.
+
+    v3 는 Photo Agent 가 이어 찍은 같은 장면 사진을 candidate 하나로 묶었다. v4 는 사진을 한 장씩
+    해석하므로 코드가 묶는다 — 2초 간격 저녁 사진 두 장이 식사 event 둘이 됐다(사용자 결정: 같은
+    사진은 무조건 event 하나).
+    """
+
+    if taken_a is None or taken_b is None or abs(taken_a - taken_b) > PHOTO_SCENE_GAP:
+        return False
+    has_a = point_a[0] is not None and point_a[1] is not None
+    has_b = point_b[0] is not None and point_b[1] is not None
+    if not has_a and not has_b:
+        return True
+    if has_a != has_b:
+        return False
+    distance = distance_between(point_a, point_b)
+    return distance is not None and distance <= SAME_PLACE_MAX_METERS
+
+
+def distance_between(
     left: tuple[float, float] | None, right: tuple[float, float] | None
 ) -> float | None:
     """두 좌표 사이의 대권 거리(m). 한쪽이라도 좌표가 없으면 계산하지 않는다."""
