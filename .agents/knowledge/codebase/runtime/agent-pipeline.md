@@ -30,6 +30,12 @@
 
 Agent별 이름은 Repair의 `rerun_event_agent`가 특정 결과만 교체하는 key다. 이름이 중복되면 suffix를 붙이며, `event_agents`와 `event_results`는 같은 key를 유지해야 한다.
 
+### v4 경로 (#167~#171)
+
+v4 세트(`uses_clue_contract`)에서는 `run_event_agents`가 Event Agent 다섯 대신 사진·알림 단서 호출(`PhotoClueAgent`·`NotificationClueAgent`)만 병렬로 돌린다. `merge_results` 자리에서 코드가 위치 뼈대(`location_skeleton`)와 일정 단서(`calendar_clues`)를 만들고, 넷을 근거 묶음(`clue_bundles`)으로 묶어 `TimelineClues`로 state에 싣는다. Timeline은 `generate_from_clues`로 묶음을 읽고, Repair는 같은 `TimelineClues`를 문맥(`RepairContext.clues`)으로 받는다. Event Agent 결과(`event_results`)는 비어 있어 사진 단일 귀속은 버려진 사진 candidate 대신 촬영 시각 경로를 쓴다.
+
+확정 pass는 `repair_draft(..., clues=...)`로 v4임을 안다. 묶음에는 구간마다 코드가 만든 기본 event(`base_events`, `E1`…, 틀 문장)가 실리고, Timeline v4는 그 구조 위에서 근거를 더하고 내용을 채우며 근거가 있으면 나누거나 합친다(event마다 `from`). 캘린더 일정 복원 뒤에 기본 event 구조를 지키는 네 단계(`skeleton_guard`: 근거 없는 이동 정리 → 이동 구간 분리 → 근거 시간 밖 event 정리 → 위치 구간 복원)가 돈다. 사용자가 정한 규칙만 검사하고 어긴 변경 하나만 되돌린다. 복원은 기본 event의 시간이 **덮였는지**로 본다(근거에 기록이 들어 있는지로 보면 일부만 쓴 시간이 비었다). `위치 근거 연결`과 `체류 병합`을 돌리지 않고(뼈대가 이미 묶었다), `장소 확정`은 장소 칸 확정(`place_slots.confirm_place_slots`), `문장 주소 정리`는 `문장 장소 칸`(`fill_place_slots`)이다. 검사는 v4에서 `ADDRESS_IN_NARRATION`을 내지 않고(주소를 문장에 쓸 수 있다) 제목의 장소명을 `PLACE_NAME_IN_TITLE`로 낸다. Repair v4 도구에는 `rerun_event_agent`·`merge_stay_events`가 없고, `update_event`는 `evidence`(묶음·단서 id와 rawId)를 받아 `expand_evidence`로 펼친다. `rerun_timeline_agent`는 같은 묶음으로 Timeline만 다시 돈다.
+
 ### Event Agent 경계
 
 각 Event Agent 실패는 전체 pipeline을 중단하지 않고 빈 결과와 warning으로 흡수한다. 정상 결과도 다음 코드 검사를 거친다.

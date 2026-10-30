@@ -50,6 +50,17 @@
 | `place` | 장소명. 파이프라인 전 구간이 이 한 이름을 쓴다 — 입력 `StayItem.place`/`GeoPlace.place`, draft event의 `place`, result event의 `place`. 예전 draft 필드명 `placeLabel`은 #72에서 통합됐고 back-compat alias로만 남는다. |
 | `places` | 한 지점을 가리킬 수 있는 장소명 **후보 목록**. 입력(`StayItem.places`)과 candidate에만 있다. 복수는 고를 후보(Timeline 입력), 단수 `place`는 고른 결과(Timeline 출력)라는 뜻이며, 그래서 candidate에는 단수 필드를 두지 않는다. |
 | `address` | 수집 원본에 실제로 있던 주소 문자열. 좌표에서 만들어 내지 않고, `인근`·`부근` 같은 근사 표현이 붙은 값은 주소로 쓰지 않는다. 근거로 뒷받침되지 않으면 확정 pass가 지운다. |
+| 위치 뼈대 | v4에서 코드가 STAY·MOVEMENT로 만든 하루의 구조(`location_skeleton`). 구간·빈 시간·단독 기록으로 이뤄지고 문장·eventType·생활 장소 라벨을 담지 않는다. |
+| 뼈대 구간 | 위치 뼈대의 한 조각. 체류(`STAY`)·이동(`MOVEMENT`)·산책(`WALK`) 중 하나다. 이동 없이 이어진 같은 장소(250m 이내)의 체류는 한 구간이고 1km 넘게 떨어진 체류는 언제나 다른 구간이다. |
+| 빈 시간 | 뼈대 구간 사이에 위치 기록이 없는 시간. 수집 공백(`COLLECTION_GAP`)과 기록되지 않은 이동(`UNRECORDED_MOVEMENT`)이 있다. 앞뒤 event로 메우지 않는다. |
+| 단서 | v4에서 데이터마다 그 데이터가 말하는 것만 담은 값. 위치 구간·일정 단서는 코드가, 사진·알림 단서는 LLM이 읽어 만든다. v3의 candidate와 달리 사건 종류와 문장을 정하지 않는다. v3까지의 Fragment 정의에 쓰인 "단서"와 다른 말이다. |
+| 근거 묶음 | 뼈대 구간 하나와 거기 붙은 사진·일정·대화 단서(`ClueBundle`, id `B1`…). 붙을 구간이 없는 단서는 자기 묶음이다. 대화가 아닌 알림은 묶음에 붙지 않고 하루 목록으로 간다. |
+| 같은 장소의 주소 | v4에서 하루 안 250m 이내 지점들이 함께 쓰는 한 주소(동이 있는 주소 우선, `same_place_addresses`). |
+| 지명(`area`) | v4 제목에 쓰는 그 장소의 이름 아닌 위치 표현. 같은 장소 묶음마다 코드가 하나 고른다: 구 + 동, 동이 없으면 구 + 도로명(건물번호 제외, 도로명 안 숫자는 둔다). 그날 시·도가 둘 이상이면 시·도를 짧게 붙인다. 제목은 Timeline이 이것을 그대로 써서 쓴다. |
+| 기본 event | v4에서 코드가 뼈대 구간마다 만든 event 구조(`E1`…, 틀 문장). Timeline은 그 위에 근거를 더하고 내용을 채우며 근거가 있으면 나누거나 합치고, 결과 event마다 온 기본 event를 `from`(`baseEventIds`)으로 적는다. |
+| 장소 칸 | v4 문장의 장소 자리 `{place}`. 이름은 코드가 근거로 확정하거나 `placeCandidates`로 사용자가 고른다. 칸을 쓸 수 없으면 주소 원문으로 바꾼다. |
+| 대표 좌표 | result event의 `latitude`·`longitude`(#175). 사용자가 실제로 있던 지점 하나의 좌표이고, 이동은 도착지다. 후보마다 좌표를 두지 않는다. 코드가 최종 근거에서 채우며 프롬프트에 싣지 않는다. |
+| `placeCandidates` | result event의 장소 후보(`[{name}]`, App Server 공지 2026-10-29). 우선순위 순서이고 App Server는 1번 후보로 `place`를 덮어쓴다. 입력의 `places`(근처 이름 목록)와 다른 값이다 — `places`는 고를 재료, `placeCandidates`는 사용자에게 보일 후보다. v4 세트에서만 보낸다. |
 | 이동 방식 (`mode`) | Location 파생 지표가 MOVEMENT마다 붙이는 두 갈래 구분(#114). `WALK`는 도보(걷기·달리기), `VEHICLE`은 이동수단 이용(자전거를 포함한 탈것 전부)이다. 어떤 탈것인지는 가르지 않는다. 산책 판정과 이동 정보 검증에만 쓰고 사용자 문장에는 싣지 않는다. 센서가 준 라벨 원본은 `transports`이며 둘을 같은 말로 쓰지 않는다. |
 | 알림 정책 (`policyId`) | 한 도메인(금융·결제, 쇼핑·택배, 예약·문화, 이동·여행, 배달·카페, 문자)의 앱에서 얻을 수 있는 정보(#116). `provides`는 `CONVERSATION`·`PAYMENT`·`RESERVATION` 중 그 앱에서 주로 오는 정보이고, 알림이 무엇인지를 그 셋으로 한정하지 않는다(#135). Notion 표의 앱은 결제·예약만 주고(문자를 뺀 결제·예약 앱은 사용자가 알림을 누르지 않아도 수집, 문자는 눌러야 수집), 표 밖의 메신저는 개인(카카오톡·Instagram·Discord, 대화·결제·예약)과 업무(Webex·Slack·Microsoft Teams, 대화·예약) 두 정책으로 갈린다. 사용 판단(candidate 여부·confidence)을 담지 않는다. |
 | 대화 묶음 (`conversations`) | 대화를 주는 앱(메신저)의 알림을 같은 앱·같은 대화 상대(`title`) 단위로 묶은 Notification Agent 입력(#116). 단체방 이름이 입력에 없어 방 단위가 아니다. 대부분 대화지만 예약·결제 안내나 회사·기관이 보낸 개인 소식일 수 있고, 판단은 prompt가 내용으로 한다(#135). Event Agent 출력 `candidate`와 다른 말이다. |

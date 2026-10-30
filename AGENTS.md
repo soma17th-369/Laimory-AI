@@ -225,9 +225,16 @@ app/
 │   │                          #   (SUCCESS→userMemory / FAILED→errorCode)을 강제한다
 │   ├── timeline_result.py     # App Server 결과 저장 요청 계약 (#40, #66). eventType/title/subtitle/
 │   │                          #   startAt/endAt/sourceRawIds/question. question 은 event 안에 중첩한다 —
-│   │                          #   계약에 clientEventId 가 없어 최상위 목록은 event 를 가리킬 수 없다
+│   │                          #   계약에 clientEventId 가 없어 최상위 목록은 event 를 가리킬 수 없다.
+│   │                          #   latitude/longitude 는 event 의 대표 지점 좌표다(#175). 둘 다 있거나
+│   │                          #   둘 다 없고(App Server 가 한쪽만 온 결과를 400 으로 거절), 값이 없으면
+│   │                          #   키를 싣지 않는다. placeCandidates([{name}])는 v4 에서만 싣는다 —
+│   │                          #   App Server 가 1번 후보로 place 를 덮어쓴다(공지 2026-10-29)
 │   ├── location.py/calendar.py/health.py/notification.py/photo.py  # 분리된 도메인 항목
-│   ├── event_candidate.py     # AI 이벤트 후보 모델
+│   ├── event_candidate.py     # AI 이벤트 후보 모델 (v1~v3. v4 는 쓰지 않는다)
+│   ├── clues.py               # v4 데이터별 단서 계약 (#169). 사진·알림 LLM 출력(`*Set`)은 입력의
+│   │                          #   짧은 id 로 항목을 가리킨다 — UUID 를 옮겨 적게 하지 않는다.
+│   │                          #   `PhotoClue`·`NotificationClue` 는 코드가 그 출력으로 만든 단서다
 │   ├── timeline_request.py    # 정규화된 요청(main agent 입력)
 │   └── timeline.py            # 타임라인 초안/이벤트 스키마
 │
@@ -235,7 +242,17 @@ app/
 │   ├── base.py                # 공통 에이전트 인터페이스
 │   ├── parsing.py             # LLM 호출/프롬프트/응답 파싱 유틸
 │   ├── events/                # 데이터별 이벤트 에이전트 (source별 폴더)
-│   │   └── base_event_agent.py
+│   │   ├── base_event_agent.py
+│   │   ├── photo/clue_agent.py        # v4 사진 단서 (#169). vision 설명은 v3 그대로 두고, 사진마다
+│   │   │                              #   "사용자가 그때 한 일" 한 문장만 읽는다. 묶거나 시간을 정하지
+│   │   │                              #   않는다. 입력은 짧은 id(`P1`)이고 rawId·좌표·URL 을 싣지 않는다.
+│   │   │                              #   해석이 실패해도 사진은 해석 없는 단서로 남는다
+│   │   └── notification/clue_agent.py # v4 알림 단서 (#169). 입력 구성은 v3 그대로이고 출력은
+│   │                                  #   같은 일끼리 묶은 알림 단서(종류·상대·마스킹한 요약·
+│   │                                  #   일정이 오늘인지)다. 짧은 id(`n3`·`g1`)로 싣고 받으며,
+│   │                                  #   **모든 알림이 단서 하나에 정확히 한 번** 들어가게 코드가
+│   │                                  #   맞춘다(빠진 것은 내용 없는 단서). 요약에 남은 민감정보
+│   │                                  #   모양은 코드가 지운다
 │   ├── timeline/timeline_agent.py   # 후보 → 초안 병합 (LLM 병합/파싱까지만)
 │   ├── question/question_agent.py   # 확정 event → 회고 유도 질문 (#66). Repair 뒤 배치 호출.
 │   │                          #   confidence·sourceRefs·분 단위 시각을 프롬프트에 주지 않는다 —
@@ -269,7 +286,9 @@ app/
     │                          #   resolve_user_memory 도 여기 있다(#102) — userMemory 계약 위반
     │                          #   흡수(1106)를 비동기·동기 두 경로가 같이 쓴다
     ├── timeline_result.py     # TimelineDraft → 결과 저장 요청 변환 (subtitle←description, question 그대로,
-    │                          #   rawId 디듀프, 255자 절단, tz 정렬)
+    │                          #   rawId 디듀프, 255자 절단, tz 정렬). 대표 좌표는 입력을 함께 받아
+    │                          #   최종 sourceRefs 로 찾는다(`place_resolver.representative_coordinates`,
+    │                          #   #175). 이동은 마지막 도착 지점, 그 밖에는 address·place 와 같은 지점이다
     ├── timeline_validator.py  # 저장 전 자체검증 (task source 소속/시간 등)
     ├── normalizer.py          # 수집 스냅샷을 itemType별로 분리·정규화
     ├── draft_repair.py        # draft 확정 repair (아래 순서대로 조립)
@@ -279,6 +298,62 @@ app/
     │                          #   합쳐진 event 는 전체 내용을 남긴다 — warning 에 제목 세 개나
     │                          #   건수로만 남으면 빠진 내용을 Repair 가 알 수 없다. 기록은 draft 가
     │                          #   아니라 RepairContext 가 들고 있어 결과 저장 계약에 나가지 않는다
+    ├── location_skeleton.py   # v4 위치 뼈대 (#167). v3 Location Agent(LLM)가 프롬프트 규칙으로
+    │                          #   하던 일을 코드가 한다. STAY·MOVEMENT 를 체류·이동·산책 **구간**,
+    │                          #   구간 사이 **빈 시간**(수집 공백·기록되지 않은 이동), **단독 기록**
+    │                          #   으로 나눈다. 같은 입력이면 같은 뼈대다. 문장·eventType·생활 장소
+    │                          #   라벨은 쓰지 않는다. 체류끼리는 **좌표 거리**로 묶는다(사용자 결정):
+    │                          #   250m 이내이고 사이에 이동 기록이 없으면 공백 길이와 무관하게 하나,
+    │                          #   1km 넘게 떨어지면 언제나 다른 장소(이동 기록이 없어도 나눈다),
+    │                          #   250m~1km 는 이어졌을 때(45분 미만)만 하나다. 이름·주소 문자열로
+    │                          #   비교하지 않는다 — 같은 건물이 다른 주소로 온다. 위치 기록이 없어도
+    │                          #   실패하지 않는다(`has_location`). 모든 rawId 가 정확히 한 곳에 있다
+    ├── calendar_clues.py      # v4 일정 단서 (#168). 모든 일정을 단서로(시각을 못 읽어도) 만들고
+    │                          #   장소명·주소를 가르며, 종일·여러 날·잘림·timezone 기본값과 배경
+    │                          #   일정(종일이거나 12시간 이상)을 표시한다. eventType 은 Timeline 이 정한다
+    ├── clue_bundles.py        # v4 근거 묶음 (#169). 구간마다 단서를 붙인다(사용자 결정): 일정·대화는
+    │                          #   겹치는 구간 **모두**, 사진은 촬영 시각의 구간과 위치가 같은(250m)
+    │                          #   앞뒤 구간, 배경 일정은 자기 묶음. **대화가 아닌 알림은 시간으로
+    │                          #   붙이지 않는다** — 받은 시각은 그 일이 일어난 때가 아니라서 하루 목록
+    │                          #   으로 두고 Timeline 이 내용으로 쓴다. 붙을 구간이 없는 단서는 자기
+    │                          #   묶음이고 가까운 구간에 붙이지 않는다(#163). `expand_evidence` 가
+    │                          #   Timeline·Repair 가 쓴 묶음·단서 id 를 rawId 로 펼치는 유일한 자리다
+    ├── base_events.py         # v4 기본 event (#167·#169). 뼈대 구간마다 `E1`… 을 틀 문장과 함께
+    │                          #   만든다(체류 `{place}에서 시간을 보냈다.`, 이동은
+    │                          #   코드가 주소로 쓰는 문장). Timeline 은 이 구조 위에서 근거를 더하고
+    │                          #   내용을 채우며, 근거가 있으면 나누거나 합친다. event 마다 `from` 으로
+    │                          #   어느 기본 event 에서 왔는지 적는다(사용자 결정 2026-10-29).
+    │                          #   **제목은 Timeline 이 쓴다.** 코드는 같은 장소 묶음마다 지명 하나
+    │                          #   (`AreaNamer`: 구 + 동, 동이 없으면 구 + 도로명. 건물번호는 빼고 도로명
+    │                          #   안 숫자는 둔다. 그날 시·도가 둘 이상이면 시·도를 짧게)를 `area` 로
+    │                          #   싣는다(사용자 결정). 기본 event 의 제목은 되살릴 때만 쓰는 틀이다
+    ├── skeleton_guard.py      # v4 기본 event 구조 지키기 (#167). 사용자가 정한 규칙만 검사하고 어긴
+    │                          #   변경 하나만 되돌린다. 일정 근거 없는 `CALENDAR_EVENT` 는 지우거나(알림만)
+    │                          #   `UNKNOWN` 으로, 위치 근거도 일정도 없이 체류·밤을 말하는 event 는 지운다.
+    │                          #   일정 event 는 이동 분리가 시간을 자르지 않는다. 그 밖에:
+    │                          #   변경 하나만 되돌린다: 이동 기록도 교통 결제·예약도 없는 MOVEMENT 삭제,
+    │                          #   이동 구간 기록을 다른 event 에서 빼고 걸친 끝을 자름, 근거의 시간과
+    │                          #   겹치지 않는 event 삭제(근거가 덮는 시간 밖의 끝을 자름 — 위치 근거가
+    │                          #   있으면 위치·사진·일정, 없으면 대화 알림도 시간을 덮는다. 대화 아닌
+    │                          #   알림은 시각을 말하지 않는다. 촬영 시각이 event 시간 ±20분 밖인 사진은
+    │                          #   빼고, 그 사진이 유일한 활동 근거였던 기본 event 는 틀 문장으로 되돌림), 기본 event 의 시간 중 어느 event 도 덮지 않은
+    │                          #   곳(20분 초과)을 틀 문장 event 로 복원. "쓰였는가" 가 아니라 **시간이
+    │                          #   덮였는가** 로 본다. 의미 판단(대화가 체류를 가져가는 것 등)은 고치지 않는다
+    ├── place_slots.py         # v4 장소 칸 (#171). 문장의 장소 자리는 `{place}` 이고 **장소 이름은
+    │                          #   언제나 후보 목록**이다(사용자 결정 — 확실해도 확정해서 후보를 빼지
+    │                          #   않는다). 결제·예약 가맹점·일정 장소명이 1번, 그다음 Timeline 이 고른
+    │                          #   순서, 그다음 근거의 나머지 이름, 그다음 같은 장소(250m)의 다른 기록·사진
+    │                          #   이름(최대 5개)이고 place 는 1번 후보다.
+    │                          #   근거에 이름이 하나도 없을 때만 칸을 **주소 원문**으로 바꾼다
+    │                          #   (동네로 바꾸지 않는다). 주차장·대여소·정류장은 후보가 되지 않는다.
+    │                          #   문장에 직접 쓴 장소명·입력 주소는 칸으로 돌린다. 이동 문장은 출발·도착
+    │                          #   지명(구 + 동)으로 코드가 쓴다. 대화 상대 이름 뒤 `와`/`과` 는 받침에 맞춘다
+    │                          #   (`fix_counterpart_particles`). 제목 앞 `{X}에서` 의 X 가 그 event 의
+    │                          #   지명이 아니면 지명으로 바꾸거나 뺀다(`fix_title_places`, 제목에 장소 금지).
+    │                          #   같은 장소(250m 이내)는 하루 안에서 한
+    │                          #   주소다(`place_resolver.same_place_addresses`, 동이 있는 주소 우선).
+    │                          #   Timeline 입력·event address·이동 문장·좌표가 모두 그 주소를 쓴다 `filled_description` 이 칸을 채운
+    │                          #   문장을 문장 길이 검사·Question 에 준다
     ├── draft_edit.py          # event 수정·삭제·나누기 (Repair 계획의 결정론 적용).
     │                          #   `split_event`(#119)는 조각의 시간·타입·문장을 호출자에게 받고
     │                          #   **근거는 코드가 원본 시각을 보고 나눠 담는다** — 호출자에게 맡기면
@@ -372,7 +447,8 @@ app/
     │                           #   근거끼리만 하나의 이동으로 묶는다**(`COVERAGE_GAP_MIN`). 이동과
     │                           #   이어지지 않은 20분 이하 체류는 나눌 자리가 아니라 `shortStays`
     │                           #   로 따로 알린다. v3 세트에서만 돈다
-    ├── conversation_guard.py   # 대화로 만든 event 개수 제한 (#119). 하루 최대 3개. 근거가 전부
+    ├── conversation_guard.py   # 대화로 만든 event 개수 제한 (#119). 하루 최대 3개. v4 는 앱 사전 대신
+    │                           #   Notification 단서의 대화(`CONVERSATION`)로 센다. 그 밖에는 근거가 전부
     │                           #   알림이고 타입이 결제·예약(`MEAL`·`MOVEMENT`)이 아닌 event 를 센다
     │                           #   (#163 — `SOCIAL`·`WORK`·`MEETING` 만 셀 때는 반응·짧은 답장이
     │                           #   `UNKNOWN` event 가 되어 빠져나갔다). 그래서 메신저로 온 소식
@@ -394,6 +470,8 @@ app/
     │                           #   붙어 저녁이 사라졌다. 만드는 event 의 문장은 언제나 코드 틀
     │                           #   (`사진을 남겼다.`)이다 — candidate 문장은 Event Agent 의 보고라
     │                           #   그대로 보일 수 없다. 한 event 에 사진 여러 장(N:1)은 그대로 허용한다
+    │                           #   v4 는 같은 장면 사진(20분 이내, 같은 곳 — `same_photo_scene`)을 한
+    │                           #   event 로 모은다(`merge_photo_scenes`, 사용자 결정). v3 는 Photo Agent 가 묶었다
     ├── event_count_guard.py    # 최종 event 개수 상한 (#118, #163). v3 세트에서 10개를 넘으면
     │                           #   **근거가 알림뿐인 event 부터 코드가 지운다**(알림 수가 적은 것,
     │                           #   같으면 늦게 시작한 것부터). 알림만 근거인 event 는 캘린더·사진
@@ -603,6 +681,24 @@ app/
 #   최초 실행과 재실행이 같은 입력을 본다.
 #   앞 3개는 LLM 이 의미를 판단하는 확률적 단계, repair_draft 는 코드가 확정하는 결정론적 단계다.
 #   main agent 는 draft 를 돌려주기 직전에 사진 단일 귀속을 한 번 더 강제한다(#119).
+# v4 세트(#167~#171): 갈리는 기준은 `prompt_loader.uses_clue_contract` 하나다(v1~v3 이 아니면 참).
+#   **v4 는 v3 의 #119 이후 계약을 그대로 이어받고**(`uses_legacy_contract` 가 거짓) 아래만 다르다.
+#   - run_event_agents: Event Agent 다섯 대신 **사진·알림 단서 호출만** 병렬로 돈다. 위치·일정은
+#     코드(`location_skeleton`·`calendar_clues`)가 만들고, 수면·걸음은 더 수집하지 않아 읽지 않는다
+#     (HEALTH 는 deprecated 표시만 하고 지우지 않는다 — 스키마는 추가만 한다).
+#   - merge_results: 뼈대·일정 단서·사진·알림 단서로 **근거 묶음**(`clue_bundles`)을 만든다.
+#   - Timeline v4(`generate_from_clues`)는 묶음과 그 **기본 event**(구간마다 하나, 틀 문장)를 읽고,
+#     그 구조 위에서 근거를 더하고 내용을 채우며 근거가 있으면 나누거나 합친다. event 마다 온
+#     기본 event(`from`, event 시간과 겹치지 않는 것은 파싱에서 버린다), 더한 근거(묶음·단서 id), 병합 이유(`mergeReason`), 장소 후보 순서
+#     (`placeCandidates`)를 쓴다. 장소는 쓰지 않는다. 출력 계약은 v3 와 따로 둔 `TimelineClueOutput` 이다.
+#   - 확정 pass: `위치 근거 연결`·`체류 병합` 은 돌리지 않고, `장소 확정` 은 장소 칸 확정,
+#     `문장 주소 정리` 는 `문장 장소 칸` 이다. 캘린더 일정 복원 뒤에 기본 event 구조를 지키는 네
+#     단계(근거 없는 이동 정리 → 이동 구간 분리 → 근거 시간 밖 event 정리 → 위치 구간 복원)가 돈다.
+#     검사는 주소를 문장 라벨로 짚지 않고(v4 는 주소를 쓸 수 있다) 제목의 장소명을
+#     `PLACE_NAME_IN_TITLE` 로 짚는다.
+#   - Repair v4 는 같은 묶음과 병합 이유를 읽는다. `rerun_event_agent`·`merge_stay_events` 가 없고,
+#     `update_event` 의 `evidence` 로 묶음·단서 id 를 받는다. 재실행은 같은 묶음으로 Timeline 만 돈다.
+#   위치 Agent·일정 Agent·수면 Agent 의 프롬프트는 처음 부를 때 읽는다 — v4 세트에는 그 파일이 없다.
 # repair_draft 순서: sourceType 정정 → 캘린더 복원 → duration → 근거 구간 정렬 → MEAL
 #   → 수면 경계 → window → **위치 근거 연결(v3 세트)** → 장소 확정 → 정렬 → 체류 병합 → 겹침 정리
 #   → **사진 단일 귀속** → confidence 보강 → **수면과 겹친 event 제거·대화 개수 제한·event 개수
@@ -835,6 +931,10 @@ Dockerfile                     # amd64/arm64 공용, uv 멀티스테이지, non-
                                #   ruleset 의 **필수 check 로 등록해야** 효력이 생긴다.
                                #   job name 이 곧 check 이름이라 바꾸면 보호가 조용히 풀린다
 scripts/deploy-ec2.sh          # EC2 컨테이너 교체·헬스체크·실패 시 직전 이미지 복구
+scripts/replay_trace.py        # Langfuse trace 재실행 (#167~#171). `skeleton` 은 LLM 없이 v4 뼈대와
+                               #   기록된 v3 Location 결과를 나란히 보이고, `run` 은 PROMPT_VERSION 한
+                               #   세트로 파이프라인 전체를 돌린다. 사진은 기록된 해석을 쓰고 다시
+                               #   내려받지 않는다. trace 데이터와 결과는 커밋하지 않는다
 scripts/prune_ecr_images.py    # EC2 배포 성공 후 dev ECR 정리. **저장소 전체**를 훑어
                                #   현재·직전 태그가 없는 이미지를 지운다(아키텍처 구분 없음).
                                #   production 이 저장소를 따로 쓰는 이유가 이것이다
