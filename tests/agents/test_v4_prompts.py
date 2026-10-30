@@ -156,11 +156,38 @@ def test_v4_titles_never_carry_a_place_name():
         assert "{place}" not in title, row
 
 
-def test_v4_movement_sentence_is_written_by_the_code():
-    rows = _format_table(_timeline())
-    movement = next(row for row in rows if row.startswith("| 이동 |"))
+def test_v4_movement_title_and_sentence_use_the_same_route():
+    """이동 제목과 문장은 LLM 이 같은 출발·도착 지명으로 쓴다(사용자 결정 2026-10-30).
 
-    assert "코드가 출발·도착 지명(구 + 동)으로 쓴다" in movement, "이동 문장은 주소 원문이 아니라 지명이다(사용자 결정)."
+    "title 이랑 description 이 안 맞으면 안되잖아". 제목은 Timeline, 문장은 코드가 따로 쓰자
+    기록되지 않은 열차 구간 때문에 둘의 출발지가 갈렸다.
+    """
+
+    for text in (_timeline(), _repair()):
+        movement = next(row for row in _format_table(text) if row.startswith("| 이동 |"))
+        assert "`{출발 지명}에서 {도착 지명}으로 {목적}했다.` 제목과 같은 지명이다" in movement
+        assert "코드가" not in movement
+        assert "`from`·`to`의 `area`" in text
+
+
+def test_timeline_v4_follows_the_base_events_without_being_told_to_merge():
+    """Timeline 은 기본 event 의 틀을 따르고, 합치라는 말을 듣지 않는다(사용자 결정 2026-10-30).
+
+    "합치지 말라고 하는 게 아니라 그냥 저 틀을 따라라 라고 하면서 합치라는 말을 아예 안하는 거지".
+    합치기를 허용했을 때 장소 이름 후보만 보고 다른 장소를 한 event 로 묶을 수 있었다.
+    """
+
+    text = _timeline()
+    assert "기본 event 하나가 하루의 event 하나" in text
+    assert not re.search(r"합치|합쳐|합친|병합", text)
+
+
+def test_repair_v4_tells_places_apart_by_the_code_address():
+    """다른 장소인지는 코드가 같은 장소마다 하나로 맞춘 주소로 가른다 — 장소 이름은 후보라 기준이 못 된다."""
+
+    text = _repair()
+    assert "주소가 다른 체류 구간을 한 event가 함께 가지면 이유와 상관없이 장소마다 나눕니다" in text
+    assert "어느 조각으로도 채우지 않습니다" in text
 
 
 def test_timeline_and_repair_v4_share_one_sentence_table():
@@ -277,14 +304,14 @@ def test_repair_v4_explains_every_finding_the_v4_confirm_pass_reports():
     for kind in (
         "LONG_STAY_BETWEEN_MOVEMENTS",
         "DURATION_OVER_LIMIT",
-        "LOCATION_ONLY_OVERLAP",
         "UNSUPPORTED_MEAL",
         "STAY_WORD_IN_TITLE",
         "TIME_IN_TITLE",
         "PLACE_NAME_IN_TITLE",
     ):
         assert f"`{kind}`" in text, kind
-    for gone in ("ADDRESS_IN_NARRATION", "PLACE_MISMATCH", "PLACE_NAME_MISMATCH", "rerun_event_agent", "장소 후보 다시 고르기"):
+    # `LOCATION_ONLY_OVERLAP` 은 v4 확정이 내지 않는다(사용자 결정 2026-10-31) — 받은 Repair 가 7시간 체류를 식사로 고쳐 썼다.
+    for gone in ("ADDRESS_IN_NARRATION", "PLACE_MISMATCH", "PLACE_NAME_MISMATCH", "LOCATION_ONLY_OVERLAP", "rerun_event_agent", "장소 후보 다시 고르기"):
         assert gone not in text, gone
 
 
@@ -302,3 +329,39 @@ def test_repair_v4_keeps_the_v3_tone_contract():
     assert "1인칭 평서형 과거형" in text
     assert "VERBOSE_NARRATION" in text
     assert "헤지" in text
+
+
+def test_v4_calendar_owns_its_time_and_a_stay_without_activity_is_filled():
+    """일정은 그 시간의 주인이고 위치는 그 근거다. 활동을 모르는 체류는 사진으로 채운다(사용자 결정 2026-10-30).
+
+    "캘린더 일정은 중요한 일정이라서 오히려 위치가 그것의 근거가 되어야돼", "보낸 시간은 사실 어떤
+    활동이 아니잖아 그래서 함께한 순간이랑 따로 볼 수가 없는거야". 실제 재실행에서 회의 일정과 같은
+    장소의 `보낸 시간` 이 따로 나왔고, 두 사람 사진 한 장이 `함께한 시간` 으로 꺼내졌다. 「꺼내기」의
+    `(식사·회의·수업·별도 방문)` 은 v3 의 "긴 체류 안의 짧은 사건" 에서 왔는데 일부라는 조건이 빠졌었다.
+    """
+
+    timeline = _timeline()
+    assert "**일정은 그 시간의 주인이고 위치는 그 근거입니다.**" in timeline
+    assert "**활동을 모르는 체류는 다른 활동과 견줄 수 없습니다.**" in timeline
+    assert "식사·회의·수업·별도 방문" not in timeline
+    assert "그 시간의 일부에서 끝나는 다른 사건" in timeline
+    repair = _repair()
+    assert "식사·회의·수업·별도 방문" not in repair
+    assert "일정이 event 시간의 대부분을 덮으면 그 일정이 event의 주인이고 위치는 그 근거라 나누지 않습니다." in repair
+
+
+def test_v4_evidence_must_match_both_time_and_place():
+    """근거는 시간과 장소를 둘 다 본다 — 사진만이 아니라 모든 근거(사용자 결정 2026-10-30).
+
+    같은 곳(일청담)에 아침과 점심 두 번 간 날, Timeline 이 12:49 점심 사진을 아침 체류의 근거로 적었고
+    Repair 가 그걸 믿고 아침 체류를 식사로 바꿨다. "같은 위치에서 찍은 사진은 다른 묶음에서 가져온다" 는
+    문장이 장소만으로 가져오게 하고 시간을 깎아내렸다.
+    """
+
+    timeline, repair = _timeline(), _repair()
+    assert "**근거는 시간과 장소가 모두 맞는 event에만 씁니다.**" in timeline
+    assert "같은 위치에서 찍은 사진" not in timeline
+    assert "**근거는 단서의 시간과 장소가 모두 그 event와 맞을 때만 넣습니다**" in repair
+    assert "의미상 다른 event의 것이면" not in repair
+    for text in (timeline, repair):
+        assert "장소 이름이 같아도 시간이 다르면 다른 방문입니다" in text
