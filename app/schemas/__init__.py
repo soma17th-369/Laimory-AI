@@ -39,6 +39,8 @@ from app.schemas.task import TaskStatus, TimelineCallbackPayload
 from app.schemas.timeline import (
     TimelineAgentEvent,
     TimelineAgentOutput,
+    TimelineClueEvent,
+    TimelineClueOutput,
     TimelineDraft,
     TimelineDraftEvent,
     TimelineEventDraft,
@@ -51,7 +53,11 @@ from app.schemas.timeline_input import (
     TimelineInputWindow,
 )
 from app.schemas.timeline_request import TimelineDraftRequest, TimeWindow
-from app.schemas.timeline_result import TimelineResultEvent, TimelineResultRequest
+from app.schemas.timeline_result import (
+    PlaceCandidate,
+    TimelineResultEvent,
+    TimelineResultRequest,
+)
 from app.schemas.user_memory import UserMemory
 from app.schemas.user_memory_update import (
     DailyTimeline,
@@ -85,6 +91,7 @@ __all__ = [
     "MovementItem",
     "NotificationItem",
     "PhotoItem",
+    "PlaceCandidate",
     "RepairIssue",
     "RepairPlan",
     "RepairToolCall",
@@ -97,6 +104,8 @@ __all__ = [
     "TimelineAgentEvent",
     "TimelineAgentOutput",
     "TimelineCallbackPayload",
+    "TimelineClueEvent",
+    "TimelineClueOutput",
     "TimelineDraft",
     "TimelineDraftEvent",
     "TimelineDraftRequest",

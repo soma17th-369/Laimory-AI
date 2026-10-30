@@ -20,8 +20,22 @@ timeline.TimelineQuestion`)이다. 이름이 비슷한 :attr:`TimelineResultEven
 
 from pydantic import AwareDatetime, Field, model_validator
 
-from app.schemas.common import CamelModel, RawId
+from app.schemas.common import CamelModel, Latitude, Longitude, RawId
 from app.schemas.event_candidate import EventType
+
+
+#: 문장의 장소 칸(App Server 공지 2026-10-29). 자리 표시는 이 하나뿐이다.
+PLACE_SLOT = "{place}"
+
+
+def _absent(value: object) -> bool:
+    return value is None
+
+
+class PlaceCandidate(CamelModel):
+    """장소가 애매할 때 사용자가 고를 후보 장소 하나(App Server 공지 2026-10-29)."""
+
+    name: str = Field(min_length=1)
 
 
 class TimelineResultEvent(CamelModel):
@@ -39,8 +53,20 @@ class TimelineResultEvent(CamelModel):
     확정해 놓고도 내보내지 않아 Repair 가 근거로 확정한 장소가 저장되지 않고 버려졌다.
     ``place`` 는 사용자가 알아보는 장소명(``집``, ``두꺼비 감자탕 지산점``)이고
     ``address`` 는 입력 근거에 실재하는 주소만 담는다 — 근거로 뒷받침되지 않는 주소는
-    ``place_resolver`` 가 저장 전에 지운다. ``places`` 는 내보내지 않는다. 여러 후보 중
-    고르는 것은 AI 의 일이고 App Server 에는 확정된 하나만 준다.
+    ``place_resolver`` 가 저장 전에 지운다.
+
+    ``latitude``·``longitude`` 는 event 의 **대표 지점** 좌표다(#175). 사용자가 실제로 있던
+    위치이고, 이동 event 는 도착지다. 후보마다 좌표를 두지 않는다 — 후보는 한 지점 주변의
+    이름 목록이라, 지점 좌표를 후보 좌표처럼 보이게 하면 안 된다. 둘 다 있거나 둘 다 없다.
+    App Server 는 한쪽만 온 결과를 통째로 거절한다.
+
+    ``placeCandidates`` 는 장소가 애매할 때 사용자가 고를 후보 장소다(#171). 우선순위가
+    높은 순서이고, App Server 는 후보가 하나라도 있으면 ``place`` 를 1번 후보로 덮어쓴다.
+    그래서 장소를 다른 근거로 확정한 event 와, ``place`` 를 1번 후보로 바꿔서는 안 되는
+    v3 세트는 후보를 싣지 않는다.
+
+    새 필드 셋은 값이 없으면 body 에 키를 싣지 않는다. 위치 근거가 없는 event 의 body 가
+    필드를 더하기 전과 같게 하려는 것이다. 기존 필드의 ``null`` 은 그대로 나간다.
     """
 
     event_type: EventType = Field(alias="eventType")
@@ -48,6 +74,11 @@ class TimelineResultEvent(CamelModel):
     subtitle: str | None = None
     place: str | None = None
     address: str | None = None
+    latitude: Latitude | None = Field(default=None, exclude_if=_absent)
+    longitude: Longitude | None = Field(default=None, exclude_if=_absent)
+    place_candidates: list[PlaceCandidate] | None = Field(
+        default=None, alias="placeCandidates", exclude_if=_absent
+    )
     start_at: AwareDatetime = Field(alias="startAt")
     end_at: AwareDatetime = Field(alias="endAt")
     source_raw_ids: list[RawId] = Field(alias="sourceRawIds", min_length=1)
@@ -57,6 +88,11 @@ class TimelineResultEvent(CamelModel):
     def _validate_range(self) -> "TimelineResultEvent":
         if self.end_at < self.start_at:
             raise ValueError("endAt must be greater than or equal to startAt")
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("latitude and longitude must be sent together")
+        if PLACE_SLOT in (self.subtitle or "") and not (self.place or self.place_candidates):
+            # App Server 는 칸이 남은 채 장소가 없는 결과를 통째로 400 으로 거절한다(#171).
+            raise ValueError("subtitle with {place} needs a place or placeCandidates")
         return self
 
 

@@ -148,6 +148,6 @@ async def run_timeline_test(
         reject_empty_structured_failure(request, draft)
         ensure_timeline_valid_for_storage(draft, source_raw_ids(snapshot))
         return TimelineTestRun(
-            result=build_result_request(draft),
+            result=build_result_request(draft, request),
             timed_out=timed_out,
         )

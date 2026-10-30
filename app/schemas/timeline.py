@@ -95,6 +95,15 @@ class TimelineEventDraft(TimelineAgentEvent):
             "Timeline Agent 의 LLM 출력 계약에는 없다 — Timeline 이 쓰는 값이 아니다."
         ),
     )
+    #: v4 세트(#171)에서 Timeline 이 고른 장소 후보, 우선순위 순서. 확정 pass 가 근거 묶음의
+    #: 장소 후보 풀 밖의 이름을 버리고, 다른 근거로 장소를 확정하면 비운다. v3 이하는 비어 있다.
+    place_candidates: list[str] = Field(default_factory=list, alias="placeCandidates")
+    #: v4 세트(#169)에서 Timeline 이 쓴 "왜 이렇게 묶거나 나눴는지". 내부·관측용이며 Repair v4
+    #: 가 읽는다. 결과 저장 계약에는 나가지 않는다(승인 결정 4).
+    merge_reason: str | None = Field(default=None, alias="mergeReason")
+    #: v4 세트에서 이 event 가 어느 기본 event(`E1`…)에서 왔는지(#169). 기본 event 는 코드가
+    #: 뼈대 구간마다 만든 구조다. 내부·관측용이며 결과 저장 계약에는 나가지 않는다.
+    base_event_ids: list[str] = Field(default_factory=list, alias="baseEventIds")
 
 
 # Backward-compatible export name used by existing imports.
@@ -110,6 +119,44 @@ class TimelineAgentOutput(CamelModel):
     """
 
     events: list[TimelineAgentEvent] = Field(default_factory=list)
+    warnings: list[TimelineWarning] = Field(default_factory=list)
+
+
+class TimelineClueEvent(CamelModel):
+    """Timeline v4 가 쓰는 event 한 건. 근거는 묶음·단서 id 로 가리킨다."""
+
+    event_type: EventType = Field(alias="eventType")
+    title: str = Field(min_length=1)
+    description: str = Field(default="")
+    #: 이 event 가 온 기본 event(`E1`…). 새로 만든 event 는 비어 있다.
+    base_event_ids: list[str] = Field(default_factory=list, alias="from")
+    evidence: list[str] = Field(default_factory=list)
+    start_time: AwareDatetime = Field(alias="startTime")
+    end_time: AwareDatetime = Field(alias="endTime")
+    confidence: float = Field(ge=0.0, le=1.0)
+    inference_level: InferenceLevel = Field(alias="inferenceLevel")
+    uncertainty: list[str] = Field(default_factory=list)
+    merge_reason: str = Field(default="", alias="mergeReason")
+    place_candidates: list[str] = Field(default_factory=list, alias="placeCandidates")
+
+    @model_validator(mode="after")
+    def _validate_range(self) -> "TimelineClueEvent":
+        if self.end_time < self.start_time:
+            raise ValueError("endTime must be greater than or equal to startTime")
+        if not self.base_event_ids and not self.evidence:
+            raise ValueError("event needs a base event (from) or evidence")
+        return self
+
+
+class TimelineClueOutput(CamelModel):
+    """Timeline v4 의 LLM 출력 계약(#169).
+
+    v3 의 `TimelineAgentOutput` 을 고치지 않고 따로 둔다(스키마는 추가만 한다). 근거를 rawId
+    대신 묶음·단서 id 로 가리키고, `place`·`address`·`tags` 를 쓰지 않는다 — 장소는 코드가
+    근거로 정하고 Timeline 은 후보의 순서만 고른다.
+    """
+
+    events: list[TimelineClueEvent] = Field(default_factory=list)
     warnings: list[TimelineWarning] = Field(default_factory=list)
 
 

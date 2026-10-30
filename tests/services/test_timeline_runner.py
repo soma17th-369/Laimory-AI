@@ -73,6 +73,32 @@ def _patch_agent(monkeypatch, draft: TimelineDraft | None = None) -> None:
     monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
 
 
+def test_stored_result_carries_the_representative_coordinates(monkeypatch):
+    """결과 저장 body 에 근거 STAY 의 좌표가 실린다(#175). 입력은 정규화한 요청이다."""
+
+    draft = _draft()
+    draft.events.append(
+        TimelineEventDraft(
+            client_event_id="evt-1",
+            event_type=EventType.UNKNOWN,
+            title="머문 시간",
+            start_time="2026-06-20T10:00:00+09:00",
+            end_time="2026-06-20T11:00:00+09:00",
+            confidence=0.5,
+            inference_level=InferenceLevel.EVIDENCE_BASED,
+            source_refs=[
+                SourceRef(source_type=EventSourceType.STAY, raw_id=fixture_raw_id("source-101"))
+            ],
+        )
+    )
+    _patch_agent(monkeypatch, draft)
+    client = _client()
+
+    assert _run(client) is TaskStatus.SUCCESS
+    [event] = client.last_result.events
+    assert (event.latitude, event.longitude) == (37.5, 127.0)
+
+
 def test_success_stores_result_then_sends_success_callback(monkeypatch):
     _patch_agent(monkeypatch)
     client = _client()

@@ -19,12 +19,26 @@
   온 질문은 이미 길이 검사를 통과한 값이다** — 이 절단은 마지막 방어선이다.
 - 시각은 draft timezone 기준 offset 을 붙여 보낸다. 계약 예시가 ``+09:00`` 형태고,
   UTC(``Z``)로 보내면 같은 시각이라도 App Server 로그에서 사람이 대조하기 어렵다.
+- ``latitude``·``longitude`` 는 event 의 대표 지점 좌표다(#175). 최종 ``sourceRefs`` 로
+  입력을 찾아 코드가 채운다(:func:`~app.services.place_resolver.representative_coordinates`).
+  그래서 입력을 함께 받는다. LLM 이 좌표를 쓰지 않고, 이 값이 프롬프트로 들어갈 경로도 없다.
+- ``placeCandidates`` 는 draft 의 ``place_candidates`` 다(#171, v4 세트). 확정 pass 가 근거의
+  후보 풀 밖의 이름을 버리고, 장소를 다른 근거로 확정했으면 비워 두었다. 비어 있으면 키를
+  싣지 않는다 — v3 세트는 언제나 비어 있어 body 가 그대로다.
+- ``subtitle`` 의 ``{place}`` 칸은 그대로 보낸다. App Server 와 앱이 ``place`` 나 사용자가 고른
+  후보로 채운다.
 """
 
 from datetime import datetime, tzinfo
 
 from app.schemas.timeline import TimelineDraft
-from app.schemas.timeline_result import TimelineResultEvent, TimelineResultRequest
+from app.schemas.timeline_request import TimelineDraftRequest
+from app.schemas.timeline_result import (
+    PlaceCandidate,
+    TimelineResultEvent,
+    TimelineResultRequest,
+)
+from app.services.place_resolver import representative_coordinates
 from app.services.validator import resolve_timezone
 
 _TITLE_MAX = 255
@@ -33,24 +47,31 @@ _QUESTION_MAX = 255
 _PLACE_MAX = 255
 
 
-def build_result_request(draft: TimelineDraft) -> TimelineResultRequest:
-    """확정 draft 를 결과 저장 요청 body 로 만든다."""
+def build_result_request(
+    draft: TimelineDraft, request: TimelineDraftRequest
+) -> TimelineResultRequest:
+    """확정 draft 를 결과 저장 요청 body 로 만든다. ``request`` 는 좌표를 찾을 입력이다."""
 
     tz = resolve_timezone(draft.timezone)
-    events = [
-        TimelineResultEvent(
-            event_type=event.event_type,
-            title=event.title[:_TITLE_MAX],
-            subtitle=_subtitle(event.description),
-            place=_place(event.place),
-            address=_place(event.address),
-            start_at=_localized(event.start_time, tz),
-            end_at=_localized(event.end_time, tz),
-            source_raw_ids=_unique_raw_ids(event),
-            question=_question(event.question),
+    events = []
+    for event in draft.events:
+        coordinates = representative_coordinates(event, request, tz)
+        events.append(
+            TimelineResultEvent(
+                event_type=event.event_type,
+                title=event.title[:_TITLE_MAX],
+                subtitle=_subtitle(event.description),
+                place=_place(event.place),
+                address=_place(event.address),
+                latitude=coordinates.latitude if coordinates else None,
+                longitude=coordinates.longitude if coordinates else None,
+                place_candidates=_place_candidates(event.place_candidates),
+                start_at=_localized(event.start_time, tz),
+                end_at=_localized(event.end_time, tz),
+                source_raw_ids=_unique_raw_ids(event),
+                question=_question(event.question),
+            )
         )
-        for event in draft.events
-    ]
     return TimelineResultRequest(events=events)
 
 
@@ -64,6 +85,13 @@ def _place(value: str | None) -> str | None:
 
     text = (value or "").strip()
     return text[:_PLACE_MAX] if text else None
+
+
+def _place_candidates(names: list[str]) -> list[PlaceCandidate] | None:
+    """후보 이름을 계약 모양으로 옮긴다. 빈 이름은 버리고 255자로 자른다. 없으면 None 이다."""
+
+    kept = [PlaceCandidate(name=text) for name in names if (text := _place(name))]
+    return kept or None
 
 
 def _question(question: str | None) -> str | None:
