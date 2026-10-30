@@ -1,0 +1,470 @@
+"""기본 event 구조 지키기 (#167·#169, v4 세트).
+
+Timeline v4 는 코드가 만든 기본 event(뼈대 구간마다 하나) 위에서 근거를 더하고, 근거가 있으면
+구조를 바꾼다(나누기, 이어진 체류 합치기, 경계 조정). 코드는 사용자가 이미 정한 규칙만 검사하고
+**어긴 변경 하나만 되돌린다.** 나머지 변경은 Timeline 의 판단이라 받아들인다.
+
+1. 이동 기록도 교통 결제·예약도 없는 `MOVEMENT` 는 지운다 — 기록되지 않은 이동(빈 시간)은
+   event 가 아니다.
+2. 이동은 체류와 합치지 않는다(#134). 이동 구간 기록을 다른 event 에서 빼고 걸친 끝을 자른다.
+3. event 는 자기 근거의 시간과 겹친다. 근거와 시간이 겹치지 않는 event 는 지운다 — 실제 Timeline
+   은 낮의 체류를 근거로 22:00~06:00 밤 event 를 만들었다. 위치 근거가 없는 event 는 근거의
+   시간 밖으로 늘이지 않는다.
+4. 기본 event 의 시간은 어느 event 가 덮는다. 덮이지 않은 구간 시간(20분 초과)은 틀 문장 event 로
+   되살린다 — 실제 Timeline 은 집 체류 묶음을 통째로 빼먹거나, 사무실 체류의 오후를 비웠다.
+
+예전에는 "구간의 기록이 어느 event 근거에 들어 있는가" 로 구간이 쓰였는지 봤다. 그러면 근거로만
+대고 시간을 일부만 쓴 event 가 있어도 쓰인 것으로 보여 구멍이 남았다. 지금은 시간으로 본다.
+"""
+
+import re
+from datetime import timedelta
+
+from app.core.logging import get_logger
+from app.schemas import (
+    EventSourceType,
+    EventType,
+    TimelineDraft,
+    TimelineDraftRequest,
+    TimelineEventDraft,
+    TimelineWarning,
+    TimelineWarningSeverity,
+)
+from app.schemas.clues import NotificationClueKind
+from app.services.base_events import base_event_draft
+from app.services.clue_bundles import TimelineClues
+from app.services.location_metrics import SHORT_STAY_MAX
+from app.services.location_skeleton import SegmentKind
+from app.services.source_lookup import raw_id_of
+from app.services.validator import parse_datetime, resolve_timezone
+
+logger = get_logger(__name__)
+
+_WARNING_ID = "warning-skeleton-restored"
+
+#: Timeline 이 쓰는 시각의 단위. 기록의 초 단위 경계와 이만큼은 어긋난다.
+_MINUTE = timedelta(minutes=1)
+
+#: 구간 근거가 event 시간과 이만큼(또는 event 길이의 절반) 겹치면 그 event 의 근거다.
+_MIN_OVERLAP = timedelta(minutes=30)
+
+
+def ensure_skeleton_segments(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """기본 event 의 시간 중 어느 event 도 덮지 않은 곳을 틀 문장 event 로 되살린다(in-place)."""
+
+    restored: list[str] = []
+    for bundle in clues.bundles:
+        base = bundle.base_event
+        if base is None:
+            continue
+        segment = base.segment
+        segment_ids = set(segment.raw_ids)
+        covering = [
+            (max(event.start_time, segment.start), min(event.end_time, segment.end))
+            for event in draft.events
+            if base.base_id in event.base_event_ids
+            or any(ref.raw_id in segment_ids for ref in event.source_refs)
+        ]
+        for start, end in _uncovered(segment.start, segment.end, covering):
+            whole = start == segment.start and end == segment.end
+            if not whole and end - start <= SHORT_STAY_MAX:
+                continue
+            event = base_event_draft(
+                base,
+                start=start,
+                end=end,
+                places=bundle.places,
+                client_event_id=f"base-{base.base_id}-{len(restored) + 1}",
+            )
+            draft.events.append(event)
+            restored.append(event.title)
+
+    draft.warnings = [w for w in draft.warnings if not w.warning_id.startswith(_WARNING_ID)]
+    if restored:
+        draft.warnings.append(
+            TimelineWarning(
+                warning_id=f"{_WARNING_ID}-001",
+                severity=TimelineWarningSeverity.MEDIUM,
+                message=(
+                    f"어느 event 도 덮지 않은 기본 event 의 시간 {len(restored)}곳을 틀 문장 "
+                    f"event 로 되살렸습니다: {', '.join(restored[:3])}"
+                ),
+            )
+        )
+        logger.debug("위치 구간 복원: %d건", len(restored))
+
+
+def _uncovered(start, end, covering):
+    """[start, end] 에서 covering 구간들이 덮지 않은 조각."""
+
+    pieces = []
+    cursor = start
+    for left, right in sorted((l, r) for l, r in covering if r > l):
+        if left > cursor:
+            pieces.append((cursor, min(left, end)))
+        cursor = max(cursor, right)
+        if cursor >= end:
+            break
+    if cursor < end:
+        pieces.append((cursor, end))
+    return [(left, right) for left, right in pieces if right > left]
+
+
+#: 교통 결제·예약은 이동 기록이 없어도 이동의 근거다(Timeline v4 `MOVEMENT` 줄).
+_MOVEMENT_NOTIFICATION_KINDS = frozenset({NotificationClueKind.PAYMENT, NotificationClueKind.RESERVATION})
+
+
+def remove_unrecorded_movements(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """이동 기록도 교통 결제·예약도 없는 `MOVEMENT` event 를 지운다(in-place).
+
+    빈 시간(기록되지 않은 이동)은 event 가 아니다. 프롬프트가 그렇게 말해도 실제 Timeline 은
+    `기록 없는 이동 구간이라 별도 이동으로 두었다` 며 앞뒤 체류 묶음을 근거로 이동 event 를
+    만들었고, 그 체류를 가져가 버려 체류가 하루에서 사라졌다. 규칙으로 정해지는 일이라 코드가
+    지운다. 그 근거였던 체류는 다음 단계(`ensure_skeleton_segments`)가 되살린다.
+    """
+
+    movement_ids = {raw_id_of(item) for item in request.movements}
+    transport_ids = {
+        raw_id
+        for clue in clues.notifications
+        if clue.kind in _MOVEMENT_NOTIFICATION_KINDS
+        for raw_id in clue.raw_ids
+    }
+    removed = [
+        event
+        for event in draft.events
+        if event.event_type is EventType.MOVEMENT
+        and not _has_calendar(event)
+        and not any(ref.raw_id in movement_ids | transport_ids for ref in event.source_refs)
+    ]
+    if not removed:
+        return
+    draft.events = [event for event in draft.events if event not in removed]
+    logger.debug("이동 기록 없는 이동 event %d건을 지웠습니다.", len(removed))
+
+
+def separate_movement_segments(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """이동 구간의 기록은 이동·산책 event 에만 둔다(in-place).
+
+    이동은 예외 없이 나눈다(#134, 사용자 결정). v4 는 뼈대가 이동 구간을 정확히 알므로 코드가
+    지킨다 — 실제 Timeline 은 `B1의 체류 뒤 B2의 이동과 사무실 작업 사진이 이어져 오전의
+    작업 흐름으로 묶었다` 며 집 체류와 출근 이동을 한 `WORK` 로 합쳤다. 다른 event 에서 이동
+    기록을 빼고, 그 event 의 시간이 이동 구간에 걸쳐 있으면 걸친 끝을 이동 구간 밖으로 자른다.
+    빠진 이동 구간은 `ensure_skeleton_segments` 가 이동 event 로 되살린다.
+
+    이동 구간을 통째로 품은 event 도 같다 — 실제 Timeline 은 40km 떨어진 집과 사무실 체류를
+    `이어진다` 며 06:00~22:00 하나로 합쳤다. 그 event 는 이동 앞뒤 중 위치 근거가 더 긴 쪽만
+    남기고, 다른 쪽의 체류 근거와 기본 event 를 뺀다. 뺀 쪽은 되살리는 단계가 틀 문장으로 덮는다.
+    """
+
+    movement_segments = {
+        raw_id: segment
+        for segment in clues.skeleton.segments
+        if segment.kind is not SegmentKind.STAY
+        for raw_id in segment.raw_ids
+    }
+    if not movement_segments:
+        return
+    movement_bases = {
+        bundle.base_event.base_id
+        for bundle in clues.bundles
+        if bundle.base_event and bundle.base_event.segment.kind is not SegmentKind.STAY
+    }
+    tz = resolve_timezone(request.timezone)
+    spans = _source_spans(request, tz)
+    base_segments = {
+        bundle.base_event.base_id: bundle.base_event.segment
+        for bundle in clues.bundles
+        if bundle.base_event
+    }
+    kept: list[TimelineEventDraft] = []
+    for event in draft.events:
+        if event.event_type in (EventType.MOVEMENT, EventType.EXERCISE):
+            kept.append(event)
+            continue
+        # 일정 event 의 시간은 바꾸지 않는다(사용자 결정) — 이동 기록만 빼고 자르지 않는다.
+        calendar_event = _has_calendar(event)
+        for segment in {s.segment_id: s for s in movement_segments.values()}.values():
+            if not calendar_event and event.start_time < segment.start and segment.end < event.end_time:
+                _keep_one_side(event, segment, spans, base_segments)
+        hits = {
+            movement_segments[ref.raw_id].segment_id: movement_segments[ref.raw_id]
+            for ref in event.source_refs
+            if ref.raw_id in movement_segments
+        }
+        if not hits:
+            kept.append(event)
+            continue
+        event.source_refs = [ref for ref in event.source_refs if ref.raw_id not in movement_segments]
+        event.base_event_ids = [b for b in event.base_event_ids if b not in movement_bases]
+        if not event.source_refs:
+            continue
+        if calendar_event:
+            kept.append(event)
+            continue
+        had_length = event.end_time > event.start_time
+        for segment in hits.values():
+            # Timeline 의 시각은 분 단위라 기록의 초(10:19:54)와 어긋난다. 1분 안은 같은 경계다.
+            if segment.start - _MINUTE <= event.start_time < segment.end:
+                event.start_time = segment.end
+            if segment.start < event.end_time <= segment.end + _MINUTE:
+                event.end_time = segment.start
+        # 시간이 통째로 이동 구간이던 event 는 남는 시간이 없다. 이동을 다른 활동으로 채운 것이라
+        # 지운다 — 실제 Timeline 은 출근 이동을 `업무` 로 채웠고, 자르고 나니 길이 0인 업무가 남았다.
+        if had_length and event.end_time <= event.start_time:
+            continue
+        if event.end_time < event.start_time:
+            event.end_time = event.start_time
+        kept.append(event)
+    draft.events = kept
+
+
+def _keep_one_side(event: TimelineEventDraft, segment, spans, base_segments) -> None:
+    """이동 구간을 품은 event 를 이동 앞뒤 중 위치 근거가 더 긴 쪽으로 줄인다."""
+
+    def stay_time(left, right) -> timedelta:
+        total = timedelta(0)
+        for ref in event.source_refs:
+            span = spans.get(ref.raw_id)
+            if ref.source_type is EventSourceType.STAY and span and span[0] and span[1]:
+                total += max(min(span[1], right) - max(span[0], left), timedelta(0))
+        return total
+
+    keep_after = stay_time(segment.end, event.end_time) >= stay_time(event.start_time, segment.start)
+
+    def other_side(start, end) -> bool:
+        return end <= segment.start if keep_after else start >= segment.end
+
+    if keep_after:
+        event.start_time = segment.end
+    else:
+        event.end_time = segment.start
+    event.source_refs = [
+        ref
+        for ref in event.source_refs
+        if not (
+            ref.source_type is EventSourceType.STAY
+            and (span := spans.get(ref.raw_id))
+            and span[0]
+            and span[1]
+            and other_side(*span)
+        )
+    ]
+    event.base_event_ids = [
+        base
+        for base in event.base_event_ids
+        if not ((seg := base_segments.get(base)) and other_side(seg.start, seg.end))
+    ]
+
+
+def _has_calendar(event: TimelineEventDraft) -> bool:
+    return any(ref.source_type is EventSourceType.CALENDAR for ref in event.source_refs)
+
+
+def remove_calendar_events_without_calendar(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """일정 근거가 없는 `CALENDAR_EVENT` 를 정리한다(in-place).
+
+    일정 event 는 사용자가 캘린더에 적은 일정이 있을 때만이다(사용자 결정). 실제 Timeline 은
+    Gmail·문자로 온 예비소집 안내를 `11:25~23:59 ICPC 예비소집 안내` 일정 event 로 만들었다.
+    대화가 아닌 알림은 시각을 말하지 않아(사용자 결정) 알림만 근거인 일정 event 는 시간이 지어낸
+    것이라 지운다. 다른 근거(체류·사진)가 있으면 그 근거의 event 로 두고 타입만 `UNKNOWN` 으로 바꾼다.
+    """
+
+    notification_ids = {raw_id_of(item) for item in request.notifications}
+    kept: list[TimelineEventDraft] = []
+    for event in draft.events:
+        if event.event_type is EventType.CALENDAR_EVENT and not _has_calendar(event):
+            if all(ref.raw_id in notification_ids for ref in event.source_refs):
+                continue
+            event.event_type = EventType.UNKNOWN
+        kept.append(event)
+    draft.events = kept
+
+
+#: 체류를 말하는 타입. 식사의 `먹으며 시간을 보냈다` 처럼 다른 타입도 같은 말을 쓰므로 타입으로 가른다.
+_STAY_TYPES = frozenset({EventType.UNKNOWN, EventType.REST, EventType.SLEEP})
+
+#: 체류를 말하는 문장 뼈대(「문장 형식」 표). 위치 근거 없이 이렇게 쓰면 있지도 않은 체류다.
+_STAY_SENTENCE = re.compile(r"(시간을 보냈다|밤을 보냈다|잠을 잤다)")
+_STAY_TITLE = re.compile(r"(보낸 시간|보낸 밤|머문 시간|에서 잠)$")
+
+
+def remove_stays_without_location(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """위치 근거도 일정도 없이 체류·밤을 말하는 event 를 지운다(in-place).
+
+    실제 Timeline 은 22시에 위치 기록이 끊긴 뒤를 `마지막 체류 이후 기록이 없어 도화동에서 이어진
+    밤으로 묶었다` 며 `도화동에서 보낸 밤` 으로 만들고, 그 시간에 찍은 저녁 사진 두 장과 대화를
+    근거로 댔다(사용자: 절대 나와서는 안 되는 문제). 체류 문장은 체류 기록이 있어야 한다. 사진은
+    사진 단일 귀속이 그 시각의 사진 event 로 되살리고, Repair 가 사진 해석으로 다시 쓴다.
+    """
+
+    location_ids = {raw_id_of(item) for item in [*request.stays, *request.movements]}
+    draft.events = [
+        event
+        for event in draft.events
+        if event.event_type not in _STAY_TYPES
+        or _has_calendar(event)
+        or any(ref.raw_id in location_ids for ref in event.source_refs)
+        or not (
+            _STAY_SENTENCE.search(event.description or "") or _STAY_TITLE.search(event.title)
+        )
+    ]
+
+
+def remove_events_outside_evidence(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """event 를 자기 근거의 시간에 맞춘다(in-place).
+
+    event 는 근거의 시간에 있었던 일이다. 사진·알림처럼 한 시점인 근거는 event 시간 안(앞뒤
+    20분 여유)에 있으면 되고, 체류·이동·일정처럼 구간인 근거는 event 시간과 충분히 겹쳐야 한다
+    (event 길이의 절반 또는 30분 중 짧은 쪽). 경계에서 몇 초 닿은 것은 겹친 것이 아니다.
+    근거와 겹치지 않는 event 는 지운다.
+
+    그리고 event 를 근거가 덮는 시간 밖으로 늘이지 않는다 — 벗어난 끝을 자르고, 자르고 나서
+    남는 시간이 없으면 지운다. 실제 Timeline 은 위치 기록이 끊긴 22시 뒤를 저녁 사진 두 장으로,
+    또 사무실 체류를 근거로 대고 `밤을 보냈다` 8시간짜리 event 를 만들었다.
+
+    - 위치 근거가 있는 event 의 시간은 위치 기록·사진·일정이 덮는 시간이다. 그 자리에 있었다고
+      말하는 근거들이고, 휴대폰으로 오간 메시지는 그곳에 있었다는 근거가 아니다.
+    - 위치 근거가 없는 event(대화·사진으로 만든 event)는 대화 알림의 시각도 시간을 덮는다.
+    - 대화가 아닌 알림은 시각을 말하지 않는다(사용자 결정) — 받은 시각은 그 일이 일어난 때가
+      아니다. 그런 알림만 근거인 event 는 자르지 않는다.
+    """
+
+    tz = resolve_timezone(request.timezone)
+    spans = _source_spans(request, tz)
+    location_ids = {raw_id_of(item) for item in [*request.stays, *request.movements]}
+    notification_ids = {raw_id_of(item) for item in request.notifications}
+    conversation_ids = {
+        raw_id
+        for clue in clues.notifications
+        if clue.kind is NotificationClueKind.CONVERSATION
+        for raw_id in clue.raw_ids
+    }
+    photo_ids = {raw_id_of(item) for item in request.photos}
+    activity_ids = photo_ids | {raw_id_of(item) for item in request.calendars} | {
+        raw_id
+        for clue in clues.notifications
+        if clue.kind in _MOVEMENT_NOTIFICATION_KINDS
+        for raw_id in clue.raw_ids
+    }
+    kept: list[TimelineEventDraft] = []
+    for event in draft.events:
+        if not _supported(event, [spans.get(ref.raw_id) for ref in event.source_refs]):
+            continue
+        _detach_distant_photos(event, spans, photo_ids, activity_ids, clues)
+        located = any(ref.raw_id in location_ids for ref in event.source_refs)
+        reach = [
+            spans.get(ref.raw_id)
+            for ref in event.source_refs
+            if ref.raw_id not in notification_ids
+            or (not located and ref.raw_id in conversation_ids)
+        ]
+        had_length = event.end_time > event.start_time
+        _fit_to(event, reach)
+        if had_length and event.end_time <= event.start_time:
+            continue
+        kept.append(event)
+    draft.events = kept
+
+
+def _detach_distant_photos(
+    event: TimelineEventDraft, spans, photo_ids: set[str], activity_ids: set[str], clues: TimelineClues
+) -> None:
+    """촬영 시각이 event 시간(앞뒤 20분) 밖인 사진을 그 event 에서 뺀다.
+
+    실제 Timeline 은 주소 없는 오전 11시 사진을 다섯 시간 뒤의 체류에 붙여 `덕충동에서 보수 작업`
+    을 만들었다. 뺀 사진은 사진 단일 귀속이 촬영 시각의 event 로 되살린다. 그 사진이 활동의
+    근거였던 기본 event 는 활동 근거가 남지 않으면 틀 문장으로 되돌린다 — 남은 문장은 뺀 사진이
+    말한 활동이다.
+    """
+
+    distant = [
+        ref
+        for ref in event.source_refs
+        if ref.raw_id in photo_ids
+        and (span := spans.get(ref.raw_id)) is not None
+        and span[0] is not None
+        and not event.start_time - SHORT_STAY_MAX <= span[0] <= event.end_time + SHORT_STAY_MAX
+    ]
+    if not distant or len(distant) == len(event.source_refs):
+        return
+    event.source_refs = [ref for ref in event.source_refs if ref not in distant]
+    if any(ref.raw_id in activity_ids for ref in event.source_refs):
+        return
+    base = next(
+        (bundle.base_event for b in event.base_event_ids if (bundle := clues.base_bundle(b)) and bundle.base_event),
+        None,
+    )
+    if base is None:
+        return
+    event.event_type = base.event_type
+    event.title = base.title
+    event.description = base.description
+    event.merge_reason = "근거 시간 밖의 사진을 뺀 뒤 활동 근거가 남지 않아 기본 event 의 틀 문장으로 되돌렸다."
+
+
+def _fit_to(event: TimelineEventDraft, spans) -> None:
+    """event 의 끝을 근거가 덮는 시간(시점은 앞뒤 20분) 안으로 자른다."""
+
+    reach = [
+        (start - SHORT_STAY_MAX, end + SHORT_STAY_MAX) if start == end else (start, end)
+        for span in spans
+        if span is not None and (start := span[0]) is not None and (end := span[1]) is not None
+    ]
+    if not reach:
+        return
+    first = min(left for left, _ in reach)
+    last = max(right for _, right in reach)
+    if event.start_time < first:
+        event.start_time = first
+    if event.end_time > last:
+        event.end_time = last
+    if event.end_time < event.start_time:
+        event.end_time = event.start_time
+
+
+def _supported(event: TimelineEventDraft, spans) -> bool:
+    duration = event.end_time - event.start_time
+    needed = min(duration / 2, _MIN_OVERLAP)
+    for span in spans:
+        if span is None or span[0] is None or span[1] is None:
+            continue
+        start, end = span
+        if start == end:
+            if event.start_time - SHORT_STAY_MAX <= start <= event.end_time + SHORT_STAY_MAX:
+                return True
+            continue
+        overlap = min(end, event.end_time) - max(start, event.start_time)
+        if duration == timedelta(0):
+            if start <= event.start_time <= end:
+                return True
+        elif overlap > timedelta(0) and overlap >= needed:
+            return True
+    return False
+
+
+def _source_spans(request: TimelineDraftRequest, tz) -> dict:
+    spans = {}
+    for item in [*request.stays, *request.movements, *request.calendars]:
+        start = parse_datetime(item.start_at, tz)
+        end = parse_datetime(item.end_at, tz) if item.end_at else start
+        spans[raw_id_of(item)] = (start, end)
+    for photo in request.photos:
+        taken = parse_datetime(photo.taken_at, tz)
+        spans[raw_id_of(photo)] = (taken, taken)
+    for notification in request.notifications:
+        posted = parse_datetime(notification.posted_at, tz)
+        spans[raw_id_of(notification)] = (posted, posted)
+    return spans

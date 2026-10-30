@@ -485,6 +485,48 @@ def test_without_any_event_a_photo_moment_is_created():
     assert_every_photo_is_in_exactly_one_event(draft, request)
 
 
+def test_v4_joins_photos_taken_one_after_another_into_one_created_event():
+    """v4 는 사진 candidate 가 없어, 이어 찍은 사진을 코드가 한 event 로 묶는다.
+
+    실제 재실행에서 Timeline 이 22:56 저녁 사진 두 장을 버리자 `사진을 남겼다.` 카드가 두 장 생겼다.
+    """
+
+    from datetime import timedelta
+
+    request = _photo_request("22:56", "22:57", "23:40")
+    draft = _draft([])
+
+    enforcement = enforce_photo_assignment(draft, request, join_created_within=timedelta(minutes=20))
+
+    assert len(enforcement.created) == 2, "20분 넘게 떨어진 사진은 따로다."
+    first = min(enforcement.created, key=lambda event: event.start_time)
+    assert {ref.raw_id for ref in first.source_refs} == {request.photos[0].raw_id, request.photos[1].raw_id}
+    assert (first.start_time.minute, first.end_time.minute) == (56, 57)
+    assert_every_photo_is_in_exactly_one_event(draft, request)
+
+
+def test_v4_joins_a_photo_into_a_card_made_in_an_earlier_confirm():
+    """사진이 확정마다 하나씩 빠지면 카드가 따로 생겼다(실제 재실행)."""
+
+    from datetime import timedelta
+
+    request = _photo_request("22:56", "22:57")
+    first, second = request.photos
+    holder = _timed_event(
+        "dinner", [("PHOTO", second.raw_id), ("STAY", STAY_1)], start="12:00", end="13:00", event_type="MEAL"
+    )
+    draft = _draft([holder])
+    join = timedelta(minutes=20)
+
+    enforce_photo_assignment(draft, request, join_created_within=join)
+    draft.events[0].source_refs = [r for r in draft.events[0].source_refs if r.raw_id != second.raw_id]
+    enforce_photo_assignment(draft, request, join_created_within=join)
+
+    cards = [event for event in draft.events if event.event_type is EventType.PHOTO_MOMENT]
+    assert len(cards) == 1
+    assert {ref.raw_id for ref in cards[0].source_refs} == {first.raw_id, second.raw_id}
+
+
 def test_created_event_stays_inside_the_window():
     request = make_request(photos=[photo_item("1", taken="2026-06-19T23:00:00")])
     draft = _draft([])

@@ -88,8 +88,10 @@ from app.schemas import (
     TimelineWarning,
     TimelineWarningSeverity,
 )
+from app.schemas.clues import NotificationClueKind
 from app.services.calendar_guard import ensure_calendar_events
 from app.services.calendar_location import reinforce_calendar_location
+from app.services.clue_bundles import TimelineClues
 from app.services.confirm_report import ConfirmReport
 from app.services.conversation_guard import enforce_conversation_limit
 from app.services.duration_guard import verify_event_duration
@@ -109,8 +111,27 @@ from app.services.narrative_place_guard import (
     replace_input_addresses,
 )
 from app.services.notification_guard import verify_notification_draft
-from app.services.photo_guard import enforce_photo_assignment, verify_photo_assignment
+from app.services.photo_guard import (
+    enforce_photo_assignment,
+    enforce_photo_scenes,
+    verify_photo_assignment,
+)
 from app.services.place_resolver import resolve_places
+from app.services.place_slots import (
+    confirm_place_slots,
+    fill_place_slots,
+    fix_counterpart_particles,
+    fix_title_places,
+    place_names_in_title,
+)
+from app.services.skeleton_guard import (
+    remove_calendar_events_without_calendar,
+    remove_stays_without_location,
+    ensure_skeleton_segments,
+    remove_events_outside_evidence,
+    remove_unrecorded_movements,
+    separate_movement_segments,
+)
 from app.services.sleep_guard import (
     enforce_sleep_boundary,
     remove_events_overlapping_sleep,
@@ -656,6 +677,7 @@ def _resolve_places_without_filling(
 def _correction_steps(
     extended: bool,
     candidates: Sequence[AiEventCandidate] = (),
+    clues: TimelineClues | None = None,
 ) -> tuple[tuple[str, Callable[[TimelineDraft, TimelineDraftRequest], object]], ...]:
     # 사진 단일 귀속은 Timeline 이 버린 사진 candidate 를 되살려야 해서 candidate 를 받는다(#163).
     overrides: dict[str, Callable[[TimelineDraft, TimelineDraftRequest], object]] = {
@@ -665,6 +687,8 @@ def _correction_steps(
         # v3 세트는 식당에 머문 식사를 3시간까지 두고(#163), 빈 place 를 채우지 않는다(#150).
         overrides["식사 시간"] = partial(enforce_meal_duration, allow_stay_meal=True)
         overrides["장소 확정"] = _resolve_places_without_filling
+    if clues is not None:
+        return _clue_correction_steps(overrides, clues)
     steps = tuple((name, overrides.get(name, step)) for name, step in _CORRECTION_STEPS)
     if not extended:
         return steps
@@ -677,12 +701,94 @@ def _correction_steps(
     )
 
 
+#: v4 세트(#167·#171)에서 v3 의 단계 대신 도는 것과 빠지는 것.
+#:
+#: - `위치 근거 연결`(#138)은 돌리지 않는다. v4 는 근거 묶음이 이미 구간에 단서를 붙였다.
+#: - 뼈대가 정한 구조를 지키는 네 단계를 더한다(`skeleton_guard`). 이동 기록도 교통 결제·예약도
+#:   없는 MOVEMENT 를 지우고, 이동 구간의 기록을 다른 event 에서 빼고, 근거의 시간과 겹치지
+#:   않는 event 를 지운 뒤, 어느 event 도 덮지 않은 기본 event 의 시간을 되살린다.
+#: - `장소 확정` 은 장소 칸 확정이다. 근거가 이름을 가리키면 확정하고 아니면 후보를 정한다.
+#: - `체류 병합` 은 돌리지 않는다. 위치 뼈대가 이미 같은 장소의 체류를 묶었다.
+#: - `문장 주소 정리` 는 `문장 장소 칸` 이다. 이동 문장을 주소로 쓰고 칸을 맞춘다.
+_CLUE_SKIPPED_STEPS = frozenset({"체류 병합"})
+
+
+def _clue_correction_steps(
+    overrides: dict[str, Callable[[TimelineDraft, TimelineDraftRequest], object]],
+    clues: TimelineClues,
+) -> tuple[tuple[str, Callable[[TimelineDraft, TimelineDraftRequest], object]], ...]:
+    overrides = {
+        **overrides,
+        "장소 확정": partial(_confirm_place_slots, clues=clues),
+        # 사진 candidate 가 없어, 되살리는 사진은 이어 찍은 것끼리 묶고 같은 장면은 한 event 로 모은다.
+        "사진 단일 귀속": enforce_photo_scenes,
+        # v4 는 대화를 Notification 단서로 센다 — 앱 사전으로 세면 대화로 쓴 문자가 빠진다.
+        "대화 개수 제한": partial(
+            enforce_conversation_limit,
+            conversation_ids={
+                raw_id
+                for clue in clues.notifications
+                if clue.kind is NotificationClueKind.CONVERSATION
+                for raw_id in clue.raw_ids
+            },
+        ),
+    }
+    steps = tuple(
+        (name, overrides.get(name, step))
+        for name, step in _CORRECTION_STEPS
+        if name not in _CLUE_SKIPPED_STEPS
+    )
+    # 위치 구간 복원은 캘린더 일정 복원 바로 뒤다. 되살린 event 도 시간·장소·정렬을 똑같이 거친다.
+    position = [name for name, _ in steps].index("캘린더 일정 복원") + 1
+    steps = (
+        *steps[:position],
+        # 뼈대가 정한 구조를 Timeline 이 어긴 것을 바로잡은 뒤에 빠진 구간을 복원한다.
+        ("근거 없는 이동 정리", partial(_skeleton_step, remove_unrecorded_movements, clues=clues)),
+        ("일정 근거 없는 일정 정리", partial(_skeleton_step, remove_calendar_events_without_calendar, clues=clues)),
+        ("위치 근거 없는 체류 정리", partial(_skeleton_step, remove_stays_without_location, clues=clues)),
+        ("이동 구간 분리", partial(_skeleton_step, separate_movement_segments, clues=clues)),
+        ("근거 시간 밖 event 정리", partial(_skeleton_step, remove_events_outside_evidence, clues=clues)),
+        ("위치 구간 복원", partial(_skeleton_step, ensure_skeleton_segments, clues=clues)),
+        *steps[position:],
+    )
+    extended: list[tuple[str, Callable[[TimelineDraft, TimelineDraftRequest], object]]] = []
+    for name, step in _EXTENDED_CORRECTION_STEPS:
+        if name == "문장 주소 정리":
+            # 캘린더 일정은 절대 빠지지 않는다(사용자 결정). 앞 단계가 일정 event 를 지웠으면 다시
+            # 되살리고, 되살린 event 도 장소 후보를 받게 장소를 한 번 더 정한다.
+            extended.append(("캘린더 일정 다시 확인", ensure_calendar_events))
+            extended.append(("장소 다시 확정", partial(_confirm_place_slots, clues=clues)))
+            extended.append(("문장 장소 칸", partial(fill_place_slots, clues=clues)))
+            extended.append(("대화 상대 조사", partial(fix_counterpart_particles, clues=clues)))
+            extended.append(("제목 장소 정리", partial(fix_title_places, clues=clues)))
+        else:
+            extended.append((name, overrides.get(name, step)))
+    return (*steps, *extended)
+
+
+def _confirm_place_slots(
+    draft: TimelineDraft, request: TimelineDraftRequest, *, clues: TimelineClues
+) -> None:
+    confirm_place_slots(draft, request, clues)
+
+
+def _skeleton_step(
+    step: Callable[[TimelineDraft, TimelineDraftRequest, TimelineClues], None],
+    draft: TimelineDraft,
+    request: TimelineDraftRequest,
+    *,
+    clues: TimelineClues,
+) -> None:
+    step(draft, request, clues)
+
+
 def _inspect(
     draft: TimelineDraft,
     request: TimelineDraftRequest,
     report: ConfirmReport,
     *,
     extended: bool,
+    clue_contract: bool = False,
 ) -> None:
     """고치지 않고 찾기만 하는 검사. 찾은 것은 warning 과 검사 결과로 남긴다.
 
@@ -726,7 +832,15 @@ def _inspect(
             event=meal,
         )
     for label in find_narrative_labels(draft):
+        # v4 는 주소를 문장에 쓸 수 있다(이동 문장, 후보가 없을 때의 주소 대체, 사용자 결정).
+        if clue_contract and label.kind == "ADDRESS_IN_NARRATION":
+            continue
         report.add_finding(label.kind, label.detail(), event=label.event)
+    if clue_contract:
+        # 제목에는 장소명을 쓰지 않는다(사용자 결정). 고칠 칸이 없어 Repair 에 넘긴다.
+        for event in draft.events:
+            if names := place_names_in_title(event, request):
+                report.add_finding("PLACE_NAME_IN_TITLE", {"found": names}, event=event)
 
 
 def repair_draft(
@@ -737,6 +851,7 @@ def repair_draft(
     extended: bool = True,
     issued_ids: set[str] | None = None,
     candidates: Sequence[AiEventCandidate] = (),
+    clues: TimelineClues | None = None,
 ) -> TimelineDraft:
     """LLM 이 만든 draft 를 코드로 확정한다(in-place, 같은 객체를 돌려준다).
 
@@ -754,17 +869,20 @@ def repair_draft(
 
     `candidates` 는 Event Agent 들의 candidate 다. 사진 단일 귀속이 Timeline 이 통째로 버린
     사진 candidate 를 사진 event 로 되살리는 데 쓴다(#163).
+
+    `clues` 를 주면 v4 세트의 확정이다(#167·#171). 장소는 장소 칸으로 확정하고, 위치 근거
+    연결과 체류 병합은 돌리지 않는다(`_clue_correction_steps`).
     """
 
     report = report if report is not None else ConfirmReport()
 
-    for name, step in _correction_steps(extended, candidates):
+    for name, step in _correction_steps(extended, candidates, clues):
         report.run(name, draft, lambda step=step: step(draft, request))
 
     # source 하나를 여러 event가 근거로 사용할 수 있다. 현재는 timeline_items에
     # event별 source 스냅샷을 저장하고, 향후 N:M 연결 테이블이 이 관계를 맡는다.
 
-    _inspect(draft, request, report, extended=extended)
+    _inspect(draft, request, report, extended=extended, clue_contract=clues is not None)
 
     # 병합으로 event 구성이 바뀌었을 수 있어 한 번 더 정렬한 뒤 id 를 부여한다.
     # 번호는 여기서만 준다. 중간 guard 는 event 를 지워도 번호를 다시 매기지 않는다(#144).
