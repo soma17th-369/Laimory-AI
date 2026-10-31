@@ -33,7 +33,7 @@ from app.schemas import (
     TimelineWarning,
     TimelineWarningSeverity,
 )
-from app.services.location_metrics import COVERAGE_GAP_MIN, SHORT_STAY_MAX
+from app.services.location_metrics import SHORT_STAY_MAX, is_continuous
 from app.services.source_lookup import raw_id_of
 from app.services.validator import parse_datetime, resolve_timezone
 
@@ -221,14 +221,14 @@ class _Layout:
 def _runs(spans: list[_Placed]) -> list[list[_Placed]]:
     """수집이 끊기지 않고 이어진 근거끼리 묶는다.
 
-    `COVERAGE_GAP_MIN` 이상 기록이 없으면 끊긴 것으로 본다. 끊긴 구간을 사이에 둔 두
-    근거는 이어진 이동이 아니다.
+    `location_metrics.is_continuous` 가 거짓인 만큼 기록이 없으면 끊긴 것으로 본다. 끊긴
+    구간을 사이에 둔 두 근거는 이어진 이동이 아니다.
     """
 
     runs: list[list[_Placed]] = []
     reached: datetime | None = None
     for span in spans:
-        if reached is None or span.start - reached >= COVERAGE_GAP_MIN:
+        if reached is None or not is_continuous(span.start - reached):
             runs.append([])
         runs[-1].append(span)
         reached = span.end if reached is None else max(reached, span.end)

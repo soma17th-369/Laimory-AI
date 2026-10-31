@@ -55,6 +55,7 @@ URL, 요청·응답 body, 토큰 값, 예외 원문은 어느 이벤트에도 �
 
 import asyncio
 import logging
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
@@ -239,6 +240,10 @@ class HttpAppServerClient(AppServerClient):
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._base_url = (base_url or settings.app_server_api_url).rstrip("/")
+        # 입력 조회만 버전이 다르다. 기본 URL 끝의 버전 경로(`/s/api/v1`, `/s/v1`)만 바꾼다.
+        self._input_base_url = re.sub(
+            r"/v\d+$", f"/{settings.app_server_input_api_version}", self._base_url
+        )
         self._timeout_sec = timeout_sec or settings.app_server_timeout_sec
         self._max_attempts = max_attempts or settings.app_server_max_attempts
         self._backoff_sec = (
@@ -255,7 +260,7 @@ class HttpAppServerClient(AppServerClient):
     async def fetch_input(self, task_id: str, token: TaskToken) -> CollectedSnapshot:
         body = await self._request(
             "GET",
-            self._url(INPUT_PATH, task_id),
+            self._url(INPUT_PATH, task_id, self._input_base_url),
             task_id=task_id,
             token=token,
             operation="input",
@@ -339,9 +344,9 @@ class HttpAppServerClient(AppServerClient):
 
     # --- 내부 ----------------------------------------------------------
 
-    def _url(self, path: str, task_id: str) -> str:
+    def _url(self, path: str, task_id: str, base_url: str | None = None) -> str:
         encoded = quote(task_id, safe="")
-        return f"{self._base_url}{path.replace('{taskId}', encoded)}"
+        return f"{base_url or self._base_url}{path.replace('{taskId}', encoded)}"
 
     async def _request(
         self,

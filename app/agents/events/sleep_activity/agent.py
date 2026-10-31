@@ -8,8 +8,12 @@ v2 부터는 review 를 두지 않는다(#56). Location 과 같은 이유이며,
 
 분기 기준은 프롬프트 버전이다. `PROMPT_VERSION=v1` 롤백이 2단계 동작까지 그대로
 되돌리도록 하기 위해서다.
+
+**deprecated(2026-10-29).** 수면·걸음은 더 수집하지 않는다. v4 세트는 이 Agent 를 부르지
+않고 프롬프트도 없다. v1~v3 경로는 운영 세트라 그대로 두고, v3 를 내릴 때 함께 지운다.
 """
 
+from functools import cache
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -26,11 +30,20 @@ from app.core.config import settings
 from app.core.llm_stages import LLMStage
 from app.schemas import AgentEventResult, TimelineDraftRequest
 
-_SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
+#: 프롬프트는 import 때가 아니라 처음 부를 때 읽는다. v4 세트에는 이 Agent 의
+#: 프롬프트가 없다 — 수면·걸음은 더 수집하지 않아 v4 는 이 Agent 를 부르지 않는다.
+#: import 때 읽으면 v4 로 기동조차 못 한다. v1~v3 은 읽는 시점만 늦어질 뿐 같은 파일을 읽는다.
+@cache
+def _system_prompt() -> str:
+    return load_prompt(__file__, "prompt.md")
 
 #: review 단계는 v1 프롬프트 세트 전용이다. v2 세트에는 `review.md` 가 없다.
 _USE_REVIEW = settings.prompt_version == "v1"
-_REVIEW_PROMPT = load_prompt(__file__, "review.md") if _USE_REVIEW else None
+
+
+@cache
+def _review_prompt() -> str | None:
+    return load_prompt(__file__, "review.md") if _USE_REVIEW else None
 
 
 class _State(TypedDict, total=False):
@@ -64,11 +77,11 @@ class SleepActivityEventAgent(EventAgent):
             window_start=request.window.start if request.window else None,
             window_end=request.window.end if request.window else None,
         )
-        if _REVIEW_PROMPT is None:
+        if _review_prompt() is None:
             return self.llm.complete_structured(
                 infer_prompt,
                 AgentEventResult,
-                system=_SYSTEM_PROMPT,
+                system=_system_prompt(),
                 temperature=0.2,
             )
         return self._run_graph(infer_prompt)
@@ -77,13 +90,13 @@ class SleepActivityEventAgent(EventAgent):
         llm = self.llm
 
         def infer_node(state: _State) -> _State:
-            draft = llm.complete(infer_prompt, system=_SYSTEM_PROMPT, temperature=0.2)
+            draft = llm.complete(infer_prompt, system=_system_prompt(), temperature=0.2)
             return {"draft": draft}
 
         def review_node(state: _State) -> _State:
-            prompt = _REVIEW_PROMPT.replace("{{DRAFT}}", state["draft"])
+            prompt = _review_prompt().replace("{{DRAFT}}", state["draft"])
             result = llm.complete_structured(
-                prompt, AgentEventResult, system=_SYSTEM_PROMPT, temperature=0.0
+                prompt, AgentEventResult, system=_system_prompt(), temperature=0.0
             )
             return {"result": result}
 

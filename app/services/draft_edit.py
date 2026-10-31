@@ -62,6 +62,8 @@ _EDITABLE_FIELDS = frozenset(
         "inferenceLevel",
         "sourceRefs",
         "uncertainty",
+        # v4 의 장소 후보(#171). 확정 pass 가 근거의 후보 풀 밖의 이름을 버린다.
+        "placeCandidates",
     }
 )
 
@@ -306,6 +308,7 @@ _PART_FIELDS = frozenset(
         "inferenceLevel",
         "uncertainty",
         "tags",
+        "placeCandidates",
     }
 )
 

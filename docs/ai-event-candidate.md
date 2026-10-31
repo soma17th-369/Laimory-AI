@@ -10,6 +10,10 @@
   위치·캘린더·사진·수면·활동·알림 등 데이터별 Agent 가 각자의 source item 을 해석해
   내놓는 **후보**다.
 - Timeline Agent 가 여러 Agent 의 후보를 **병합·분할·검증**해 최종 draft 를 만든다.
+- **v4 세트(`PROMPT_VERSION=v4`, #167~#171)는 이 후보를 쓰지 않는다.** 위치는 코드가 만든
+  위치 뼈대(`app/services/location_skeleton.py`), 일정은 일정 단서(`calendar_clues.py`)이고,
+  사진·알림은 LLM 이 읽은 데이터별 단서(`app/schemas/clues.py`)다. 코드가 이것들을 근거
+  묶음(`clue_bundles.py`)으로 묶어 Timeline v4 에 넘긴다. 이 문서는 v1~v3 의 계약이다.
 - 후보에는 아직 **안정적인 `eventId` 가 없다.** 최종 `eventId` / `clientEventId` 는
   Timeline Agent 가 draft 를 만들 때 부여된다. run 내부 추적이 필요하면 DTO 본질
   필드가 아니라 `candidateIndex` / `traceId` 같은 별도 수단으로 다룬다.

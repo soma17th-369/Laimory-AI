@@ -64,6 +64,7 @@ from app.schemas import (
     TimelineWarning,
     TimelineWarningSeverity,
 )
+from app.services.place_slots import filled_description
 
 logger = get_logger(__name__)
 
@@ -135,7 +136,8 @@ def project_event(event: TimelineEventDraft) -> dict:
         "timeOfDay": f"{event.start_time.hour}시~{event.end_time.hour}시",
     }
     if event.description:
-        projected["description"] = event.description
+        # v4 의 장소 칸은 채운 문장으로 보인다(#171). v3 문장에는 칸이 없어 그대로다.
+        projected["description"] = filled_description(event)
     if event.place:
         projected["place"] = event.place
     return projected

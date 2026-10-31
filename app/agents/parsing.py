@@ -65,7 +65,7 @@ def items_to_text(items: list) -> str:
 
 
 #: 프롬프트에 싣지 않는 키. **코드만** 쓰는 값이다 — 좌표(이슈 #80)와 사진 URL(이슈 #127).
-_PROMPT_EXCLUDED_KEYS = frozenset({"latitude", "longitude", "photoUrl"})
+_PROMPT_EXCLUDED_KEYS = frozenset({"latitude", "longitude", "photoUrl", "placePoints"})
 
 
 def strip_prompt_excluded_keys(payload):

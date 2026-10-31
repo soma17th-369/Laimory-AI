@@ -7,12 +7,17 @@ App Server 결과 저장 API 를 호출하기 전에 각 이벤트의 필수값�
 뻔한 요청을 왕복시키면 실패 원인이 네트워크 계층으로 밀려 진단이 어려워진다.
 """
 
+from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import AppError
+from app.schemas.common import PlacePoint
 from app.schemas.timeline import TimelineDraft
+from app.schemas.timeline_result import MAX_PLACE_CANDIDATES, TEXT_MAX, PlaceCandidate
+from app.services.place_text import normalize_place_text
 
 
 class TimelineViolationCode(StrEnum):
@@ -97,6 +102,52 @@ def _collect_timeline_violations(
                 )
 
     return violations
+
+
+class PlaceCandidateViolation(StrEnum):
+    """후보를 뺀 이유. 원문 값 없이 운영 관측에 남긴다."""
+
+    BLANK_NAME = "BLANK_NAME"
+    DUPLICATE_NAME = "DUPLICATE_NAME"
+    NAME_NOT_IN_EVIDENCE = "NAME_NOT_IN_EVIDENCE"
+    TOO_MANY = "TOO_MANY"
+
+
+def checked_place_candidates(
+    names: list[str], sources: Mapping[str, PlacePoint | None]
+) -> tuple[list[PlaceCandidate], Counter[PlaceCandidateViolation]]:
+    """후보 이름을 그 event 의 입력과 대조해 계약 모양으로 옮긴다(사용자 결정 2026-10-31).
+
+    `sources` 는 그 event 가 쓸 수 있는 이름(정규화한 값)과 입력 원소의 좌표다. 입력에 없는 이름, 빈
+    이름, 중복, 5개를 넘는 후보는 뺀다. 좌표는 언제나 입력의 그 원소 값이고 코드가 만들거나 고치지
+    않는다. 뺀 것을 실패로 올리지 않는다 — 후보 하나 때문에 하루 기록을 버리지 않는다.
+    """
+
+    kept: list[PlaceCandidate] = []
+    seen: set[str] = set()
+    dropped: Counter[PlaceCandidateViolation] = Counter()
+    for name in names:
+        text = name.strip()
+        key = normalize_place_text(text)
+        if not text or not key:
+            dropped[PlaceCandidateViolation.BLANK_NAME] += 1
+        elif key in seen:
+            dropped[PlaceCandidateViolation.DUPLICATE_NAME] += 1
+        elif key not in sources:
+            dropped[PlaceCandidateViolation.NAME_NOT_IN_EVIDENCE] += 1
+        elif len(kept) == MAX_PLACE_CANDIDATES:
+            dropped[PlaceCandidateViolation.TOO_MANY] += 1
+        else:
+            seen.add(key)
+            point = sources[key]
+            kept.append(
+                PlaceCandidate(
+                    name=text[:TEXT_MAX],
+                    latitude=point.latitude if point else None,
+                    longitude=point.longitude if point else None,
+                )
+            )
+    return kept, dropped
 
 
 def validate_timeline_for_storage(

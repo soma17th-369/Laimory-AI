@@ -65,9 +65,28 @@ def notification_count(event: TimelineEventDraft) -> int:
 
 
 def conversation_events(
-    draft: TimelineDraft, request: TimelineDraftRequest
+    draft: TimelineDraft,
+    request: TimelineDraftRequest,
+    conversation_ids: set[str] | None = None,
 ) -> list[TimelineEventDraft]:
-    """대화로 만든 event 를 draft 의 순서대로 돌려준다(draft 를 바꾸지 않는다)."""
+    """대화로 만든 event 를 draft 의 순서대로 돌려준다(draft 를 바꾸지 않는다).
+
+    `conversation_ids` 를 주면(v4) 앱 사전 대신 그것으로 센다. v4 는 Notification 단서 Agent 가
+    알림을 대화로 묶어 두었고, 앱 사전으로 세면 대화로 쓰인 문자 알림(`메시지`)이 빠진다 — 실제
+    재실행에서 대화 event 가 4개 남았다.
+    """
+
+    if conversation_ids is not None:
+        # 근거가 모두 알림이고 그중 대화가 있으면 대화 event 다. 대화에 거래 알림(당근)이 함께 붙어도
+        # 대화 event 로 센다 — 대화만 세면 그런 event 가 빠져 4개가 남았다.
+        return [
+            event
+            for event in draft.events
+            if event.event_type not in _TRANSACTION_EVENT_TYPES
+            and event.source_refs
+            and all(ref.source_type is EventSourceType.NOTIFICATION for ref in event.source_refs)
+            and any(ref.raw_id in conversation_ids for ref in event.source_refs)
+        ]
 
     # 앱 분류의 정본은 Notification Agent 가 쓰는 사전이다. guard 가 분류를 따로 가지면
     # 같은 앱을 두 곳이 다르게 본다. 모듈을 읽는 시점에 Agent 패키지까지 끌어오지 않도록
@@ -109,14 +128,16 @@ def _keep_order(event: TimelineEventDraft):
 
 
 def enforce_conversation_limit(
-    draft: TimelineDraft, request: TimelineDraftRequest
+    draft: TimelineDraft,
+    request: TimelineDraftRequest,
+    conversation_ids: set[str] | None = None,
 ) -> list[TimelineEventDraft]:
     """대화 event 가 3개를 넘으면 알림이 많은 3개만 남긴다(in-place). 지운 event 를 돌려준다.
 
     두 번 적용해도 결과가 같다.
     """
 
-    conversations = conversation_events(draft, request)
+    conversations = conversation_events(draft, request, conversation_ids)
     if len(conversations) <= MAX_CONVERSATION_EVENTS:
         return []
 

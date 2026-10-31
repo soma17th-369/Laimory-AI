@@ -20,7 +20,7 @@ AI 서버가 App Server에서 source를 조회하고 Timeline 결과·완료 상
 
 ## Current Implementation
 
-`APP_SERVER_API_URL`은 필수이며 절대 HTTP(S) URL이어야 한다. query/fragment는 허용하지 않고 path가 `/s/api/v{숫자}` 또는 `/s/v{숫자}`로 끝나야 한다. task path는 client가 아래처럼 조립하고 taskId를 URL encode한다.
+`APP_SERVER_API_URL`은 필수이며 절대 HTTP(S) URL이어야 한다. query/fragment는 허용하지 않고 path가 `/s/api/v{숫자}` 또는 `/s/v{숫자}`로 끝나야 한다. task path는 client가 아래처럼 조립하고 taskId를 URL encode한다. 입력 조회만 `APP_SERVER_INPUT_API_VERSION`(기본 `v2`)으로 부른다 — 기본 URL 끝의 버전만 바꾸고 result·callback은 기본 URL의 버전 그대로다(명세 2026-10-30). 입력 조회 v2의 `places`는 `{name, latitude, longitude}` 객체이고 AI는 이름을 `places`에, 좌표를 `placePoints`에 나눠 받는다(두 형태가 섞여도 받는다).
 
 | Operation | Method/path | 전송 의미 |
 |---|---|---|
@@ -45,7 +45,7 @@ input response는 taskId, record date/timezone, optional window, 평평한 `sour
 
 계약 위반(모르는 최상위 필드, 지원하지 않는 `schemaVersion`, 길이·개수 초과)은 묶음 규칙과 달리 **task를 실패시키지 않는다**. client가 code 1106으로 기록하고 memory 없이 진행한다. 응답 model에 `UserMemory`를 직접 선언하지 않는 이유가 이것이다 — 직접 선언하면 보조 context 하나가 응답 전체를 1102로 만든다.
 
-result request는 내부 draft보다 좁다. App Server에는 event type, title, subtitle, place, address, 시작·종료, source rawId 목록과 optional event question만 보낸다. confidence, inference level, uncertainty, 내부 warnings, tags, 장소 후보 목록(`places`), clientEventId는 보내지 않는다. `place`/`address`는 `place_resolver`가 근거로 확정한 값이며 mapper는 검증하지 않고 옮기기만 한다 — 근거 없는 address는 확정 pass에서 이미 지워졌다. title/subtitle/place/address/question은 mapper에서 최대 255자로 방어하고, source rawId는 순서를 유지해 중복 제거하며, datetime은 draft timezone offset으로 보낸다. event가 0건이어도 결과 request를 전송한다.
+result request는 내부 draft보다 좁다. App Server에는 event type, title, subtitle, place, address, 대표 좌표(`latitude`·`longitude`, #175), 장소 후보(`placeCandidates`, 최대 5개, 후보마다 입력 원소의 좌표), 시작·종료, source rawId 목록과 optional event question만 보낸다. 후보는 저장 직전에 그 event의 입력과 대조한다(`checked_place_candidates`) — 입력에 없는 이름·빈 이름·중복·5개 초과는 빼고, 좌표는 입력의 그 원소 값이다. `places` 밖에서 만든 후보(일정 장소명)는 좌표 키가 없다. 후보 좌표가 쌍·범위를 어기면 App Server가 batch 전체를 400으로 거절하므로 계약이 NaN·무한대·한쪽만을 받지 않는다. App Server는 1번 후보로 `place`와(좌표가 있으면) event 좌표를 덮어쓴다. confidence, inference level, uncertainty, 내부 warnings, tags, 입력의 장소 후보 목록(`places`), clientEventId는 보내지 않는다. 대표 좌표는 mapper가 최종 sourceRefs로 입력을 찾아 `place_resolver.representative_coordinates`로 채우며(이동은 마지막 도착 지점, 그 밖에는 address·place와 같은 지점, 없으면 가장 긴 체류), 둘 다 있거나 둘 다 없고 값이 없으면 키를 싣지 않는다 — 위치 근거 없는 event의 body는 필드를 더하기 전과 같다. App Server는 한쪽 좌표만 온 결과를 통째로 400으로 거절하므로 계약 모델이 짝을 강제한다. `placeCandidates`(`[{name}]`)는 계약에 있지만 v3 세트는 싣지 않는다 — App Server가 후보 1번으로 `place`를 덮어쓴다(App Server 공지 2026-10-29). v4 세트(#171)는 장소를 확정하지 못한 event에 `placeCandidates`(최대 5개, 1번이 `place`)를 싣고, `subtitle`의 장소 자리를 `{place}`로 보낸다. `{place}`가 남은 채 `place`·후보가 없으면 App Server가 결과 전체를 400으로 거절하므로 계약 모델이 그 조합을 막고, 결과 변환(`build_result_request`)이 그런 칸을 지명(구 + 동, 건물번호 없음)으로 바꾸거나 지운다. `place`/`address`는 `place_resolver`가 근거로 확정한 값이며 mapper는 검증하지 않고 옮기기만 한다 — 근거 없는 address는 확정 pass에서 이미 지워졌다. title/subtitle/place/address/question은 mapper에서 최대 255자로 방어하고, source rawId는 순서를 유지해 중복 제거하며, datetime은 draft timezone offset으로 보낸다. event가 0건이어도 결과 request를 전송한다.
 
 callback body는 terminal status와 오류 필드뿐이다. taskId는 URL, token은 header에 있으므로 body에 반복하지 않는다. SUCCESS는 error가 모두 null이고 FAILED는 예약되지 않은 카탈로그 code와 정확한 안전 메시지 쌍이어야 한다.
 
