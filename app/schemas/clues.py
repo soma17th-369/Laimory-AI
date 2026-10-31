@@ -40,6 +40,7 @@ class NotificationClueKind(StrEnum):
     PAYMENT = "PAYMENT"
     RESERVATION = "RESERVATION"
     ACTION_RESULT = "ACTION_RESULT"
+    # 스키마는 추가만 한다. 프롬프트는 더 이상 이 값을 쓰지 않고, 모델이 내면 코드가 버린다(#173).
     PROMOTION = "PROMOTION"
 
 
@@ -62,6 +63,7 @@ class NotificationClueSet(CamelModel):
     """알림 단서 결과."""
 
     clues: list[NotificationClueOutput] = Field(default_factory=list)
+    dropped: list[str] = Field(default_factory=list, description="남기지 않는 알림의 id")
 
 
 class PhotoClue(CamelModel):
@@ -80,10 +82,10 @@ class PhotoClue(CamelModel):
 
 
 class NotificationClue(CamelModel):
-    """알림 묶음 하나의 단서.
+    """남기기로 한 알림 묶음 하나의 단서.
 
-    `kind` 가 비어 있으면 모델이 이 알림을 읽지 못한 것이다(응답에서 빠졌거나 호출이 실패).
-    알림을 버리지 않으려고 남기되 내용은 싣지 않는다 — 원문에는 민감정보가 있을 수 있다.
+    광고, 종류에 들지 않는 알림, 읽지 못한 알림은 단서가 되지 않는다(#173). `kind` 의 `None` 은
+    예전 계약에서 읽지 못한 알림을 뜻했고 스키마는 추가만 하므로 남겨 둔다. 이제 만들지 않는다.
     """
 
     clue_id: str = Field(alias="id")

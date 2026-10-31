@@ -1,6 +1,6 @@
 """근거 묶음 (#169, v4 세트).
 
-위치 뼈대의 구간마다 그 시간의 사진·일정·대화 단서를 붙여 **묶음**을 만든다. Timeline v4 는
+위치 뼈대의 구간마다 그 시간의 사진·일정·알림 단서를 붙여 **묶음**을 만든다. Timeline v4 는
 묶음을 읽고 event 를 판단하며, 근거를 rawId 대신 묶음·단서 id(`B3`·`P2`·`N5`)로 가리킨다.
 `location_link`(#138)의 방향이 뒤집힌 것이다 — 구간이 주인이고 단서가 붙는다.
 
@@ -11,11 +11,16 @@
   구간에는 배경 일정이 있다는 표시만 단다.
 - 사진: 촬영 시각을 품는 구간. 촬영 위치가 바로 앞·뒤 구간의 장소와 같으면(250m 이내) 그
   구간에도 붙인다. 구간 경계나 빈 시간에 찍은 사진도 위치가 맞는 구간에 붙는다.
-- 대화: 대화가 오간 시간과 겹치는 구간 모두.
-- 그 밖의 알림(결제·예약·소식·행동 결과·광고): **시간으로 붙이지 않는다.** 수신 시각은 그
-  일이 일어난 때가 아니다. 하루 전체 목록으로 두고 Timeline 이 내용으로 쓸 event 를 고른다.
+- 대화: **구간에 붙이지 않고 언제나 자기 묶음이다**(#173, 사용자 결정 2026-10-31). "대화는 기존
+  이벤트와 연관이 크게 없다." 구간에 붙여 두자 Timeline 이 대화로 체류를 채워 `덕충동에서 대화` 가
+  됐다. 대화는 단독 event 로 하루 3개까지 남는다.
+- 그 밖의 알림(결제·예약·소식·행동 결과): 처음 받은 시각을 품는 구간 **하나**에 붙인다(#173, 사용자
+  결정 2026-10-31). 시각이 없던 때 이 알림은 근거로 거의 쓰이지 않았다(토스·문자 72건 중 2건). 어느
+  event 의 것인지는 Timeline·Repair 가 내용으로 판단한다. 묶음 id 를 펼쳐도 알림은 담기지 않고 `N5` 처럼
+  직접 적은 알림만 근거다 — 묶음 id 로 따라오게 두자 온라인 결제·설문 알림이 그 시각의 체류에 붙었다.
+  구간 밖 시각의 알림과 다른 날 일정을 말하는 알림은 붙이지 않고 하루 목록으로 둔다.
 
-붙을 구간이 없는 사진·일정·대화는 자기 묶음이 된다. 시간이 가깝다는 이유만으로 구간에 붙이지
+붙을 구간이 없는 사진·일정은 자기 묶음이 된다. 시간이 가깝다는 이유만으로 구간에 붙이지
 않는다(#163). 단독 위치 기록은 시간이 겹치는 묶음에 보태진다.
 
 여러 묶음에 붙은 단서도 최종 event 에서는 기존 규칙을 따른다. 일정은 여러 event 가 함께 가질
@@ -62,6 +67,8 @@ class ClueBundle:
     photos: list[PhotoClue] = field(default_factory=list)
     calendars: list[CalendarClue] = field(default_factory=list)
     conversations: list[NotificationClue] = field(default_factory=list)
+    #: 이 구간의 시각에 받은, 대화가 아닌 알림(#173).
+    notifications: list[NotificationClue] = field(default_factory=list)
     isolated: list[LocationRecord] = field(default_factory=list)
     #: 이 구간을 덮는 배경 일정의 id. 배경 일정 자체는 자기 묶음에 있다.
     background_calendar_ids: list[str] = field(default_factory=list)
@@ -86,7 +93,7 @@ class TimelineClues:
     photos: list[PhotoClue]
     notifications: list[NotificationClue]
     bundles: list[ClueBundle]
-    #: 시간으로 묶음에 붙이지 않는 알림(대화가 아닌 것).
+    #: 어느 구간에도 붙지 않은, 대화가 아닌 알림.
     day_notifications: list[NotificationClue]
     #: 어느 묶음과도 시간이 겹치지 않는 단독 위치 기록.
     loose_records: list[LocationRecord] = field(default_factory=list)
@@ -97,6 +104,12 @@ class TimelineClues:
 
     #: 제목에 쓰는 지명(사용자 결정). 그날 시·도가 둘 이상인지를 안다.
     areas: AreaNamer = field(default_factory=AreaNamer)
+
+    @property
+    def short_record_ids(self) -> frozenset[str]:
+        """단독 위치 기록의 rawId. event 를 만들지 않고 보태기만 하는 근거다."""
+
+        return frozenset(record.raw_id for record in self.skeleton.isolated)
 
     def address(self, address: str | None) -> str | None:
         if not address:
@@ -205,14 +218,13 @@ def build_timeline_clues(
     day_notifications: list[NotificationClue] = []
     for clue in notifications:
         if clue.kind is not NotificationClueKind.CONVERSATION:
-            day_notifications.append(clue)
+            hits = _overlapping(segment_bundles, clue.first_at, clue.first_at)
+            if hits and clue.schedule_today is not False:
+                hits[0].notifications.append(clue)
+            else:
+                day_notifications.append(clue)
             continue
-        start, end = clue.first_at, clue.last_at or clue.first_at
-        hits = _overlapping(segment_bundles, start, end) if start else []
-        for bundle in hits:
-            bundle.conversations.append(clue)
-        if not hits:
-            extra.append(_own(start, end, conversations=[clue]))
+        extra.append(_own(clue.first_at, clue.last_at or clue.first_at, conversations=[clue]))
 
     bundles = sorted(
         [*segment_bundles, *extra],
@@ -385,8 +397,8 @@ def expand_evidence(
     `B5`·`C1` 로 다시 적자 B5 의 식사 사진까지 회의로 들어갔고, 사진 단일 귀속이 일정이 있는 회의에
     사진을 남겨 사진뿐이던 식사 event 가 지워졌다.
 
-    기본 event id(`events_bases`)는 그 구간의 위치 기록이다. 묶음 id 는 그 구간과 거기 붙은 단서
-    전부다. 다만 **다른 event 가 단서 id 로 직접 가져간 단서는 그 묶음을 펼칠 때 빠진다** — 묶음에 붙은 점심 사진을 다른 event 가 `P2` 로 가져갔으면
+    기본 event id(`events_bases`)는 그 구간의 위치 기록이다. 묶음 id 는 그 구간과 거기 붙은 사진·일정·
+    대화 전부이고 알림은 담지 않는다(#173). 다만 **다른 event 가 단서 id 로 직접 가져간 단서는 그 묶음을 펼칠 때 빠진다** — 묶음에 붙은 점심 사진을 다른 event 가 `P2` 로 가져갔으면
     그 묶음의 event 에는 넣지 않는다. 같은 event 안에서 같은 rawId 는 한 번만 담는다.
     모르는 id 는 버린다.
     """
@@ -466,7 +478,8 @@ def misplaced_clues(
     - 사진: 촬영 시각이 event 시간 앞뒤 20분(`SHORT_STAY_MAX`) 밖이거나, 위치를 아는데 event 가 가진
       체류 구간과 250m 넘게 떨어졌다. 체류 구간이 없으면 장소는 보지 않는다.
     - 일정: event 시간과 앞뒤 20분 안에서도 겹치지 않는다. 일정은 계획이라 시간이 조금 어긋날 수 있다.
-    - 대화·알림은 보지 않는다. 약속 대화는 나중에 만난 event 의 근거이고, 알림은 시각이 없다.
+    - 대화·알림은 보지 않는다. 약속 대화는 나중에 만난 event 의 근거이고, 알림의 받은 시각은 그 일이
+      일어난 때가 아닐 수 있다.
     """
 
     held = {ref.raw_id for ref in refs}
@@ -542,10 +555,7 @@ def timeline_input_sections(clues: TimelineClues) -> dict[str, object]:
         "day": day,
         "bundles": [_bundle_dict(bundle, clues) for bundle in clues.bundles],
         "emptyTimes": [_empty_dict(empty, clues) for empty in skeleton.empty_times],
-        "notifications": [
-            _notification_dict(clue, with_time=not skeleton.has_location)
-            for clue in clues.day_notifications
-        ],
+        "notifications": [_notification_dict(clue) for clue in clues.day_notifications],
     }
 
 
@@ -576,6 +586,8 @@ def _bundle_dict(bundle: ClueBundle, clues: TimelineClues) -> dict[str, object]:
         ]
     if bundle.conversations:
         payload["conversations"] = [_notification_dict(clue) for clue in bundle.conversations]
+    if bundle.notifications:
+        payload["notifications"] = [_notification_dict(clue) for clue in bundle.notifications]
     if bundle.isolated:
         payload["shortRecords"] = [_record_dict(record, clues) for record in bundle.isolated]
     return payload
@@ -657,17 +669,12 @@ def _photo_dict(
     return payload
 
 
-def _notification_dict(clue: NotificationClue, *, with_time: bool = False) -> dict[str, object]:
-    """알림 단서. 대화는 오간 시간을 싣고, 그 밖의 알림은 시각을 싣지 않는다(사용자 결정).
-
-    `with_time` 은 위치 기록이 없는 날이다. 그날은 알림이 붙을 구간이 없어 알림 자체가 event 이고, 받은
-    시각이 그 event 의 유일한 시간이다. 시각이 없자 Timeline 이 결제·대화를 모두 버렸다.
-    """
+def _notification_dict(clue: NotificationClue) -> dict[str, object]:
+    """알림 단서. 받은 시각도 싣는다(#173) — 시각이 없자 Timeline 이 어느 event 의 것인지 알 수 없어
+    결제·소식을 근거로 거의 쓰지 않았고, 위치 없는 날에는 결제·대화를 모두 버렸다."""
 
     payload: dict[str, object] = {"id": clue.clue_id}
-    if clue.kind is None:
-        payload["unread"] = True
-    else:
+    if clue.kind is not None:
         payload["kind"] = clue.kind.value
     if clue.app_names:
         payload["appNames"] = list(clue.app_names)
@@ -676,11 +683,10 @@ def _notification_dict(clue: NotificationClue, *, with_time: bool = False) -> di
             payload[key] = value
     if clue.schedule_today is not None:
         payload["scheduleToday"] = clue.schedule_today
-    if with_time or clue.kind is NotificationClueKind.CONVERSATION:
-        if clue.first_at is not None:
-            payload["firstAt"] = clue.first_at.isoformat()
-        if clue.last_at is not None:
-            payload["lastAt"] = clue.last_at.isoformat()
+    if clue.first_at is not None:
+        payload["firstAt"] = clue.first_at.isoformat()
+    if clue.last_at is not None:
+        payload["lastAt"] = clue.last_at.isoformat()
     return payload
 
 

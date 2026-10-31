@@ -15,7 +15,7 @@ from app.schemas.common import CamelModel, RawId
 # 값을 더해도 v1~v3 의 provider schema 는 한 글자도 달라지면 안 된다(#172). 그 세트의 프롬프트는
 # 13종만 말하고, 운영 세트이며, App Server 는 13종 밖의 값을 받으면 task 를 FAILED 로 만든다.
 # 그래서 enum 의 JSON schema 는 언제나 13종을 보이고(`__get_pydantic_json_schema__`), v4 출력
-# 모델(`TimelineClueEvent`)만 17종을 연다. 필드를 좁히지 않는 것은 draft·결과·guard 가 세트와
+# 모델(`TimelineClueEvent`)만 새 4종을 연다. 필드를 좁히지 않는 것은 draft·결과·guard 가 세트와
 # 상관없이 이 enum 하나를 쓰기 때문이다. LLM 이 적어 낸 값은 v1~v3 의 입구에서 따로 거절한다.
 # 아래 docstring 은 schema 로 provider 에 나가므로 고치면 v3 schema 가 달라진다.
 class EventType(str, Enum):

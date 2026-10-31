@@ -114,7 +114,10 @@ def test_timeline_v4_states_the_event_limit_the_code_enforces():
     assert f"**최종 event는 {MAX_EVENT_COUNT}개를 넘지 않습니다.**" in _timeline()
 
 
-@pytest.mark.parametrize("event_type", [member.value for member in EventType if member is not EventType.WAKE_UP])
+@pytest.mark.parametrize(
+    "event_type",
+    [member.value for member in EventType if member not in (EventType.WAKE_UP, EventType.UNKNOWN)],
+)
 def test_timeline_v4_type_table_has_every_type(event_type: str):
     table = _between(_timeline(), "### eventType 표", "#### `MEAL`과 `SLEEP`")
 
@@ -126,6 +129,8 @@ def test_timeline_v4_review_limits_match_the_code():
 
     table = _between(_timeline(), "### eventType 표", "#### `MEAL`과 `SLEEP`")
     for event_type, limit in DURATION_LIMITS.items():
+        if event_type is EventType.UNKNOWN:  # v4 에 없는 종류다(#173).
+            continue
         row = next((line for line in table.splitlines() if line.startswith(f"| `{event_type.value}` |")), None)
         if limit is None:
             if row is not None:
@@ -252,8 +257,7 @@ def _rich_clues():
         clue_id="N2", kind=NotificationClueKind.RESERVATION, raw_ids=[fixture_raw_id("n-2")],
         counterpart="OO헤어", summary="예약", schedule_today=False,
     )
-    unread = NotificationClue(clue_id="N3", raw_ids=[fixture_raw_id("n-3")], app_names=["자리톡"])
-    return build_timeline_clues(build_location_skeleton(request), build_calendar_clues(request), [photo], [chat, news, unread])
+    return build_timeline_clues(build_location_skeleton(request), build_calendar_clues(request), [photo], [chat, news])
 
 
 def test_timeline_v4_names_every_input_key_the_code_sends():
@@ -283,7 +287,8 @@ def test_notification_v4_names_every_payload_key():
         assert f"`{key}`" in text, f"notification v4 에 입력 키 `{key}` 설명이 없습니다."
     assert "`rawId`" not in text, "v4 알림 입력은 rawId 대신 짧은 id 를 싣는다."
     for kind in NotificationClueKind:
-        assert kind.value in text
+        if kind is not NotificationClueKind.PROMOTION:  # 스키마에만 남은 값이다(#173).
+            assert kind.value in text
 
 
 def test_photo_v4_reads_what_the_user_did_one_photo_at_a_time():
@@ -376,9 +381,30 @@ def test_timeline_v4_makes_events_from_notifications_on_a_day_without_location()
 
     text = _timeline()
 
-    assert "다르면 내용이 있는 대화와 그 알림이 그날의 event입니다" in text
-    assert "위치 기록이 없는 날에만 받은 시각(`firstAt`·`lastAt`)이 있습니다" in text
-    assert "구간에 붙지 않은 사진·일정·대화" in text
+    assert "다르면 내용이 있는 대화만 그날의 event이고" in text
+    assert "대화가 아닌 알림은 event가 되지 않습니다" in text
+    assert "구간에 붙지 않은 사진·일정, 대화" in text
+
+
+def test_timeline_v4_uses_notifications_as_evidence_not_events():
+    """알림은 틀의 근거다(#173). `scheduleToday` 규칙이 결제까지 막지 않는다."""
+
+    text = _timeline()
+
+    assert "**대화가 아닌 알림은 event를 새로 만들거나 꺼내지 않습니다.**" in text
+    assert "다만 알림은 담기지 않아 `N5`처럼 직접 적습니다" in text
+    assert "`scheduleToday`가 `true`가 아닌 예약·일정 알림" in text
+    assert "`PROMOTION`" not in text and "`unread`" not in text
+
+
+def test_notification_v4_keeps_only_what_is_needed():
+    """필요한 알림만 남기고 나머지는 `dropped` 에 id 만 적는다(#173)."""
+
+    text = _read("agents/events/notification/prompts/v4/prompt.md")
+
+    assert "들지 않거나 판단이 서지 않으면 버립니다" in text
+    assert "`dropped`" in text and "버리는 알림에는 요약을 쓰지 않습니다" in text
+    assert "PROMOTION" not in text
 
 
 def test_timeline_v4_keeps_what_the_photo_shows_in_the_meal_sentence():
@@ -414,16 +440,23 @@ def test_timeline_v4_keeps_a_calendar_a_calendar():
 
 
 def test_timeline_and_repair_v4_list_every_type():
-    every = {member.value for member in EventType}
+    every = {member.value for member in EventType} - {EventType.UNKNOWN.value}
 
     for text in (_timeline(), _repair()):
         listed = _between(text, f"eventType은 {len(every)}종 중 하나입니다: ", ".")
         assert set(re.findall(r"`(\w+)`", listed)) == every
 
-    assert f'"eventType": "{"|".join(member.value for member in EventType)}"' in _timeline()
+    assert f'"eventType": "{"|".join(member.value for member in EventType if member is not EventType.UNKNOWN)}"' in _timeline()
 
 
-@pytest.mark.parametrize("event_type", ["STAY", "SHOPPING", "CULTURE", "ERRAND", "UNKNOWN"])
+def test_v4_prompts_do_not_offer_unknown():
+    """v4 에는 `UNKNOWN` event 가 없다(#173). 체류는 `STAY`, 알림만으로 된 event 는 만들지 않는다."""
+
+    for text in (_timeline(), _repair(), _read("agents/question/prompts/v4/question.md")):
+        assert "UNKNOWN" not in text
+
+
+@pytest.mark.parametrize("event_type", ["STAY", "SHOPPING", "CULTURE", "ERRAND"])
 def test_question_v4_has_an_example_for_each_new_boundary(event_type: str):
     question = _read("agents/question/prompts/v4/question.md")
 

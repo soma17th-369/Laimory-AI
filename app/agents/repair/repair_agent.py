@@ -42,6 +42,7 @@ from app.agents.prompt_loader import load_prompt, uses_legacy_contract
 from app.agents.repair.tools import (
     RepairContext,
     clue_evidence_text,
+    dropped_notification_ids,
     confirm_report_text,
     event_evidence_text,
     execute_tool_calls,
@@ -150,7 +151,7 @@ def build_repair_prompt(ctx: RepairContext, remaining: int) -> str:
             f"[자동 검사 결과]\n{confirm_report_text(ctx)}\n\n"
             f"[event 근거]\n{clue_evidence_text(ctx)}\n\n"
             f"[user memory]\n{user_memory_to_text(ctx.request.user_memory)}\n\n"
-            f"[근거 원본]\n{source_index_text(ctx.request)}\n\n"
+            f"[근거 원본]\n{source_index_text(ctx.request, hidden=dropped_notification_ids(ctx))}\n\n"
             f"[사용 가능한 도구]\n{tool_catalog_text(ctx)}\n\n"
             f"[지금까지 실행한 도구]\n{tool_log_text(ctx)}\n\n"
             f"[남은 반복 횟수] 이번 차례를 포함해 {remaining}번\n\n"

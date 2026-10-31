@@ -142,17 +142,57 @@ def test_photo_with_no_matching_segment_is_its_own_bundle_not_the_nearest():
     assert holder.segment is None
 
 
-def test_conversation_attaches_to_every_overlapping_segment_but_other_notifications_do_not():
+def test_a_conversation_is_always_its_own_bundle():
+    """구간에 붙여 두자 Timeline 이 대화로 체류를 채웠다(#173). 대화는 위치와 따로다."""
+
     home, work = _home_work()
-    chat = _conversation("N1", "08:00", "10:00")
+
+    clues = _clues(stays=[home, work], notifications=[_conversation("N1", "08:00", "10:00")])
+
+    [holder] = [b for b in clues.bundles if b.conversations]
+    assert holder.segment is None and (holder.start, holder.end) == (_at("08:00"), _at("10:00"))
+
+
+def test_other_notifications_attach_to_the_one_segment_of_their_time():
+    """시각이 없던 때 결제·소식은 근거로 거의 쓰이지 않았다(#173). 구간 하나에만 붙는다."""
+
+    home, work = _home_work()
     payment = _conversation("N2", "12:30", "12:30", kind=NotificationClueKind.PAYMENT)
+    news = _conversation("N3", "13:00", "18:30", kind=NotificationClueKind.NEWS)
 
-    clues = _clues(stays=[home, work], notifications=[chat, payment])
+    clues = _clues(stays=[home, work], notifications=[payment, news])
 
-    holders = [b for b in clues.bundles if b.conversations]
-    assert len(holders) == 2
-    assert [c.clue_id for c in clues.day_notifications] == ["N2"]
-    assert not any(b.conversations and b.conversations[0].clue_id == "N2" for b in clues.bundles)
+    [holder] = [b for b in clues.bundles if b.notifications]
+    assert [c.clue_id for c in holder.notifications] == ["N2", "N3"]
+    assert holder.segment.raw_ids == [work.raw_id]
+    assert clues.day_notifications == []
+
+
+def test_a_notification_outside_every_segment_or_for_another_day_stays_on_the_day_list():
+    away = _conversation("N1", "20:00", "20:00", kind=NotificationClueKind.PAYMENT)
+    later = _conversation("N2", "12:30", "12:30", kind=NotificationClueKind.RESERVATION)
+    later.schedule_today = False
+
+    clues = _clues(stays=_home_work(), notifications=[away, later])
+
+    assert not any(b.notifications for b in clues.bundles)
+    assert [c.clue_id for c in clues.day_notifications] == ["N1", "N2"]
+
+
+def test_the_bundle_id_leaves_notifications_out():
+    """묶음 id 로 따라오게 두자 무관한 온라인 결제가 체류의 근거가 됐다(#173). 직접 적은 알림만 근거다."""
+
+    home, work = _home_work()
+    request = make_request(stays=[home, work], notifications=[notification_item("pay", "토스", "결제")])
+    payment = _conversation("N2", "12:30", "12:30", kind=NotificationClueKind.PAYMENT)
+    payment.raw_ids = [request.notifications[0].raw_id]
+    clues = build_timeline_clues(build_location_skeleton(request), [], [], [payment])
+    [holder] = [b for b in clues.bundles if b.notifications]
+
+    [by_bundle, by_clue] = expand_evidence(clues, [[holder.bundle_id], ["N2"]], request)
+
+    assert payment.raw_ids[0] not in [ref.raw_id for ref in by_bundle]
+    assert payment.raw_ids[0] in [ref.raw_id for ref in by_clue]
 
 
 def test_no_location_day_still_bundles_photos_and_calendars():
@@ -219,12 +259,14 @@ def test_prompt_sections_carry_no_raw_ids_or_coordinates():
     assert "37.6" not in text and "latitude" not in text
 
 
-def test_day_notifications_carry_no_time_on_a_located_day():
-    payment = _conversation("N1", "12:30", "12:30", kind=NotificationClueKind.PAYMENT)
+def test_bundled_notifications_carry_their_time():
+    payment = _conversation("N1", "12:30", "12:31", kind=NotificationClueKind.PAYMENT)
 
-    [entry] = timeline_input_sections(_clues(stays=_home_work(), notifications=[payment]))["notifications"]
+    sections = timeline_input_sections(_clues(stays=_home_work(), notifications=[payment]))
 
-    assert "firstAt" not in entry and "lastAt" not in entry
+    assert sections["notifications"] == []
+    [entry] = [e for bundle in sections["bundles"] for e in bundle.get("notifications", [])]
+    assert entry["firstAt"] == _at("12:30").isoformat() and entry["lastAt"] == _at("12:31").isoformat()
 
 
 def test_day_notifications_carry_their_time_without_location():

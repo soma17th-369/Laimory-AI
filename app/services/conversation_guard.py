@@ -64,10 +64,25 @@ def notification_count(event: TimelineEventDraft) -> int:
     return len({ref.raw_id for ref in event.source_refs})
 
 
+def notification_only(
+    event: TimelineEventDraft, aside: frozenset[str] | set[str] = frozenset()
+) -> bool:
+    """근거가 알림뿐인 event 인가.
+
+    `aside` 는 세지 않는 근거의 rawId 다. v4 의 단독 위치 기록은 event 를 만들지 않고 보태기만 하는
+    근거라 붙어 있어도 실제 사건이 되지 않는다. Timeline 이 대화의 묶음 id 를 적으면 딸려 온다(#173).
+    """
+
+    refs = [ref for ref in event.source_refs if ref.raw_id not in aside]
+    return bool(refs) and all(ref.source_type is EventSourceType.NOTIFICATION for ref in refs)
+
+
 def conversation_events(
     draft: TimelineDraft,
     request: TimelineDraftRequest,
     conversation_ids: set[str] | None = None,
+    *,
+    aside: frozenset[str] | set[str] = frozenset(),
 ) -> list[TimelineEventDraft]:
     """대화로 만든 event 를 draft 의 순서대로 돌려준다(draft 를 바꾸지 않는다).
 
@@ -83,8 +98,7 @@ def conversation_events(
             event
             for event in draft.events
             if event.event_type not in _TRANSACTION_EVENT_TYPES
-            and event.source_refs
-            and all(ref.source_type is EventSourceType.NOTIFICATION for ref in event.source_refs)
+            and notification_only(event, aside)
             and any(ref.raw_id in conversation_ids for ref in event.source_refs)
         ]
 
@@ -131,13 +145,15 @@ def enforce_conversation_limit(
     draft: TimelineDraft,
     request: TimelineDraftRequest,
     conversation_ids: set[str] | None = None,
+    *,
+    aside: frozenset[str] | set[str] = frozenset(),
 ) -> list[TimelineEventDraft]:
     """대화 event 가 3개를 넘으면 알림이 많은 3개만 남긴다(in-place). 지운 event 를 돌려준다.
 
     두 번 적용해도 결과가 같다.
     """
 
-    conversations = conversation_events(draft, request, conversation_ids)
+    conversations = conversation_events(draft, request, conversation_ids, aside=aside)
     if len(conversations) <= MAX_CONVERSATION_EVENTS:
         return []
 
