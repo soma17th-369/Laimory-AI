@@ -43,6 +43,7 @@ from app.schemas import (
     AgentEventResult,
     EventSourceType,
     EventType,
+    PRE_CLUE_EVENT_TYPES,
     HealthMetric,
     RepairToolCall,
     RepairToolResult,
@@ -85,6 +86,9 @@ from app.services.source_lookup import raw_id_of
 from app.services.validator import parse_datetime, resolve_timezone
 
 logger = get_logger(__name__)
+
+#: v1~v3 세트의 도구 인자가 쓸 수 없는 eventType 문자열. 모르는 문자열은 `draft_edit` 가 거절한다.
+_NOT_IN_PRE_CLUE_SETS = frozenset(member.value for member in set(EventType) - PRE_CLUE_EVENT_TYPES)
 
 
 class RepairToolError(AppError):
@@ -241,6 +245,17 @@ def _lookup_source(ctx: RepairContext, args: dict) -> str:
 # --- 편집 --------------------------------------------------------------------
 
 
+def _require_type_of_the_set(ctx: RepairContext, event_type: object) -> None:
+    """v1~v3 세트에 없는 타입을 거절한다(#172).
+
+    도구 인자는 자유 dict 이고 draft 는 공용 enum 이라, 거절하지 않으면 새 값이 App Server 까지
+    간다. `STAY` 는 v3 의 sourceType 과 같은 글자라 모델이 쓸 수 있는 값이다.
+    """
+
+    if ctx.clues is None and isinstance(event_type, str) and event_type in _NOT_IN_PRE_CLUE_SETS:
+        raise RepairToolError(f"이 프롬프트 세트에 없는 eventType 입니다: {event_type}")
+
+
 def _update_event(ctx: RepairContext, args: dict) -> str:
     client_event_id = args.get("clientEventId")
     if not client_event_id:
@@ -249,6 +264,7 @@ def _update_event(ctx: RepairContext, args: dict) -> str:
     fields = args.get("fields")
     if not isinstance(fields, dict):
         raise RepairToolError("fields 인자(바꿀 필드만 담은 객체)가 필요합니다.")
+    _require_type_of_the_set(ctx, fields.get("eventType"))
     named_photos: set[str] = set()
     if "evidence" in fields:
         identifiers = fields["evidence"]
@@ -434,6 +450,9 @@ def _split_event(ctx: RepairContext, args: dict) -> str:
     parts = args.get("parts")
     if not isinstance(parts, list):
         raise RepairToolError("parts 인자(조각을 둘 이상 담은 목록)가 필요합니다.")
+    for part in parts:
+        if isinstance(part, dict):
+            _require_type_of_the_set(ctx, part.get("eventType"))
 
     if ctx.clues is not None:
         # 근거 없는 식사 조각을 만들지 않는다(사용자 결정 2026-10-31). 나눠 본 결과로 확인하고, 맞으면

@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from app.agents.repair.tools import RepairContext, tool_catalog_text
-from app.schemas import EventType, TimelineDraft
+from app.schemas import PRE_CLUE_EVENT_TYPES, TimelineDraft
 from app.schemas.user_memory import NARRATIVE_FIELDS
 from app.services.event_count_guard import MAX_EVENT_COUNT
 from tests.agents.test_timeline_v3_prompt import format_table
@@ -205,7 +205,7 @@ def test_repair_v3_uses_only_known_event_types() -> None:
 
     listed = _between(_repair_v3(), "eventType은 13종 중 하나입니다: ", ".")
 
-    assert set(re.findall(r"`(\w+)`", listed)) == {member.value for member in EventType}
+    assert set(re.findall(r"`(\w+)`", listed)) == {member.value for member in PRE_CLUE_EVENT_TYPES}
 
 
 # --- 1단계. 코드가 찾은 것 --------------------------------------------------------

@@ -233,7 +233,13 @@ app/
 │   │                          #   (공지 2026-10-29, 명세 2026-10-30). 후보 좌표가 쌍·범위를 어기면 batch 전체가 400 이라
 │   │                          #   계약이 NaN·무한대·한쪽만·5개 초과를 받지 않는다
 │   ├── location.py/calendar.py/health.py/notification.py/photo.py  # 분리된 도메인 항목
-│   ├── event_candidate.py     # AI 이벤트 후보 모델 (v1~v3. v4 는 쓰지 않는다)
+│   ├── event_candidate.py     # AI 이벤트 후보 모델 (v1~v3. v4 는 쓰지 않는다). `EventType` 은 세트 공용
+│   │                          #   enum 이고 17종이다(#172). 다만 enum 의 JSON schema 는 언제나 13종
+│   │                          #   (`PRE_CLUE_EVENT_TYPES`)을 보이고 v4 출력 모델(`TimelineClueEvent`)만 17종을
+│   │                          #   연다 — v3 의 provider schema 가 한 글자도 달라지면 안 되고 App Server 는
+│   │                          #   13종 밖의 값을 받으면 task 를 FAILED 로 만든다. LLM 이 적어 낸 새 값은 v1~v3
+│   │                          #   의 입구 세 곳(`parse_timeline_draft`·`AiEventCandidate`·Repair 도구)이 모르는
+│   │                          #   문자열과 똑같이 거절한다. `EventType` docstring 은 schema 로 나가니 고치지 않는다
 │   ├── clues.py               # v4 데이터별 단서 계약 (#169). 사진·알림 LLM 출력(`*Set`)은 입력의
 │   │                          #   짧은 id 로 항목을 가리킨다 — UUID 를 옮겨 적게 하지 않는다.
 │   │                          #   `PhotoClue`·`NotificationClue` 는 코드가 그 출력으로 만든 단서다
@@ -344,8 +350,8 @@ app/
     │                          #   입력에 싣지 않는다 — 같은 곳에 두 번 간 날 LLM 이 그 이름으로 다른 시간의
     │                          #   구간에 사진을 이었다. 장소 후보는 묶음의 `places` 에 남는다
     ├── base_events.py         # v4 기본 event (#167·#169). 뼈대 구간마다 `E1`… 을 틀 문장과 함께
-    │                          #   만든다(체류 `{place}에서 시간을 보냈다.`, 이동은 출발·도착 지명으로
-    │                          #   `…에서 …으로 이동했다.`). Timeline 은 이 틀을 따라 근거를 더하고
+    │                          #   만든다(체류는 eventType `STAY` 와 `{place}에서 시간을 보냈다.`, 이동은 출발·도착
+    │                          #   지명으로 `…에서 …으로 이동했다.`). Timeline 은 이 틀을 따라 근거를 더하고
     │                          #   내용을 채우며, 그 안의 다른 사건은 근거가 있으면 꺼낸다. 합치라는 말은
     │                          #   프롬프트에 없다(사용자 결정 2026-10-30 — 합치기를 허용했을 때 장소 이름
     │                          #   후보만 보고 다른 장소를 묶을 수 있었다). event 마다 `from` 으로
@@ -358,7 +364,8 @@ app/
     │                          #   시간, `{place}에서 {일정} 일정이 있었다.`)가 되고 입력에 `calendar` 를 싣는다. 틀의 eventType 은 입력에 남긴다 — 캘린더 일정은 `CALENDAR_EVENT` 로 저장한다(사용자 결정 2026-10-31, 수면 일정만 `SLEEP`). 틀에서 빼자 Timeline 이 음식 사진을 회의에 흡수해 식사가 사라졌다(회의 날 식사 6회 중 1~6회)
     ├── skeleton_guard.py      # v4 기본 event 구조 지키기 (#167). 사용자가 정한 규칙만 검사하고 어긴
     │                          #   변경 하나만 되돌린다. 일정 근거 없는 `CALENDAR_EVENT` 는 지우거나(알림만)
-    │                          #   `UNKNOWN` 으로, 위치 근거도 일정도 없이 체류·밤을 말하는 event 는 지운다.
+    │                          #   `STAY`(근거가 위치뿐)·`UNKNOWN`(사진·알림이 함께 있음)으로 바꿔 글을 Repair 에
+    │                          #   맡기고, 위치 근거도 일정도 없이 체류·밤을 말하는 event 는 지운다.
     │                          #   일정 event 는 이동 분리가 시간을 자르지 않는다. 그 밖에:
     │                          #   변경 하나만 되돌린다: 이동 기록도 교통 결제·예약도 없는 MOVEMENT 삭제,
     │                          #   이동 구간 기록을 다른 event 에서 빼고 걸친 끝을 자름, **주소가 다른 체류
@@ -387,7 +394,7 @@ app/
     │                          #   **시간이 다 정해진 뒤 event 와 근거를 맞춘다**(`settle_event_evidence`, 사용자
     │                          #   결정 2026-10-31): 체류·이동 근거는 event 시간 앞뒤 20분 안이어야 하고(기본 event 의
     │                          #   기록을 모두 받아 17:24 식사에 12:08 체류가 실렸다), 알림은 꺼낸(가장 짧은) event
-    │                          #   하나에만 두고(받은 시각이 event 시간 ±20분 밖인 대화 아닌 알림은 근거에서 뺀다), 근거가 위치뿐인 `UNKNOWN`·`SLEEP`·`SOCIAL`·`PHOTO_MOMENT` 는 틀 문장을 제안으로 넘기고(Repair 가 7시간
+    │                          #   하나에만 두고(받은 시각이 event 시간 ±20분 밖인 대화 아닌 알림은 근거에서 뺀다), 근거가 위치뿐인 `UNKNOWN`·`SLEEP`·`SOCIAL`·`PHOTO_MOMENT`·`SHOPPING`·`CULTURE`·`ERRAND` 는 `STAY` 틀 문장을 제안으로 넘기고(쇼핑몰에 머문 것만으로는 쇼핑이 아니다, #172. 오늘 일이 아닌 알림(`scheduleToday` 거짓)은 근거로 치지 않는다 — 다음 주 예매 알림이 온 영화관 체류가 관람이 됐다. Repair 가 7시간
     │                          #   체류를 안쪽 점심 문장으로 덮었다), 같은 기본 event 의 다른 event 가 시간을 모두 덮으면
     │                          #   그런 event 는 그 event 의 근거로 합친다.
     │                          #   **알림은 틀의 근거다(#173, 사용자 결정 2026-10-31).** 틀(알림뿐이 아닌 event)이
@@ -771,6 +778,10 @@ app/
 #     말은 하지 않는다(사용자 결정 2026-10-30). event 마다 온
 #     기본 event(`from`, event 시간과 겹치지 않는 것은 파싱에서 버린다), 더한 근거(묶음·단서 id), 병합 이유(`mergeReason`), 장소 후보 순서
 #     (`placeCandidates`)를 쓴다. 장소는 쓰지 않는다. 출력 계약은 v3 와 따로 둔 `TimelineClueOutput` 이다.
+#     **eventType 은 17종이다(#172).** 활동 근거 없는 체류는 `UNKNOWN` 이 아니라 `STAY` 이고, 결제·예약
+#     알림이나 사진이 말하는 쇼핑·관람·용무는 `SHOPPING`·`CULTURE`·`ERRAND` 다. 근거가 위치뿐이면 이
+#     셋을 쓰지 않는다(#150). `UNKNOWN` 은 근거는 있지만 어느 종류에도 맞지 않는 일이고, 일정이 근거인
+#     event 는 진료·관람 일정이어도 `CALENDAR_EVENT` 다. 관광지 체류·사진은 `STAY`·`PHOTO_MOMENT` 다.
 #     파싱은 시간·장소가 맞지 않는 사진·일정 근거를 빼고 warning 을 남긴다(`misplaced_clues`). `from` 을
 #     비운 사진 event 는 그 사진이 붙은 위치 구간을 `from` 으로 잇는다 — 단서를 위치에 잇는 것은 코드다.
 #   - **코드는 제목·문장을 쓰지 않는다**(사용자 결정 2026-10-31 — 코드가 고친 문장에 일정·사진의 내용이 묻혔다).

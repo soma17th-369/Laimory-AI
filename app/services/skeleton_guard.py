@@ -61,7 +61,7 @@ _MIN_OVERLAP = timedelta(minutes=30)
 
 
 #: 일정 기본 event 의 주인이 될 수 없는 종류. 사진·`보낸 시간` 은 일정이 말하는 일이 아니다.
-_NOT_CALENDAR_OWNER = frozenset({EventType.UNKNOWN, EventType.PHOTO_MOMENT})
+_NOT_CALENDAR_OWNER = frozenset({EventType.STAY, EventType.UNKNOWN, EventType.PHOTO_MOMENT})
 
 #: 틀이 하나도 없는 날 그 자체로 event 가 되는 알림. 사용자가 했거나 끝낸 일을 말한다.
 _NOTIFICATION_EVENT_KINDS = frozenset(
@@ -73,9 +73,19 @@ _TITLE_MAX = 30
 #: `merge_reason` 표지. 코드가 만들었거나 구조를 바꿔 Repair 가 글을 써야 하는 event 다.
 NEEDS_WRITING = "코드가 구조를 정했고 제목·문장은 Repair 가 근거로 쓴다."
 
-#: 근거가 위치뿐이면 어디에 있었는지까지만 말하는 종류.
+#: 근거가 위치뿐이면 어디에 있었는지까지만 말하는 종류. `WORK`·`CLASS`·`REST` 는 User Memory 가
+#: 그곳을 설명할 수 있어 넣지 않는다. 쇼핑·관람·용무는 User Memory 로 정하지 않는다(#172).
 _PLACE_ONLY_TYPES = frozenset(
-    {EventType.UNKNOWN, EventType.SLEEP, EventType.SOCIAL, EventType.PHOTO_MOMENT}
+    {
+        EventType.STAY,
+        EventType.UNKNOWN,
+        EventType.SLEEP,
+        EventType.SOCIAL,
+        EventType.PHOTO_MOMENT,
+        EventType.SHOPPING,
+        EventType.CULTURE,
+        EventType.ERRAND,
+    }
 )
 
 #: 활동 근거가 없는 체류의 문장. `{place}에서 ○○를 먹으며 시간을 보냈다` 는 활동을 말하므로 맞지 않는다.
@@ -374,16 +384,24 @@ def restore_place_only_text(
 
     Repair 가 7시간 체류를 안쪽 점심과 같은 문장으로 고쳐 썼고, 일정 없는 저녁 체류가 `잠` 이 됐고, 사진을
     식사에 넘겨준 event 가 체류만 남긴 채 `OO와 함께했다` 로 남았다. 위치는 어디에 있었는지만 말한다.
+
+    오늘 일이 아닌 알림(`scheduleToday` 가 거짓)도 그 체류에서 한 일을 말하지 않는다. 다음 주 예매 알림이 온
+    영화관 체류를 Timeline 이 관람으로 썼고, 그 알림이 근거로 붙어 위치뿐이 아닌 것으로 보여 빠져나갔다(#172).
     """
 
-    location_ids = {raw_id_of(item) for item in [*request.stays, *request.movements]}
+    says_only_where = {raw_id_of(item) for item in [*request.stays, *request.movements]} | {
+        raw_id
+        for clue in clues.notifications
+        if clue.schedule_today is False
+        for raw_id in clue.raw_ids
+    }
     for event in draft.events:
         if event.event_type not in _PLACE_ONLY_TYPES or any(
-            ref.raw_id not in location_ids for ref in event.source_refs
+            ref.raw_id not in says_only_where for ref in event.source_refs
         ):
             continue
         if (
-            event.event_type is not EventType.UNKNOWN
+            event.event_type is not EventType.STAY
             or "보낸" not in event.title
             or not _PLACE_ONLY_SENTENCE.fullmatch(event.description)
         ):
@@ -806,22 +824,27 @@ def remove_calendar_events_without_calendar(
     일정 event 는 사용자가 캘린더에 적은 일정이 있을 때만이다(사용자 결정). 실제 Timeline 은
     Gmail·문자로 온 예비소집 안내를 `11:25~23:59 ICPC 예비소집 안내` 일정 event 로 만들었다.
     알림의 받은 시각은 일정 시간이 아니라 알림만 근거인 일정 event 는 시간이 지어낸 것이라 지운다.
-    다른 근거(체류·사진)가 있으면 그 근거의 event 로 두고 타입만 `UNKNOWN` 으로 바꾼다.
+    다른 근거가 있으면 그 근거의 event 로 두고 타입만 바꾼다 — 근거가 위치뿐이면 `STAY`,
+    사진·알림이 함께 있으면 `UNKNOWN` 이다.
     """
 
     notification_ids = {raw_id_of(item) for item in request.notifications}
+    location_ids = {raw_id_of(item) for item in [*request.stays, *request.movements]}
     kept: list[TimelineEventDraft] = []
     for event in draft.events:
         if event.event_type is EventType.CALENDAR_EVENT and not _has_calendar(event):
             if all(ref.raw_id in notification_ids for ref in event.source_refs):
                 continue
-            event.event_type = EventType.UNKNOWN
+            only_location = all(ref.raw_id in location_ids for ref in event.source_refs)
+            event.event_type = EventType.STAY if only_location else EventType.UNKNOWN
+            # `…일정이 있었다` 문장은 일정이 없으면 틀린 말이다. 종류와 글은 Repair 가 근거로 쓴다.
+            event.merge_reason = NEEDS_WRITING
         kept.append(event)
     draft.events = kept
 
 
 #: 체류를 말하는 타입. 식사의 `먹으며 시간을 보냈다` 처럼 다른 타입도 같은 말을 쓰므로 타입으로 가른다.
-_STAY_TYPES = frozenset({EventType.UNKNOWN, EventType.REST, EventType.SLEEP})
+_STAY_TYPES = frozenset({EventType.STAY, EventType.UNKNOWN, EventType.REST, EventType.SLEEP})
 
 #: 체류를 말하는 문장 뼈대(「문장 형식」 표). 위치 근거 없이 이렇게 쓰면 있지도 않은 체류다.
 _STAY_SENTENCE = re.compile(r"(시간을 보냈다|밤을 보냈다|잠을 잤다)")

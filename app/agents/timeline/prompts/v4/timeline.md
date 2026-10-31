@@ -151,17 +151,20 @@ event를 만들기 전에, 이날의 중심이 무엇이었는지 한 문장으�
 
 ### eventType을 정하는 방법
 
-eventType은 13종 중 하나입니다: `WAKE_UP`, `SLEEP`, `MOVEMENT`, `CALENDAR_EVENT`, `MEAL`, `PHOTO_MOMENT`, `MEETING`, `CLASS`, `WORK`, `EXERCISE`, `SOCIAL`, `REST`, `UNKNOWN`. 다른 이름을 만들지 않습니다.
+eventType은 17종 중 하나입니다: `WAKE_UP`, `SLEEP`, `MOVEMENT`, `CALENDAR_EVENT`, `MEAL`, `PHOTO_MOMENT`, `MEETING`, `CLASS`, `WORK`, `EXERCISE`, `SOCIAL`, `REST`, `UNKNOWN`, `STAY`, `SHOPPING`, `CULTURE`, `ERRAND`. 다른 이름을 만들지 않습니다.
 
 **실제 활동의 주목적으로 분류합니다.** 쇼핑몰에서 먹은 점심은 `MEAL`, 회의 뒤 이어진 작업은 `WORK`입니다. **활동을 말해 주는 근거가 위치뿐이면 활동을 쓰지 않습니다.** 장소 이름만으로 그곳에서 한 일을 짐작하지 않습니다 — 대학교에 있었다고 수업이, 식당 근처에 있었다고 식사가 되지 않습니다. 체류 중에 알림이 왔다는 것도 그 체류의 활동이 아닙니다. 결제·예약 알림이 그 장소의 가맹점을 가리킬 때만 체류의 활동이 됩니다.
 
 #### 헷갈리는 경계
 
-- **`REST`·`WORK`·`UNKNOWN`** — 한 곳에 머문 시간
+- **`REST`·`WORK`·`STAY`** — 한 곳에 머문 시간
   - `WORK`는 업무 일정, 업무 대화·알림, User Memory가 회사로 확인하는 곳의 체류가 일을 가리킬 때입니다.
   - `REST`는 쉬었다는 근거(쉬는 장면 사진, User Memory의 휴식 습관)가 있을 때만 씁니다.
-  - 체류만 있고 무엇을 했는지 말해 주는 근거가 없으면 `UNKNOWN`입니다. 집에서 보낸 시간도 쉬었다는 근거가 없으면 `UNKNOWN`입니다.
-  - 캘린더 없이 다른 종류에 맞지 않는 활동(쇼핑·진료·미용실·은행 같은 방문·용무)도 `UNKNOWN`으로 두고, 무엇을 했는지는 `title`·`description`이 말합니다.
+  - 체류만 있고 무엇을 했는지 말해 주는 근거가 없으면 `STAY`입니다. 집에서 보낸 시간도 쉬었다는 근거가 없으면 `STAY`입니다.
+- **`SHOPPING`·`CULTURE`·`ERRAND`·`UNKNOWN`** — 어딘가에 들러 한 일
+  - 결제·예약 알림이나 사진이 무엇을 했는지 말할 때만 씁니다. 쇼핑몰·영화관·병원에 머물렀다는 것만으로는 `STAY`입니다.
+  - 일정이 근거이면 진료·관람 일정도 `CALENDAR_EVENT`입니다(아래).
+  - 근거는 있지만 어느 종류에도 맞지 않는 결제·소식은 `UNKNOWN`으로 두고, 무엇이었는지는 `title`·`description`이 말합니다.
 - **`SOCIAL`·`MEAL`** — 사람과 함께한 시간
   - 누구와 무엇을 하며 보냈는지가 주목적이면 `SOCIAL`, 무엇을 먹었는지가 주목적이면 `MEAL`입니다.
   - 만남·회의·일정 중이어도 사진의 `activity`가 먹었다고 말하거나 음식 결제가 있으면 `MEAL`로 따로 꺼냅니다.
@@ -201,13 +204,17 @@ eventType은 13종 중 하나입니다: `WAKE_UP`, `SLEEP`, `MOVEMENT`, `CALENDA
 | `MEAL` | 무엇을 누구와 먹었는지 | 음식 사진이나 음식점 결제가 있어야 함(정본), 식당 체류·식사 약속·대화 | 20~60분, 식당 체류를 채우면 3시간 이내 | 표현에만 | 사진에 보인 음식과 끼니까지 |
 | `PHOTO_MOMENT` | 무엇을 봤는지 | 같은 장면의 연속 사진(정본), 촬영 시각의 체류 | 첫 촬영부터 마지막 촬영까지(검토 기준 1시간) | `memoryStyle`로 남기는 방식 | 본 장면까지 |
 | `MEETING` | 누구와 무슨 주제로 | 회의 장면 사진, 대화, 같은 시간 체류 | 일정 > 체류(검토 기준 4시간) | `currentFocus`·`relationships` | 회의를 했다는 것까지 |
-| `CLASS` | 무슨 수업을 들었는지 | 수업 일정(정본), 학교 체류 | 일정 > 체류(검토 기준 8시간) | `lifeContext`·`routines`로 전공·시간표 | 수업을 들었다는 것까지. 일정도 User Memory도 없이 학교 체류만 있으면 `UNKNOWN` |
-| `WORK` | 무슨 일을 했는지 | 업무 일정·업무 대화, 회사 체류 | 일정 > 체류(검토 기준 12시간) | `currentFocus`·`lifeContext`로 업무 내용 | 일했다는 것까지. 업무 근거도 User Memory도 없으면 `UNKNOWN` |
+| `CLASS` | 무슨 수업을 들었는지 | 수업 일정(정본), 학교 체류 | 일정 > 체류(검토 기준 8시간) | `lifeContext`·`routines`로 전공·시간표 | 수업을 들었다는 것까지. 일정도 User Memory도 없이 학교 체류만 있으면 `STAY` |
+| `WORK` | 무슨 일을 했는지 | 업무 일정·업무 대화, 회사 체류 | 일정 > 체류(검토 기준 12시간) | `currentFocus`·`lifeContext`로 업무 내용 | 일했다는 것까지. 업무 근거도 User Memory도 없으면 `STAY` |
 | `EXERCISE` | 어떤 운동을 했는지 | 산책 구간, 운동 일정·사진(정본), 운동 시설 결제·예약 | 일정 > 산책 구간 > 체류(검토 기준 4시간) | `routines`의 운동 습관 | 운동 종류 없이 |
 | `SOCIAL` | 누구와 무엇을 하며 보냈는지 | 약속 일정(정본), 함께한 사진, 약속 대화 | 일정 > 만난 곳의 체류 > 대화 시각(검토 기준 8시간) | 관계 호칭은 `relationships`가 그렇게 부를 때만 | 만났다는 것까지 |
-| `REST` | 어떻게 쉬었는지 | 쉬는 장면 사진, User Memory의 휴식 습관 | 체류 구간(검토 기준 12시간) | `routines`·`preferences`의 휴식 방식 | 쉬었다는 근거가 없으면 `UNKNOWN` |
+| `REST` | 어떻게 쉬었는지 | 쉬는 장면 사진, User Memory의 휴식 습관 | 체류 구간(검토 기준 12시간) | `routines`·`preferences`의 휴식 방식 | 쉬었다는 근거가 없으면 `STAY` |
 | `SLEEP` | 잤다는 것 | 수면 일정(이것이 있을 때만 만든다), 그 시간의 체류(잔 곳) | 일정 시간 | 표현에만 | 잤다는 것까지. 수면 일정 없이 밤 체류만으로 만들지 않는다 |
-| `UNKNOWN` | 다른 종류에 맞지 않는 활동, 또는 활동 불명 | 그 장소 체류(정본), 결제·예약 알림, 사진 | 체류 구간(검토 기준 12시간) | 쓰지 않음 | 머문 곳까지. 활동 근거가 없는 긴 체류는 지어내지도 부풀리지도 않고 하나로 |
+| `STAY` | 어디에 있었는지 | 체류(정본) | 체류 구간(검토 기준 12시간) | 쓰지 않음 | 머문 곳까지. 활동 근거가 없는 긴 체류는 지어내지도 부풀리지도 않고 하나로 |
+| `SHOPPING` | 무엇을 사거나 골랐는지 | 쇼핑·주문·결제 알림, 물건을 고르는 사진(정본), 그 장소 체류. 마트·편의점 결제도 음식 근거가 없으면 여기다 | 체류 구간(검토 기준 4시간) | 쓰지 않음 | 샀다는 것까지. 배송 알림만으로는 만들지 않는다(받은 소식이다) |
+| `CULTURE` | 영화·공연·전시·경기 중 무엇을 봤는지 | 관람 장면 사진(정본), `scheduleToday`가 참인 예매 알림과 그곳의 체류 | 체류 구간(검토 기준 4시간) | 쓰지 않음 | 봤다는 것까지. 예매 알림만으로는 만들지 않는다(예매한 것이지 본 것이 아니다) |
+| `ERRAND` | 병원·약국·은행·관공서·미용실에서 어떤 볼일을 봤는지 | `scheduleToday`가 참인 예약·접수 알림, 그곳의 결제 알림(정본), 그 장소 체류 | 체류 구간(검토 기준 4시간) | 쓰지 않음 | 볼일을 봤다는 것까지 |
+| `UNKNOWN` | 근거는 있지만 어느 종류에도 맞지 않는 일 | 결제·예약 알림, 소식, 사진 | 근거의 시간(검토 기준 12시간) | 쓰지 않음 | 근거가 말하는 것까지 |
 
 `WAKE_UP`은 기상 기록이 있을 때만 쓰는 타입이고, 지금 입력에는 기상 기록이 없어 만들지 않습니다.
 
@@ -345,7 +352,7 @@ event 하나에 걸린 불확실성은 warning이 아니라 그 event의 `uncert
 {
   "events": [
     {
-      "eventType": "WAKE_UP|SLEEP|MOVEMENT|CALENDAR_EVENT|MEAL|PHOTO_MOMENT|MEETING|CLASS|WORK|EXERCISE|SOCIAL|REST|UNKNOWN",
+      "eventType": "WAKE_UP|SLEEP|MOVEMENT|CALENDAR_EVENT|MEAL|PHOTO_MOMENT|MEETING|CLASS|WORK|EXERCISE|SOCIAL|REST|UNKNOWN|STAY|SHOPPING|CULTURE|ERRAND",
       "title": "마포구 도화동에서 국물 요리와 만두",
       "description": "{place}에서 국물 요리와 만두를 먹었다.",
       "from": ["E3"],

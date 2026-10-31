@@ -429,3 +429,31 @@ def test_timeline_v4_keeps_a_calendar_a_calendar():
     assert "캘린더 일정은 `CALENDAR_EVENT`로 남깁니다" in text
     assert "회의는 `MEETING`" not in text
     assert "수면 일정은 `SLEEP`입니다" in text
+
+
+# --- eventType (#172) --------------------------------------------------------------
+
+
+def test_timeline_and_repair_v4_list_every_type():
+    every = {member.value for member in EventType}
+
+    for text in (_timeline(), _repair()):
+        listed = _between(text, f"eventType은 {len(every)}종 중 하나입니다: ", ".")
+        assert set(re.findall(r"`(\w+)`", listed)) == every
+
+    assert f'"eventType": "{"|".join(member.value for member in EventType)}"' in _timeline()
+
+
+@pytest.mark.parametrize("event_type", ["STAY", "SHOPPING", "CULTURE", "ERRAND", "UNKNOWN"])
+def test_question_v4_has_an_example_for_each_new_boundary(event_type: str):
+    question = _read("agents/question/prompts/v4/question.md")
+
+    assert f"| `{event_type}` |" in question
+    assert f"`{event_type}`(" in question
+
+
+def test_v4_prompts_no_longer_send_a_stay_to_unknown():
+    """체류는 `STAY` 다. `UNKNOWN` 을 체류의 뜻으로 적은 줄이 남으면 모델이 둘을 섞어 쓴다."""
+
+    for text in (_timeline(), _repair()):
+        assert not [line for line in text.splitlines() if re.search(r"체류[^|.]*`UNKNOWN`", line)]
