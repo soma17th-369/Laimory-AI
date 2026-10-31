@@ -115,7 +115,7 @@ def test_stay_with_unknown_activity_keeps_the_slot_and_offers_the_names():
     assert event.place == "OO식당"
 
 
-def test_stay_without_any_name_falls_back_to_the_address():
+def test_stay_without_any_name_falls_back_to_the_area():
     bare = stay_item("bare", start="2026-06-20T12:00:00", end="2026-06-20T13:00:00", places=[], address="전남 여수시 덕충동 2079")
     request = make_request(stays=[bare])
     event = _event([_ref(bare, EventSourceType.STAY)], place_candidates=[])
@@ -124,7 +124,7 @@ def test_stay_without_any_name_falls_back_to_the_address():
     fill_place_slots(_draft(event), request)
 
     assert event.place_candidates == []
-    assert event.description == "전남 여수시 덕충동 2079에서 시간을 보냈다.", "이름이 없으면 칸을 둘 수 없다(App Server 400)."
+    assert event.description == "여수시 덕충동에서 시간을 보냈다.", "이름이 없으면 칸을 둘 수 없다(App Server 400)."
 
 
 def test_same_place_shares_its_names_even_when_the_event_cites_a_record_without_names():
@@ -467,4 +467,4 @@ def test_split_events_take_names_only_from_the_records_in_their_own_time():
 
     assert afternoon.place_candidates == []
     assert afternoon.address == "서울 마포구 도화동 17-14"
-    assert afternoon.description == "서울 마포구 도화동 17-14에서 시간을 보냈다."
+    assert afternoon.description == "마포구 도화동에서 시간을 보냈다."

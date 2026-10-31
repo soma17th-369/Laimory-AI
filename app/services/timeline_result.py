@@ -22,29 +22,42 @@
 - ``latitude``·``longitude`` 는 event 의 대표 지점 좌표다(#175). 최종 ``sourceRefs`` 로
   입력을 찾아 코드가 채운다(:func:`~app.services.place_resolver.representative_coordinates`).
   그래서 입력을 함께 받는다. LLM 이 좌표를 쓰지 않고, 이 값이 프롬프트로 들어갈 경로도 없다.
-- ``placeCandidates`` 는 draft 의 ``place_candidates`` 다(#171, v4 세트). 확정 pass 가 근거의
-  후보 풀 밖의 이름을 버리고, 장소를 다른 근거로 확정했으면 비워 두었다. 비어 있으면 키를
+- ``placeCandidates`` 는 draft 의 ``place_candidates`` 를 입력과 대조해 옮긴다(#171, v4 세트,
+  :func:`~app.services.timeline_validator.checked_place_candidates`). 그 event 의 입력에 없는 이름은
+  빼고, 좌표는 입력 ``places`` 의 그 원소 값이다. ``place`` 는 언제나 1번 후보다. 대조에서 후보가 모두
+  빠지면 칸을 지명으로 바꾼다 — 칸이 남으면 App Server 가 하루치를 400 으로 거절한다. 비어 있으면 키를
   싣지 않는다 — v3 세트는 언제나 비어 있어 body 가 그대로다.
 - ``subtitle`` 의 ``{place}`` 칸은 그대로 보낸다. App Server 와 앱이 ``place`` 나 사용자가 고른
   후보로 채운다.
 """
 
+from collections import Counter
 from datetime import datetime, tzinfo
 
+from app.core.logging import get_logger, log_fields
 from app.schemas.timeline import TimelineDraft
 from app.schemas.timeline_request import TimelineDraftRequest
 from app.schemas.timeline_result import (
+    PLACE_SLOT,
+    TEXT_MAX,
     PlaceCandidate,
     TimelineResultEvent,
     TimelineResultRequest,
 )
 from app.services.place_resolver import representative_coordinates
+from app.services.place_slots import CandidateSources, without_place_slot
+from app.services.timeline_validator import (
+    PlaceCandidateViolation,
+    checked_place_candidates,
+)
 from app.services.validator import resolve_timezone
 
-_TITLE_MAX = 255
-_SUBTITLE_MAX = 255
-_QUESTION_MAX = 255
-_PLACE_MAX = 255
+logger = get_logger(__name__)
+
+_TITLE_MAX = TEXT_MAX
+_SUBTITLE_MAX = TEXT_MAX
+_QUESTION_MAX = TEXT_MAX
+_PLACE_MAX = TEXT_MAX
 
 
 def build_result_request(
@@ -53,24 +66,44 @@ def build_result_request(
     """확정 draft 를 결과 저장 요청 body 로 만든다. ``request`` 는 좌표를 찾을 입력이다."""
 
     tz = resolve_timezone(draft.timezone)
+    sources = CandidateSources.build(request)
+    dropped: Counter[PlaceCandidateViolation] = Counter()
     events = []
     for event in draft.events:
         coordinates = representative_coordinates(event, request, tz)
+        description = event.description
+        place = _place(event.place)
+        candidates: list[PlaceCandidate] = []
+        if event.place_candidates:
+            candidates, violations = checked_place_candidates(
+                event.place_candidates, sources.of(event)
+            )
+            dropped.update(violations)
+            # 1번 후보가 place 다. 후보가 모두 빠졌으면 그 이름은 근거가 없어 쓸 수 없다.
+            place = candidates[0].name if candidates else None
+        # 칸만 남으면 App Server 가 하루치를 400 으로 거절한다.
+        if PLACE_SLOT in (description or "") and not (place or candidates):
+            description = without_place_slot(description, sources.area_of(event.address))
         events.append(
             TimelineResultEvent(
                 event_type=event.event_type,
                 title=event.title[:_TITLE_MAX],
-                subtitle=_subtitle(event.description),
-                place=_place(event.place),
+                subtitle=_subtitle(description),
+                place=place,
                 address=_place(event.address),
                 latitude=coordinates.latitude if coordinates else None,
                 longitude=coordinates.longitude if coordinates else None,
-                place_candidates=_place_candidates(event.place_candidates),
+                place_candidates=candidates or None,
                 start_at=_localized(event.start_time, tz),
                 end_at=_localized(event.end_time, tz),
                 source_raw_ids=_unique_raw_ids(event),
                 question=_question(event.question),
             )
+        )
+    if dropped:
+        logger.warning(
+            "입력과 맞지 않는 장소 후보를 뺐습니다.",
+            extra=log_fields(placeCandidatesDropped={str(k): v for k, v in dropped.items()}),
         )
     return TimelineResultRequest(events=events)
 
@@ -85,13 +118,6 @@ def _place(value: str | None) -> str | None:
 
     text = (value or "").strip()
     return text[:_PLACE_MAX] if text else None
-
-
-def _place_candidates(names: list[str]) -> list[PlaceCandidate] | None:
-    """후보 이름을 계약 모양으로 옮긴다. 빈 이름은 버리고 255자로 자른다. 없으면 None 이다."""
-
-    kept = [PlaceCandidate(name=text) for name in names if (text := _place(name))]
-    return kept or None
 
 
 def _question(question: str | None) -> str | None:

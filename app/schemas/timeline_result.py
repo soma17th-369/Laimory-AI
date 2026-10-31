@@ -28,14 +28,34 @@ from app.schemas.event_candidate import EventType
 PLACE_SLOT = "{place}"
 
 
+#: event 하나에 내보내는 후보의 최대 개수(사용자 결정 2026-10-30). App Server 공지의 권장은 2~4개다.
+MAX_PLACE_CANDIDATES = 5
+
+#: App Server 저장 컬럼 한도. 제목·문장·장소·주소·질문·후보 이름이 같다.
+TEXT_MAX = 255
+
+
 def _absent(value: object) -> bool:
     return value is None
 
 
 class PlaceCandidate(CamelModel):
-    """장소가 애매할 때 사용자가 고를 후보 장소 하나(App Server 공지 2026-10-29)."""
+    """사용자가 고를 후보 장소 하나(App Server 공지 2026-10-29, 좌표는 명세 2026-10-30).
 
-    name: str = Field(min_length=1)
+    좌표는 입력 `places` 의 그 원소 좌표를 그대로 싣는다. 입력 `places` 밖에서 만든 후보(일정 장소명)는
+    좌표가 없어 키를 싣지 않는다. 둘 다 있거나 둘 다 없고, App Server 는 한쪽만 있거나 범위 밖이면
+    결과 batch 전체를 400 으로 거절한다.
+    """
+
+    name: str = Field(min_length=1, max_length=TEXT_MAX)
+    latitude: Latitude | None = Field(default=None, exclude_if=_absent)
+    longitude: Longitude | None = Field(default=None, exclude_if=_absent)
+
+    @model_validator(mode="after")
+    def _validate_pair(self) -> "PlaceCandidate":
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("candidate latitude and longitude must be sent together")
+        return self
 
 
 class TimelineResultEvent(CamelModel):
@@ -56,9 +76,10 @@ class TimelineResultEvent(CamelModel):
     ``place_resolver`` 가 저장 전에 지운다.
 
     ``latitude``·``longitude`` 는 event 의 **대표 지점** 좌표다(#175). 사용자가 실제로 있던
-    위치이고, 이동 event 는 도착지다. 후보마다 좌표를 두지 않는다 — 후보는 한 지점 주변의
-    이름 목록이라, 지점 좌표를 후보 좌표처럼 보이게 하면 안 된다. 둘 다 있거나 둘 다 없다.
-    App Server 는 한쪽만 온 결과를 통째로 거절한다.
+    위치이고, 이동 event 는 도착지다. 후보의 좌표는 그 후보 장소의 좌표로 따로 싣는다(지도 마커용,
+    명세 2026-10-30). App Server 는 1번 후보에 좌표가 있으면 event 좌표를 그 값으로 덮어쓰고 2번
+    이하 후보의 좌표는 쓰지 않는다. 그래서 AI 가 대표 좌표를 1번 후보에 맞출 필요가 없다. 둘 다
+    있거나 둘 다 없다. App Server 는 한쪽만 온 결과를 통째로 거절한다.
 
     ``placeCandidates`` 는 장소가 애매할 때 사용자가 고를 후보 장소다(#171). 우선순위가
     높은 순서이고, App Server 는 후보가 하나라도 있으면 ``place`` 를 1번 후보로 덮어쓴다.
@@ -70,19 +91,19 @@ class TimelineResultEvent(CamelModel):
     """
 
     event_type: EventType = Field(alias="eventType")
-    title: str = Field(min_length=1)
-    subtitle: str | None = None
-    place: str | None = None
-    address: str | None = None
+    title: str = Field(min_length=1, max_length=TEXT_MAX)
+    subtitle: str | None = Field(default=None, max_length=TEXT_MAX)
+    place: str | None = Field(default=None, max_length=TEXT_MAX)
+    address: str | None = Field(default=None, max_length=TEXT_MAX)
     latitude: Latitude | None = Field(default=None, exclude_if=_absent)
     longitude: Longitude | None = Field(default=None, exclude_if=_absent)
     place_candidates: list[PlaceCandidate] | None = Field(
-        default=None, alias="placeCandidates", exclude_if=_absent
+        default=None, alias="placeCandidates", max_length=MAX_PLACE_CANDIDATES, exclude_if=_absent
     )
     start_at: AwareDatetime = Field(alias="startAt")
     end_at: AwareDatetime = Field(alias="endAt")
     source_raw_ids: list[RawId] = Field(alias="sourceRawIds", min_length=1)
-    question: str | None = None
+    question: str | None = Field(default=None, max_length=TEXT_MAX)
 
     @model_validator(mode="after")
     def _validate_range(self) -> "TimelineResultEvent":

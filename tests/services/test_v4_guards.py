@@ -5,7 +5,10 @@
 재실행에서 어긴 출력을 그대로 옮긴 것이다.
 """
 
+
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from app.schemas import (
     EventSourceType,
@@ -520,7 +523,6 @@ def test_v4_stay_time_cut_by_a_later_step_comes_back():
     assert meal.end_time - meal.start_time <= timedelta(hours=1)
 
 
-
 # --- 꺼낸 event 가 사진을 갖는다 ------------------------------------------------------------
 
 
@@ -599,3 +601,45 @@ def test_v4_does_not_send_location_only_overlap_to_repair():
     repair_draft(_draft(stayed, meal), request, report=report, clues=_clues(request))
 
     assert [item for item in report.findings if item["kind"] == "LOCATION_ONLY_OVERLAP"] == []
+
+
+def test_a_slot_with_no_place_never_reaches_app_server():
+    """칸만 남으면 App Server 가 하루치를 400 으로 거절한다."""
+
+    from app.services.timeline_result import build_result_request
+
+    photo = photo_item("p", taken="2026-06-20T12:00:00")
+    request = make_request(photos=[photo])
+    event = _event(
+        [(EventSourceType.PHOTO, photo.raw_id)], start=_at(12), end=_at(12, 30), description="{place}에서 시간을 보냈다.",
+    )
+
+    [body] = build_result_request(_draft(event), request).model_dump(by_alias=True, mode="json")["events"]
+
+    assert "{place}" not in body["subtitle"]
+
+
+def test_an_empty_slot_is_filled_with_the_area_not_the_whole_address():
+    """후보가 없는 체류가 `대구 북구 산격동 1346에서 시간을 보냈다.` 로 나간 실제 출력. 번지를 넣지 않는다."""
+
+    from app.services.timeline_result import build_result_request
+
+    stay = stay_item(
+        "campus", start="2026-06-20T10:57:00", end="2026-06-20T11:27:00", places=[], address="대구 북구 산격동 1346",
+    )
+    request = make_request(stays=[stay])
+    event = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(10, 57), end=_at(11, 27), description="{place}에서 시간을 보냈다.",
+    )
+    event.address = stay.address
+
+    [body] = build_result_request(_draft(event), request).model_dump(by_alias=True, mode="json")["events"]
+
+    assert body["subtitle"] == "북구 산격동에서 시간을 보냈다."
+    assert body["address"] == "대구 북구 산격동 1346", "`address` 필드는 저장용이라 원문 그대로다."
+
+
+def test_an_empty_slot_loses_the_slot_when_the_address_has_no_area():
+    from app.services.place_slots import without_place_slot
+
+    assert without_place_slot("{place}에서 시간을 보냈다.", None) == "시간을 보냈다."

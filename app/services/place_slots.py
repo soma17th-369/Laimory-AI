@@ -28,6 +28,7 @@ v4 문장은 장소 자리를 `{place}` 칸으로 남긴다. 칸에 들어갈 �
 """
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import tzinfo
 
@@ -43,8 +44,9 @@ from app.schemas import (
     TimelineEventDraft,
 )
 from app.schemas.clues import NotificationClueKind
-from app.schemas.timeline_result import PLACE_SLOT
-from app.services.base_events import AreaNamer, movement_route, toward_particle
+from app.schemas.common import PlacePoint
+from app.schemas.timeline_result import MAX_PLACE_CANDIDATES, PLACE_SLOT
+from app.services.base_events import AreaNamer, area_namer, movement_route, toward_particle
 from app.services.calendar_clues import split_location_text
 from app.services.clue_bundles import TimelineClues
 from app.services.place_resolver import (
@@ -60,9 +62,6 @@ from app.services.validator import parse_datetime, resolve_timezone
 
 logger = get_logger(__name__)
 
-
-#: event 하나에 내보내는 후보의 최대 개수(사용자 결정 2026-10-30). App Server 공지의 권장은 2~4개다.
-MAX_PLACE_CANDIDATES = 5
 
 #: 칸 뒤에 붙일 수 있는 조사(승인 결정 1). 칸을 지울 때 함께 지운다.
 _SLOT_WITH_PARTICLE = re.compile(r"\{place\}(?:에서|에|의|까지)?\s*")
@@ -81,13 +80,24 @@ class _Evidence:
     notification_ids: set[str]
 
 
+def without_place_slot(description: str, area: str | None) -> str:
+    """장소 이름이 없을 때의 문장. 칸을 지명으로 바꾸고, 지명도 없으면 칸과 조사를 지운다.
+
+    주소를 통째로 넣지 않는다(사용자 결정 2026-10-31) — `대구 북구 산격동 1346에서` 가 아니라 `북구 산격동에서` 다.
+    """
+
+    if area:
+        return description.replace(PLACE_SLOT, area)
+    return _SLOT_WITH_PARTICLE.sub("", description).strip()
+
+
 def filled_description(event: TimelineEventDraft) -> str:
     """칸을 채운 문장. 문장 길이 검사와 Question 입력이 본다(v3 문장은 그대로 돌려준다)."""
 
     text = event.description or ""
     if PLACE_SLOT not in text:
         return text
-    return text.replace(PLACE_SLOT, (event.place or event.address or "").strip())
+    return text.replace(PLACE_SLOT, (event.place or AreaNamer().name(event.address) or "").strip())
 
 
 def confirm_place_slots(
@@ -189,10 +199,7 @@ def fill_place_slots(
                     description = description.replace(literal, PLACE_SLOT, 1)
                     break
         if PLACE_SLOT in description and not (event.place or event.place_candidates):
-            if event.address:
-                description = description.replace(PLACE_SLOT, event.address)
-            else:
-                description = _SLOT_WITH_PARTICLE.sub("", description).strip()
+            description = without_place_slot(description, areas.name(_same(same_place, event.address)))
         event.description = description
 
 
@@ -433,27 +440,110 @@ def _address_forms(addresses: list[str | None]) -> list[str]:
     return sorted(forms, key=len, reverse=True)
 
 
-def _names_by_place(
-    request: TimelineDraftRequest, same_place: dict[str, str], tz: tzinfo
-) -> dict[str, list[str]]:
-    """같은 장소마다 그 장소의 지점들에서 나온 이름. 오래 머문 체류의 이름이 앞이다."""
+#: 입력에 실린 장소 이름 하나와 그 원소의 좌표. 좌표가 없는 이름(단수 `place`, 입력 조회 v1)은 None 이다.
+_Label = tuple[str, PlacePoint | None]
 
-    entries: list[tuple[float, str | None, list[str | None]]] = []
+
+def _labels(names: Iterable[str | None], points: list[PlacePoint]) -> list[_Label]:
+    by_name: dict[str, PlacePoint] = {}
+    for point in points:
+        by_name.setdefault(point.name.strip(), point)
+    return [(name.strip(), by_name.get(name.strip())) for name in names if name and name.strip()]
+
+
+def _labels_by_place(
+    request: TimelineDraftRequest, same_place: dict[str, str], tz: tzinfo
+) -> dict[str, list[_Label]]:
+    """같은 장소마다 그 장소의 지점들에서 나온 이름과 좌표. 오래 머문 체류의 이름이 앞이다."""
+
+    entries: list[tuple[float, str | None, list[_Label]]] = []
     for stay in request.stays:
         start = parse_datetime(stay.start_at, tz)
         end = parse_datetime(stay.end_at, tz) if stay.end_at else start
         weight = (end - start).total_seconds() if start and end else 0.0
-        entries.append((weight, stay.address, [stay.place, *stay.places]))
+        entries.append((weight, stay.address, _labels([stay.place, *stay.places], stay.place_points)))
     for movement in request.movements:
-        if movement.end is not None:
-            entries.append((0.0, movement.end.address, [movement.end.place, *movement.end.places]))
-    entries.extend((0.0, photo.address, list(photo.places)) for photo in request.photos)
+        if (spot := movement.end) is not None:
+            entries.append((0.0, spot.address, _labels([spot.place, *spot.places], spot.place_points)))
+    entries.extend(
+        (0.0, photo.address, _labels(photo.places, photo.place_points)) for photo in request.photos
+    )
 
-    table: dict[str, list[str | None]] = {}
-    for _, address, names in sorted(entries, key=lambda item: -item[0]):
+    table: dict[str, list[_Label]] = {}
+    for _, address, labels in sorted(entries, key=lambda item: -item[0]):
         if address and (place := _same(same_place, address)):
-            table.setdefault(place, []).extend(names)
-    return {place: unique_place_names(names) for place, names in table.items()}
+            table.setdefault(place, []).extend(labels)
+    return table
+
+
+def _names_by_place(
+    request: TimelineDraftRequest, same_place: dict[str, str], tz: tzinfo
+) -> dict[str, list[str]]:
+    """같은 장소마다 그 장소의 지점들에서 나온 이름."""
+
+    return {
+        place: unique_place_names(name for name, _ in labels)
+        for place, labels in _labels_by_place(request, same_place, tz).items()
+    }
+
+
+@dataclass(frozen=True)
+class CandidateSources:
+    """event 의 후보가 입력의 어디에서 왔는지 찾는 표. 결과 저장 직전에 후보를 입력과 대조한다.
+
+    후보 풀(`_pool`·`_with_same_place`)과 같은 자리를 같은 순서로 본다 — event 의 체류·이동 도착지·사진,
+    그다음 같은 장소(250m)의 다른 기록, 그리고 일정 장소명이다. 같은 이름이 여러 기록에 있으면 앞선 기록의
+    좌표를 쓴다. 건물명은 기록마다 관측 좌표가 달라서, event 를 대표하는 기록의 값이 맞다.
+    """
+
+    index: _Index
+    same_place: dict[str, str]
+    labels_by_place: dict[str, list[_Label]]
+    tz: tzinfo
+    areas: AreaNamer
+
+    @classmethod
+    def build(cls, request: TimelineDraftRequest) -> "CandidateSources":
+        tz = resolve_timezone(request.timezone)
+        same_place = same_place_addresses(request, tz)
+        areas = area_namer(_day_raw_addresses(request))
+        return cls(_Index.build(request), same_place, _labels_by_place(request, same_place, tz), tz, areas)
+
+    def area_of(self, address: str | None) -> str | None:
+        """그 주소의 지명(구 + 동). 제목과 같은 지명이고 번지가 없다."""
+
+        return self.areas.name(_same(self.same_place, address))
+
+    def of(self, event: TimelineEventDraft) -> dict[str, PlacePoint | None]:
+        """그 event 가 후보로 쓸 수 있는 이름(정규화한 값) → 입력 원소의 좌표."""
+
+        evidence = self.index.evidence(event, self.tz)
+        ends = [m.end for m in evidence.movements if m.end is not None]
+        labels = [
+            *(l for s in evidence.stays for l in _labels([s.place, *s.places], s.place_points)),
+            *(l for e in ends for l in _labels([e.place, *e.places], e.place_points)),
+            *(l for p in evidence.photos for l in _labels(p.places, p.place_points)),
+        ]
+        addresses = [
+            *(stay.address for stay in evidence.stays),
+            *(end.address for end in ends),
+            *(photo.address for photo in evidence.photos),
+        ]
+        for address in addresses:
+            if address and (place := _same(self.same_place, address)):
+                labels.extend(self.labels_by_place.get(place, []))
+        labels.extend(
+            (name, None)
+            for calendar in evidence.calendars
+            if (name := split_location_text(calendar.location_text)[0])
+        )
+
+        table: dict[str, PlacePoint | None] = {}
+        for name, point in labels:
+            key = normalize_place_text(name)
+            if key and table.get(key) is None:
+                table[key] = point
+        return table
 
 
 def _with_same_place(
