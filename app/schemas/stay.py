@@ -5,9 +5,17 @@
 문자열을 그대로 물려받는다.
 """
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
-from app.schemas.common import CamelModel, GeoPlace, Latitude, Longitude, RawId
+from app.schemas.common import (
+    CamelModel,
+    GeoPlace,
+    Latitude,
+    Longitude,
+    PlacePoint,
+    RawId,
+    split_place_objects,
+)
 
 
 class StayItem(CamelModel):
@@ -21,7 +29,10 @@ class StayItem(CamelModel):
     place: str | None = None
     address: str | None = None
     places: list[str] = Field(default_factory=list)
+    place_points: list[PlacePoint] = Field(default_factory=list, alias="placePoints")
     duration_text: str | None = Field(default=None, alias="durationText")
+
+    _split_places = model_validator(mode="before")(split_place_objects)
 
 
 class MovementItem(CamelModel):
