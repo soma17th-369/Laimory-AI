@@ -6,7 +6,7 @@ v3 Timeline 은 다른 Event Agent 의 candidate 를 보고 판단하는 규칙�
 
 v3 Question 은 수면을 다루지 않는다(`SLEEP`·`WAKE_UP` 예시가 없다). Timeline v3 는 #134 에서
 수면 금지를 걷어냈다 — 금지 때문에 캘린더 수면이 일반 일정으로 되살아나 체류와 겹쳤다.
-`EventType` 계약(App Server 와 같은 13종)은 그대로다.
+v3 의 `EventType` 계약은 App Server 가 받는 13종(`PRE_CLUE_EVENT_TYPES`) 그대로다(#172).
 
 v3 Timeline 은 판단 순서대로 읽힌다(역할 → 입력 → 작업 흐름 → 1~3단계 → eventType별 절 →
 4~6단계 → 출력). 한 타입을 만드는 데 필요한 규칙은 그 타입의 절 하나에 모여 있고, 여러 표를
@@ -20,7 +20,13 @@ from pathlib import Path
 
 import pytest
 
-from app.schemas import EventSourceType, EventType, InferenceLevel, TimelineWarningSeverity
+from app.schemas import (
+    PRE_CLUE_EVENT_TYPES,
+    EventSourceType,
+    EventType,
+    InferenceLevel,
+    TimelineWarningSeverity,
+)
 from app.schemas.user_memory import NARRATIVE_FIELDS
 from app.services.event_count_guard import MAX_EVENT_COUNT
 from app.services.meal_guard import MEAL_STAY_MAX_DURATION
@@ -31,7 +37,11 @@ APP_ROOT = Path(__file__).resolve().parents[2] / "app"
 UNHANDLED_EVENT_TYPES = frozenset({EventType.SLEEP, EventType.WAKE_UP})
 
 #: Question v3 가 예시를 두는 종류.
-EVENT_TYPES = [member.value for member in EventType if member not in UNHANDLED_EVENT_TYPES]
+EVENT_TYPES = [
+    member.value
+    for member in EventType
+    if member in PRE_CLUE_EVENT_TYPES and member not in UNHANDLED_EVENT_TYPES
+]
 
 #: Timeline v3 가 절을 두는 종류. `WAKE_UP` 은 `SLEEP` 절의 한 줄이다(#134).
 TIMELINE_SECTION_TYPES = [*EVENT_TYPES, EventType.SLEEP.value]
@@ -179,14 +189,15 @@ def test_timeline_v3_uses_only_known_event_types() -> None:
     text = _timeline_v3()
     mentioned = set(re.findall(r"`([A-Z][A-Z_]+)`", text))
     allowed = (
-        {member.value for member in EventType}
+        {member.value for member in PRE_CLUE_EVENT_TYPES}
         | {member.value for member in EventSourceType}
         | {member.value for member in InferenceLevel}
         | {member.value for member in TimelineWarningSeverity}
     )
 
     assert mentioned <= allowed, f"허용되지 않은 대문자 토큰: {sorted(mentioned - allowed)}"
-    assert f'"eventType": "{"|".join(member.value for member in EventType)}"' in text, (
+    contract = [member.value for member in EventType if member in PRE_CLUE_EVENT_TYPES]
+    assert f'"eventType": "{"|".join(contract)}"' in text, (
         "출력 형식의 eventType enum 이 계약의 13종 순서 그대로여야 합니다."
     )
 

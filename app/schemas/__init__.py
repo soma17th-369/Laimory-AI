@@ -15,6 +15,7 @@ from app.schemas.event_candidate import (
     EventSourceType,
     EventType,
     InferenceLevel,
+    PRE_CLUE_EVENT_TYPES,
     SourceFragment,
     SourceRef,
 )
@@ -88,6 +89,7 @@ __all__ = [
     "ItemType",
     "Latitude",
     "Longitude",
+    "PRE_CLUE_EVENT_TYPES",
     "MovementItem",
     "NotificationItem",
     "PhotoItem",

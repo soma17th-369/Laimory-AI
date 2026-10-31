@@ -21,11 +21,19 @@ event 의 ``uncertainty`` 와 Timeline 의 warning 이 대신한다. 사용자�
 """
 
 from enum import Enum
+from typing import Annotated
 
-from pydantic import AliasChoices, AwareDatetime, Field, model_validator
+from pydantic import AliasChoices, AwareDatetime, Field, WithJsonSchema, model_validator
 
 from app.schemas.common import CamelModel
 from app.schemas.event_candidate import EventType, InferenceLevel, SourceRef
+
+#: v4 Timeline 출력의 eventType. `EventType` 의 schema 는 v1~v3 를 위해 13종만 보이므로
+#: 여기서 17종을 연다(#172). v4 에서 LLM 이 eventType 을 내는 모델은 이것 하나다.
+_ClueEventType = Annotated[
+    EventType,
+    WithJsonSchema({"type": "string", "enum": [member.value for member in EventType]}),
+]
 
 
 class TimelineWarningSeverity(str, Enum):
@@ -125,7 +133,7 @@ class TimelineAgentOutput(CamelModel):
 class TimelineClueEvent(CamelModel):
     """Timeline v4 가 쓰는 event 한 건. 근거는 묶음·단서 id 로 가리킨다."""
 
-    event_type: EventType = Field(alias="eventType")
+    event_type: _ClueEventType = Field(alias="eventType")
     title: str = Field(min_length=1)
     description: str = Field(default="")
     #: 이 event 가 온 기본 event(`E1`…). 새로 만든 event 는 비어 있다.

@@ -142,7 +142,7 @@ def test_a_calendar_covering_a_stay_becomes_that_stays_base_event():
     assert (office.start.hour, office.end.hour) == (12, 23), "시간은 일정 시간이다."
     prompt = office.as_prompt_dict()
     assert prompt["calendar"] == office.calendar.clue_id and prompt["startAt"].startswith("2026-06-20T12:00")
-    assert station.calendar is None and station.event_type is EventType.UNKNOWN
+    assert station.calendar is None and station.event_type is EventType.STAY
 
 
 def test_a_short_calendar_inside_a_long_stay_stays_a_clue():
@@ -184,7 +184,7 @@ def test_restore_counts_the_calendar_event_and_brings_back_the_rest_as_a_stay():
     part = TimelineDraft(user_id="u", date="2026-06-20", timezone="Asia/Seoul", events=[meeting(15)])
     ensure_skeleton_segments(part, request, clues)
     [rest] = [e for e in part.events if office.base_id in e.base_event_ids]
-    assert rest.event_type is EventType.UNKNOWN and rest.description == "{place}에서 시간을 보냈다."
+    assert rest.event_type is EventType.STAY and rest.description == "{place}에서 시간을 보냈다."
     assert rest.start_time.hour == 15
 
 
@@ -217,7 +217,7 @@ def test_the_calendar_base_event_ends_up_as_one_event_at_the_calendar_time(cites
 
     calendar_ref = [SourceRef(source_type=EventSourceType.CALENDAR, raw_id=office.calendar.raw_id)]
     meeting = event("회의", EventType.MEETING, (12, 8), (20, 36), stay_refs + (calendar_ref if cites_calendar else []))
-    stayed = event("보낸 시간", EventType.UNKNOWN, (12, 8), (20, 36), stay_refs)
+    stayed = event("보낸 시간", EventType.STAY, (12, 8), (20, 36), stay_refs)
     meal = event("식사", EventType.MEAL, (17, 24), (18, 4), stay_refs)
     draft = TimelineDraft(user_id="u", date="2026-06-20", timezone="Asia/Seoul", events=[meeting, stayed, meal])
 
@@ -334,7 +334,7 @@ def test_the_calendar_evidence_stays_on_its_owner_only():
     calendar_ref = SourceRef(source_type=EventSourceType.CALENDAR, raw_id=office.calendar.raw_id)
     stay_ref = SourceRef(source_type=EventSourceType.STAY, raw_id=request.stays[1].raw_id)
     meeting = _kst_event("회의", EventType.MEETING, (12, 0), (23, 0), [calendar_ref], base=[office.base_id])
-    station = _kst_event("청파로", EventType.UNKNOWN, (22, 34), (22, 59), [stay_ref, calendar_ref])
+    station = _kst_event("청파로", EventType.STAY, (22, 34), (22, 59), [stay_ref, calendar_ref])
     draft = TimelineDraft(user_id="u", date="2026-06-20", timezone="Asia/Seoul", events=[meeting, station])
 
     keep_calendar_base_events(draft, request, clues)

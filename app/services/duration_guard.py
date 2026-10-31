@@ -64,6 +64,10 @@ DURATION_LIMITS: dict[EventType, timedelta | None] = {
     EventType.WORK: timedelta(hours=12),
     EventType.REST: timedelta(hours=12),
     EventType.UNKNOWN: timedelta(hours=12),
+    EventType.STAY: timedelta(hours=12),  # `UNKNOWN` 이 맡던 체류다
+    EventType.SHOPPING: timedelta(hours=4),  # 더 길면 다른 일이 묻혔을 가능성이 크다
+    EventType.CULTURE: timedelta(hours=4),
+    EventType.ERRAND: timedelta(hours=4),
     EventType.CALENDAR_EVENT: None,  # 시작·종료가 일정에 명시돼 있다
     EventType.MOVEMENT: None,  # 실제 이동 구간은 통째로 품는다
     EventType.SLEEP: None,  # 수면은 직접 기록된 구간이다

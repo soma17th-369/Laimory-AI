@@ -233,6 +233,18 @@ def test_lineage_to_a_base_event_at_another_time_is_ignored():
     assert request.stays[1].raw_id not in {r.raw_id for r in event.source_refs}
 
 
+@pytest.mark.parametrize("event_type", ["STAY", "SHOPPING", "CULTURE", "ERRAND"])
+def test_v4_timeline_can_use_the_types_only_v4_has(event_type):
+    from app.agents.timeline.timeline_agent import parse_timeline_clue_draft
+
+    request = _day()
+    text = _one_event(event_type, "아침", ["E3"], ["B1"], "07:00")
+
+    [event] = parse_timeline_clue_draft(text, request, _clues_with_lunch_photo(request)).events
+
+    assert event.event_type.value == event_type
+
+
 def test_evidence_taken_at_another_time_is_not_an_events_evidence():
     """12:30 점심 사진을 07:00 event 의 근거로 적으면 뺀다 — 근거는 시간과 장소가 모두 맞아야 한다
     (사용자 결정 2026-10-30·31). 같은 곳에 두 번 간 날 점심 사진이 아침 체류의 근거로 적혔고, Repair 가
