@@ -29,6 +29,7 @@ from app.services.location_skeleton import build_location_skeleton
 from app.services.photo_guard import merge_photo_scenes
 from app.services.place_slots import fix_title_places
 from app.services.skeleton_guard import (
+    NEEDS_WRITING,
     remove_calendar_events_without_calendar,
     remove_stays_without_location,
     separate_movement_segments,
@@ -187,6 +188,7 @@ def test_notification_cannot_become_a_calendar_event():
 
     assert draft.events == [with_stay]
     assert with_stay.event_type is EventType.UNKNOWN
+    assert with_stay.merge_reason == NEEDS_WRITING, "예매 알림으로 쓴 `일정이 있었다` 가 그대로 남은 실제 출력."
 
 
 def test_a_calendar_event_with_only_a_stay_becomes_a_stay():

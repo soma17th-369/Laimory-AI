@@ -742,6 +742,8 @@ def remove_calendar_events_without_calendar(
                 continue
             only_location = all(ref.raw_id in location_ids for ref in event.source_refs)
             event.event_type = EventType.STAY if only_location else EventType.UNKNOWN
+            # `…일정이 있었다` 문장은 일정이 없으면 틀린 말이다. 종류와 글은 Repair 가 근거로 쓴다.
+            event.merge_reason = NEEDS_WRITING
         kept.append(event)
     draft.events = kept
 
