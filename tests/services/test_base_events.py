@@ -6,6 +6,8 @@
 
 import pytest
 
+import pytest
+
 from app.schemas import GeoPlace, MovementItem
 from app.services.base_events import AreaNamer, area_namer, sido_of
 from app.services.clue_bundles import build_timeline_clues, timeline_input_sections
@@ -306,3 +308,35 @@ def test_a_meal_holding_the_calendar_goes_back_to_being_the_calendar_event():
     assert meal.event_type is EventType.CALENDAR_EVENT
     assert meal.description == "{place}에서 팀 정기 회의 일정이 있었다."
     assert (meal.start_time.hour, meal.end_time.hour) == (12, 23)
+
+
+@pytest.mark.parametrize(
+    "address, expected",
+    [
+        ("대구 북구 산격동 1346", "북구 산격동"),
+        ("서울특별시 마포구 백범로31길 7", "마포구 백범로31길"),
+        ("대전광역시 동구 옥천로180번길 47-2", "동구 옥천로180번길"),
+        ("경기도 오산시 경기대로 645", "오산시 경기대로"),
+        ("경기 안산시 상록구 팔곡이동 산 3-11", "상록구 팔곡이동"),
+        ("충북 청주시 흥덕구 오송읍 봉산리 804", "흥덕구 오송읍"),
+        ("경북 칠곡군 지천면 덕산리 406-9", "칠곡군 지천면"),
+        ("경기도 성남시 분당구 정자동 178-1", "분당구 정자동"),
+        ("세종특별자치시 한솔동 123", "한솔동"),
+        ("전남광주통합특별시 여수시 여서동 123", "여수시 여서동"),
+        ("서울특별시 노원구 상계3.4동 123", "노원구 상계3.4동"),
+        ("서울특별시 종로구 종로1.2.3.4가동", "종로구 종로1.2.3.4가동"),
+        ("서울특별시 중구 을지로1가 16", "중구 을지로1가"),
+        ("대구 수성구 범어동 123 우성동", "수성구 범어동"),
+        ("대구광역시 수성구 지범로17길 85 101동", "수성구 지범로17길"),
+        ("서울특별시 강남구 테헤란로 152 (역삼동)", "강남구 테헤란로"),
+        ("서울특별시 강남구 테헤란로 152 강남파이낸스동", "강남구 테헤란로"),
+        ("서울특별시", None),
+        ("1-2-3 Shibuya, Tokyo", None),
+    ],
+)
+def test_the_area_is_the_district_and_the_neighborhood_without_the_number(address, expected):
+    """지명은 구 + 동이다. 번지·건물명을 읽지 않고, 읍·면이 있으면 리가 아니라 읍·면이다."""
+
+    from app.services.base_events import AreaNamer
+
+    assert AreaNamer().name(address) == expected

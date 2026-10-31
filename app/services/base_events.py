@@ -67,7 +67,7 @@ _SIDO_SHORT = {
 _SIDO_SUFFIX = re.compile(r"(통합특별시|특별자치시|특별자치도|특별시|광역시|도)$")
 _GU = re.compile(r"^[가-힣]+구$")
 _SI_GUN = re.compile(r"^[가-힣]+(시|군)$")
-_EUP_MYEON_DONG = re.compile(r"^[가-힣][가-힣0-9]*(동|리|가|읍|면)$")
+_EUP_MYEON_DONG = re.compile(r"^[가-힣][가-힣0-9.·]*(동|리|가|읍|면)$")
 _ROAD = re.compile(r"^[가-힣][가-힣0-9]*(로|길)$")
 
 
@@ -95,12 +95,13 @@ class AreaNamer:
         tokens = address.split() if address else []
         if not tokens:
             return None
-        rest = tokens[1:] if sido_of(address) else tokens
+        rest = _before_number(tokens[1:] if sido_of(address) else tokens)
         district = next((t for t in rest if _GU.match(t)), None) or next(
             (t for t in rest if _SI_GUN.match(t)), None
         )
-        # 읍면동이 먼저고, 없으면 도로명이다. 건물번호는 따로 떨어진 어절이라 고르지 않는다.
-        local = next((t for t in reversed(rest) if _EUP_MYEON_DONG.match(t)), None) or next(
+        # 읍면동이 먼저고, 없으면 도로명이다. 앞에서부터 찾아 `오송읍 봉산리` 는 읍이다 — 구 + 동과
+        # 같은 단위라서다.
+        local = next((t for t in rest if _EUP_MYEON_DONG.match(t)), None) or next(
             (t for t in rest if _ROAD.match(t)), None
         )
         parts = [part for part in (district, local) if part]
@@ -108,6 +109,15 @@ class AreaNamer:
             return None
         sido = sido_of(address) if self.multi_region else None
         return " ".join([sido, *parts] if sido else parts)
+
+
+def _before_number(tokens: list[str]) -> list[str]:
+    """번지 앞의 어절. 뒤는 번지·건물명이라 `101동`·`우성동` 이 지명으로 읽히면 안 된다."""
+
+    for position, token in enumerate(tokens):
+        if token[0].isdigit() or token == "산" or token.startswith("("):
+            return tokens[:position]
+    return tokens
 
 
 def area_namer(addresses: Iterable[str | None]) -> AreaNamer:
