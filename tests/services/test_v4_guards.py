@@ -1087,6 +1087,33 @@ def test_a_stay_in_the_frame_sentence_needs_no_correction():
     assert not [s for _, s in settle.suggest(settle(event)) if "eventType" in s or "title" in s]
 
 
+@pytest.mark.parametrize(("today", "corrected"), [(False, True), (True, False), (None, False)])
+def test_a_reservation_for_another_day_is_not_what_happened_at_the_stay(today, corrected):
+    """다음 주 예매 알림이 온 영화관 체류를 관람으로 쓴 실제 재실행 출력. 그 알림이 근거로 붙어 위치뿐이 아닌
+    것으로 보여 빠져나갔다(#172). 예매가 오늘이면 관람의 근거다."""
+
+    from app.services.text_suggestions import suggest_text_fixes
+
+    booking = notification_item("next", "롯데시네마", "예매 완료", posted="2026-06-20T14:00:00")
+    stay = stay_item("day", start="2026-06-20T10:57:00", end="2026-06-20T17:45:00")
+    request = make_request(stays=[stay], notifications=[booking])
+    clue = NotificationClue(
+        clue_id="N1", kind=NotificationClueKind.RESERVATION, summary="예매했다.", raw_ids=[booking.raw_id],
+        schedule_today=today,
+    )
+    clues = _clues(request, [clue])
+    base = next(bundle.base_event for bundle in clues.bundles if bundle.base_event)
+    event = _event(
+        [(EventSourceType.STAY, stay.raw_id), (EventSourceType.NOTIFICATION, booking.raw_id)],
+        start=_at(10, 57), end=_at(17, 45), event_type=EventType.CULTURE,
+        title="영화 관람", description="{place}에서 영화를 봤다.", base=[base.base_id],
+    )
+
+    found = [s for _, s in suggest_text_fixes(_draft(event), request, clues) if s.get("eventType") == "STAY"]
+
+    assert bool(found) is corrected
+
+
 def test_a_shopping_event_with_a_payment_keeps_its_type():
     """결제 알림이 쇼핑을 말하면 체류가 있어도 틀로 되돌리지 않는다."""
 
