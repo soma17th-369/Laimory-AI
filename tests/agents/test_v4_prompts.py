@@ -368,3 +368,43 @@ def test_v4_evidence_must_match_both_time_and_place():
     assert "의미상 다른 event의 것이면" not in repair
     for text in (timeline, repair):
         assert "장소 이름이 같아도 시간이 다르면 다른 방문입니다" in text
+
+
+
+def test_timeline_v4_makes_events_from_notifications_on_a_day_without_location():
+    """위치 없는 날 결제·대화를 모두 버려 v3 절반의 event 가 됐다. 그날은 알림 자체가 event 다."""
+
+    text = _timeline()
+
+    assert "다르면 내용이 있는 대화와 그 알림이 그날의 event입니다" in text
+    assert "위치 기록이 없는 날에만 받은 시각(`firstAt`·`lastAt`)이 있습니다" in text
+    assert "구간에 붙지 않은 사진·일정·대화" in text
+
+
+def test_timeline_v4_keeps_what_the_photo_shows_in_the_meal_sentence():
+    """Timeline 식사 문장 32건 중 21건이 `음식을 먹었다` 였다. 뭉개지 말라고만 하자 없는 음식을 지어냈다."""
+
+    text = _timeline()
+
+    assert "말하는 음식은 그 말대로 쓰고, 말하지 않은 음식은 지어내지 않습니다" in text
+    assert "음식을 모르면 `{지명}에서 {끼니}`" in text
+
+
+def test_timeline_v4_takes_a_meal_out_of_a_meeting():
+    """일정의 타입을 Timeline 이 정하자 음식 사진을 회의에 흡수해 식사가 사라졌다(사용자 결정: 둘 다 산다)."""
+
+    text = _timeline()
+
+    assert "만남·회의·일정 중이어도 사진의 `activity`가 먹었다고 말하거나 음식 결제가 있으면 `MEAL`로" in text
+    assert "회의 장면 사진" in text
+
+
+
+def test_timeline_v4_keeps_a_calendar_a_calendar():
+    """캘린더라면 캘린더 일정으로 저장한다(사용자 결정 2026-10-31). 수면 일정만 `SLEEP` 이다."""
+
+    text = _timeline()
+
+    assert "캘린더 일정은 `CALENDAR_EVENT`로 남깁니다" in text
+    assert "회의는 `MEETING`" not in text
+    assert "수면 일정은 `SLEEP`입니다" in text
