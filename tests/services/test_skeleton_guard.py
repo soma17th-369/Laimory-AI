@@ -211,10 +211,10 @@ def test_located_event_is_cut_to_where_its_records_put_the_user():
     assert draft.events == [work]
 
 
-def test_photo_taken_hours_away_is_detached_and_the_stay_goes_back_to_its_template():
+def test_photo_taken_hours_away_is_detached_and_the_stay_goes_to_repair():
     """주소 없는 오전 사진을 다섯 시간 뒤의 체류에 붙인 실제 Timeline 출력."""
 
-    from app.services.skeleton_guard import remove_events_outside_evidence
+    from app.services.skeleton_guard import NEEDS_WRITING, remove_events_outside_evidence
 
     stay = stay_item("stay", lat=37.5, start="2026-06-20T16:59:00", end="2026-06-20T17:38:00",
                      address="전남 여수시 덕충동 2079")
@@ -237,9 +237,8 @@ def test_photo_taken_hours_away_is_detached_and_the_stay_goes_back_to_its_templa
     remove_events_outside_evidence(draft, request, clues)
 
     assert [ref.raw_id for ref in work.source_refs] == [stay.raw_id]
-    assert (work.event_type, work.title, work.description) == (
-        EventType.UNKNOWN, "여수시 덕충동에서 보낸 시간", "{place}에서 시간을 보냈다."
-    )
+    assert work.title == "덕충동에서 보수 작업", "글은 코드가 바꾸지 않는다."
+    assert work.merge_reason == NEEDS_WRITING
 
 
 def test_event_spanning_a_whole_movement_keeps_the_longer_side():

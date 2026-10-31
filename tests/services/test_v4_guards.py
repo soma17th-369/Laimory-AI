@@ -603,6 +603,154 @@ def test_v4_does_not_send_location_only_overlap_to_repair():
     assert [item for item in report.findings if item["kind"] == "LOCATION_ONLY_OVERLAP"] == []
 
 
+def test_same_titles_in_a_row_go_to_repair():
+    """같은 일이면 괜찮지만(사용자 결정) 다른 음식이 같은 제목으로 이어진 실제 출력이 있어 Repair 가 판단한다."""
+
+    from app.services.confirm_report import ConfirmReport
+    from app.services.draft_repair import repair_draft
+
+    first, second = photo_item("a", taken="2026-06-20T12:00:00"), photo_item("b", taken="2026-06-20T13:00:00")
+    request = make_request(photos=[first, second])
+    report = ConfirmReport()
+
+    repair_draft(
+        _draft(
+            _event([(EventSourceType.PHOTO, first.raw_id)], start=_at(12), end=_at(12, 30), event_type=EventType.MEAL, title="식사"),
+            _event([(EventSourceType.PHOTO, second.raw_id)], start=_at(13), end=_at(13, 30), event_type=EventType.MEAL, title="간식"),
+        ),
+        request,
+        report=report,
+        clues=_clues(request),
+    )
+    assert not [f for f in report.findings if f["kind"] == "SAME_TITLE_IN_A_ROW"]
+
+    report = ConfirmReport()
+    draft = repair_draft(
+        _draft(
+            _event([(EventSourceType.PHOTO, first.raw_id)], start=_at(12), end=_at(12, 30), event_type=EventType.MEAL, title="식사"),
+            _event([(EventSourceType.PHOTO, second.raw_id)], start=_at(13), end=_at(13, 30), event_type=EventType.MEAL, title="식사"),
+        ),
+        request,
+        report=report,
+        clues=_clues(request),
+    )
+
+    [found] = [f for f in report.findings if f["kind"] == "SAME_TITLE_IN_A_ROW"]
+    assert found["clientEventId"] == draft.events[0].client_event_id
+    assert found["nextEvent"] == draft.events[1].client_event_id
+
+
+@pytest.mark.parametrize(
+    "before, after",
+    [
+        ("{place}에서 점심을 먹었다.", "{place}에서 점심을 먹고 시간을 보냈다."),
+        ("{place}에서 음식을 먹으며 시간을 보냈다.", "{place}에서 음식을 먹고 시간을 보냈다."),
+        ("{place}에서 식사했다.", "{place}에서 식사하고 시간을 보냈다."),
+        ("{place}에서 식사하며 다른 사람과 시간을 보냈다.", "{place}에서 식사하고 다른 사람과 시간을 보냈다."),
+        ("{place}에서 점심을 먹고 시간을 보냈다.", "{place}에서 점심을 먹고 시간을 보냈다."),
+    ],
+)
+def test_a_long_stay_with_a_meal_photo_says_it_ate_and_spent_the_time(before, after):
+    """긴 체류에 사진을 넣는 것은 좋지만 문장은 `점심을 먹고 시간을 보냈다` 다(사용자 결정 2026-10-31)."""
+
+    from app.services.meal_guard import word_long_stay_meals
+
+    stay = _event(
+        [(EventSourceType.STAY, fixture_raw_id("s")), (EventSourceType.PHOTO, fixture_raw_id("p"))],
+        start=_at(10, 57), end=_at(17, 45), description=before,
+    )
+
+    word_long_stay_meals(_draft(stay))
+
+    assert stay.description == after
+
+
+@pytest.mark.parametrize(
+    "event_type, start, end, source",
+    [
+        (EventType.MEAL, _at(12), _at(14), EventSourceType.PHOTO),  # 식당에 머문 식사는 그 시간이 식사다(#163)
+        (EventType.SOCIAL, _at(12), _at(13), EventSourceType.PHOTO),  # 60분이면 그 일이 식사다
+        (EventType.MEETING, _at(12), _at(18), EventSourceType.CALENDAR),  # 일정 event 는 일정의 문장이다
+    ],
+)
+def test_a_meal_sentence_stays_where_the_time_is_the_meal(event_type, start, end, source):
+    from app.services.meal_guard import word_long_stay_meals
+
+    event = _event(
+        [(source, fixture_raw_id("x"))], start=start, end=end, event_type=event_type,
+        description="{place}에서 점심을 먹었다.",
+    )
+
+    word_long_stay_meals(_draft(event))
+
+    assert event.description == "{place}에서 점심을 먹었다."
+
+
+def test_confirmation_hands_text_rules_to_repair_and_leaves_the_text_alone():
+    """확정은 글을 고치지 않는다. 규칙을 어긴 글은 `TEXT_CORRECTION` 으로 Repair 에 넘긴다(사용자 결정 2026-10-31)."""
+
+    from app.services.confirm_report import ConfirmReport
+    from app.services.draft_repair import repair_draft
+
+    stay = stay_item("day", start="2026-06-20T10:57:00", end="2026-06-20T17:45:00")
+    photo = photo_item("lunch", taken="2026-06-20T12:49:00")
+    request = make_request(stays=[stay], photos=[photo])
+    clues = _clues(request)
+    base = next(bundle.base_event for bundle in clues.bundles if bundle.base_event)
+    event = _event(
+        [(EventSourceType.STAY, stay.raw_id), (EventSourceType.PHOTO, photo.raw_id)],
+        start=_at(10, 57), end=_at(17, 45), title="대현동에서 점심", description="{place}에서 점심을 먹었다.",
+        base=[base.base_id],
+    )
+    report = ConfirmReport()
+
+    draft = repair_draft(_draft(event), request, report=report, clues=clues)
+
+    assert draft.events[0].description == "{place}에서 점심을 먹었다."
+    [found] = [f for f in report.findings if f["kind"] == "TEXT_CORRECTION"]
+    assert found["description"].endswith("점심을 먹고 시간을 보냈다.")
+    assert any("긴 체류" in rule for rule in found["rules"])
+
+
+def test_a_restored_photo_keeps_what_the_photo_shows():
+    """`사진을 남겼다` 로는 사진의 내용이 사라진다. Repair 가 쓰기 전까지 사진 단서의 말을 둔다."""
+
+    from app.schemas.clues import PhotoClue
+    from app.services.photo_guard import CREATED_PHOTO_TITLE
+    from app.services.skeleton_guard import NEEDS_WRITING, hand_restored_events_to_repair
+
+    photo = photo_item("lunch", taken="2026-06-20T12:49:00")
+    request = make_request(photos=[photo])
+    clue = PhotoClue(
+        id="P1", rawId=photo.raw_id, takenAt=_at(12, 49), activity="매운 국물 요리와 만두를 먹었다",
+    )
+    clues = build_timeline_clues(build_location_skeleton(request), [], [clue], [])
+    event = _event(
+        [(EventSourceType.PHOTO, photo.raw_id)], start=_at(12, 49), end=_at(12, 49),
+        event_type=EventType.PHOTO_MOMENT, title=CREATED_PHOTO_TITLE, description="사진을 남겼다.",
+    )
+
+    hand_restored_events_to_repair(_draft(event), request, clues)
+
+    assert event.description == "매운 국물 요리와 만두를 먹었다."
+    assert event.merge_reason == NEEDS_WRITING
+
+
+def test_a_restored_calendar_carries_no_code_sentence():
+    from app.services.calendar_guard import RESTORED_CALENDAR_DESCRIPTION
+    from app.services.skeleton_guard import NEEDS_WRITING, hand_restored_events_to_repair
+
+    request = make_request()
+    event = _event(
+        [(EventSourceType.CALENDAR, fixture_raw_id("c"))], start=_at(12), end=_at(13),
+        event_type=EventType.CALENDAR_EVENT, title="팀 회의", description=RESTORED_CALENDAR_DESCRIPTION,
+    )
+
+    hand_restored_events_to_repair(_draft(event), request, _clues(request))
+
+    assert (event.title, event.description, event.merge_reason) == ("팀 회의", "", NEEDS_WRITING)
+
+
 def test_a_slot_with_no_place_never_reaches_app_server():
     """칸만 남으면 App Server 가 하루치를 400 으로 거절한다."""
 

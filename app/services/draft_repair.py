@@ -121,14 +121,14 @@ from app.services.place_resolver import resolve_places
 from app.services.place_slots import (
     confirm_place_slots,
     fill_place_slots,
-    fix_counterpart_particles,
-    fix_title_places,
     place_names_in_title,
 )
 from app.services.skeleton_guard import (
     remove_calendar_events_without_calendar,
     remove_stays_without_location,
+    NEEDS_WRITING,
     ensure_skeleton_segments,
+    hand_restored_events_to_repair,
     keep_calendar_base_events,
     remove_events_outside_evidence,
     remove_unrecorded_movements,
@@ -142,6 +142,7 @@ from app.services.sleep_guard import (
 from app.services.source_lookup import normalize_source_types, raw_id_of
 from app.services.source_integrity import filter_draft_sources
 from app.services.stay_merge import mergeable_stay_groups
+from app.services.text_suggestions import suggest_text_fixes
 from app.services.validator import (
     assign_event_ids,
     parse_datetime,
@@ -789,9 +790,12 @@ def _clue_correction_steps(
             )
             extended.append(("캘린더 일정 다시 확인", ensure_calendar_events))
             extended.append(("장소 다시 확정", partial(_confirm_place_slots, clues=clues)))
-            extended.append(("문장 장소 칸", partial(fill_place_slots, clues=clues)))
-            extended.append(("대화 상대 조사", partial(fix_counterpart_particles, clues=clues)))
-            extended.append(("제목 장소 정리", partial(fix_title_places, clues=clues)))
+            # 글은 고치지 않는다(사용자 결정 2026-10-31). `_inspect` 가 제안으로 Repair 에 넘긴다.
+            extended.append(
+                ("되살린 event 넘기기", partial(_skeleton_step, hand_restored_events_to_repair, clues=clues))
+            )
+            # 예외는 `{place}` 칸 하나다. 칸이 있어야 사용자가 고른 장소를 문장이 따라간다.
+            extended.append(("문장 장소 칸", partial(fill_place_slots, clues=clues, slots_only=True)))
         else:
             extended.append((name, overrides.get(name, step)))
     return (*steps, *extended)
@@ -820,6 +824,7 @@ def _inspect(
     *,
     extended: bool,
     clue_contract: bool = False,
+    clues: TimelineClues | None = None,
 ) -> None:
     """고치지 않고 찾기만 하는 검사. 찾은 것은 warning 과 검사 결과로 남긴다.
 
@@ -874,6 +879,25 @@ def _inspect(
         for event in draft.events:
             if names := place_names_in_title(event, request):
                 report.add_finding("PLACE_NAME_IN_TITLE", {"found": names}, event=event)
+        ordered = sorted(draft.events, key=lambda event: event.start_time)
+        for event, following in zip(ordered, ordered[1:]):
+            # 같은 일이면 괜찮다(사용자 결정 2026-10-31). 무엇이 다른지는 Repair 가 판단한다.
+            if event.title == following.title and event.event_type is not EventType.MOVEMENT:
+                report.add_finding(
+                    "SAME_TITLE_IN_A_ROW",
+                    partial(lambda after: {"nextEvent": after.client_event_id}, following),
+                    event=event,
+                )
+        for event in draft.events:
+            if event.merge_reason == NEEDS_WRITING:
+                report.add_finding(
+                    "EVENT_TO_WRITE",
+                    {"sourceTypes": sorted({ref.source_type.value for ref in event.source_refs})},
+                    event=event,
+                )
+        for event, suggestion in suggest_text_fixes(draft, request, clues):
+            if event.merge_reason != NEEDS_WRITING:
+                report.add_finding("TEXT_CORRECTION", suggestion, event=event)
 
 
 def repair_draft(
@@ -915,7 +939,7 @@ def repair_draft(
     # source 하나를 여러 event가 근거로 사용할 수 있다. 현재는 timeline_items에
     # event별 source 스냅샷을 저장하고, 향후 N:M 연결 테이블이 이 관계를 맡는다.
 
-    _inspect(draft, request, report, extended=extended, clue_contract=clues is not None)
+    _inspect(draft, request, report, extended=extended, clue_contract=clues is not None, clues=clues)
 
     # 병합으로 event 구성이 바뀌었을 수 있어 한 번 더 정렬한 뒤 id 를 부여한다.
     # 번호는 여기서만 준다. 중간 guard 는 event 를 지워도 번호를 다시 매기지 않는다(#144).

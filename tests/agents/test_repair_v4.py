@@ -218,6 +218,44 @@ def test_update_event_will_not_make_a_meal_without_evidence():
     assert lunch.ok, lunch.message
 
 
+def test_update_event_will_not_write_a_meal_on_an_event_without_evidence():
+    """타입을 두고 문장만 식사로 고치는 호출도 같은 근거를 본다. 대화 알림만 가진 아침 체류의 문장이 식사로 덮였다."""
+
+    ctx, _ = _context()
+
+    def call(fields):
+        [result] = execute_tool_calls(
+            ctx, [RepairToolCall(tool="update_event", args={"clientEventId": "event-001", "fields": fields}, reason="문장")]
+        )
+        return result
+
+    assert not call({"title": "대현동에서 식사"}).ok
+    assert not call({"description": "{place}에서 음식을 먹었다."}).ok
+    assert call({"description": "{place}에서 시간을 보냈다."}).ok
+
+
+def test_a_long_stay_with_its_meal_photo_can_say_so():
+    """긴 체류에 음식 사진이 있으면 `점심을 먹고 시간을 보냈다` 로 쓸 수 있다(사용자 결정). 길이는 타입에만 본다."""
+
+    ctx, _ = _context()
+
+    [result] = execute_tool_calls(
+        ctx,
+        [
+            RepairToolCall(
+                tool="update_event",
+                args={
+                    "clientEventId": "event-001",
+                    "fields": {"description": "{place}에서 점심을 먹고 시간을 보냈다.", "evidence": ["B1", "P1"]},
+                },
+                reason="문장",
+            )
+        ],
+    )
+
+    assert result.ok, result.message
+
+
 def test_split_event_will_not_make_a_meal_piece_without_evidence():
     """split_event 로도 근거 없는 식사 조각을 만들지 않는다(사용자 결정 2026-10-31). 대화 알림만 가진 아침
     체류가 `09:06 식사` 조각이 된 실제 출력. 사진이 있는 시간의 조각은 식사가 될 수 있다."""
@@ -249,3 +287,47 @@ def test_split_event_will_not_make_a_meal_piece_without_evidence():
     assert len(ctx.draft.events) == 1, "거절하면 나누지 않는다."
     result = split("2026-06-20T12:20:00+09:00", "2026-06-20T12:50:00+09:00")
     assert result.ok, result.message
+
+
+
+def test_update_event_clears_the_writing_mark_only_when_it_writes():
+    """코드가 맡긴 event 는 Repair 가 글을 쓰면 끝난다. 시간만 고쳐서는 끝나지 않는다."""
+
+    from app.services.skeleton_guard import NEEDS_WRITING
+
+    ctx, _ = _context()
+    event = ctx.draft.events[0]
+    event.merge_reason = NEEDS_WRITING
+
+    def call(fields):
+        [result] = execute_tool_calls(
+            ctx, [RepairToolCall(tool="update_event", args={"clientEventId": "event-001", "fields": fields}, reason="글")]
+        )
+        assert result.ok, result.message
+
+    call({"endTime": "2026-06-20T17:00:00+09:00"})
+    assert ctx.draft.events[0].merge_reason == NEEDS_WRITING
+
+    call({"title": "서비스 배포 준비"})
+    assert ctx.draft.events[0].merge_reason == NEEDS_WRITING, "제목만 고치면 문장이 빈 채로 남는다."
+
+    call({"description": "{place}에서 서비스 배포를 준비했다."})
+    assert ctx.draft.events[0].merge_reason is None
+
+
+def test_repair_goes_on_while_writing_is_left():
+    """마지막 확정이 맡긴 글이 있으면 `done` 이어도 한 번 더 돈다. 코드는 대신 쓰지 않는다."""
+
+    from app.agents.repair.repair_agent import _writing_left
+    from app.services.confirm_report import ConfirmReport
+
+    ctx, _ = _context()
+    assert not _writing_left(ctx)
+
+    report = ConfirmReport()
+    report.findings = [{"kind": "EVENT_TO_WRITE"}]
+    ctx.reports.append(report)
+    assert _writing_left(ctx)
+
+    report.findings = [{"kind": "DURATION_OVER_LIMIT"}]
+    assert not _writing_left(ctx)

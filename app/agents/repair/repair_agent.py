@@ -110,6 +110,14 @@ def parse_repair_plan(text: str) -> RepairPlan:
 _EXTENDED_INPUT = not uses_legacy_contract()
 
 
+def _writing_left(ctx: RepairContext) -> bool:
+    """마지막 확정이 Repair 에 맡긴 글이 남았는가(v4). 코드는 글을 쓰지 않아 Repair 가 마지막 기회다."""
+
+    return bool(ctx.reports) and any(
+        finding["kind"] in ("EVENT_TO_WRITE", "TEXT_CORRECTION") for finding in ctx.reports[-1].findings
+    )
+
+
 def build_repair_prompt(ctx: RepairContext, remaining: int) -> str:
     """분석 요청(user prompt): 확정된 draft + 근거 원본 + 도구 + 지금까지의 실행 로그.
 
@@ -568,7 +576,10 @@ class RepairAgent(Agent):
             return "execute" if state["plan"].tool_calls else END
 
         def after_execute(state: _State) -> str:
-            if state["plan"].done or state["iteration"] >= max_iterations:
+            if state["iteration"] >= max_iterations:
+                return END
+            # 마지막 확정이 글을 맡긴 event 를 만들었으면 `done` 이어도 한 번 더 쓴다.
+            if state["plan"].done and not _writing_left(ctx):
                 return END
             return "analyze"
 

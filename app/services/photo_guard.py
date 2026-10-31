@@ -62,7 +62,7 @@ _CREATED_CONFIDENCE = 0.4
 #: 코드가 만든 사진 event 의 문장. candidate 에서 만들어도 이 틀을 쓴다(#163) — candidate
 #: 문장은 Event Agent 의 보고라 분 단위 시각·추정 표현·종결형 제목이 들어 있어 사용자에게
 #: 그대로 보일 수 없다. Repair 가 돌면 그 candidate 를 보고 다시 쓴다.
-_CREATED_TITLE = "사진으로 남긴 순간"
+CREATED_PHOTO_TITLE = "사진으로 남긴 순간"
 _CREATED_DESCRIPTION = "사진을 남겼다."
 _CREATED_NOTE = (
     "사진을 담을 event 가 없어 촬영 시각으로 만든 기록이다. 사진 내용은 확인하지 못했다."
@@ -319,7 +319,7 @@ def _create_event(
         # 임시 id 다. 확정 마지막이 정식 번호를 준다.
         client_event_id=f"event-photo-{sequence:03d}",
         event_type=EventType.PHOTO_MOMENT,
-        title=_CREATED_TITLE,
+        title=CREATED_PHOTO_TITLE,
         description=_CREATED_DESCRIPTION,
         place=next((name for name in first.places if name and name.strip()), None),
         address=first.address,

@@ -147,7 +147,11 @@ def confirm_place_slots(
 
 
 def fill_place_slots(
-    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues | None = None
+    draft: TimelineDraft,
+    request: TimelineDraftRequest,
+    clues: TimelineClues | None = None,
+    *,
+    slots_only: bool = False,
 ) -> None:
     """문장을 장소 칸 계약에 맞춘다(in-place). event 를 지우거나 합치는 단계 뒤에 돈다."""
 
@@ -160,6 +164,8 @@ def fill_place_slots(
     areas = clues.areas if clues else AreaNamer()
     movement_names = _place_names_outside_areas(request, raw_addresses, same_place, areas)
     for event in draft.events:
+        if slots_only and event.event_type is EventType.MOVEMENT:
+            continue
         evidence = index.evidence(event, tz)
         if event.event_type is EventType.MOVEMENT:
             route = _movement_route(evidence.movements, tz, same_place, areas)
@@ -198,7 +204,7 @@ def fill_place_slots(
                 if len(literal) >= 2 and literal in description:
                     description = description.replace(literal, PLACE_SLOT, 1)
                     break
-        if PLACE_SLOT in description and not (event.place or event.place_candidates):
+        if not slots_only and PLACE_SLOT in description and not (event.place or event.place_candidates):
             description = without_place_slot(description, areas.name(_same(same_place, event.address)))
         event.description = description
 

@@ -127,7 +127,7 @@ def test_v4_pipeline_bundles_clues_and_fills_place_slots():
 
     by_type = {event.event_type: event for event in draft.events}
     movement = by_type[EventType.MOVEMENT]
-    assert movement.description == "마포구 도화동에서 강남구 강남대로로 이동했다.", "이동 문장은 주소 원문이 아니라 지명(구 + 동)이다."
+    assert movement.description == "", "코드는 이동 문장을 쓰지 않는다. Repair 가 쓴다(사용자 결정 2026-10-31)."
     assert movement.place is None
 
     work = by_type[EventType.WORK]

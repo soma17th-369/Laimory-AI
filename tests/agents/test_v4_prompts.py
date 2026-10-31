@@ -308,6 +308,9 @@ def test_repair_v4_explains_every_finding_the_v4_confirm_pass_reports():
         "STAY_WORD_IN_TITLE",
         "TIME_IN_TITLE",
         "PLACE_NAME_IN_TITLE",
+        "SAME_TITLE_IN_A_ROW",
+        "EVENT_TO_WRITE",
+        "TEXT_CORRECTION",
     ):
         assert f"`{kind}`" in text, kind
     # `LOCATION_ONLY_OVERLAP` 은 v4 확정이 내지 않는다(사용자 결정 2026-10-31) — 받은 Repair 가 7시간 체류를 식사로 고쳐 썼다.

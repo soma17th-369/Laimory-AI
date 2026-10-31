@@ -6,8 +6,6 @@
 
 import pytest
 
-import pytest
-
 from app.schemas import GeoPlace, MovementItem
 from app.services.base_events import AreaNamer, area_namer, sido_of
 from app.services.clue_bundles import build_timeline_clues, timeline_input_sections
@@ -277,16 +275,16 @@ def _find_photos(node):
             return
 
 
-def test_a_meal_holding_the_calendar_goes_back_to_being_the_calendar_event():
+def test_a_meal_holding_the_calendar_becomes_the_calendar_event_and_goes_to_repair():
     """Repair 가 회의 event 를 식사로 바꾸며 묶음 id 로 일정을 다시 담은 실제 출력. 일정을 가진 식사가 일정의
     주인으로 남자 식사 시간이 20분으로 줄여 회의 일정이 17:24~17:44 가 됐다. 일정 기본 event 의 주인은 일정
-    event 다 — 식사·사진·`보낸 시간` 이면 일정 틀로 되돌리고 시간은 일정 시간이다.
+    event 다 — 식사·사진·`보낸 시간` 이면 종류와 시간을 일정으로 맞추고 글은 Repair 에 맡긴다.
     """
 
     from datetime import datetime, timedelta, timezone
 
     from app.schemas import EventSourceType, EventType, InferenceLevel, SourceRef, TimelineDraft, TimelineEventDraft
-    from app.services.skeleton_guard import keep_calendar_base_events
+    from app.services.skeleton_guard import NEEDS_WRITING, keep_calendar_base_events
 
     kst = timezone(timedelta(hours=9))
     request = _meeting_day("2026-06-20T12:00:00", "2026-06-20T23:00:00")
@@ -306,8 +304,46 @@ def test_a_meal_holding_the_calendar_goes_back_to_being_the_calendar_event():
     keep_calendar_base_events(draft, request, clues)
 
     assert meal.event_type is EventType.CALENDAR_EVENT
-    assert meal.description == "{place}에서 팀 정기 회의 일정이 있었다."
+    assert meal.merge_reason == NEEDS_WRITING
+    assert meal.title == "점심", "글은 코드가 바꾸지 않는다."
     assert (meal.start_time.hour, meal.end_time.hour) == (12, 23)
+
+
+def _kst_event(title, event_type, start, end, refs, base=()):
+    from datetime import datetime, timedelta, timezone
+
+    from app.schemas import InferenceLevel, TimelineEventDraft
+
+    kst = timezone(timedelta(hours=9))
+    return TimelineEventDraft(
+        client_event_id=f"event-{title}", event_type=event_type, title=title, description="",
+        start_time=datetime(2026, 6, 20, *start, tzinfo=kst), end_time=datetime(2026, 6, 20, *end, tzinfo=kst),
+        confidence=0.7, inference_level=InferenceLevel.DIRECT, source_refs=list(refs), base_event_ids=list(base),
+    )
+
+
+def test_a_meal_appointment_stays_a_meal():
+    """식사 약속은 일정이 식사다. 3시간 이하면 식사가 일정의 주인으로 남는다 — 일정 틀로 되돌리면 무엇을 먹었는지가 사라진다."""
+
+    from app.schemas import EventSourceType, EventType, SourceRef, TimelineDraft
+    from app.services.skeleton_guard import keep_calendar_base_events
+    from tests.fixtures.requests import calendar_item
+
+    lunch_place = stay_item("lunch", lat=37.55, start="2026-06-20T12:05:00", end="2026-06-20T12:55:00", address="서울 마포구 도화동 17-13")
+    appointment = calendar_item("lunch", "점심 약속", start="2026-06-20T12:00:00", end="2026-06-20T13:00:00")
+    request = make_request(stays=[lunch_place], calendars=[appointment])
+    clues = _clues_with_calendars(request)
+    base = next(b.base_event for b in clues.bundles if b.base_event and b.base_event.calendar)
+    meal = _kst_event(
+        "순두부찌개", EventType.MEAL, (12, 0), (13, 0),
+        [SourceRef(source_type=EventSourceType.CALENDAR, raw_id=appointment.raw_id)], base=[base.base_id],
+    )
+
+    keep_calendar_base_events(
+        TimelineDraft(user_id="u", date="2026-06-20", timezone="Asia/Seoul", events=[meal]), request, clues
+    )
+
+    assert meal.event_type is EventType.MEAL and meal.title == "순두부찌개"
 
 
 @pytest.mark.parametrize(

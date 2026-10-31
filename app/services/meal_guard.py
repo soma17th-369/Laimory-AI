@@ -26,6 +26,7 @@ event 를 따로 만든다" 를 안내하고, 이 모듈이 draft repair 단계�
 이 가드는 요청 window 검증 **앞**에서 돌아, 늘어난 시간의 최종 경계는 window 검증이 정한다.
 """
 
+import re
 from datetime import datetime, timedelta, tzinfo
 
 from app.core.logging import get_logger
@@ -271,6 +272,34 @@ def enforce_meal_duration(
 
 
 #: 식사가 있었다고 말해 주는 근거의 종류. 시점 근거(`_anchor_times`)와 같은 둘이다.
+#: 식사가 아닌 긴 event 의 식사 표현을 `먹고 시간을 보냈다` 꼴로 바꾼다.
+_LONG_STAY_MEAL_WORDS = (
+    (re.compile(r"먹으며"), "먹고"),
+    (re.compile(r"식사하며"), "식사하고"),
+    (re.compile(r"먹었다\.?$"), "먹고 시간을 보냈다."),
+    (re.compile(r"식사했다\.?$"), "식사하고 시간을 보냈다."),
+)
+
+
+def word_long_stay_meals(draft: TimelineDraft) -> None:
+    """식사 사진을 품은 긴 체류의 문장을 `점심을 먹고 시간을 보냈다` 꼴로 맞춘다(in-place, v4).
+
+    "긴 체류에 사진을 넣는 것은 좋아 근데 문장 구성을 점심을 먹고 시간을 보냈다 이런 식으로 하라니까"
+    (사용자 결정 2026-10-31). `점심을 먹었다` 로 두면 7시간 전체가 점심으로 읽힌다. 식당에 머문 `MEAL` 은 그
+    시간이 식사라 `먹었다` 그대로이고(#163), 일정 event 는 일정을 말하는 문장이라 건드리지 않는다.
+    """
+
+    for event in draft.events:
+        if (
+            event.event_type is EventType.MEAL
+            or event.end_time - event.start_time <= MEAL_MAX_DURATION
+            or any(ref.source_type is EventSourceType.CALENDAR for ref in event.source_refs)
+        ):
+            continue
+        for pattern, replacement in _LONG_STAY_MEAL_WORDS:
+            event.description = pattern.sub(replacement, event.description)
+
+
 _MEAL_EVIDENCE = (EventSourceType.PHOTO, EventSourceType.NOTIFICATION)
 
 

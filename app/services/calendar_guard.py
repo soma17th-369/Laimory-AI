@@ -36,6 +36,7 @@ logger = get_logger(__name__)
 
 #: 되살린 일정의 confidence. "일정이 잡혀 있었다"는 확실하지만 "그 일을 했다"는 아니다.
 _RESTORED_CONFIDENCE = 0.6
+RESTORED_CALENDAR_DESCRIPTION = "캘린더에 적어 둔 일정이다."
 
 _RESTORED_NOTE = (
     "캘린더에 일정이 잡혀 있었다는 것까지가 근거다. 그 시간 내내 실제로 그 일을 했는지는 "
@@ -94,7 +95,7 @@ def ensure_calendar_events(draft: TimelineDraft, request: TimelineDraftRequest) 
                 client_event_id=f"calendar-restored-{index:03d}",
                 event_type=EventType.CALENDAR_EVENT,
                 title=item.title,
-                description="캘린더에 적어 둔 일정이다.",
+                description=RESTORED_CALENDAR_DESCRIPTION,
                 place=calendar_place_label(item.location_text),
                 start_time=start,
                 end_time=end,

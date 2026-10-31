@@ -33,10 +33,13 @@ from app.schemas import (
     TimelineWarningSeverity,
 )
 from app.schemas.clues import NotificationClueKind
-from app.services.base_events import base_event_draft
+from app.services.base_events import BaseEvent, base_event_draft
+from app.services.calendar_guard import RESTORED_CALENDAR_DESCRIPTION
 from app.services.clue_bundles import TimelineClues
 from app.services.location_metrics import SHORT_STAY_MAX
 from app.services.location_skeleton import SegmentKind
+from app.services.meal_guard import MEAL_STAY_MAX_DURATION
+from app.services.photo_guard import CREATED_PHOTO_TITLE
 from app.services.source_lookup import raw_id_of
 from app.services.validator import parse_datetime, resolve_timezone
 
@@ -51,8 +54,33 @@ _MINUTE = timedelta(minutes=1)
 _MIN_OVERLAP = timedelta(minutes=30)
 
 
-#: 일정 기본 event 의 주인이 될 수 없는 종류. 식사·사진은 일정 안의 다른 일이다.
-_NOT_CALENDAR_OWNER = frozenset({EventType.UNKNOWN, EventType.MEAL, EventType.PHOTO_MOMENT})
+#: 일정 기본 event 의 주인이 될 수 없는 종류. 사진·`보낸 시간` 은 일정이 말하는 일이 아니다.
+_NOT_CALENDAR_OWNER = frozenset({EventType.UNKNOWN, EventType.PHOTO_MOMENT})
+
+_TITLE_MAX = 30
+
+#: `merge_reason` 표지. 코드가 만들었거나 구조를 바꿔 Repair 가 글을 써야 하는 event 다.
+NEEDS_WRITING = "코드가 구조를 정했고 제목·문장은 Repair 가 근거로 쓴다."
+
+#: 근거가 위치뿐이면 어디에 있었는지까지만 말하는 종류.
+_PLACE_ONLY_TYPES = frozenset(
+    {EventType.UNKNOWN, EventType.SLEEP, EventType.SOCIAL, EventType.PHOTO_MOMENT}
+)
+
+#: 활동 근거가 없는 체류의 문장. `{place}에서 ○○를 먹으며 시간을 보냈다` 는 활동을 말하므로 맞지 않는다.
+_PLACE_ONLY_SENTENCE = re.compile(r"(?:.*에서 )?(?:시간|밤)을 보냈다\.?")
+
+
+def _owns_calendar(event: TimelineEventDraft, base: BaseEvent) -> bool:
+    """그 event 가 일정 event 로 남을 수 있는가.
+
+    식사는 식사 약속처럼 일정이 식사일 때만이다(식당에 머문 식사 상한 3시간). 더 긴 일정을 식사로 두면
+    식사 시간이 일정을 잘라 회의가 17:24~17:44 가 됐다.
+    """
+
+    if event.event_type is EventType.MEAL:
+        return base.end - base.start <= MEAL_STAY_MAX_DURATION
+    return event.event_type not in _NOT_CALENDAR_OWNER
 
 
 def keep_calendar_base_events(
@@ -91,18 +119,14 @@ def keep_calendar_base_events(
         owner = next(
             (e for e in covering if any(ref.raw_id == calendar_id for ref in e.source_refs)),
             None,
-        ) or next((e for e in covering if e.event_type not in _NOT_CALENDAR_OWNER), None)
-        # 일정을 가진 event 라도 식사·사진·`보낸 시간` 이면 일정 event 로 되돌린다. Repair 가 회의 event 를
-        # 식사로 바꾸며 묶음 id 로 일정을 다시 담자, 식사 시간이 그 event 를 20분으로 줄여 회의 일정이
+        ) or next((e for e in covering if _owns_calendar(e, base)), None)
+        # 일정을 가진 event 라도 일정 event 로 남을 수 없으면 되돌린다. Repair 가 회의 event 를 식사로
+        # 바꾸며 묶음 id 로 일정을 다시 담자, 식사 시간이 그 event 를 20분으로 줄여 회의 일정이
         # 17:24~17:44 가 됐고 일정이 참조되고 있어 캘린더 복원도 돌지 않았다.
-        if owner is None or owner.event_type in _NOT_CALENDAR_OWNER:
+        if owner is None or not _owns_calendar(owner, base):
             owner = owner or covering[0]
-            frame = base_event_draft(base, places=bundle.places)
-            owner.event_type, owner.title, owner.description = (
-                frame.event_type,
-                frame.title,
-                frame.description,
-            )
+            owner.event_type = base.event_type
+            owner.merge_reason = NEEDS_WRITING
         if not any(ref.raw_id == calendar_id for ref in owner.source_refs):
             owner.source_refs.append(
                 SourceRef(source_type=EventSourceType.CALENDAR, raw_id=calendar_id, reason="일정")
@@ -118,6 +142,52 @@ def keep_calendar_base_events(
     if merged:
         draft.events = [event for event in draft.events if id(event) not in merged]
         logger.debug("일정 기본 event 지키기: %d건 합침", len(merged))
+
+
+def hand_restored_events_to_repair(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """코드가 되살린 사진·일정 event 의 고정 문장을 치우고 Repair 에 맡긴다(in-place, 사용자 결정 2026-10-31).
+
+    `사진을 남겼다` 로는 사진의 내용이 사라진다. Repair 가 쓰기 전까지 사진 단서의 말을 그대로 두고, 일정은
+    제목만 두고 문장을 비운다. Repair 가 실패해도 고정 문장이 나가지 않는다.
+    """
+
+    photos = {clue.raw_id: clue for clue in clues.photos}
+    for event in draft.events:
+        if event.description == RESTORED_CALENDAR_DESCRIPTION:
+            event.description = ""
+            event.merge_reason = NEEDS_WRITING
+        elif event.title == CREATED_PHOTO_TITLE:
+            event.merge_reason = NEEDS_WRITING
+            clue = next((photos[r.raw_id] for r in event.source_refs if r.raw_id in photos), None)
+            told = (clue.activity or clue.description or "").strip(" .") if clue else ""
+            event.description = f"{told}." if told else ""
+            if told:
+                event.title = told[:_TITLE_MAX]
+
+
+def restore_place_only_text(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """근거가 위치뿐인 event 의 글을 틀 문장으로 되돌린다. 사본에서만 돈다(`text_suggestions`).
+
+    Repair 가 7시간 체류를 안쪽 점심과 같은 문장으로 고쳐 썼고, 일정 없는 저녁 체류가 `잠` 이 됐고, 사진을
+    식사에 넘겨준 event 가 체류만 남긴 채 `OO와 함께했다` 로 남았다. 위치는 어디에 있었는지만 말한다.
+    """
+
+    location_ids = {raw_id_of(item) for item in [*request.stays, *request.movements]}
+    for event in draft.events:
+        if event.event_type not in _PLACE_ONLY_TYPES or any(
+            ref.raw_id not in location_ids for ref in event.source_refs
+        ):
+            continue
+        if (
+            event.event_type is not EventType.UNKNOWN
+            or "보낸" not in event.title
+            or not _PLACE_ONLY_SENTENCE.fullmatch(event.description)
+        ):
+            _back_to_frame(event, clues)
 
 
 def ensure_skeleton_segments(
@@ -588,9 +658,8 @@ def _detach_distant_photos(
     """촬영 시각이 event 시간(앞뒤 20분) 밖인 사진을 그 event 에서 뺀다.
 
     실제 Timeline 은 주소 없는 오전 11시 사진을 다섯 시간 뒤의 체류에 붙여 `덕충동에서 보수 작업`
-    을 만들었다. 뺀 사진은 사진 단일 귀속이 촬영 시각의 event 로 되살린다. 그 사진이 활동의
-    근거였던 기본 event 는 활동 근거가 남지 않으면 틀 문장으로 되돌린다 — 남은 문장은 뺀 사진이
-    말한 활동이다.
+    을 만들었다. 뺀 사진은 사진 단일 귀속이 촬영 시각의 event 로 되살린다. 활동 근거가 남지 않으면
+    남은 문장은 뺀 사진이 말한 활동이라 Repair 가 다시 쓴다(`NEEDS_WRITING`).
     """
 
     distant = [
@@ -604,18 +673,23 @@ def _detach_distant_photos(
     if not distant or len(distant) == len(event.source_refs):
         return
     event.source_refs = [ref for ref in event.source_refs if ref not in distant]
-    if any(ref.raw_id in activity_ids for ref in event.source_refs):
-        return
+    if not any(ref.raw_id in activity_ids for ref in event.source_refs):
+        event.merge_reason = NEEDS_WRITING
+
+
+def _back_to_frame(event: TimelineEventDraft, clues: TimelineClues) -> None:
+    """event 를 온 곳의 체류 틀 문장으로 되돌린다."""
+
     base = next(
         (bundle.base_event for b in event.base_event_ids if (bundle := clues.base_bundle(b)) and bundle.base_event),
         None,
     )
     if base is None:
         return
-    event.event_type = base.event_type
-    event.title = base.title
-    event.description = base.description
-    event.merge_reason = "근거 시간 밖의 사진을 뺀 뒤 활동 근거가 남지 않아 기본 event 의 틀 문장으로 되돌렸다."
+    frame = base.stay if base.stay is not None else base
+    event.event_type = frame.event_type
+    event.title = frame.title
+    event.description = frame.description
 
 
 def _fit_to(event: TimelineEventDraft, spans) -> None:

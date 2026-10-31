@@ -23,6 +23,7 @@ LLM 이 "무엇을 다시 확정해야 하는지" 골라 부를 수 있어야 �
 """
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from time import perf_counter
@@ -73,6 +74,7 @@ from app.services.draft_repair import (
     sort_events,
 )
 from app.services.meal_guard import MEAL_STAY_MAX_DURATION, enforce_meal_duration
+from app.services.skeleton_guard import NEEDS_WRITING
 from app.services.photo_guard import inspect_photo_assignment
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import AppError, code_of, report_error
@@ -144,6 +146,9 @@ class RepairTool:
 # --- 조회 --------------------------------------------------------------------
 
 #: HEALTH 는 하나의 itemType 이지만 metric 으로 SLEEP/ACTIVITY 를 나눈다.
+#: 문장이 식사를 말하는 표현.
+_MEAL_WORDS = re.compile(r"먹|식사")
+
 _HEALTH_SOURCE_TYPES = {
     HealthMetric.SLEEP: EventSourceType.SLEEP,
     HealthMetric.STEPS: EventSourceType.ACTIVITY,
@@ -238,9 +243,14 @@ def _update_event(ctx: RepairContext, args: dict) -> str:
         named_photos = _named_photos(ctx, identifiers)
         fields = _without_misplaced(ctx, str(client_event_id), fields, named_photos)
 
-    if ctx.clues is not None and fields.get("eventType") == EventType.MEAL.value:
-        _require_meal_evidence(ctx, str(client_event_id), fields)
+    if ctx.clues is not None:
+        becomes_meal = fields.get("eventType") == EventType.MEAL.value
+        if becomes_meal or _writes_a_meal(ctx, str(client_event_id), fields):
+            _require_meal_evidence(ctx, str(client_event_id), fields, becomes_meal=becomes_meal)
     event = update_event(ctx.draft, str(client_event_id), fields)
+    # 제목만 고치면 문장이 빈 채로 남는다. 문장까지 있어야 다 쓴 것이다.
+    if event.merge_reason == NEEDS_WRITING and "description" in fields and event.description.strip():
+        event.merge_reason = None
     # Repair 가 사진을 직접 적은 event 가 그 사진의 주인이다(사용자 결정 2026-10-30 — 코드는 Repair 를
     # 따른다). 다른 event 에서 빼 두면 확정 pass 의 사진 단일 귀속이 자기 순서로 Repair 의 선택을 뒤집지
     # 않는다. 회의·식사 실행에서 그 순서가 일정이 있는 회의를 골라 식사가 지워졌다.
@@ -250,12 +260,25 @@ def _update_event(ctx: RepairContext, args: dict) -> str:
     return f"{client_event_id} 를 수정했습니다: {event.title} ({', '.join(sorted(fields))})"
 
 
-def _require_meal_evidence(ctx: RepairContext, client_event_id: str, fields: dict) -> None:
-    """근거 없이 식사로 바꾸지 않는다(v4, 사용자 결정 2026-10-31).
+def _writes_a_meal(ctx: RepairContext, client_event_id: str, fields: dict) -> bool:
+    """타입을 두고 문장만 식사로 고치는 호출인가. 식사 약속처럼 일정이 있는 event 는 일정의 말이다."""
+
+    current = next((e for e in ctx.draft.events if e.client_event_id == client_event_id), None)
+    if current is None or any(ref.source_type is EventSourceType.CALENDAR for ref in current.source_refs):
+        return False
+    return bool(_MEAL_WORDS.search(f"{fields.get('title') or ''} {fields.get('description') or ''}"))
+
+
+def _require_meal_evidence(
+    ctx: RepairContext, client_event_id: str, fields: dict, *, becomes_meal: bool = True
+) -> None:
+    """근거 없이 식사를 쓰지 않는다(v4, 사용자 결정 2026-10-31).
 
     식사는 시간이 맞는 사진이나 알림(결제)이 있어야 하고 3시간을 넘지 않는다(식당에 머문 식사 상한).
     Repair 가 없는 사진을 근거로("B3 안에 점심처럼 보이는 사진") 아침 체류를 `점심 식사` 로, 검사 결과를
-    따라 7시간 체류를 식사로 바꿨다 — 둘 다 근거는 그대로 두고 eventType·문장만 바꿨다.
+    따라 7시간 체류를 식사로 바꿨다 — 둘 다 근거는 그대로 두고 eventType·문장만 바꿨다. 타입을 두고 문장만
+    식사로 고치는 호출도 같은 근거를 본다 — 대화 알림만 가진 아침 체류의 문장이 식사로 덮였다. 다만 긴
+    체류에 사진이 있으면 `점심을 먹으며 시간을 보냈다` 로 쓸 수 있어 길이는 보지 않는다(사용자 결정).
     """
 
     current = next((e for e in ctx.draft.events if e.client_event_id == client_event_id), None)
@@ -269,11 +292,13 @@ def _require_meal_evidence(ctx: RepairContext, client_event_id: str, fields: dic
         if "sourceRefs" in fields
         else current.source_refs
     )
-    _require_meal_evidence_of(ctx, start, end, refs)
+    _require_meal_evidence_of(ctx, start, end, refs, check_length=becomes_meal)
 
 
-def _require_meal_evidence_of(ctx: RepairContext, start, end, refs: list[SourceRef]) -> None:
-    if end - start > MEAL_STAY_MAX_DURATION:
+def _require_meal_evidence_of(
+    ctx: RepairContext, start, end, refs: list[SourceRef], *, check_length: bool = True
+) -> None:
+    if check_length and end - start > MEAL_STAY_MAX_DURATION:
         raise RepairToolError(
             "3시간이 넘는 event 는 식사가 아닙니다. 그 안의 식사는 split_event 로 따로 꺼냅니다."
         )
