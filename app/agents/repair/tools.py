@@ -191,21 +191,34 @@ def _item_label(item) -> str:
     return ""
 
 
-def source_index_text(request: TimelineDraftRequest) -> str:
+def source_index_text(
+    request: TimelineDraftRequest, *, hidden: frozenset[str] | set[str] = frozenset()
+) -> str:
     """근거 원본 목록을 한 줄씩 요약한다(프롬프트용).
 
     전체 항목을 통째로 싣지 않는 이유는 프롬프트가 비대해지기 때문이다. 자세한 값이
-    필요하면 LLM 이 `lookup_source` 로 그 항목만 꺼내 본다.
+    필요하면 LLM 이 `lookup_source` 로 그 항목만 꺼내 본다. `hidden` 은 싣지 않을 rawId 다.
     """
 
     lines: list[str] = []
     for raw_id, (source_type, item) in _source_index(request).items():
+        if raw_id in hidden:
+            continue
         start = getattr(item, "start_at", None) or getattr(item, "taken_at", None) or getattr(item, "posted_at", None) or ""
         end = getattr(item, "end_at", None) or ""
         span = f"{start}~{end}" if end else str(start)
         label = _item_label(item)
         lines.append(f"- {source_type.value} rawId={raw_id} {span} {label}".rstrip())
     return "\n".join(lines) if lines else "없음"
+
+
+def dropped_notification_ids(ctx: RepairContext) -> set[str]:
+    """Notification v4 가 단서로 남기지 않은 알림의 rawId. Repair 입력에 싣지 않는다(#173)."""
+
+    if ctx.clues is None:
+        return set()
+    kept = {raw_id for clue in ctx.clues.notifications for raw_id in clue.raw_ids}
+    return {raw_id_of(item) for item in ctx.request.notifications} - kept
 
 
 def _lookup_source(ctx: RepairContext, args: dict) -> str:
@@ -364,7 +377,7 @@ def _named_photos(ctx: RepairContext, identifiers: list) -> set[str]:
 def _with_expanded_evidence(ctx: RepairContext, fields: dict, client_event_id: str) -> dict:
     """v4 의 `evidence`(묶음·단서 id 와 rawId)를 `sourceRefs` 로 펼친다(#169).
 
-    도구 인자의 근거를 펼치는 자리는 여기 하나다. 묶음 id 는 그 구간과 붙은 단서 전부이고,
+    도구 인자의 근거를 펼치는 자리는 여기 하나다. 묶음 id 는 그 구간과 붙은 사진·일정·대화 전부이고,
     rawId 는 그대로 근거가 된다. 펼친 근거가 하나도 없으면 고치지 않는다. 다른 event 가 이미
     가진 사진·대화는 묶음을 펼칠 때 빼고 단서 id 로 직접 적은 것만 담는다 — Timeline 출력을
     펼칠 때와 같은 규칙이다.

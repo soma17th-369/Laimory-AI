@@ -18,10 +18,10 @@ from app.schemas import (
     TimelineDraft,
     TimelineEventDraft,
 )
-from app.schemas.clues import PhotoClue
+from app.schemas.clues import NotificationClue, NotificationClueKind, PhotoClue
 from app.services.clue_bundles import build_timeline_clues
 from app.services.location_skeleton import build_location_skeleton
-from tests.fixtures.requests import make_request, photo_item, stay_item
+from tests.fixtures.requests import make_request, notification_item, photo_item, stay_item
 
 _KST = timezone(timedelta(hours=9))
 
@@ -49,6 +49,23 @@ def _context():
     )
     draft = TimelineDraft(user_id="u", date="2026-06-20", timezone="Asia/Seoul", events=[event])
     return RepairContext(request=request, draft=draft, extended=True, clues=clues), photo
+
+
+def test_a_dropped_notification_is_not_in_the_repair_prompt():
+    """Notification 이 버린 알림은 `근거 원본` 에도 없다(#173). 남긴 알림은 있다."""
+
+    ctx, _ = _context()
+    kept = notification_item("kept", "토스", "결제 완료", posted="2026-06-20T12:30:00")
+    dropped = notification_item("dropped", "YouTube", "좋아요 알림", posted="2026-06-20T13:00:00")
+    ctx.request.notifications.extend([kept, dropped])
+    ctx.clues.notifications.append(
+        NotificationClue(id="N1", kind=NotificationClueKind.PAYMENT, rawIds=[kept.raw_id], summary="결제")
+    )
+
+    prompt = build_repair_prompt(ctx, remaining=3)
+
+    assert kept.raw_id in prompt
+    assert dropped.raw_id not in prompt
 
 
 def test_v4_prompt_carries_bundles_merge_reasons_and_unused_clues():
