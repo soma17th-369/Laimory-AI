@@ -32,6 +32,7 @@ from app.core.structured import StructuredOutputError
 from app.core.llm_stages import LLMStage
 from app.schemas import (
     AgentEventResult,
+    PRE_CLUE_EVENT_TYPES,
     TimelineAgentOutput,
     TimelineClueEvent,
     TimelineClueOutput,
@@ -341,8 +342,13 @@ def parse_timeline_draft(text: str, request: TimelineDraftRequest) -> TimelineDr
         item.pop("eventId", None)
         item["clientEventId"] = f"event-{len(events) + 1:03d}"
         try:
-            events.append(TimelineEventDraft.model_validate(item))
-        except ValidationError as exc:
+            event = TimelineEventDraft.model_validate(item)
+            # 이 함수는 v1~v3 경로다(v4 는 `parse_timeline_clue_draft`). 13종 밖의 값은 모르는
+            # 문자열과 똑같이 그 항목만 뺀다 — draft 가 공용 enum 이라 검증을 통과한다(#172).
+            if event.event_type not in PRE_CLUE_EVENT_TYPES:
+                raise ValueError(f"unknown eventType: {event.event_type.value}")
+            events.append(event)
+        except (ValidationError, ValueError) as exc:
             _report_skipped_item("event", index, exc)
             skipped.append(_invalid_item_warning("event", index))
 

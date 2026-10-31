@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from app.schemas import EventType, TimelineDraft, TimelineWarningSeverity
+from app.schemas import PRE_CLUE_EVENT_TYPES, EventType, TimelineDraft, TimelineWarningSeverity
 from app.services.duration_guard import (
     DURATION_LIMITS,
     LEGACY_MAX_EVENT_DURATION,
@@ -205,7 +205,9 @@ def _hours_text(limit: timedelta) -> str:
     return f"{hours:.1f}".removesuffix(".0")
 
 
-@pytest.mark.parametrize("event_type", _LIMITED, ids=lambda t: t.value)
+@pytest.mark.parametrize(
+    "event_type", [t for t in _LIMITED if t in PRE_CLUE_EVENT_TYPES], ids=lambda t: t.value
+)
 def test_timeline_v3_prompt_states_the_same_limit(event_type):
     """프롬프트가 다른 값을 말하면 Timeline 이 다시 보는 길이와 코드가 짚는 길이가 갈린다.
 
