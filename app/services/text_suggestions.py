@@ -5,7 +5,8 @@
 
 글 규칙은 그대로 코드에 있다 — 다만 **사본에서만 돌린다.** 달라진 값을 `TEXT_CORRECTION` 으로 Repair 에
 넘기고, 쓰는 것은 Repair 다. 규칙마다 판정을 따로 만들지 않고 고치던 함수를 그대로 쓰므로 규칙이 하나다.
-장소 이름을 `{place}` 칸으로 바꾸는 것만 확정이 직접 한다(`fill_place_slots(slots_only=True)`, 사용자 결정).
+장소 자리만 확정이 직접 맞춘다(사용자 결정) — 문장의 장소 이름을 `{place}` 칸으로 바꾸고
+(`fill_place_slots(slots_only=True)`), 제목과 이동 글에서 장소 이름을 뺀다(`keep_place_names_out`).
 """
 
 from collections.abc import Callable

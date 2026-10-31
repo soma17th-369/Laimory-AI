@@ -523,6 +523,7 @@ def test_v4_stay_time_cut_by_a_later_step_comes_back():
     assert meal.end_time - meal.start_time <= timedelta(hours=1)
 
 
+
 # --- 꺼낸 event 가 사진을 갖는다 ------------------------------------------------------------
 
 
@@ -630,6 +631,7 @@ def test_v4_location_evidence_matches_the_event_time():
     assert [r.raw_id for r in meal.source_refs] == [evening.raw_id]
     assert [r.raw_id for r in near.source_refs] == [morning.raw_id], "앞뒤 20분은 그 시간의 기록이다."
     assert [r.raw_id for r in alone.source_refs] == [morning.raw_id]
+
 
 
 def _stay_day(*notifications):
@@ -752,6 +754,7 @@ def test_a_stay_elsewhere_inside_a_long_calendar_stays():
     assert draft.events == [cafe, meeting]
 
 
+
 def _notification_clue(label, kind, *, today=None, title="Amazon 결제", at=None):
     from app.schemas.clues import NotificationClue
 
@@ -842,6 +845,7 @@ def test_a_located_day_leaves_alerts_to_timeline():
     assert draft.events == []
 
 
+
 def test_a_stay_cannot_slip_an_activity_into_the_place_only_sentence():
     """`보냈다` 로 끝나도 활동을 말하면 틀 문장이 아니다. 위치뿐인 7시간 체류에 음식 이름이 붙은 실제 출력."""
 
@@ -885,6 +889,7 @@ def test_a_restored_alert_goes_through_confirmation_and_the_result_contract():
     twice = repair_draft(draft, request, clues=clues)
 
     assert len([event for event in twice.events if event.title == "Amazon 결제"]) == 1, "확정이 반복돼도 한 번만 되살린다."
+
 
 
 def test_a_stay_with_no_calendar_is_not_sleep():
@@ -937,6 +942,7 @@ def test_same_titles_in_a_row_go_to_repair():
     [found] = [f for f in report.findings if f["kind"] == "SAME_TITLE_IN_A_ROW"]
     assert found["clientEventId"] == draft.events[0].client_event_id
     assert found["nextEvent"] == draft.events[1].client_event_id
+
 
 
 @pytest.mark.parametrize(
@@ -1055,6 +1061,7 @@ def test_two_place_only_twins_do_not_absorb_each_other():
     assert len(settle(*twins).events) == 1
 
 
+
 def test_a_restored_photo_keeps_what_the_photo_shows():
     """`사진을 남겼다` 로는 사진의 내용이 사라진다. Repair 가 쓰기 전까지 사진 단서의 말을 둔다."""
 
@@ -1150,6 +1157,45 @@ def test_suggestions_leave_the_draft_alone():
     assert draft.model_dump() == before
 
 
+
+def test_confirmation_keeps_place_names_in_the_slot_only():
+    """문장의 장소 이름은 `{place}` 칸으로, 제목과 이동 글에는 장소 이름이 남지 않는다(사용자 결정 2026-10-31)."""
+
+    from app.services.confirm_report import ConfirmReport
+    from app.services.draft_repair import repair_draft
+    from tests.fixtures.requests import movement_item
+
+    office = stay_item(
+        "office", start="2026-06-20T09:00:00", end="2026-06-20T12:00:00", places=["프롬프트 일청담점"],
+        address="대구 북구 대현동 25",
+    )
+    home = stay_item(
+        "home", start="2026-06-20T13:00:00", end="2026-06-20T18:00:00", lat=37.6, lon=127.1, places=["한빛아파트"],
+        address="대구 수성구 지범로 1",
+    )
+    move = movement_item("m", start="2026-06-20T12:00:00", end="2026-06-20T13:00:00")
+    request = make_request(stays=[office, home], movements=[move])
+    clues = _clues(request)
+    base = next(bundle.base_event for bundle in clues.bundles if bundle.base_event)
+    stay = _event(
+        [(EventSourceType.STAY, office.raw_id)], start=_at(9), end=_at(12), title="프롬프트 일청담점에서 점심",
+        description="프롬프트 일청담점에서 시간을 보냈다.", base=[base.base_id],
+    )
+    moving = _event(
+        [(EventSourceType.MOVEMENT, move.raw_id)], start=_at(12), end=_at(13), event_type=EventType.MOVEMENT,
+        title="이동", description="한빛아파트로 이동했다.",
+    )
+
+    draft = repair_draft(_draft(stay, moving), request, report=ConfirmReport(), clues=clues)
+
+    held = next(event for event in draft.events if office.raw_id in [ref.raw_id for ref in event.source_refs])
+    assert held.description == "{place}에서 시간을 보냈다."
+    assert "프롬프트 일청담점" not in held.title and held.title.endswith("점심")
+    [movement] = [event for event in draft.events if event.event_type is EventType.MOVEMENT]
+    assert "한빛아파트" not in movement.description
+
+
+
 def test_a_day_with_only_talk_and_news_is_not_left_empty():
     """사진도 일정도 결제도 없는 날은 남은 알림이라도 기록이다. event 0건은 정상 결과로 저장돼 아무것도 안 보인다."""
 
@@ -1177,3 +1223,85 @@ def test_an_empty_day_restores_no_more_than_three_talks():
     clues = [_notification_clue(f"N{index}", NotificationClueKind.CONVERSATION) for index in range(5)]
 
     assert len(_without_location(*clues)().events) == 3
+
+
+
+def _title_day():
+    stay = stay_item(
+        "day", start="2026-06-20T09:00:00", end="2026-06-20T12:00:00", places=["공덕 SK 리더스뷰"],
+        address="서울특별시 마포구 도화동 17-13",
+    )
+    request = make_request(stays=[stay])
+    return stay, request, _clues(request)
+
+
+@pytest.mark.parametrize(
+    "title, expected",
+    [
+        ("{place}에서 점심", "마포구 도화동에서 점심"),
+        ("{place} 점심", "마포구 도화동 점심"),
+        ("공덕 SK 리더스뷰에서 매운 국물 요리와 만두", "마포구 도화동에서 매운 국물 요리와 만두"),
+        ("공덕 SK 리더스뷰 점심", "점심"),
+        ("마포구 도화동에서 점심", "마포구 도화동에서 점심"),
+        ("회의에서 나온 이야기", "회의에서 나온 이야기"),
+    ],
+)
+def test_a_title_carries_only_the_address(title, expected):
+    """제목에는 `{place}` 도 장소 이름도 남지 않는다(사용자 결정 2026-10-31). 그 밖의 말은 그대로다."""
+
+    from app.services.place_slots import keep_place_names_out
+
+    stay, request, clues = _title_day()
+    event = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(9), end=_at(12), title=title,
+        description="{place}에서 시간을 보냈다.",
+    )
+    event.address = stay.address
+
+    keep_place_names_out(_draft(event), request, clues)
+
+    assert event.title == expected
+
+
+def test_a_title_with_no_address_only_loses_the_name():
+    """주소 없는 17:24 사진의 제목에 다른 곳의 장소 이름이 붙은 실제 출력. 빌려 올 지명이 없으면 이름만 뺀다."""
+
+    from app.services.place_slots import keep_place_names_out
+
+    stay, request, clues = _title_day()
+    event = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(9), end=_at(12),
+        title="공덕 SK 리더스뷰에서 매운 국물 면 요리와 만두", description="매운 국물 면 요리와 만두를 먹었다.",
+    )
+
+    keep_place_names_out(_draft(event), request, clues)
+
+    assert event.title == "매운 국물 면 요리와 만두"
+    assert event.description == "매운 국물 면 요리와 만두를 먹었다.", "문장은 건드리지 않는다."
+
+
+def test_a_movement_carries_only_the_address():
+    """이동은 제목과 문장 모두 주소 지명만 나온다. 장소 이름이 없는 글은 그대로 둔다."""
+
+    from app.services.place_slots import keep_place_names_out
+    from tests.fixtures.requests import movement_item
+
+    stay = stay_item(
+        "home", start="2026-06-20T09:00:00", end="2026-06-20T10:00:00", places=["다른 이름"],
+        address="서울특별시 마포구 도화동 17-13",
+    )
+    move = movement_item("m", start="2026-06-20T10:00:00", end="2026-06-20T11:00:00")
+    move.start = GeoPlace(latitude=37.5, longitude=127.0, address="서울특별시 마포구 도화동 17-13", places=["한빛아파트"])
+    move.end = GeoPlace(latitude=37.6, longitude=127.1, address="서울특별시 강남구 강남대로 396", places=["OO타워"])
+    request = make_request(stays=[stay], movements=[move])
+    clues = _clues(request)
+    named = _event(
+        [(EventSourceType.MOVEMENT, move.raw_id)], start=_at(10), end=_at(11), event_type=EventType.MOVEMENT,
+        title="한빛아파트에서 OO타워로 이동", description="{place}에서 OO타워로 이동했다.",
+    )
+
+    keep_place_names_out(_draft(named), request, clues)
+
+    for text in (named.title, named.description):
+        assert "한빛아파트" not in text and "OO타워" not in text and "{place}" not in text
+        assert "마포구" in text and "강남구" in text

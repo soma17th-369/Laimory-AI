@@ -121,6 +121,7 @@ from app.services.place_resolver import resolve_places
 from app.services.place_slots import (
     confirm_place_slots,
     fill_place_slots,
+    keep_place_names_out,
     place_names_in_title,
 )
 from app.services.skeleton_guard import (
@@ -801,8 +802,10 @@ def _clue_correction_steps(
             extended.append(
                 ("되살린 event 넘기기", partial(_skeleton_step, hand_restored_events_to_repair, clues=clues))
             )
-            # 예외는 `{place}` 칸 하나다. 칸이 있어야 사용자가 고른 장소를 문장이 따라간다.
+            # 예외는 장소 자리 둘이다. 문장의 장소 이름은 칸으로 바꿔야 사용자가 고른 장소를 따라가고,
+            # 제목과 이동 글에는 장소 이름이 절대 남지 않는다(사용자 결정 2026-10-31).
             extended.append(("문장 장소 칸", partial(fill_place_slots, clues=clues, slots_only=True)))
+            extended.append(("제목·이동 장소 이름", partial(_skeleton_step, keep_place_names_out, clues=clues)))
         else:
             extended.append((name, overrides.get(name, step)))
     return (*steps, *extended)

@@ -209,6 +209,47 @@ def fill_place_slots(
         event.description = description
 
 
+def keep_place_names_out(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """제목과 이동 글에 장소 이름·칸을 남기지 않는다(in-place, v4, 사용자 결정 2026-10-31).
+
+    "제목에는 절대 {place} 를 남기면 안되고 무조건 주소만 언급해야된다", "이동에서도 제목과 내용에 주소만
+    나와야한다". Repair 가 놓치면 그대로 나갔다(제목 517개 중 1개). 장소 이름과 칸만 지명으로 바꾸거나 빼고
+    나머지 글은 건드리지 않는다 — 코드가 글을 통째로 덮으면 일정·사진의 내용이 사라졌다.
+    """
+
+    tz = resolve_timezone(request.timezone)
+    index = _Index.build(request)
+    names = _place_names_outside_areas(
+        request, _day_raw_addresses(request), clues.same_place, clues.areas
+    )
+    for event in draft.events:
+        if event.event_type is EventType.MOVEMENT:
+            movements = index.evidence(event, tz).movements
+            route = _movement_route(movements, tz, clues.same_place, clues.areas)
+            for field, default in (("title", "이동"), ("description", "이동했다.")):
+                text = getattr(event, field) or ""
+                if PLACE_SLOT in text or _without_place_names(text, names) != text:
+                    cleaned = text.replace(PLACE_SLOT, "")
+                    setattr(event, field, _movement_text(cleaned, route, names, default))
+            continue
+        event.title = _title_without_place(event.title, names, clues.area(event.address))
+
+
+def _title_without_place(title: str, names: list[str], area: str | None) -> str:
+    """제목의 칸과 장소 이름을 지명으로 바꾸거나 뺀다. 그 밖의 말은 그대로다."""
+
+    text = title.replace(f"{PLACE_SLOT}에서 ", f"{area}에서 " if area else "")
+    text = text.replace(PLACE_SLOT, area or "")
+    if "에서 " in text:
+        head, rest = text.split("에서 ", 1)
+        if head.strip() in names and rest.strip():
+            text = f"{area}에서 {rest.strip()}" if area else rest.strip()
+    text = " ".join(_without_place_names(text, names).split())
+    return text or area or title
+
+
 def fix_counterpart_particles(
     draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
 ) -> None:
@@ -364,6 +405,7 @@ def _day_place_names(request: TimelineDraftRequest) -> set[str]:
     names = [
         *(name for stay in request.stays for name in (stay.place, *stay.places)),
         *(name for m in request.movements if m.end for name in (m.end.place, *m.end.places)),
+        *(name for m in request.movements if m.start for name in (m.start.place, *m.start.places)),
         *(name for photo in request.photos for name in photo.places),
         *(split_location_text(c.location_text)[0] for c in request.calendars),
     ]
