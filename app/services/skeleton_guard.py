@@ -68,6 +68,12 @@ _NOTIFICATION_EVENT_KINDS = frozenset(
     {NotificationClueKind.PAYMENT, NotificationClueKind.RESERVATION, NotificationClueKind.ACTION_RESULT}
 )
 _RESTORED_CONFIDENCE = 0.6
+
+#: 틀이 없는 날 알림뿐인 event 의 종류. 결제가 쇼핑인지 식사인지 코드는 모르므로 Repair 가 글을 쓰며 바꾼다.
+_ALERT_EVENT_TYPES = {
+    NotificationClueKind.CONVERSATION: EventType.SOCIAL,
+    NotificationClueKind.PAYMENT: EventType.SHOPPING,
+}
 _TITLE_MAX = 30
 
 #: `merge_reason` 표지. 코드가 만들었거나 구조를 바꿔 Repair 가 글을 써야 하는 event 다.
@@ -283,7 +289,7 @@ def _restore_notifications(draft: TimelineDraft, picked: list[NotificationClue])
         draft.events.append(
             TimelineEventDraft(
                 client_event_id=f"notification-restored-{clue.clue_id}",
-                event_type=EventType.UNKNOWN,
+                event_type=_ALERT_EVENT_TYPES.get(clue.kind, EventType.ERRAND),
                 title=(clue.title or clue.counterpart or clue.kind.value)[:_TITLE_MAX],
                 description=clue.summary or "",
                 start_time=at,
@@ -422,6 +428,38 @@ def _keep_notifications_on_one_event(draft: TimelineDraft, request: TimelineDraf
             rest = [ref for ref in event.source_refs if ref.raw_id != raw_id]
             if event is not owner and rest:
                 event.source_refs = rest
+
+
+def retire_unknown_events(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """v4 에는 `UNKNOWN` event 가 없다(in-place, 사용자 결정 2026-10-31).
+
+    #172 로 체류는 `STAY`, #173 으로 알림만으로 된 event 는 없어져 `UNKNOWN` 이 쓰일 자리가 없다. 프롬프트와
+    출력 schema 에서 뺐지만 모델이 쓸 수 있어 코드가 지킨다. 근거로 종류를 정하고 글은 건드리지 않는다.
+    일정이 있으면 `CALENDAR_EVENT`, 위치 근거가 있으면 `STAY`, 사진뿐이면 `PHOTO_MOMENT` 이고, 알림뿐이면(틀이
+    없는 날) 단서 종류로 정한다. `EventType.UNKNOWN` 값은 v1~v3 가 쓰므로 남는다.
+    """
+
+    location_ids = {raw_id_of(item) for item in [*request.stays, *request.movements]}
+    kinds = {raw_id: clue.kind for clue in clues.notifications for raw_id in clue.raw_ids}
+    for event in draft.events:
+        if event.event_type is not EventType.UNKNOWN:
+            continue
+        refs = {ref.raw_id for ref in event.source_refs}
+        if _has_calendar(event):
+            event.event_type = EventType.CALENDAR_EVENT
+        elif refs & location_ids:
+            event.event_type = EventType.STAY
+        elif any(ref.source_type is EventSourceType.PHOTO for ref in event.source_refs):
+            event.event_type = EventType.PHOTO_MOMENT
+        else:
+            alerts = {kinds.get(raw_id) for raw_id in refs}
+            kind = next(
+                (k for k in (NotificationClueKind.CONVERSATION, NotificationClueKind.PAYMENT) if k in alerts),
+                None,
+            )
+            event.event_type = _ALERT_EVENT_TYPES.get(kind, EventType.ERRAND)
 
 
 def _conversation_ids(clues: TimelineClues) -> set[str]:
@@ -824,8 +862,8 @@ def remove_calendar_events_without_calendar(
     일정 event 는 사용자가 캘린더에 적은 일정이 있을 때만이다(사용자 결정). 실제 Timeline 은
     Gmail·문자로 온 예비소집 안내를 `11:25~23:59 ICPC 예비소집 안내` 일정 event 로 만들었다.
     알림의 받은 시각은 일정 시간이 아니라 알림만 근거인 일정 event 는 시간이 지어낸 것이라 지운다.
-    다른 근거가 있으면 그 근거의 event 로 두고 타입만 바꾼다 — 근거가 위치뿐이면 `STAY`,
-    사진·알림이 함께 있으면 `UNKNOWN` 이다.
+    다른 근거가 있으면 그 근거의 event 로 두고 타입만 바꾼다 — 위치 근거가 있으면 `STAY`, 사진뿐이면
+    `PHOTO_MOMENT` 다.
     """
 
     notification_ids = {raw_id_of(item) for item in request.notifications}
@@ -835,8 +873,8 @@ def remove_calendar_events_without_calendar(
         if event.event_type is EventType.CALENDAR_EVENT and not _has_calendar(event):
             if all(ref.raw_id in notification_ids for ref in event.source_refs):
                 continue
-            only_location = all(ref.raw_id in location_ids for ref in event.source_refs)
-            event.event_type = EventType.STAY if only_location else EventType.UNKNOWN
+            located = any(ref.raw_id in location_ids for ref in event.source_refs)
+            event.event_type = EventType.STAY if located else EventType.PHOTO_MOMENT
             # `…일정이 있었다` 문장은 일정이 없으면 틀린 말이다. 종류와 글은 Repair 가 근거로 쓴다.
             event.merge_reason = NEEDS_WRITING
         kept.append(event)

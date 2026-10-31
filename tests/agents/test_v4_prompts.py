@@ -114,7 +114,10 @@ def test_timeline_v4_states_the_event_limit_the_code_enforces():
     assert f"**최종 event는 {MAX_EVENT_COUNT}개를 넘지 않습니다.**" in _timeline()
 
 
-@pytest.mark.parametrize("event_type", [member.value for member in EventType if member is not EventType.WAKE_UP])
+@pytest.mark.parametrize(
+    "event_type",
+    [member.value for member in EventType if member not in (EventType.WAKE_UP, EventType.UNKNOWN)],
+)
 def test_timeline_v4_type_table_has_every_type(event_type: str):
     table = _between(_timeline(), "### eventType 표", "#### `MEAL`과 `SLEEP`")
 
@@ -126,6 +129,8 @@ def test_timeline_v4_review_limits_match_the_code():
 
     table = _between(_timeline(), "### eventType 표", "#### `MEAL`과 `SLEEP`")
     for event_type, limit in DURATION_LIMITS.items():
+        if event_type is EventType.UNKNOWN:  # v4 에 없는 종류다(#173).
+            continue
         row = next((line for line in table.splitlines() if line.startswith(f"| `{event_type.value}` |")), None)
         if limit is None:
             if row is not None:
@@ -435,16 +440,23 @@ def test_timeline_v4_keeps_a_calendar_a_calendar():
 
 
 def test_timeline_and_repair_v4_list_every_type():
-    every = {member.value for member in EventType}
+    every = {member.value for member in EventType} - {EventType.UNKNOWN.value}
 
     for text in (_timeline(), _repair()):
         listed = _between(text, f"eventType은 {len(every)}종 중 하나입니다: ", ".")
         assert set(re.findall(r"`(\w+)`", listed)) == every
 
-    assert f'"eventType": "{"|".join(member.value for member in EventType)}"' in _timeline()
+    assert f'"eventType": "{"|".join(member.value for member in EventType if member is not EventType.UNKNOWN)}"' in _timeline()
 
 
-@pytest.mark.parametrize("event_type", ["STAY", "SHOPPING", "CULTURE", "ERRAND", "UNKNOWN"])
+def test_v4_prompts_do_not_offer_unknown():
+    """v4 에는 `UNKNOWN` event 가 없다(#173). 체류는 `STAY`, 알림만으로 된 event 는 만들지 않는다."""
+
+    for text in (_timeline(), _repair(), _read("agents/question/prompts/v4/question.md")):
+        assert "UNKNOWN" not in text
+
+
+@pytest.mark.parametrize("event_type", ["STAY", "SHOPPING", "CULTURE", "ERRAND"])
 def test_question_v4_has_an_example_for_each_new_boundary(event_type: str):
     question = _read("agents/question/prompts/v4/question.md")
 

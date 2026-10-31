@@ -64,7 +64,7 @@ def test_pre_clue_provider_schema_is_unchanged_to_the_letter(name):
 def test_v4_output_schema_opens_every_type(schema):
     prop = schema["$defs"]["TimelineClueEvent"]["properties"]["eventType"]
 
-    assert prop["enum"] == [member.value for member in EventType]
+    assert prop["enum"] == [member.value for member in EventType if member is not EventType.UNKNOWN]
 
 
 def test_the_pre_clue_set_is_what_the_app_server_takes_today():

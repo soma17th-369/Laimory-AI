@@ -187,7 +187,7 @@ def test_notification_cannot_become_a_calendar_event():
     remove_calendar_events_without_calendar(draft, request, _clues(request))
 
     assert draft.events == [with_stay]
-    assert with_stay.event_type is EventType.UNKNOWN
+    assert with_stay.event_type is EventType.STAY
     assert with_stay.merge_reason == NEEDS_WRITING, "예매 알림으로 쓴 `일정이 있었다` 가 그대로 남은 실제 출력."
 
 
@@ -1600,3 +1600,53 @@ def test_a_conversation_with_a_short_record_counts_as_a_conversation():
 
     assert conversation_events(draft, request, {chat.raw_id}) == []
     assert conversation_events(draft, request, {chat.raw_id}, aside=clues.short_record_ids) == [event]
+
+
+# --- v4 에는 UNKNOWN event 가 없다 (#173) -----------------------------------------------------
+
+
+def test_an_unknown_event_takes_the_type_its_evidence_says():
+    from app.services.skeleton_guard import retire_unknown_events
+
+    stay = stay_item("day", start="2026-06-20T09:00:00", end="2026-06-20T18:00:00")
+    photo = photo_item("p", taken="2026-06-20T20:00:00")
+    chat = notification_item("chat", "카카오톡", "친구", posted="2026-06-20T21:00:00")
+    pay = notification_item("pay", "토스", "결제", posted="2026-06-20T21:30:00")
+    news = notification_item("news", "메시지", "안내", posted="2026-06-20T22:00:00")
+    clues = []
+    for item, kind in (
+        (chat, NotificationClueKind.CONVERSATION),
+        (pay, NotificationClueKind.PAYMENT),
+        (news, NotificationClueKind.NEWS),
+    ):
+        clue = _notification_clue(item.raw_id[:6], kind)
+        clue.raw_ids = [item.raw_id]
+        clues.append(clue)
+    request = make_request(stays=[stay], photos=[photo], notifications=[chat, pay, news])
+    events = [
+        _event([(EventSourceType.STAY, stay.raw_id), (EventSourceType.NOTIFICATION, pay.raw_id)], start=_at(9), end=_at(18)),
+        _event([(EventSourceType.PHOTO, photo.raw_id)], start=_at(20), end=_at(20)),
+        _event([(EventSourceType.NOTIFICATION, chat.raw_id)], start=_at(21), end=_at(21)),
+        _event([(EventSourceType.NOTIFICATION, pay.raw_id)], start=_at(21, 30), end=_at(21, 30)),
+        _event([(EventSourceType.NOTIFICATION, news.raw_id)], start=_at(22), end=_at(22)),
+        _event([(EventSourceType.CALENDAR, fixture_raw_id("calendar"))], start=_at(23), end=_at(23)),
+    ]
+
+    retire_unknown_events(_draft(*events), request, _clues(request, clues))
+
+    assert [event.event_type for event in events] == [
+        EventType.STAY,
+        EventType.PHOTO_MOMENT,
+        EventType.SOCIAL,
+        EventType.SHOPPING,
+        EventType.ERRAND,
+        EventType.CALENDAR_EVENT,
+    ]
+
+
+def test_a_restored_alert_is_not_unknown():
+    clue = _notification_clue("N1", NotificationClueKind.PAYMENT)
+
+    [event] = _without_location(clue)().events
+
+    assert event.event_type is EventType.SHOPPING

@@ -300,7 +300,7 @@ event의 상황마다 문장의 뼈대가 정해져 있습니다. `{ }`는 그 e
 
 - 근거가 충분한 사실은 유지합니다.
 - `update_event`는 변경할 필드만 포함합니다. **값이 바뀌지 않는 호출은 하지 않습니다.** 지금 문장과 같은 문장으로 고치는 것은 고치는 것이 아닙니다.
-- eventType은 17종 중 하나입니다: `WAKE_UP`, `SLEEP`, `MOVEMENT`, `CALENDAR_EVENT`, `MEAL`, `PHOTO_MOMENT`, `MEETING`, `CLASS`, `WORK`, `EXERCISE`, `SOCIAL`, `REST`, `UNKNOWN`, `STAY`, `SHOPPING`, `CULTURE`, `ERRAND`. `CALENDAR_EVENT`는 일정이 근거일 때만입니다. `STAY`는 활동 근거가 없는 체류, `SHOPPING`은 물건을 사거나 고른 것, `CULTURE`는 영화·공연·전시·경기를 본 것, `ERRAND`는 병원·약국·은행·관공서·미용실에서 본 볼일이고, 셋은 결제·예약 알림이나 사진이 그 일을 말할 때만 씁니다. `UNKNOWN`은 근거는 있지만 어느 종류에도 맞지 않을 때입니다.
+- eventType은 16종 중 하나입니다: `WAKE_UP`, `SLEEP`, `MOVEMENT`, `CALENDAR_EVENT`, `MEAL`, `PHOTO_MOMENT`, `MEETING`, `CLASS`, `WORK`, `EXERCISE`, `SOCIAL`, `REST`, `STAY`, `SHOPPING`, `CULTURE`, `ERRAND`. `CALENDAR_EVENT`는 일정이 근거일 때만입니다. `STAY`는 활동 근거가 없는 체류, `SHOPPING`은 물건을 사거나 고른 것, `CULTURE`는 영화·공연·전시·경기를 본 것, `ERRAND`는 병원·약국·은행·관공서·미용실에서 본 볼일이고, 셋은 결제·예약 알림이나 사진이 그 일을 말할 때만 씁니다.
 - 사진과 일정 단서를 `evidence`에서 빼기만 하지 않습니다. 빼면 코드가 다른 event에 붙이거나 새 event로 되살립니다.
 - 같은 도구를 같은 인자로 다시 부르지 않습니다.
 

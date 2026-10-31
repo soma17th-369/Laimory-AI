@@ -235,7 +235,7 @@ app/
 │   ├── location.py/calendar.py/health.py/notification.py/photo.py  # 분리된 도메인 항목
 │   ├── event_candidate.py     # AI 이벤트 후보 모델 (v1~v3. v4 는 쓰지 않는다). `EventType` 은 세트 공용
 │   │                          #   enum 이고 17종이다(#172). 다만 enum 의 JSON schema 는 언제나 13종
-│   │                          #   (`PRE_CLUE_EVENT_TYPES`)을 보이고 v4 출력 모델(`TimelineClueEvent`)만 17종을
+│   │                          #   (`PRE_CLUE_EVENT_TYPES`)을 보이고 v4 출력 모델(`TimelineClueEvent`)만 `UNKNOWN` 을 뺀 16종을
 │   │                          #   연다 — v3 의 provider schema 가 한 글자도 달라지면 안 되고 App Server 는
 │   │                          #   13종 밖의 값을 받으면 task 를 FAILED 로 만든다. LLM 이 적어 낸 새 값은 v1~v3
 │   │                          #   의 입구 세 곳(`parse_timeline_draft`·`AiEventCandidate`·Repair 도구)이 모르는
@@ -403,6 +403,9 @@ app/
     │                          #   근거가 빠지면 알림뿐인 event 가 새로 생긴다). `from` 으로 위치 근거를 달고 꺼낸 event 도 활동
     │                          #   근거가 대화가 아닌 알림뿐이고 같은 기본 event 가 시간을 덮으면 그 event 의 근거로
     │                          #   합친다. 예외는 체류 안의 결제로 꺼낸 `MEAL` 이다.
+    │                          #   **v4 에는 `UNKNOWN` event 가 없다**(`retire_unknown_events`, 사용자 결정 2026-10-31): 일정이 있으면
+    │                          #   `CALENDAR_EVENT`, 위치 근거가 있으면 `STAY`, 사진뿐이면 `PHOTO_MOMENT`, 알림뿐이면 단서 종류로 정한다
+    │                          #   (대화 `SOCIAL`, 결제 `SHOPPING`, 나머지 `ERRAND`). 글은 건드리지 않고 값은 v1~v3 가 쓰므로 enum 에 남는다.
     │                          #   **틀이 하나도 없는 날만 빠진 결제·예약·완료 알림을 되살린다**(`ensure_notification_events`):
     │                          #   그날은 알림이 그날의 기록이다. 제목은 Notification 단서의 `title` 이다. 대화와
     │                          #   소식은 Timeline 이 고르되, 그래도 event 가 0건인 날은 대화(최대 3개)·소식까지 되살린다 — 0건은 정상 결과로 저장돼 아무것도 보이지 않는다.
@@ -778,9 +781,9 @@ app/
 #     말은 하지 않는다(사용자 결정 2026-10-30). event 마다 온
 #     기본 event(`from`, event 시간과 겹치지 않는 것은 파싱에서 버린다), 더한 근거(묶음·단서 id), 병합 이유(`mergeReason`), 장소 후보 순서
 #     (`placeCandidates`)를 쓴다. 장소는 쓰지 않는다. 출력 계약은 v3 와 따로 둔 `TimelineClueOutput` 이다.
-#     **eventType 은 17종이다(#172).** 활동 근거 없는 체류는 `UNKNOWN` 이 아니라 `STAY` 이고, 결제·예약
+#     **eventType 은 16종이고 `UNKNOWN` 은 쓰지 않는다(#172, #173).** 활동 근거 없는 체류는 `STAY` 이고, 결제·예약
 #     알림이나 사진이 말하는 쇼핑·관람·용무는 `SHOPPING`·`CULTURE`·`ERRAND` 다. 근거가 위치뿐이면 이
-#     셋을 쓰지 않는다(#150). `UNKNOWN` 은 근거는 있지만 어느 종류에도 맞지 않는 일이고, 일정이 근거인
+#     셋을 쓰지 않는다(#150). 일정이 근거인
 #     event 는 진료·관람 일정이어도 `CALENDAR_EVENT` 다. 관광지 체류·사진은 `STAY`·`PHOTO_MOMENT` 다.
 #     파싱은 시간·장소가 맞지 않는 사진·일정 근거를 빼고 warning 을 남긴다(`misplaced_clues`). `from` 을
 #     비운 사진 event 는 그 사진이 붙은 위치 구간을 `from` 으로 잇는다 — 단서를 위치에 잇는 것은 코드다.

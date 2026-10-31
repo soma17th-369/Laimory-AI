@@ -29,10 +29,16 @@ from app.schemas.common import CamelModel
 from app.schemas.event_candidate import EventType, InferenceLevel, SourceRef
 
 #: v4 Timeline 출력의 eventType. `EventType` 의 schema 는 v1~v3 를 위해 13종만 보이므로
-#: 여기서 17종을 연다(#172). v4 에서 LLM 이 eventType 을 내는 모델은 이것 하나다.
+#: 여기서 새 4종을 연다(#172). `UNKNOWN` 은 v4 에서 쓰지 않아 뺀다(#173, 사용자 결정 2026-10-31).
+#: 모델이 내면 확정 pass 가 근거로 종류를 정한다. v4 에서 LLM 이 eventType 을 내는 모델은 이것 하나다.
 _ClueEventType = Annotated[
     EventType,
-    WithJsonSchema({"type": "string", "enum": [member.value for member in EventType]}),
+    WithJsonSchema(
+        {
+            "type": "string",
+            "enum": [member.value for member in EventType if member is not EventType.UNKNOWN],
+        }
+    ),
 ]
 
 

@@ -95,5 +95,6 @@ def test_a_framed_day_keeps_no_alert_event_but_conversations(seed):
     alerts = [event for event in draft.events if notification_only(event, bundle.short_record_ids)]
     conversations = [e for e in alerts if any(r.raw_id in talk for r in e.source_refs)]
     assert len(conversations) <= MAX_CONVERSATION_EVENTS
+    assert EventType.UNKNOWN not in {event.event_type for event in draft.events}
     if len(alerts) < len(draft.events):
         assert alerts == conversations

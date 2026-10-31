@@ -135,6 +135,7 @@ from app.services.skeleton_guard import (
     remove_events_outside_evidence,
     remove_notification_events,
     remove_unrecorded_movements,
+    retire_unknown_events,
     settle_event_evidence,
     separate_movement_segments,
     spares_from_sleep,
@@ -808,6 +809,7 @@ def _clue_correction_steps(
             extended.append(
                 ("알림 event 다시 정리", partial(_skeleton_step, remove_notification_events, clues=clues))
             )
+            extended.append(("종류 없는 event 정리", partial(_skeleton_step, retire_unknown_events, clues=clues)))
             extended.append(("장소 다시 확정", partial(_confirm_place_slots, clues=clues)))
             # 글은 고치지 않는다(사용자 결정 2026-10-31). `_inspect` 가 제안으로 Repair 에 넘긴다.
             extended.append(
