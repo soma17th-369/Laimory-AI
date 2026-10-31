@@ -1,7 +1,7 @@
 """v4 사진·알림 단서 Agent 검증 (#169).
 
-두 Agent 모두 입력 항목을 하나도 버리지 않는다. 모델이 응답에서 빠뜨리거나 호출이 실패해도
-사진은 해석 없는 단서로, 알림은 내용 없는 단서로 남는다.
+사진은 입력을 하나도 버리지 않는다. 모델이 빠뜨리거나 호출이 실패해도 해석 없는 단서로 남는다.
+알림은 필요한 것만 남긴다(#173). 버리거나 읽지 못한 알림은 단서가 되지 않는다.
 """
 
 import json
@@ -101,27 +101,84 @@ def test_payload_uses_short_ids_and_groups_conversations():
     assert {entry["id"] for entry in payload.body["notifications"] + payload.body["unclassified"]} == {"n1", "n2"}
 
 
-def test_every_notification_lands_in_exactly_one_clue():
-    chat_1, chat_2, pay, other = _notifications()
-    payload = build_notification_clue_payload([chat_1, chat_2, pay, other])
-    pay_id = next(e["id"] for e in payload.body["notifications"])
+def _ids(items):
+    body = build_notification_clue_payload(list(items)).body
+    return {
+        "pay": next(e["id"] for e in body["notifications"]),
+        "etc": next(e["id"] for e in body["unclassified"]),
+    }
+
+
+def _clue_result(items, response):
+    agent = NotificationClueAgent(llm=FakeLLM([json.dumps(response, ensure_ascii=False)]))
+    return agent.generate(make_request(notifications=list(items)))
+
+
+def test_kept_notifications_land_in_exactly_one_clue():
+    chat_1, chat_2, pay, other = items = _notifications()
+    ids = _ids(items)
     response = {
         "clues": [
             {"kind": "CONVERSATION", "items": ["g1"], "counterpart": "김민수", "summary": "약속 시간을 물었다"},
-            {"kind": "PAYMENT", "items": [pay_id, pay_id], "counterpart": "OO식당", "summary": "점심값 결제"},
-        ]
+            {"kind": "PAYMENT", "items": [ids["pay"], ids["pay"]], "counterpart": "OO식당", "summary": "점심값 결제"},
+        ],
+        "dropped": [ids["etc"]],
     }
-    agent = NotificationClueAgent(llm=FakeLLM([json.dumps(response, ensure_ascii=False)]))
 
-    result = agent.generate(make_request(notifications=[chat_1, chat_2, pay, other]))
+    result = _clue_result(items, response)
 
-    raw_ids = [raw_id for clue in result.clues for raw_id in clue.raw_ids]
-    assert sorted(raw_ids) == sorted(item.raw_id for item in [chat_1, chat_2, pay, other])
-    conversation = next(c for c in result.clues if c.kind is NotificationClueKind.CONVERSATION)
-    assert (conversation.first_at.minute, conversation.last_at.minute) == (0, 5)
-    unread = next(c for c in result.clues if other.raw_id in c.raw_ids)
-    assert unread.kind is None and unread.summary is None
-    assert [clue.clue_id for clue in result.clues] == ["N1", "N2", "N3"]
+    assert [clue.clue_id for clue in result.clues] == ["N1", "N2"]
+    assert sorted(r for clue in result.clues for r in clue.raw_ids) == sorted(
+        item.raw_id for item in [chat_1, chat_2, pay]
+    )
+    assert (result.clues[0].first_at.minute, result.clues[0].last_at.minute) == (0, 5)
+    assert result.warnings == []
+
+
+def test_a_notification_the_model_skipped_is_dropped_with_a_warning():
+    """읽지 못한 알림을 넘기지 않는다(사용자: UNKNOWN 도 넘겨주면 안된다). 건수는 드러낸다."""
+
+    chat_1, chat_2, pay, other = items = _notifications()
+    ids = _ids(items)
+    response = {
+        "clues": [{"kind": "PAYMENT", "items": [ids["pay"]], "summary": "점심값 결제"}],
+        "dropped": ["g1"],
+    }
+
+    result = _clue_result(items, response)
+
+    assert [clue.raw_ids for clue in result.clues] == [[pay.raw_id]]
+    assert [warning.message for warning in result.warnings] == ["응답에서 빠진 알림 1묶음을 버렸습니다."]
+
+
+def test_an_advert_the_model_still_labels_is_dropped():
+    """스키마에 남은 `PROMOTION` 을 모델이 내도 단서가 되지 않는다."""
+
+    _, _, pay, other = items = _notifications()
+    ids = _ids(items)
+    response = {
+        "clues": [
+            {"kind": "PROMOTION", "items": [ids["etc"]], "summary": "할인 광고"},
+            {"kind": "PAYMENT", "items": [ids["pay"]], "summary": "점심값 결제"},
+        ],
+        "dropped": ["g1"],
+    }
+
+    result = _clue_result(items, response)
+
+    assert [clue.kind for clue in result.clues] == [NotificationClueKind.PAYMENT]
+    assert result.warnings == []
+
+
+def test_a_notification_both_kept_and_dropped_stays():
+    _, _, pay, other = items = _notifications()
+    ids = _ids(items)
+    response = {
+        "clues": [{"kind": "PAYMENT", "items": [ids["pay"]], "summary": "점심값 결제"}],
+        "dropped": [ids["pay"], ids["etc"], "g1"],
+    }
+
+    assert [clue.raw_ids for clue in _clue_result(items, response).clues] == [[pay.raw_id]]
 
 
 def test_sensitive_values_left_in_a_summary_are_dropped():
@@ -135,12 +192,11 @@ def test_sensitive_values_left_in_a_summary_are_dropped():
     assert clue.kind is NotificationClueKind.PAYMENT
 
 
-def test_notification_failure_keeps_every_notification_without_content():
+def test_notification_failure_goes_on_without_clues():
     items = list(_notifications())
     agent = NotificationClueAgent(llm=FakeLLM([RuntimeError("down")]))
 
     result = agent.generate(make_request(notifications=items))
 
-    assert sorted(r for c in result.clues for r in c.raw_ids) == sorted(i.raw_id for i in items)
-    assert all(clue.summary is None for clue in result.clues)
-    assert result.warnings
+    assert result.clues == []
+    assert len(result.warnings) == 1 and "알림 없이 진행합니다" in result.warnings[0].message

@@ -283,7 +283,8 @@ def test_notification_v4_names_every_payload_key():
         assert f"`{key}`" in text, f"notification v4 에 입력 키 `{key}` 설명이 없습니다."
     assert "`rawId`" not in text, "v4 알림 입력은 rawId 대신 짧은 id 를 싣는다."
     for kind in NotificationClueKind:
-        assert kind.value in text
+        if kind is not NotificationClueKind.PROMOTION:  # 스키마에만 남은 값이다(#173).
+            assert kind.value in text
 
 
 def test_photo_v4_reads_what_the_user_did_one_photo_at_a_time():
@@ -379,6 +380,16 @@ def test_timeline_v4_makes_events_from_notifications_on_a_day_without_location()
     assert "다르면 내용이 있는 대화와 그 알림이 그날의 event입니다" in text
     assert "위치 기록이 없는 날에만 받은 시각(`firstAt`·`lastAt`)이 있습니다" in text
     assert "구간에 붙지 않은 사진·일정·대화" in text
+
+
+def test_notification_v4_keeps_only_what_is_needed():
+    """필요한 알림만 남기고 나머지는 `dropped` 에 id 만 적는다(#173)."""
+
+    text = _read("agents/events/notification/prompts/v4/prompt.md")
+
+    assert "들지 않거나 판단이 서지 않으면 버립니다" in text
+    assert "`dropped`" in text and "버리는 알림에는 요약을 쓰지 않습니다" in text
+    assert "PROMOTION" not in text
 
 
 def test_timeline_v4_keeps_what_the_photo_shows_in_the_meal_sentence():

@@ -5,11 +5,16 @@ candidate·fragment·eventType 대신, 같은 일을 가리키는 알림 묶음�
 상대·발신자, 민감정보를 가린 요약, 알림이 말하는 일정이 오늘인지**만 낸다. 무엇이 하루의
 사건인지, 대화 3개를 고르는 것은 Timeline v4 와 `conversation_guard` 가 한다.
 
+**필요한 알림만 남긴다(#173, 사용자 결정 2026-10-31).** 뒤 단계에 넘기는 것은 다섯 종류에 분명히
+드는 알림뿐이고, 나머지는 모델이 내용을 읽고 `dropped` 에 id 만 적는다. 이 Agent 가 알림을 고르는
+자리다 — 광고까지 단서로 넘기면 Timeline 과 Repair 매 반복의 입력이 된다.
+
 내용 읽기와 마스킹은 의미 판단이라 LLM 에 남긴다. 코드가 하는 것은 셋이다.
 
 - 알림·대화 묶음을 짧은 id(`n3`·`g1`)로 싣고 돌려받는다. UUID 를 옮겨 적게 하지 않는다.
-- **모든 알림이 단서 하나에 정확히 한 번** 들어가게 한다. 응답에서 빠진 알림은 읽지 못한
-  단서로 남기고(내용 없이), 두 번 나온 알림은 처음 것만 둔다.
+- 남긴 알림은 단서 하나에 정확히 한 번 들어가게 한다. 두 번 나온 알림은 처음 것만 둔다.
+  `clues` 와 `dropped` 양쪽에 나온 알림은 남긴다. 어느 쪽에도 없는 알림은 모델이 읽지 못한 것이라
+  버리되 건수를 warning 으로 남긴다.
 - 요약·상대에 남은 민감정보 모양(`SENSITIVE_PATTERNS`)을 찾으면 그 값을 지운다. 한 번 새면
   최종 일기에 남으므로 프롬프트만 믿지 않는다.
 """
@@ -29,7 +34,7 @@ from app.core.execution_context import ExecutionStage
 from app.core.llm_stages import LLMStage
 from app.core.logging import get_logger, stage_span
 from app.schemas import AgentWarning, NotificationItem, TimelineDraftRequest
-from app.schemas.clues import NotificationClue, NotificationClueOutput, NotificationClueSet
+from app.schemas.clues import NotificationClue, NotificationClueKind, NotificationClueSet
 from app.services.notification_guard import SENSITIVE_PATTERNS
 from app.services.validator import parse_datetime, resolve_timezone
 
@@ -78,7 +83,7 @@ class NotificationClueAgent:
             payload = build_notification_clue_payload(items)
             warnings: list[AgentWarning] = []
             try:
-                outputs = self._read(payload, request)
+                output = self._read(payload, request)
             except Exception as exc:
                 failure_code = code_of_or(exc, ErrorCode.EVENT_AGENT_FAILED)
                 report_error(
@@ -86,22 +91,22 @@ class NotificationClueAgent:
                     failure_code,
                     "알림 단서 해석 실패",
                     exc=exc,
-                    context={"agent": self.name, "fallback": "unread_clues"},
+                    context={"agent": self.name, "fallback": "no_clues"},
                     exc_info=True,
                 )
                 warnings.append(
                     AgentWarning(
                         agent_name=self.name,
-                        message=f"알림 해석 실패: {message_for(failure_code)}. 내용 없이 진행합니다.",
+                        message=f"알림 해석 실패: {message_for(failure_code)}. 알림 없이 진행합니다.",
                     )
                 )
-                outputs = []
-            clues, stats = assemble_notification_clues(outputs, payload, request)
-            if stats["unread"]:
+                output = None
+            clues, stats = assemble_notification_clues(output, payload, request)
+            if output is not None and stats["unread"]:
                 warnings.append(
                     AgentWarning(
                         agent_name=self.name,
-                        message=f"응답에서 빠진 알림 {stats['unread']}묶음을 내용 없이 남겼습니다.",
+                        message=f"응답에서 빠진 알림 {stats['unread']}묶음을 버렸습니다.",
                     )
                 )
             if stats["masked"]:
@@ -115,17 +120,16 @@ class NotificationClueAgent:
             outcome.update({f"{key}Count": value for key, value in stats.items()})
             return NotificationClueResult(clues=clues, warnings=warnings)
 
-    def _read(self, payload: _Payload, request: TimelineDraftRequest) -> list[NotificationClueOutput]:
+    def _read(self, payload: _Payload, request: TimelineDraftRequest) -> NotificationClueSet:
         prompt = build_infer_prompt(
             json.dumps(payload.body, ensure_ascii=False, indent=2),
             date=request.date,
             window_start=request.window.start if request.window else None,
             window_end=request.window.end if request.window else None,
         )
-        result = self.llm.complete_structured(
+        return self.llm.complete_structured(
             prompt, NotificationClueSet, system=_system_prompt(), temperature=0.2
         )
-        return list(result.clues)
 
 
 def build_notification_clue_payload(items: list[NotificationItem]) -> _Payload:
@@ -173,18 +177,21 @@ def build_notification_clue_payload(items: list[NotificationItem]) -> _Payload:
 
 
 def assemble_notification_clues(
-    outputs: list[NotificationClueOutput],
+    result: NotificationClueSet | None,
     payload: _Payload,
     request: TimelineDraftRequest,
 ) -> tuple[list[NotificationClue], dict[str, int]]:
-    """모델 출력을 알림 단서로 만든다. 모든 알림이 정확히 한 번 들어간다."""
+    """모델 출력을 알림 단서로 만든다. 남긴 알림은 단서 하나에 정확히 한 번 들어간다.
+
+    `result` 가 없으면 호출이 실패한 것이다. 단서 없이 진행한다.
+    """
 
     tz = resolve_timezone(request.timezone)
     used: set[str] = set()
-    drafts: list[tuple[NotificationClueOutput | None, list[NotificationItem]]] = []
-    stats = {"unread": 0, "masked": 0, "duplicate": 0, "unknownId": 0}
+    drafts = []
+    stats = {"unread": 0, "dropped": 0, "masked": 0, "duplicate": 0, "unknownId": 0}
 
-    for output in outputs:
+    for output in result.clues if result is not None else []:
         group: list[NotificationItem] = []
         for short_id in output.item_ids:
             if short_id not in payload.members:
@@ -194,35 +201,39 @@ def assemble_notification_clues(
                 stats["duplicate"] += 1
                 continue
             used.add(short_id)
+            if output.kind is NotificationClueKind.PROMOTION:
+                stats["dropped"] += 1
+                continue
             group.extend(payload.members[short_id])
         if group:
             drafts.append((output, group))
 
-    for short_id, group in payload.members.items():
-        if short_id not in used:
-            stats["unread"] += 1
-            drafts.append((None, group))
+    for short_id in result.dropped if result is not None else []:
+        if short_id in payload.members and short_id not in used:
+            used.add(short_id)
+            stats["dropped"] += 1
+    stats["unread"] = len(payload.members.keys() - used)
 
     rows = []
     for output, group in drafts:
         posted = sorted(
             dt for item in group if (dt := parse_datetime(item.posted_at, tz)) is not None
         )
-        summary = output.summary.strip() if output and output.summary else None
-        counterpart = output.counterpart.strip() if output and output.counterpart else None
-        title = output.title.strip() if output and output.title else None
+        summary = output.summary.strip() if output.summary else None
+        counterpart = output.counterpart.strip() if output.counterpart else None
+        title = output.title.strip() if output.title else None
         if _sensitive(summary) or _sensitive(counterpart) or _sensitive(title):
             stats["masked"] += 1
             summary, counterpart, title = None, None, None
         rows.append(
             dict(
-                kind=output.kind if output else None,
+                kind=output.kind,
                 raw_ids=[str(item.raw_id) for item in group],
                 app_names=_unique(item.app_name for item in group),
                 counterpart=counterpart or None,
                 summary=summary or None,
                 title=title or None,
-                schedule_today=output.schedule_today if output else None,
+                schedule_today=output.schedule_today,
                 first_at=posted[0] if posted else None,
                 last_at=posted[-1] if posted else None,
             )
