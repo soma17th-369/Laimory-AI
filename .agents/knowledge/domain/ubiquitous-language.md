@@ -58,9 +58,10 @@
 | 같은 장소의 주소 | v4에서 하루 안 250m 이내 지점들이 함께 쓰는 한 주소(동이 있는 주소 우선, `same_place_addresses`). |
 | 지명(`area`) | v4 제목에 쓰는 그 장소의 이름 아닌 위치 표현. 같은 장소 묶음마다 코드가 하나 고른다: 구 + 동, 동이 없으면 구 + 도로명(건물번호 제외, 도로명 안 숫자는 둔다). 그날 시·도가 둘 이상이면 시·도를 짧게 붙인다. 제목은 Timeline이 이것을 그대로 써서 쓴다. |
 | 기본 event | v4에서 코드가 뼈대 구간마다 만든 event 구조(`E1`…, 틀 문장). Timeline은 그 틀을 따라 근거를 더하고 내용을 채우며 그 안의 다른 사건은 근거가 있으면 꺼내고, 결과 event마다 온 기본 event를 `from`(`baseEventIds`)으로 적는다. 기본 event 둘을 한 event로 합치지 않는다 — 체류 기본 event가 따로라는 것은 다른 장소이거나 사이에 이동·빈 시간이 있다는 뜻이다. 일정이 덮은 체류의 기본 event는 **일정 기본 event**(`calendar`, 일정 시간)다. |
-| 장소 칸 | v4 문장의 장소 자리 `{place}`. 이름은 코드가 근거로 확정하거나 `placeCandidates`로 사용자가 고른다. 칸을 쓸 수 없으면 주소 원문으로 바꾼다. |
+| 장소 칸 | v4 문장의 장소 자리 `{place}`. 이름은 코드가 근거로 확정하거나 `placeCandidates`로 사용자가 고른다. 칸을 쓸 수 없으면 지명(구 + 동, 건물번호 없음)으로 바꾼다. |
 | 대표 좌표 | result event의 `latitude`·`longitude`(#175). 사용자가 실제로 있던 지점 하나의 좌표이고, 이동은 도착지다. 후보마다 좌표를 두지 않는다. 코드가 최종 근거에서 채우며 프롬프트에 싣지 않는다. |
-| `placeCandidates` | result event의 장소 후보(`[{name}]`, App Server 공지 2026-10-29). 우선순위 순서이고 App Server는 1번 후보로 `place`를 덮어쓴다. 입력의 `places`(근처 이름 목록)와 다른 값이다 — `places`는 고를 재료, `placeCandidates`는 사용자에게 보일 후보다. v4 세트에서만 보낸다. |
+| `placeCandidates` | result event의 장소 후보(`[{name, latitude?, longitude?}]`, App Server 공지 2026-10-29·명세 2026-10-30, 최대 5개). 우선순위 순서이고 App Server는 1번 후보로 `place`와 event 좌표를 덮어쓴다. 입력의 `places`(근처 이름 목록)와 다른 값이다 — `places`는 고를 재료, `placeCandidates`는 사용자에게 보일 후보다. 좌표는 입력 `placePoints`의 그 원소 값이다. v4 세트에서만 보낸다. |
+| `placePoints` | 입력의 주변 장소 이름과 좌표(입력 조회 v2). `places`(이름 목록)와 나란히 있고 프롬프트에 싣지 않는다. 맨 앞 건물명의 좌표는 장소 좌표가 아니라 그 항목의 관측 좌표다. |
 | 이동 방식 (`mode`) | Location 파생 지표가 MOVEMENT마다 붙이는 두 갈래 구분(#114). `WALK`는 도보(걷기·달리기), `VEHICLE`은 이동수단 이용(자전거를 포함한 탈것 전부)이다. 어떤 탈것인지는 가르지 않는다. 산책 판정과 이동 정보 검증에만 쓰고 사용자 문장에는 싣지 않는다. 센서가 준 라벨 원본은 `transports`이며 둘을 같은 말로 쓰지 않는다. |
 | 알림 정책 (`policyId`) | 한 도메인(금융·결제, 쇼핑·택배, 예약·문화, 이동·여행, 배달·카페, 문자)의 앱에서 얻을 수 있는 정보(#116). `provides`는 `CONVERSATION`·`PAYMENT`·`RESERVATION` 중 그 앱에서 주로 오는 정보이고, 알림이 무엇인지를 그 셋으로 한정하지 않는다(#135). Notion 표의 앱은 결제·예약만 주고(문자를 뺀 결제·예약 앱은 사용자가 알림을 누르지 않아도 수집, 문자는 눌러야 수집), 표 밖의 메신저는 개인(카카오톡·Instagram·Discord, 대화·결제·예약)과 업무(Webex·Slack·Microsoft Teams, 대화·예약) 두 정책으로 갈린다. 사용 판단(candidate 여부·confidence)을 담지 않는다. |
 | 대화 묶음 (`conversations`) | 대화를 주는 앱(메신저)의 알림을 같은 앱·같은 대화 상대(`title`) 단위로 묶은 Notification Agent 입력(#116). 단체방 이름이 입력에 없어 방 단위가 아니다. 대부분 대화지만 예약·결제 안내나 회사·기관이 보낸 개인 소식일 수 있고, 판단은 prompt가 내용으로 한다(#135). Event Agent 출력 `candidate`와 다른 말이다. |
