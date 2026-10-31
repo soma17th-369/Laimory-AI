@@ -603,6 +603,184 @@ def test_v4_does_not_send_location_only_overlap_to_repair():
     assert [item for item in report.findings if item["kind"] == "LOCATION_ONLY_OVERLAP"] == []
 
 
+def test_v4_location_evidence_matches_the_event_time():
+    """기본 event 에서 온 식사의 근거에 그 구간의 기록이 모두 실린 실제 출력 — 17:24 식사에 12:08 체류.
+
+    event 와 근거의 연계는 시간이 맞아야 한다(사용자 결정 2026-10-31). 앞뒤 20분까지는 그 시간의 기록이다.
+    근거가 모두 빠지는 event 는 건드리지 않는다.
+    """
+
+    from app.services.skeleton_guard import settle_event_evidence
+
+    morning = stay_item("am", start="2026-06-20T12:08:00", end="2026-06-20T14:38:00")
+    evening = stay_item("pm", start="2026-06-20T17:00:00", end="2026-06-20T20:36:00")
+    request = make_request(stays=[morning, evening])
+    clues = _clues(request)
+    meal = _event(
+        [(EventSourceType.STAY, morning.raw_id), (EventSourceType.STAY, evening.raw_id)],
+        start=_at(17, 24), end=_at(18, 4), event_type=EventType.MEAL, title="식사",
+    )
+    near = _event(
+        [(EventSourceType.STAY, morning.raw_id)], start=_at(14, 50), end=_at(15, 0), title="바로 뒤",
+    )
+    alone = _event([(EventSourceType.STAY, morning.raw_id)], start=_at(22), end=_at(22, 30), title="근거가 이것뿐")
+
+    settle_event_evidence(_draft(meal, near, alone), request, clues)
+
+    assert [r.raw_id for r in meal.source_refs] == [evening.raw_id]
+    assert [r.raw_id for r in near.source_refs] == [morning.raw_id], "앞뒤 20분은 그 시간의 기록이다."
+    assert [r.raw_id for r in alone.source_refs] == [morning.raw_id]
+
+
+def _stay_day(*notifications):
+    from app.services.skeleton_guard import settle_event_evidence
+    from app.services.text_suggestions import suggest_text_fixes
+
+    stay = stay_item("day", start="2026-06-20T10:57:00", end="2026-06-20T17:45:00")
+    request = make_request(stays=[stay], notifications=list(notifications))
+    clues = _clues(request)
+    base = next(bundle.base_event for bundle in clues.bundles if bundle.base_event)
+
+    def settle(*events):
+        draft = _draft(*events)
+        settle_event_evidence(draft, request, clues)
+        return draft
+
+    settle.suggest = lambda draft: suggest_text_fixes(draft, request, clues)
+    return stay, base, settle
+
+
+def test_a_stay_with_only_location_evidence_is_handed_to_repair():
+    """Repair 가 7시간 체류를 안쪽 점심과 같은 문장으로 고쳐 쓴 실제 출력. 코드는 고치지 않고 제안만 넘긴다."""
+
+    stay, base, settle = _stay_day()
+    outer = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(10, 57), end=_at(17, 45), title="점심 식사",
+        description="{place}에서 점심을 먹었다.", base=[base.base_id],
+    )
+
+    draft = settle(outer)
+    [(event, suggestion)] = settle.suggest(draft)
+
+    assert event is outer
+    assert suggestion["title"] == base.title and "시간을 보냈다" in suggestion["description"]
+    assert (outer.title, outer.description) == ("점심 식사", "{place}에서 점심을 먹었다."), "글은 코드가 바꾸지 않는다."
+
+
+def test_a_stay_keeps_a_sentence_that_only_says_where():
+    stay, base, settle = _stay_day()
+    night = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(10, 57), end=_at(17, 45), title="지범로에서 보낸 밤",
+        description="{place}에서 밤을 보냈다.", base=[base.base_id],
+    )
+
+    settle(night)
+
+    assert night.title == "지범로에서 보낸 밤"
+
+
+def test_a_notification_stays_on_the_event_that_took_it_out():
+    """같은 대화 알림이 체류와 대화 event 둘 다에 있고 체류 문장이 대화로 덮인 실제 출력."""
+
+    message = notification_item("n", "Threads", "OO", posted="2026-06-20T11:06:00")
+    stay, base, settle = _stay_day(message)
+    outer = _event(
+        [(EventSourceType.STAY, stay.raw_id), (EventSourceType.NOTIFICATION, message.raw_id)],
+        start=_at(10, 57), end=_at(17, 45), title="포트폴리오 이야기", description="OO와 포트폴리오를 이야기했다.",
+        base=[base.base_id],
+    )
+    talk = _event(
+        [(EventSourceType.NOTIFICATION, message.raw_id)], start=_at(11, 6), end=_at(11, 6),
+        event_type=EventType.SOCIAL, title="OO와 대화", description="OO와 포트폴리오를 이야기했다.",
+    )
+
+    draft = settle(outer, talk)
+
+    assert [r.raw_id for r in outer.source_refs] == [stay.raw_id]
+    assert [r.raw_id for r in talk.source_refs] == [message.raw_id]
+    suggestions = {id(event): suggestion for event, suggestion in settle.suggest(draft)}
+    assert suggestions[id(outer)]["title"] == base.title, "알림이 빠지면 체류의 글은 Repair 가 고친다."
+
+
+def test_a_notification_that_is_the_only_evidence_stays_where_it_is():
+    """근거를 모두 잃는 event 를 만들지 않는다. 지우는 것은 다른 단계의 몫이다."""
+
+    message = notification_item("n", "Threads", "OO", posted="2026-06-20T11:06:00")
+    _, _, settle = _stay_day(message)
+    first = _event([(EventSourceType.NOTIFICATION, message.raw_id)], start=_at(11, 6), end=_at(11, 6), title="가")
+    second = _event([(EventSourceType.NOTIFICATION, message.raw_id)], start=_at(11), end=_at(12), title="나")
+
+    settle(first, second)
+
+    assert [r.raw_id for r in second.source_refs] == [message.raw_id]
+
+
+def test_a_stay_covered_by_an_activity_from_the_same_base_joins_it():
+    """사진 하나로 체류 전체를 덮은 event 옆에 같은 시간의 `보낸 시간` 이 나란히 남은 실제 출력."""
+
+    stay, base, settle = _stay_day()
+    rest = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(10, 57), end=_at(17, 45), title="보낸 시간",
+        description="{place}에서 시간을 보냈다.", base=[base.base_id],
+    )
+    social = _event(
+        [(EventSourceType.PHOTO, fixture_raw_id("photo"))], start=_at(10, 57), end=_at(17, 45),
+        event_type=EventType.SOCIAL, title="두 사람과 시간", base=[base.base_id],
+    )
+
+    draft = settle(rest, social)
+
+    assert draft.events == [social]
+    assert stay.raw_id in [r.raw_id for r in social.source_refs]
+
+
+def test_a_stay_elsewhere_inside_a_long_calendar_stays():
+    """일정 중 잠깐 다른 장소에 간 체류는 뼈대로 남는다(사용자 결정). 기본 event 가 달라 합치지 않는다."""
+
+    stay, base, settle = _stay_day()
+    cafe = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(11), end=_at(12), title="보낸 시간",
+        description="{place}에서 시간을 보냈다.", base=[base.base_id],
+    )
+    meeting = _event(
+        [(EventSourceType.CALENDAR, fixture_raw_id("calendar"))], start=_at(9), end=_at(23),
+        event_type=EventType.MEETING, title="회의", base=["E9"],
+    )
+
+    draft = settle(cafe, meeting)
+
+    assert draft.events == [cafe, meeting]
+
+
+def test_a_stay_cannot_slip_an_activity_into_the_place_only_sentence():
+    """`보냈다` 로 끝나도 활동을 말하면 틀 문장이 아니다. 위치뿐인 7시간 체류에 음식 이름이 붙은 실제 출력."""
+
+    stay, base, settle = _stay_day()
+    outer = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(10, 57), end=_at(17, 45), title="대현동에서 보낸 시간",
+        description="{place}에서 순두부찌개를 먹으며 시간을 보냈다.", base=[base.base_id],
+    )
+
+    [(_, suggestion)] = settle.suggest(settle(outer))
+
+    assert "순두부찌개" not in suggestion["description"]
+
+
+def test_a_stay_with_no_calendar_is_not_sleep():
+    """일정 없는 저녁 체류가 `잠` 이 된 실제 출력. 위치는 어디에 있었는지만 말한다."""
+
+    stay, base, settle = _stay_day()
+    evening = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(10, 57), end=_at(17, 45), event_type=EventType.SLEEP,
+        title="지범로에서 잠", description="{place}에서 잠을 잤다.", base=[base.base_id],
+    )
+
+    [(_, suggestion)] = settle.suggest(settle(evening))
+
+    assert (suggestion["eventType"], suggestion["title"]) == ("UNKNOWN", base.title)
+    assert evening.event_type is EventType.SLEEP
+
+
 def test_same_titles_in_a_row_go_to_repair():
     """같은 일이면 괜찮지만(사용자 결정) 다른 음식이 같은 제목으로 이어진 실제 출력이 있어 Repair 가 판단한다."""
 
@@ -712,6 +890,50 @@ def test_confirmation_hands_text_rules_to_repair_and_leaves_the_text_alone():
     assert any("긴 체류" in rule for rule in found["rules"])
 
 
+def test_an_event_that_gave_its_photo_away_says_only_where():
+    """사진을 식사 event 에 넘겨주고 체류만 남은 `SOCIAL` 이 `OO와 함께했다` 로 남은 실제 출력."""
+
+    stay, base, settle = _stay_day()
+    social = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(10, 57), end=_at(17, 45), event_type=EventType.SOCIAL,
+        title="함께한 시간", description="{place}에서 OO와 함께했다.", base=[base.base_id],
+    )
+
+    [(_, suggestion)] = settle.suggest(settle(social))
+
+    assert (suggestion["eventType"], suggestion["title"]) == ("UNKNOWN", base.title)
+
+
+def test_twins_on_the_same_stay_become_one():
+    """같은 체류를 같은 시간으로 가진 두 event 는 하나만 남는다. 활동 근거가 있는 쪽이 남는다."""
+
+    message = notification_item("n", "YouTube", "답글", posted="2026-06-20T16:23:00")
+    stay, base, settle = _stay_day(message)
+    rest = _event(
+        [(EventSourceType.STAY, stay.raw_id), (EventSourceType.NOTIFICATION, message.raw_id)],
+        start=_at(10, 57), end=_at(17, 45), title="보낸 시간", description="{place}에서 시간을 보냈다.", base=[base.base_id],
+    )
+    social = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(10, 57), end=_at(17, 45), event_type=EventType.SOCIAL,
+        title="함께한 시간", description="{place}에서 OO와 함께했다.", base=[base.base_id],
+    )
+
+    assert settle(rest, social).events == [rest]
+
+
+def test_two_place_only_twins_do_not_absorb_each_other():
+    stay, base, settle = _stay_day()
+    twins = [
+        _event(
+            [(EventSourceType.STAY, stay.raw_id)], start=_at(10, 57), end=_at(17, 45), title=f"보낸 시간 {label}",
+            description="{place}에서 시간을 보냈다.", base=[base.base_id],
+        )
+        for label in ("가", "나")
+    ]
+
+    assert len(settle(*twins).events) == 1
+
+
 def test_a_restored_photo_keeps_what_the_photo_shows():
     """`사진을 남겼다` 로는 사진의 내용이 사라진다. Repair 가 쓰기 전까지 사진 단서의 말을 둔다."""
 
@@ -791,3 +1013,17 @@ def test_an_empty_slot_loses_the_slot_when_the_address_has_no_area():
     from app.services.place_slots import without_place_slot
 
     assert without_place_slot("{place}에서 시간을 보냈다.", None) == "시간을 보냈다."
+
+
+def test_suggestions_leave_the_draft_alone():
+    stay, base, settle = _stay_day()
+    outer = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(10, 57), end=_at(17, 45), title="점심 식사",
+        description="{place}에서 점심을 먹었다.", base=[base.base_id],
+    )
+    draft = settle(outer)
+    before = draft.model_dump()
+
+    settle.suggest(draft)
+
+    assert draft.model_dump() == before

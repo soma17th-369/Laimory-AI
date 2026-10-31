@@ -139,6 +139,14 @@ def keep_calendar_base_events(
             owner.source_refs.extend(ref for ref in other.source_refs if ref.raw_id not in held)
             held |= {ref.raw_id for ref in other.source_refs}
             merged.add(id(other))
+        # 그 일정의 근거는 주인 하나에만 둔다. 재실행에서 일정 시간과 조금 겹친 이동·다른 장소 체류가
+        # 같은 일정을 근거로 가졌다. 근거가 그것뿐인 event 는 건드리지 않는다.
+        for event in draft.events:
+            if event is owner or id(event) in merged:
+                continue
+            rest = [ref for ref in event.source_refs if ref.raw_id != calendar_id]
+            if rest:
+                event.source_refs = rest
     if merged:
         draft.events = [event for event in draft.events if id(event) not in merged]
         logger.debug("일정 기본 event 지키기: %d건 합침", len(merged))
@@ -167,6 +175,56 @@ def hand_restored_events_to_repair(
                 event.title = told[:_TITLE_MAX]
 
 
+def settle_event_evidence(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """시간이 모두 정해진 뒤 event 와 근거를 맞춘다(in-place, 사용자 결정 2026-10-31).
+
+    "이벤트와 그 근거 id 연계도 정합성이 무조건 맞아야해", "단서가 중복되서 나오는 거 아닌지 판단해".
+
+    - event 시간과 맞지 않는 체류·이동 근거를 뺀다. 기본 event 에서 온 event 는 그 구간의 기록을 모두
+      근거로 받아, 17:24 식사의 `sourceRawIds` 에 12:08~14:38 체류 기록이 실렸다(12개 하루에서 근거 295개
+      중 58개). 앞뒤 20분(`SHORT_STAY_MAX`)으로 재고, 근거가 모두 빠지는 event 는 건드리지 않는다 — 시간
+      밖 event 는 `remove_events_outside_evidence` 의 몫이다.
+    - 알림은 event 하나에만 둔다. 사진처럼 꺼낸 event 가 갖는다 — Repair 가 대화 알림을 체류에도 적어
+      같은 알림이 두 event 에 있었고 체류 문장이 대화로 덮였다.
+    - 근거가 위치뿐인 event 를 같은 기본 event 의 다른 event 가 시간째 덮으면 그 event 의 위치 근거로 합친다.
+      사진 하나로 체류 전체를 덮은 event 옆에 같은 시간의 `보낸 시간` 이 나란히 남았다.
+
+    글은 건드리지 않는다. 근거가 위치뿐인데 활동을 말하는 문장은 `restore_place_only_text` 가 제안으로 넘긴다.
+    """
+
+    spans = clues.skeleton.record_spans()
+    spans.update({record.raw_id: (record.start, record.end) for record in clues.skeleton.isolated})
+    for event in draft.events:
+        low, high = event.start_time - SHORT_STAY_MAX, event.end_time + SHORT_STAY_MAX
+        kept = [
+            ref
+            for ref in event.source_refs
+            if (span := spans.get(ref.raw_id)) is None or (span[0] <= high and low <= span[1])
+        ]
+        if kept:
+            event.source_refs = kept
+
+    _keep_notifications_on_one_event(draft, request)
+    location_ids = {raw_id_of(item) for item in [*request.stays, *request.movements]}
+    absorbed: set[int] = set()
+    for event in draft.events:
+        if event.event_type not in _PLACE_ONLY_TYPES or any(
+            ref.raw_id not in location_ids for ref in event.source_refs
+        ):
+            continue
+        cover = _event_covering(event, draft, absorbed)
+        if cover is not None:
+            held = {ref.raw_id for ref in cover.source_refs}
+            cover.source_refs = [
+                *cover.source_refs,
+                *(ref for ref in event.source_refs if ref.raw_id not in held),
+            ]
+            absorbed.add(id(event))
+    draft.events = [event for event in draft.events if id(event) not in absorbed]
+
+
 def restore_place_only_text(
     draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
 ) -> None:
@@ -188,6 +246,45 @@ def restore_place_only_text(
             or not _PLACE_ONLY_SENTENCE.fullmatch(event.description)
         ):
             _back_to_frame(event, clues)
+
+
+def _keep_notifications_on_one_event(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
+    """여러 event 가 가진 알림은 가장 짧은 event 에만 남긴다. 그것이 유일한 근거인 event 는 둔다."""
+
+    notification_ids = {raw_id_of(item) for item in request.notifications}
+    holders: dict[str, list[TimelineEventDraft]] = {}
+    for event in draft.events:
+        for raw_id in {ref.raw_id for ref in event.source_refs} & notification_ids:
+            holders.setdefault(raw_id, []).append(event)
+    for raw_id, events in holders.items():
+        owner = min(events, key=lambda event: event.end_time - event.start_time)
+        for event in events:
+            rest = [ref for ref in event.source_refs if ref.raw_id != raw_id]
+            if event is not owner and rest:
+                event.source_refs = rest
+
+
+def _event_covering(
+    event: TimelineEventDraft, draft: TimelineDraft, absorbed: set[int]
+) -> TimelineEventDraft | None:
+    """같은 기본 event 에서 와서 그 event 의 시간을 모두 덮는 event. `absorbed` 는 이미 합친 event 다.
+
+    기본 event 가 같아야 한다. 긴 일정 안에 잠깐 다른 장소에 간 체류는 뼈대로 남는다(사용자 결정).
+    """
+
+    return next(
+        (
+            other
+            for other in draft.events
+            if other is not event
+            and id(other) not in absorbed
+            and other.event_type is not EventType.MOVEMENT
+            and set(other.base_event_ids) & set(event.base_event_ids)
+            and other.start_time <= event.start_time
+            and event.end_time <= other.end_time
+        ),
+        None,
+    )
 
 
 def ensure_skeleton_segments(

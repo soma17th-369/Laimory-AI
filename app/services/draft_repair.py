@@ -132,6 +132,7 @@ from app.services.skeleton_guard import (
     keep_calendar_base_events,
     remove_events_outside_evidence,
     remove_unrecorded_movements,
+    settle_event_evidence,
     separate_movement_segments,
     spares_from_sleep,
 )
@@ -789,6 +790,10 @@ def _clue_correction_steps(
                 ("위치 구간 다시 확인", partial(_skeleton_step, ensure_skeleton_segments, clues=clues))
             )
             extended.append(("캘린더 일정 다시 확인", ensure_calendar_events))
+            # event 시간이 모두 정해진 뒤에 근거를 맞추고, 그 근거로 장소를 다시 정한다.
+            extended.append(
+                ("근거 정리", partial(_skeleton_step, settle_event_evidence, clues=clues))
+            )
             extended.append(("장소 다시 확정", partial(_confirm_place_slots, clues=clues)))
             # 글은 고치지 않는다(사용자 결정 2026-10-31). `_inspect` 가 제안으로 Repair 에 넘긴다.
             extended.append(

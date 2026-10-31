@@ -322,6 +322,27 @@ def _kst_event(title, event_type, start, end, refs, base=()):
     )
 
 
+def test_the_calendar_evidence_stays_on_its_owner_only():
+    """일정 시간과 조금 겹친 이동·다른 장소 체류가 같은 일정을 근거로 가진 실제 출력. 일정 근거는 주인 하나다."""
+
+    from app.schemas import EventSourceType, EventType, SourceRef, TimelineDraft
+    from app.services.skeleton_guard import keep_calendar_base_events
+
+    request = _meeting_day("2026-06-20T12:00:00", "2026-06-20T23:00:00")
+    clues = _clues_with_calendars(request)
+    office = next(b.base_event for b in clues.bundles if b.base_event and b.base_event.calendar)
+    calendar_ref = SourceRef(source_type=EventSourceType.CALENDAR, raw_id=office.calendar.raw_id)
+    stay_ref = SourceRef(source_type=EventSourceType.STAY, raw_id=request.stays[1].raw_id)
+    meeting = _kst_event("회의", EventType.MEETING, (12, 0), (23, 0), [calendar_ref], base=[office.base_id])
+    station = _kst_event("청파로", EventType.UNKNOWN, (22, 34), (22, 59), [stay_ref, calendar_ref])
+    draft = TimelineDraft(user_id="u", date="2026-06-20", timezone="Asia/Seoul", events=[meeting, station])
+
+    keep_calendar_base_events(draft, request, clues)
+
+    assert [r.raw_id for r in station.source_refs] == [request.stays[1].raw_id]
+    assert office.calendar.raw_id in [r.raw_id for r in meeting.source_refs]
+
+
 def test_a_meal_appointment_stays_a_meal():
     """식사 약속은 일정이 식사다. 3시간 이하면 식사가 일정의 주인으로 남는다 — 일정 틀로 되돌리면 무엇을 먹었는지가 사라진다."""
 
@@ -344,6 +365,7 @@ def test_a_meal_appointment_stays_a_meal():
     )
 
     assert meal.event_type is EventType.MEAL and meal.title == "순두부찌개"
+
 
 
 @pytest.mark.parametrize(
