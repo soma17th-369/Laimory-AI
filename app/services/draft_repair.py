@@ -133,6 +133,7 @@ from app.services.skeleton_guard import (
     hand_restored_events_to_repair,
     keep_calendar_base_events,
     remove_events_outside_evidence,
+    remove_notification_events,
     remove_unrecorded_movements,
     settle_event_evidence,
     separate_movement_segments,
@@ -749,6 +750,7 @@ def _clue_correction_steps(
         # 수면 일정은 계획이다 — 이동과 다른 장소의 체류는 겹쳐도 남긴다.
         "수면과 겹친 event 제거": partial(remove_events_overlapping_sleep, spare=spares_from_sleep(clues)),
         # v4 는 대화를 Notification 단서로 센다 — 앱 사전으로 세면 대화로 쓴 문자가 빠진다.
+        # 단독 위치 기록은 보태기만 하는 근거라 알림뿐인 event 를 가를 때 세지 않는다(#173).
         "대화 개수 제한": partial(
             enforce_conversation_limit,
             conversation_ids={
@@ -757,6 +759,10 @@ def _clue_correction_steps(
                 if clue.kind is NotificationClueKind.CONVERSATION
                 for raw_id in clue.raw_ids
             },
+            aside=clues.short_record_ids,
+        ),
+        "event 개수 정리": lambda draft, request: enforce_event_count(
+            draft, aside=clues.short_record_ids
         ),
     }
     steps = tuple(
@@ -797,6 +803,11 @@ def _clue_correction_steps(
             extended.append(
                 ("근거 정리", partial(_skeleton_step, settle_event_evidence, clues=clues))
             )
+            # 근거 정리가 체류 근거를 빼면 알림뿐인 event 가 새로 생긴다(#173). 마지막 확정이면 그대로
+            # 저장되므로 그 자리에서 다시 지운다.
+            extended.append(
+                ("알림 event 다시 정리", partial(_skeleton_step, remove_notification_events, clues=clues))
+            )
             extended.append(("장소 다시 확정", partial(_confirm_place_slots, clues=clues)))
             # 글은 고치지 않는다(사용자 결정 2026-10-31). `_inspect` 가 제안으로 Repair 에 넘긴다.
             extended.append(
@@ -808,6 +819,11 @@ def _clue_correction_steps(
             extended.append(("제목·이동 장소 이름", partial(_skeleton_step, keep_place_names_out, clues=clues)))
         else:
             extended.append((name, overrides.get(name, step)))
+            if name == "대화 개수 제한":
+                # 알림은 틀의 근거다. 단독 event 로 남는 알림은 대화 3개뿐이다(#173).
+                extended.append(
+                    ("알림 event 정리", partial(_skeleton_step, remove_notification_events, clues=clues))
+                )
     return (*steps, *extended)
 
 

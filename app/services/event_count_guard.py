@@ -20,13 +20,12 @@ v1·v2 Timeline 프롬프트에는 개수 지시가 없어, 그 세트에 10개�
 
 from app.core.logging import get_logger, log_fields
 from app.schemas import (
-    EventSourceType,
     TimelineDraft,
     TimelineEventDraft,
     TimelineWarning,
     TimelineWarningSeverity,
 )
-from app.services.conversation_guard import notification_count
+from app.services.conversation_guard import notification_count, notification_only
 
 logger = get_logger(__name__)
 
@@ -45,12 +44,6 @@ _TRIM_WARNING_ID_PREFIX = "warning-event-trim-"
 _SAMPLE_LIMIT = 3
 
 
-def _is_notification_only(event: TimelineEventDraft) -> bool:
-    return bool(event.source_refs) and all(
-        ref.source_type is EventSourceType.NOTIFICATION for ref in event.source_refs
-    )
-
-
 def _trim_order(event: TimelineEventDraft):
     """먼저 지울 event 가 앞이다. 알림이 적은 것, 같으면 늦게 시작한 것이다."""
 
@@ -58,11 +51,14 @@ def _trim_order(event: TimelineEventDraft):
 
 
 def enforce_event_count(
-    draft: TimelineDraft, *, limit: int = MAX_EVENT_COUNT
+    draft: TimelineDraft,
+    *,
+    limit: int = MAX_EVENT_COUNT,
+    aside: frozenset[str] | set[str] = frozenset(),
 ) -> list[TimelineEventDraft]:
     """상한을 넘으면 근거가 알림뿐인 event 부터 지운다(in-place). 지운 event 를 돌려준다.
 
-    두 번 적용해도 결과가 같다.
+    `aside` 는 알림뿐인지 볼 때 세지 않는 근거다(`notification_only`). 두 번 적용해도 결과가 같다.
     """
 
     before = len(draft.events)
@@ -71,7 +67,7 @@ def enforce_event_count(
         return []
 
     removed = sorted(
-        (event for event in draft.events if _is_notification_only(event)), key=_trim_order
+        (event for event in draft.events if notification_only(event, aside)), key=_trim_order
     )[:excess]
     if not removed:
         return []

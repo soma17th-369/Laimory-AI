@@ -252,8 +252,7 @@ def _rich_clues():
         clue_id="N2", kind=NotificationClueKind.RESERVATION, raw_ids=[fixture_raw_id("n-2")],
         counterpart="OO헤어", summary="예약", schedule_today=False,
     )
-    unread = NotificationClue(clue_id="N3", raw_ids=[fixture_raw_id("n-3")], app_names=["자리톡"])
-    return build_timeline_clues(build_location_skeleton(request), build_calendar_clues(request), [photo], [chat, news, unread])
+    return build_timeline_clues(build_location_skeleton(request), build_calendar_clues(request), [photo], [chat, news])
 
 
 def test_timeline_v4_names_every_input_key_the_code_sends():
@@ -377,9 +376,20 @@ def test_timeline_v4_makes_events_from_notifications_on_a_day_without_location()
 
     text = _timeline()
 
-    assert "다르면 내용이 있는 대화와 그 알림이 그날의 event입니다" in text
-    assert "위치 기록이 없는 날에만 받은 시각(`firstAt`·`lastAt`)이 있습니다" in text
-    assert "구간에 붙지 않은 사진·일정·대화" in text
+    assert "다르면 내용이 있는 대화만 그날의 event이고" in text
+    assert "대화가 아닌 알림은 event가 되지 않습니다" in text
+    assert "구간에 붙지 않은 사진·일정, 대화" in text
+
+
+def test_timeline_v4_uses_notifications_as_evidence_not_events():
+    """알림은 틀의 근거다(#173). `scheduleToday` 규칙이 결제까지 막지 않는다."""
+
+    text = _timeline()
+
+    assert "**대화가 아닌 알림은 event를 새로 만들거나 꺼내지 않습니다.**" in text
+    assert "다만 알림은 담기지 않아 `N5`처럼 직접 적습니다" in text
+    assert "`scheduleToday`가 `true`가 아닌 예약·일정 알림" in text
+    assert "`PROMOTION`" not in text and "`unread`" not in text
 
 
 def test_notification_v4_keeps_only_what_is_needed():

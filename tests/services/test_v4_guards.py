@@ -23,7 +23,7 @@ from app.schemas import (
 )
 from app.schemas.clues import NotificationClue, NotificationClueKind, PhotoClue
 from app.services.clue_bundles import build_timeline_clues
-from app.services.conversation_guard import enforce_conversation_limit
+from app.services.conversation_guard import conversation_events, enforce_conversation_limit
 from app.services.draft_repair import repair_draft
 from app.services.location_skeleton import build_location_skeleton
 from app.services.photo_guard import merge_photo_scenes
@@ -838,11 +838,12 @@ def test_a_located_day_leaves_alerts_to_timeline():
     stay = stay_item("day", start="2026-06-20T10:57:00", end="2026-06-20T17:45:00")
     request = make_request(stays=[stay])
     clue = _notification_clue("N1", NotificationClueKind.PAYMENT)
-    draft = _draft()
+    frame = _event([(EventSourceType.STAY, stay.raw_id)], start=_at(10, 57), end=_at(17, 45))
+    draft = _draft(frame)
 
     ensure_notification_events(draft, request, _clues(request, [clue]))
 
-    assert draft.events == []
+    assert draft.events == [frame]
 
 
 
@@ -871,14 +872,8 @@ def test_a_restored_alert_goes_through_confirmation_and_the_result_contract():
     clue = _notification_clue("pay", NotificationClueKind.PAYMENT)
     clue.raw_ids = [message.raw_id]
     clues = _clues(request, [clue])
-    photo = photo_item("lunch", taken="2026-06-20T12:00:00")
-    request.photos.append(photo)
-    meal = _event(
-        [(EventSourceType.PHOTO, photo.raw_id)], start=_at(12), end=_at(12, 30), event_type=EventType.MEAL,
-        title="순두부찌개", description="순두부찌개를 먹었다.",
-    )
 
-    draft = repair_draft(_draft(meal), request, clues=clues)
+    draft = repair_draft(_draft(), request, clues=clues)
 
     [restored] = [event for event in draft.events if event.title == "Amazon 결제"]
     assert restored.start_time == restored.end_time == _at(14, 23)
@@ -1305,3 +1300,204 @@ def test_a_movement_carries_only_the_address():
     for text in (named.title, named.description):
         assert "한빛아파트" not in text and "OO타워" not in text and "{place}" not in text
         assert "마포구" in text and "강남구" in text
+
+
+# --- 알림은 틀의 근거다 (#173) ---------------------------------------------------------------
+
+
+def _alert_day(*labels_and_kinds, **request_fields):
+    """알림 하나마다 그 시각의 알림뿐인 event 를 만든다."""
+
+    items, clues = [], []
+    for number, (label, kind) in enumerate(labels_and_kinds):
+        item = notification_item(label, "토스", label, posted=f"2026-06-20T1{number}:00:00")
+        clue = _notification_clue(label, kind, at=_at(10 + number))
+        clue.raw_ids = [item.raw_id]
+        items.append(item)
+        clues.append(clue)
+    request = make_request(notifications=items, **request_fields)
+    events = [
+        _event([(EventSourceType.NOTIFICATION, item.raw_id)], start=_at(10 + number), end=_at(10 + number), title=item.title)
+        for number, item in enumerate(items)
+    ]
+    return request, clues, events
+
+
+def _titles(draft):
+    return sorted(event.title for event in draft.events)
+
+
+def test_with_a_frame_only_conversations_stay_as_alert_events():
+    """결제·예약·완료·소식 모두 단독 event 가 되지 않는다(사용자 결정 2026-10-31)."""
+
+    from app.services.skeleton_guard import remove_notification_events
+
+    photo = photo_item("p", taken="2026-06-20T09:00:00")
+    request, clues, events = _alert_day(
+        ("chat", NotificationClueKind.CONVERSATION),
+        ("pay", NotificationClueKind.PAYMENT),
+        ("book", NotificationClueKind.RESERVATION),
+        ("done", NotificationClueKind.ACTION_RESULT),
+        ("news", NotificationClueKind.NEWS),
+        photos=[photo],
+    )
+    frame = _event([(EventSourceType.PHOTO, photo.raw_id)], start=_at(9), end=_at(9), title="사진")
+    draft = _draft(frame, *events)
+
+    remove_notification_events(draft, request, _clues(request, clues))
+
+    assert _titles(draft) == ["chat", "사진"]
+    assert "알림으로 만든 event 4건" in draft.warnings[-1].message
+
+
+def test_a_conversation_with_a_payment_still_counts_as_a_conversation():
+    """당근 거래 대화 — 대화에 거래 알림이 함께 붙어도 대화다(#167)."""
+
+    from app.services.skeleton_guard import remove_notification_events
+
+    photo = photo_item("p", taken="2026-06-20T09:00:00")
+    request, clues, [chat, pay] = _alert_day(
+        ("chat", NotificationClueKind.CONVERSATION), ("pay", NotificationClueKind.PAYMENT), photos=[photo]
+    )
+    chat.source_refs = [*chat.source_refs, *pay.source_refs]
+    frame = _event([(EventSourceType.PHOTO, photo.raw_id)], start=_at(9), end=_at(9), title="사진")
+    draft = _draft(frame, chat)
+
+    remove_notification_events(draft, request, _clues(request, clues))
+
+    assert _titles(draft) == ["chat", "사진"]
+
+
+def test_a_day_without_any_frame_keeps_its_alerts_through_repeated_confirmation():
+    """사진도 일정도 위치도 없는 날은 알림이 그날의 기록이다. 소식도 다음 확정에서 지워지지 않는다."""
+
+    request, clues, _ = _alert_day(
+        ("chat", NotificationClueKind.CONVERSATION), ("news", NotificationClueKind.NEWS)
+    )
+    bundle = _clues(request, clues)
+
+    draft = repair_draft(_draft(), request, clues=bundle)
+    assert len(draft.events) == 2
+
+    assert len(repair_draft(draft, request, clues=bundle).events) == 2
+
+
+def test_a_day_with_photos_does_not_restore_a_payment():
+    """위치가 없어도 사진·일정이 틀이다. Timeline 이 만든 결제 event 도 지워진다."""
+
+    photo = photo_item("p", taken="2026-06-20T09:00:00")
+    request, clues, [pay] = _alert_day(("pay", NotificationClueKind.PAYMENT), photos=[photo])
+    frame = _event(
+        [(EventSourceType.PHOTO, photo.raw_id)], start=_at(9), end=_at(9), event_type=EventType.PHOTO_MOMENT, title="사진",
+    )
+
+    draft = repair_draft(_draft(frame, pay), request, clues=_clues(request, clues))
+
+    assert _titles(draft) == ["사진"]
+
+
+def _stay_with_alert(kind, event_type=EventType.UNKNOWN):
+    stay = stay_item("office", start="2026-06-20T09:00:00", end="2026-06-20T18:00:00")
+    item = notification_item("alert", "토스", "알림", posted="2026-06-20T12:30:00")
+    clue = _notification_clue("N1", kind, at=_at(12, 30))
+    clue.raw_ids = [item.raw_id]
+    request = make_request(stays=[stay], notifications=[item])
+    whole = _event([(EventSourceType.STAY, stay.raw_id)], start=_at(9), end=_at(18), title="체류", base=("E1",))
+    piece = _event(
+        [(EventSourceType.STAY, stay.raw_id), (EventSourceType.NOTIFICATION, item.raw_id)],
+        start=_at(12, 30), end=_at(13), event_type=event_type, title="꺼낸 event", base=("E1",),
+    )
+    return request, _clues(request, [clue]), whole, piece, item
+
+
+def test_an_alert_event_pulled_out_of_a_stay_goes_back_as_its_evidence():
+    """`from` 을 적어 위치 근거를 가져도 알림으로 만든 event 다. 근거는 체류 event 로 옮긴다."""
+
+    from app.services.skeleton_guard import remove_notification_events
+
+    request, clues, whole, piece, item = _stay_with_alert(NotificationClueKind.NEWS)
+    draft = _draft(whole, piece)
+
+    remove_notification_events(draft, request, clues)
+
+    assert draft.events == [whole]
+    assert item.raw_id in [ref.raw_id for ref in whole.source_refs]
+
+
+def test_a_meal_pulled_out_by_a_payment_stays():
+    from app.services.skeleton_guard import remove_notification_events
+
+    request, clues, whole, piece, _ = _stay_with_alert(NotificationClueKind.PAYMENT, EventType.MEAL)
+    draft = _draft(whole, piece)
+
+    remove_notification_events(draft, request, clues)
+
+    assert _titles(draft) == ["꺼낸 event", "체류"]
+
+
+def test_an_alert_outside_the_event_time_is_not_its_evidence():
+    """15:28 결제가 18:17 식사의 근거로 붙었다. 받은 시각이 맞아야 그 event 의 근거다."""
+
+    from app.services.skeleton_guard import settle_event_evidence
+
+    stay = stay_item("office", start="2026-06-20T09:00:00", end="2026-06-20T20:00:00")
+    far = notification_item("far", "토스", "결제", posted="2026-06-20T15:28:00")
+    near = notification_item("near", "토스", "결제", posted="2026-06-20T18:20:00")
+    clues = []
+    for item, at in ((far, _at(15, 28)), (near, _at(18, 20))):
+        clue = _notification_clue(item.raw_id[:6], NotificationClueKind.PAYMENT, at=at)
+        clue.raw_ids = [item.raw_id]
+        clues.append(clue)
+    request = make_request(stays=[stay], notifications=[far, near])
+    meal = _event(
+        [
+            (EventSourceType.STAY, stay.raw_id),
+            (EventSourceType.NOTIFICATION, far.raw_id),
+            (EventSourceType.NOTIFICATION, near.raw_id),
+        ],
+        start=_at(18, 17), end=_at(19), event_type=EventType.MEAL,
+    )
+
+    settle_event_evidence(_draft(meal), request, _clues(request, clues))
+
+    assert [ref.raw_id for ref in meal.source_refs] == [stay.raw_id, near.raw_id]
+
+
+def test_an_alert_far_from_the_stay_it_came_with_leaves_the_event():
+    """체류 근거로 시간이 정해진 event 에 다른 시각의 결제가 남지 않는다. 알림뿐인 event 는
+    `test_notification_guarantee.py` 가 본다."""
+
+    morning = stay_item("am", lat=37.50, start="2026-06-20T09:00:00", end="2026-06-20T10:00:00")
+    evening = stay_item("pm", lat=37.60, start="2026-06-20T13:00:00", end="2026-06-20T18:00:00")
+    item = notification_item("pay", "토스", "결제", posted="2026-06-20T20:00:00")
+    clue = _notification_clue("N1", NotificationClueKind.PAYMENT, at=_at(20))
+    clue.raw_ids = [item.raw_id]
+    request = make_request(stays=[morning, evening], notifications=[item])
+    stray = _event(
+        [(EventSourceType.STAY, morning.raw_id), (EventSourceType.NOTIFICATION, item.raw_id)],
+        start=_at(20), end=_at(20), title="떠 있는 결제",
+    )
+
+    draft = repair_draft(_draft(stray), request, clues=_clues(request, [clue]))
+
+    assert item.raw_id not in {ref.raw_id for event in draft.events for ref in event.source_refs}
+
+
+def test_a_conversation_with_a_short_record_counts_as_a_conversation():
+    """대화의 묶음 id 를 적으면 단독 위치 기록이 딸려 온다. 세지 않으면 대화 event 가 3개를 넘는다."""
+
+    short = stay_item("short", start="2026-06-20T19:00:00", end="2026-06-20T19:05:00")
+    chat = notification_item("chat", "카카오톡", "친구", posted="2026-06-20T19:02:00")
+    request = make_request(stays=[short], notifications=[chat])
+    clue = _notification_clue("N1", NotificationClueKind.CONVERSATION, at=_at(19, 2))
+    clue.raw_ids = [chat.raw_id]
+    clues = _clues(request, [clue])
+    assert clues.short_record_ids == {short.raw_id}
+    event = _event(
+        [(EventSourceType.STAY, short.raw_id), (EventSourceType.NOTIFICATION, chat.raw_id)],
+        start=_at(19, 2), end=_at(19, 2), event_type=EventType.SOCIAL, title="친구와 대화",
+    )
+    draft = _draft(event)
+
+    assert conversation_events(draft, request, {chat.raw_id}) == []
+    assert conversation_events(draft, request, {chat.raw_id}, aside=clues.short_record_ids) == [event]

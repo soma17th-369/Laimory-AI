@@ -37,7 +37,7 @@ from app.schemas.clues import NotificationClue, NotificationClueKind
 from app.services.base_events import BaseEvent, base_event_draft
 from app.services.calendar_guard import RESTORED_CALENDAR_DESCRIPTION
 from app.services.clue_bundles import TimelineClues
-from app.services.conversation_guard import MAX_CONVERSATION_EVENTS
+from app.services.conversation_guard import MAX_CONVERSATION_EVENTS, notification_only
 from app.services.location_metrics import SHORT_STAY_MAX
 from app.services.location_skeleton import SegmentKind
 from app.services.meal_guard import MEAL_STAY_MAX_DURATION
@@ -49,6 +49,10 @@ logger = get_logger(__name__)
 
 _WARNING_ID = "warning-skeleton-restored"
 
+_NOTIFICATION_WARNING_ID = "warning-notification-event-"
+
+_SAMPLE_LIMIT = 3
+
 #: Timeline 이 쓰는 시각의 단위. 기록의 초 단위 경계와 이만큼은 어긋난다.
 _MINUTE = timedelta(minutes=1)
 
@@ -59,7 +63,7 @@ _MIN_OVERLAP = timedelta(minutes=30)
 #: 일정 기본 event 의 주인이 될 수 없는 종류. 사진·`보낸 시간` 은 일정이 말하는 일이 아니다.
 _NOT_CALENDAR_OWNER = frozenset({EventType.UNKNOWN, EventType.PHOTO_MOMENT})
 
-#: 위치 기록이 없는 날 그 자체로 event 가 되는 알림. 사용자가 했거나 끝낸 일을 말한다.
+#: 틀이 하나도 없는 날 그 자체로 event 가 되는 알림. 사용자가 했거나 끝낸 일을 말한다.
 _NOTIFICATION_EVENT_KINDS = frozenset(
     {NotificationClueKind.PAYMENT, NotificationClueKind.RESERVATION, NotificationClueKind.ACTION_RESULT}
 )
@@ -159,17 +163,84 @@ def keep_calendar_base_events(
         logger.debug("일정 기본 event 지키기: %d건 합침", len(merged))
 
 
+def remove_notification_events(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """틀이 있는 날 대화가 아닌 알림으로 만든 event 를 없앤다(in-place, #173).
+
+    "알림은 기존 만들어진 틀의 부가적인 근거가 되는 것" (사용자 결정 2026-10-31). 운영 v3 는 15개 중 10개가
+    알림뿐인 날이 있었다. 대화는 기존 event 와 연관이 크지 않아 단독으로 남고 개수는
+    `enforce_conversation_limit` 이 맞춘다.
+
+    틀은 알림뿐이 아닌 event 다(위치 구간·사진·일정). 틀이 하나도 없는 날은 건드리지 않는다 — 그날은 알림이
+    그날의 기록이다(`ensure_notification_events`).
+
+    - 근거가 알림뿐이고 대화 단서가 없는 event 는 지운다. 종류는 보지 않는다.
+    - 기본 event 안으로 꺼낸 event 는 `from` 때문에 위치 근거를 가져 위 판정을 빠져나간다. 활동 근거가 대화가
+      아닌 알림뿐이고 같은 기본 event 의 다른 event 가 그 시간을 덮으면 그 event 의 근거로 합친다. 예외는
+      `MEAL` 이다 — 체류 안의 점심 결제는 체류 전체로 채울 수 없는 다른 사건이다.
+
+    지운 알림은 시간으로 옮기지 않는다. Repair 가 묶음에서 다시 쓸 수 있다.
+    """
+
+    aside = clues.short_record_ids
+    if all(notification_only(event, aside) for event in draft.events):
+        return
+
+    conversation_ids = _conversation_ids(clues)
+    location_ids = {raw_id_of(item) for item in [*request.stays, *request.movements]} | aside
+    notification_ids = {raw_id_of(item) for item in request.notifications}
+    removed = [
+        event
+        for event in draft.events
+        if notification_only(event, aside)
+        and not any(ref.raw_id in conversation_ids for ref in event.source_refs)
+    ]
+    gone = {id(event) for event in removed}
+    for event in draft.events:
+        activity = {ref.raw_id for ref in event.source_refs} - location_ids
+        if (
+            id(event) in gone
+            or event.event_type is EventType.MEAL
+            or not activity
+            or not activity <= notification_ids
+            or activity & conversation_ids
+        ):
+            continue
+        cover = _event_covering(event, draft, gone)
+        if cover is not None:
+            _take_evidence(cover, event)
+            gone.add(id(event))
+            removed.append(event)
+    if not removed:
+        return
+
+    draft.events = [event for event in draft.events if id(event) not in gone]
+    titles = ", ".join(event.title for event in removed[:_SAMPLE_LIMIT])
+    if len(removed) > _SAMPLE_LIMIT:
+        titles += f" 외 {len(removed) - _SAMPLE_LIMIT}건"
+    draft.warnings.append(
+        TimelineWarning(
+            warning_id=f"{_NOTIFICATION_WARNING_ID}{len(draft.warnings) + 1:03d}",
+            severity=TimelineWarningSeverity.LOW,
+            message=f"대화가 아닌 알림으로 만든 event {len(removed)}건을 제외했습니다: {titles}",
+        )
+    )
+    # 제목은 운영 이벤트로 나가지 않는다. 건수만 남긴다.
+    logger.debug("알림 event 정리: %d건", len(removed))
+
+
 def ensure_notification_events(
     draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
 ) -> None:
-    """위치 기록이 없는 날 빠진 결제·예약·완료 알림을 event 로 되살린다(in-place).
+    """틀이 하나도 없는 날 빠진 결제·예약·완료 알림을 event 로 되살린다(in-place).
 
-    "위치가 없을 때도 v3 에서 나오는 거랑 거의 똑같이 나와야". 그날은 알림이 붙을 구간이 없어 알림이 그
-    자체로 그날의 일인데, Timeline 은 붙일 곳이 없다며 버렸다(v3 8회 22건, v4 12회 2건). 위치 기록이 있는
-    날에는 돌지 않는다. 대화와 소식은 Timeline 이 고른다 — 답글 알림까지 대화로 분류돼 코드가 고를 수 없다.
+    "사진·캘린더가 중심이고 없으면 알림이라도"(사용자 결정 2026-10-31). 위치도 사진도 일정도 없는 날은 알림이
+    그 자체로 그날의 기록이다. 사진이나 일정이 있는 날은 되살리지 않는다 — 알림은 틀의 근거이지 event 가
+    아니다(#173). 대화와 소식은 Timeline 이 고른다 — 답글 알림까지 대화로 분류돼 코드가 고를 수 없다.
     """
 
-    if clues.skeleton.has_location:
+    if not all(notification_only(event, clues.short_record_ids) for event in draft.events):
         return
     _restore_notifications(
         draft, [clue for clue in clues.notifications if clue.kind in _NOTIFICATION_EVENT_KINDS]
@@ -251,7 +322,8 @@ def settle_event_evidence(
     - event 시간과 맞지 않는 체류·이동 근거를 뺀다. 기본 event 에서 온 event 는 그 구간의 기록을 모두
       근거로 받아, 17:24 식사의 `sourceRawIds` 에 12:08~14:38 체류 기록이 실렸다(12개 하루에서 근거 295개
       중 58개). 앞뒤 20분(`SHORT_STAY_MAX`)으로 재고, 근거가 모두 빠지는 event 는 건드리지 않는다 — 시간
-      밖 event 는 `remove_events_outside_evidence` 의 몫이다.
+      밖 event 는 `remove_events_outside_evidence` 의 몫이다. 대화가 아닌 알림도 같다 — 받은 시각이 event
+      시간과 맞아야 그 event 의 근거다(#173). 15:28 결제가 18:17 식사의 근거로 붙었다.
     - 알림은 event 하나에만 둔다. 사진처럼 꺼낸 event 가 갖는다 — Repair 가 대화 알림을 체류에도 적어
       같은 알림이 두 event 에 있었고 체류 문장이 대화로 덮였다.
     - 근거가 위치뿐인 event 를 같은 기본 event 의 다른 event 가 시간째 덮으면 그 event 의 위치 근거로 합친다.
@@ -262,6 +334,14 @@ def settle_event_evidence(
 
     spans = clues.skeleton.record_spans()
     spans.update({record.raw_id: (record.start, record.end) for record in clues.skeleton.isolated})
+    spans.update(
+        {
+            raw_id: (clue.first_at, clue.last_at or clue.first_at)
+            for clue in clues.notifications
+            if clue.kind is not NotificationClueKind.CONVERSATION and clue.first_at is not None
+            for raw_id in clue.raw_ids
+        }
+    )
     for event in draft.events:
         low, high = event.start_time - SHORT_STAY_MAX, event.end_time + SHORT_STAY_MAX
         kept = [
@@ -282,11 +362,7 @@ def settle_event_evidence(
             continue
         cover = _event_covering(event, draft, absorbed)
         if cover is not None:
-            held = {ref.raw_id for ref in cover.source_refs}
-            cover.source_refs = [
-                *cover.source_refs,
-                *(ref for ref in event.source_refs if ref.raw_id not in held),
-            ]
+            _take_evidence(cover, event)
             absorbed.add(id(event))
     draft.events = [event for event in draft.events if id(event) not in absorbed]
 
@@ -328,6 +404,25 @@ def _keep_notifications_on_one_event(draft: TimelineDraft, request: TimelineDraf
             rest = [ref for ref in event.source_refs if ref.raw_id != raw_id]
             if event is not owner and rest:
                 event.source_refs = rest
+
+
+def _conversation_ids(clues: TimelineClues) -> set[str]:
+    return {
+        raw_id
+        for clue in clues.notifications
+        if clue.kind is NotificationClueKind.CONVERSATION
+        for raw_id in clue.raw_ids
+    }
+
+
+def _take_evidence(cover: TimelineEventDraft, event: TimelineEventDraft) -> None:
+    """`event` 의 근거를 `cover` 로 옮긴다. 이미 가진 근거는 건너뛴다."""
+
+    held = {ref.raw_id for ref in cover.source_refs}
+    cover.source_refs = [
+        *cover.source_refs,
+        *(ref for ref in event.source_refs if ref.raw_id not in held),
+    ]
 
 
 def _event_covering(
@@ -710,8 +805,8 @@ def remove_calendar_events_without_calendar(
 
     일정 event 는 사용자가 캘린더에 적은 일정이 있을 때만이다(사용자 결정). 실제 Timeline 은
     Gmail·문자로 온 예비소집 안내를 `11:25~23:59 ICPC 예비소집 안내` 일정 event 로 만들었다.
-    대화가 아닌 알림은 시각을 말하지 않아(사용자 결정) 알림만 근거인 일정 event 는 시간이 지어낸
-    것이라 지운다. 다른 근거(체류·사진)가 있으면 그 근거의 event 로 두고 타입만 `UNKNOWN` 으로 바꾼다.
+    알림의 받은 시각은 일정 시간이 아니라 알림만 근거인 일정 event 는 시간이 지어낸 것이라 지운다.
+    다른 근거(체류·사진)가 있으면 그 근거의 event 로 두고 타입만 `UNKNOWN` 으로 바꾼다.
     """
 
     notification_ids = {raw_id_of(item) for item in request.notifications}
@@ -774,20 +869,15 @@ def remove_events_outside_evidence(
     - 위치 근거가 있는 event 의 시간은 위치 기록·사진·일정이 덮는 시간이다. 그 자리에 있었다고
       말하는 근거들이고, 휴대폰으로 오간 메시지는 그곳에 있었다는 근거가 아니다.
     - 위치 근거가 없는 event(대화·사진으로 만든 event)는 대화 알림의 시각도 시간을 덮는다.
-    - 대화가 아닌 알림은 시각을 말하지 않는다(사용자 결정) — 받은 시각은 그 일이 일어난 때가
-      아니다. 그런 알림만 근거인 event 는 자르지 않는다.
+    - 대화가 아닌 알림은 event 의 시간을 덮지 않는다 — 받은 시각은 그 일이 일어난 때가 아닐 수
+      있다. 그런 알림만 근거인 event 는 자르지 않는다.
     """
 
     tz = resolve_timezone(request.timezone)
     spans = _source_spans(request, tz)
     location_ids = {raw_id_of(item) for item in [*request.stays, *request.movements]}
     notification_ids = {raw_id_of(item) for item in request.notifications}
-    conversation_ids = {
-        raw_id
-        for clue in clues.notifications
-        if clue.kind is NotificationClueKind.CONVERSATION
-        for raw_id in clue.raw_ids
-    }
+    conversation_ids = _conversation_ids(clues)
     photo_ids = {raw_id_of(item) for item in request.photos}
     activity_ids = photo_ids | {raw_id_of(item) for item in request.calendars} | {
         raw_id
