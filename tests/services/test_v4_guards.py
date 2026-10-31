@@ -189,6 +189,36 @@ def test_notification_cannot_become_a_calendar_event():
     assert with_stay.event_type is EventType.UNKNOWN
 
 
+def test_a_calendar_event_with_only_a_stay_becomes_a_stay():
+    """일정 근거가 없고 체류만 남으면 그 체류의 event 다. `UNKNOWN` 은 체류를 뜻하지 않는다(#172)."""
+
+    stay = stay_item("stay", start="2026-06-20T09:00:00", end="2026-06-20T18:00:00")
+    request = make_request(stays=[stay])
+    event = _event([(EventSourceType.STAY, stay.raw_id)], start=_at(9), end=_at(18), event_type=EventType.CALENDAR_EVENT, title="체류")
+    draft = _draft(event)
+
+    remove_calendar_events_without_calendar(draft, request, _clues(request))
+
+    assert draft.events == [event]
+    assert event.event_type is EventType.STAY
+
+
+def test_a_stay_type_without_location_is_not_a_stay():
+    """위치 근거 없이 체류를 말하는 event 는 타입이 `STAY` 여도 지운다."""
+
+    chat = notification_item("mom", "카카오톡", "엄마", posted="2026-06-20T22:01:00")
+    request = make_request(notifications=[chat])
+    night = _event(
+        [(EventSourceType.NOTIFICATION, chat.raw_id)], start=_at(22), end=_at(23), event_type=EventType.STAY,
+        title="도화동에서 보낸 밤", description="밤을 보냈다.",
+    )
+    draft = _draft(night)
+
+    remove_stays_without_location(draft, request, _clues(request))
+
+    assert draft.events == []
+
+
 def test_calendar_event_spanning_a_movement_keeps_its_time():
     """일정 시간은 바꾸지 않는다 — 이동을 품은 일정 event 를 이동 앞뒤로 자르지 않는다."""
 
@@ -903,7 +933,7 @@ def test_a_stay_with_no_calendar_is_not_sleep():
 
     [(_, suggestion)] = settle.suggest(settle(evening))
 
-    assert (suggestion["eventType"], suggestion["title"]) == ("UNKNOWN", base.title)
+    assert (suggestion["eventType"], suggestion["title"]) == ("STAY", base.title)
     assert evening.event_type is EventType.SLEEP
 
 
@@ -1028,7 +1058,47 @@ def test_an_event_that_gave_its_photo_away_says_only_where():
 
     [(_, suggestion)] = settle.suggest(settle(social))
 
-    assert (suggestion["eventType"], suggestion["title"]) == ("UNKNOWN", base.title)
+    assert (suggestion["eventType"], suggestion["title"]) == ("STAY", base.title)
+
+
+@pytest.mark.parametrize("event_type", [EventType.SHOPPING, EventType.CULTURE, EventType.ERRAND, EventType.UNKNOWN])
+def test_a_type_that_only_a_stay_supports_goes_back_to_stay(event_type):
+    """쇼핑몰·영화관·병원에 머문 것만으로는 그 일을 한 것이 아니다(#150, #172). 코드는 제안만 넘긴다."""
+
+    stay, base, settle = _stay_day()
+    event = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(10, 57), end=_at(17, 45), event_type=event_type,
+        title="쇼핑", description="{place}에서 쇼핑했다.", base=[base.base_id],
+    )
+
+    [(_, suggestion)] = settle.suggest(settle(event))
+
+    assert (suggestion["eventType"], suggestion["title"]) == ("STAY", base.title)
+    assert event.event_type is event_type
+
+
+def test_a_stay_in_the_frame_sentence_needs_no_correction():
+    stay, base, settle = _stay_day()
+    event = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(10, 57), end=_at(17, 45), event_type=EventType.STAY,
+        title=base.title, description=base.description, base=[base.base_id],
+    )
+
+    assert not [s for _, s in settle.suggest(settle(event)) if "eventType" in s or "title" in s]
+
+
+def test_a_shopping_event_with_a_payment_keeps_its_type():
+    """결제 알림이 쇼핑을 말하면 체류가 있어도 틀로 되돌리지 않는다."""
+
+    payment = notification_item("pay", "쿠팡", "결제 완료", posted="2026-06-20T14:00:00")
+    stay, base, settle = _stay_day(payment)
+    event = _event(
+        [(EventSourceType.STAY, stay.raw_id), (EventSourceType.NOTIFICATION, payment.raw_id)],
+        start=_at(10, 57), end=_at(17, 45), event_type=EventType.SHOPPING,
+        title="쇼핑", description="{place}에서 쇼핑했다.", base=[base.base_id],
+    )
+
+    assert not [s for _, s in settle.suggest(settle(event)) if "eventType" in s or "title" in s]
 
 
 def test_twins_on_the_same_stay_become_one():

@@ -202,7 +202,7 @@ def build_base_event(
 
     if segment.kind is SegmentKind.STAY:
         title = f"{area}에서 보낸 시간" if area else "머문 시간"
-        return BaseEvent(f"E{number}", segment, EventType.UNKNOWN, title, "{place}에서 시간을 보냈다.")
+        return BaseEvent(f"E{number}", segment, EventType.STAY, title, "{place}에서 시간을 보냈다.")
     if segment.kind is SegmentKind.WALK:
         return BaseEvent(
             f"E{number}", segment, EventType.EXERCISE, f"{area} 산책" if area else "산책",
