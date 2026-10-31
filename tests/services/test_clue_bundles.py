@@ -219,9 +219,19 @@ def test_prompt_sections_carry_no_raw_ids_or_coordinates():
     assert "37.6" not in text and "latitude" not in text
 
 
-def test_day_notifications_carry_no_time():
+def test_day_notifications_carry_no_time_on_a_located_day():
     payment = _conversation("N1", "12:30", "12:30", kind=NotificationClueKind.PAYMENT)
+
+    [entry] = timeline_input_sections(_clues(stays=_home_work(), notifications=[payment]))["notifications"]
+
+    assert "firstAt" not in entry and "lastAt" not in entry
+
+
+def test_day_notifications_carry_their_time_without_location():
+    """위치가 없는 날은 알림이 그 자체로 event 이고, 받은 시각이 유일한 시간이다."""
+
+    payment = _conversation("N1", "12:30", "12:31", kind=NotificationClueKind.PAYMENT)
 
     [entry] = timeline_input_sections(_clues(notifications=[payment]))["notifications"]
 
-    assert "firstAt" not in entry and "lastAt" not in entry
+    assert entry["firstAt"] == _at("12:30").isoformat() and entry["lastAt"] == _at("12:31").isoformat()

@@ -542,7 +542,10 @@ def timeline_input_sections(clues: TimelineClues) -> dict[str, object]:
         "day": day,
         "bundles": [_bundle_dict(bundle, clues) for bundle in clues.bundles],
         "emptyTimes": [_empty_dict(empty, clues) for empty in skeleton.empty_times],
-        "notifications": [_notification_dict(clue) for clue in clues.day_notifications],
+        "notifications": [
+            _notification_dict(clue, with_time=not skeleton.has_location)
+            for clue in clues.day_notifications
+        ],
     }
 
 
@@ -654,8 +657,12 @@ def _photo_dict(
     return payload
 
 
-def _notification_dict(clue: NotificationClue) -> dict[str, object]:
-    """알림 단서. 대화는 오간 시간을 싣고, 그 밖의 알림은 시각을 싣지 않는다(사용자 결정)."""
+def _notification_dict(clue: NotificationClue, *, with_time: bool = False) -> dict[str, object]:
+    """알림 단서. 대화는 오간 시간을 싣고, 그 밖의 알림은 시각을 싣지 않는다(사용자 결정).
+
+    `with_time` 은 위치 기록이 없는 날이다. 그날은 알림이 붙을 구간이 없어 알림 자체가 event 이고, 받은
+    시각이 그 event 의 유일한 시간이다. 시각이 없자 Timeline 이 결제·대화를 모두 버렸다.
+    """
 
     payload: dict[str, object] = {"id": clue.clue_id}
     if clue.kind is None:
@@ -669,7 +676,7 @@ def _notification_dict(clue: NotificationClue) -> dict[str, object]:
             payload[key] = value
     if clue.schedule_today is not None:
         payload["scheduleToday"] = clue.schedule_today
-    if clue.kind is NotificationClueKind.CONVERSATION:
+    if with_time or clue.kind is NotificationClueKind.CONVERSATION:
         if clue.first_at is not None:
             payload["firstAt"] = clue.first_at.isoformat()
         if clue.last_at is not None:

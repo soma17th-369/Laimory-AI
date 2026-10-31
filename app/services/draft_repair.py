@@ -127,6 +127,7 @@ from app.services.skeleton_guard import (
     remove_calendar_events_without_calendar,
     remove_stays_without_location,
     NEEDS_WRITING,
+    ensure_notification_events,
     ensure_skeleton_segments,
     hand_restored_events_to_repair,
     keep_calendar_base_events,
@@ -790,6 +791,7 @@ def _clue_correction_steps(
                 ("위치 구간 다시 확인", partial(_skeleton_step, ensure_skeleton_segments, clues=clues))
             )
             extended.append(("캘린더 일정 다시 확인", ensure_calendar_events))
+            extended.append(("알림 event 복원", partial(_skeleton_step, ensure_notification_events, clues=clues)))
             # event 시간이 모두 정해진 뒤에 근거를 맞추고, 그 근거로 장소를 다시 정한다.
             extended.append(
                 ("근거 정리", partial(_skeleton_step, settle_event_evidence, clues=clues))

@@ -752,6 +752,96 @@ def test_a_stay_elsewhere_inside_a_long_calendar_stays():
     assert draft.events == [cafe, meeting]
 
 
+def _notification_clue(label, kind, *, today=None, title="Amazon 결제", at=None):
+    from app.schemas.clues import NotificationClue
+
+    return NotificationClue(
+        id=label, kind=kind, rawIds=[fixture_raw_id(label)], title=title, summary="Amazon에서 결제했다.",
+        scheduleToday=today, firstAt=at or _at(14, 23), lastAt=at or _at(14, 23),
+    )
+
+
+def _without_location(*clues):
+    from app.services.skeleton_guard import ensure_notification_events
+
+    request = make_request()
+    bundle = _clues(request, clues)
+    return lambda *events: ensure_notification_events(draft := _draft(*events), request, bundle) or draft
+
+
+def test_a_day_without_location_keeps_its_payment_as_an_event():
+    """위치가 없는 날은 알림이 그날의 일이다. 붙일 곳이 없다고 버린 결제를 되살린다."""
+
+    clue = _notification_clue("N1", NotificationClueKind.PAYMENT)
+
+    [event] = _without_location(clue)().events
+
+    assert (event.title, event.description) == ("Amazon 결제", "Amazon에서 결제했다.")
+    assert event.start_time == event.end_time == _at(14, 23)
+    assert [r.raw_id for r in event.source_refs] == clue.raw_ids
+
+
+def test_an_alert_already_on_an_event_is_not_restored():
+    clue = _notification_clue("N1", NotificationClueKind.PAYMENT)
+    meal = _event(
+        [(EventSourceType.NOTIFICATION, clue.raw_ids[0])], start=_at(14), end=_at(14, 30), event_type=EventType.MEAL,
+    )
+
+    assert _without_location(clue)(meal).events == [meal]
+
+
+def test_only_what_the_user_did_comes_back():
+    """대화·소식·광고는 코드가 고르지 않는다. 다른 날의 예약과 날짜를 모르는 예약은 오늘 일이 아니다."""
+
+    clues = [
+        _notification_clue("N1", NotificationClueKind.CONVERSATION),
+        _notification_clue("N2", NotificationClueKind.NEWS),
+        _notification_clue("N3", NotificationClueKind.PROMOTION),
+        _notification_clue("N4", NotificationClueKind.RESERVATION, today=False),
+        _notification_clue("N5", NotificationClueKind.RESERVATION),
+        _notification_clue("N6", NotificationClueKind.PAYMENT, today=False),
+    ]
+
+    photo = _event(
+        [(EventSourceType.PHOTO, fixture_raw_id("p"))], start=_at(12), end=_at(12), event_type=EventType.PHOTO_MOMENT,
+    )
+
+    assert _without_location(*clues)(photo).events == [photo]
+
+
+def test_a_reservation_for_today_and_a_result_come_back():
+    clues = [
+        _notification_clue("N1", NotificationClueKind.RESERVATION, today=True),
+        _notification_clue("N2", NotificationClueKind.ACTION_RESULT),
+    ]
+
+    assert len(_without_location(*clues)().events) == 2
+
+
+def test_an_alert_during_sleep_stays_out():
+    """수면과 겹친 event 는 확정이 지운다. 되살리면 다음 확정과 번갈아 생겼다 사라진다."""
+
+    sleep = _event(
+        [(EventSourceType.CALENDAR, fixture_raw_id("sleep"))], start=_at(0), end=_at(8), event_type=EventType.SLEEP,
+    )
+    clue = _notification_clue("N1", NotificationClueKind.PAYMENT, at=_at(3, 55))
+
+    assert _without_location(clue)(sleep).events == [sleep]
+
+
+def test_a_located_day_leaves_alerts_to_timeline():
+    from app.services.skeleton_guard import ensure_notification_events
+
+    stay = stay_item("day", start="2026-06-20T10:57:00", end="2026-06-20T17:45:00")
+    request = make_request(stays=[stay])
+    clue = _notification_clue("N1", NotificationClueKind.PAYMENT)
+    draft = _draft()
+
+    ensure_notification_events(draft, request, _clues(request, [clue]))
+
+    assert draft.events == []
+
+
 def test_a_stay_cannot_slip_an_activity_into_the_place_only_sentence():
     """`보냈다` 로 끝나도 활동을 말하면 틀 문장이 아니다. 위치뿐인 7시간 체류에 음식 이름이 붙은 실제 출력."""
 
@@ -764,6 +854,37 @@ def test_a_stay_cannot_slip_an_activity_into_the_place_only_sentence():
     [(_, suggestion)] = settle.suggest(settle(outer))
 
     assert "순두부찌개" not in suggestion["description"]
+
+
+def test_a_restored_alert_goes_through_confirmation_and_the_result_contract():
+    """위치 없는 날 되살린 결제가 확정의 나머지 단계에서 지워지지 않고 결과 저장 계약으로 나간다."""
+
+    from app.services.draft_repair import repair_draft
+    from app.services.timeline_result import build_result_request
+
+    message = notification_item("pay", "토스", "결제", posted="2026-06-20T14:23:00")
+    request = make_request(notifications=[message])
+    clue = _notification_clue("pay", NotificationClueKind.PAYMENT)
+    clue.raw_ids = [message.raw_id]
+    clues = _clues(request, [clue])
+    photo = photo_item("lunch", taken="2026-06-20T12:00:00")
+    request.photos.append(photo)
+    meal = _event(
+        [(EventSourceType.PHOTO, photo.raw_id)], start=_at(12), end=_at(12, 30), event_type=EventType.MEAL,
+        title="순두부찌개", description="순두부찌개를 먹었다.",
+    )
+
+    draft = repair_draft(_draft(meal), request, clues=clues)
+
+    [restored] = [event for event in draft.events if event.title == "Amazon 결제"]
+    assert restored.start_time == restored.end_time == _at(14, 23)
+    assert restored.client_event_id.startswith("event-")
+    body = build_result_request(draft, request).model_dump(by_alias=True, mode="json")
+    assert [message.raw_id] in [event["sourceRawIds"] for event in body["events"]]
+
+    twice = repair_draft(draft, request, clues=clues)
+
+    assert len([event for event in twice.events if event.title == "Amazon 결제"]) == 1, "확정이 반복돼도 한 번만 되살린다."
 
 
 def test_a_stay_with_no_calendar_is_not_sleep():
@@ -1027,3 +1148,32 @@ def test_suggestions_leave_the_draft_alone():
     settle.suggest(draft)
 
     assert draft.model_dump() == before
+
+
+def test_a_day_with_only_talk_and_news_is_not_left_empty():
+    """사진도 일정도 결제도 없는 날은 남은 알림이라도 기록이다. event 0건은 정상 결과로 저장돼 아무것도 안 보인다."""
+
+    clues = [
+        _notification_clue("N1", NotificationClueKind.CONVERSATION, title="OO와 대화"),
+        _notification_clue("N2", NotificationClueKind.NEWS, title="서비스 안내"),
+        _notification_clue("N3", NotificationClueKind.PROMOTION, title="광고"),
+    ]
+
+    events = _without_location(*clues)().events
+
+    assert [event.title for event in events] == ["OO와 대화", "서비스 안내"]
+
+
+def test_talk_is_left_to_timeline_when_the_day_already_has_events():
+    photo = _event(
+        [(EventSourceType.PHOTO, fixture_raw_id("p"))], start=_at(12), end=_at(12), event_type=EventType.PHOTO_MOMENT,
+    )
+    clue = _notification_clue("N1", NotificationClueKind.CONVERSATION)
+
+    assert _without_location(clue)(photo).events == [photo]
+
+
+def test_an_empty_day_restores_no_more_than_three_talks():
+    clues = [_notification_clue(f"N{index}", NotificationClueKind.CONVERSATION) for index in range(5)]
+
+    assert len(_without_location(*clues)().events) == 3

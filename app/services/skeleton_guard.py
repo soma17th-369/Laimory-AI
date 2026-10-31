@@ -25,6 +25,7 @@ from app.core.logging import get_logger
 from app.schemas import (
     EventSourceType,
     EventType,
+    InferenceLevel,
     SourceRef,
     TimelineDraft,
     TimelineDraftRequest,
@@ -32,10 +33,11 @@ from app.schemas import (
     TimelineWarning,
     TimelineWarningSeverity,
 )
-from app.schemas.clues import NotificationClueKind
+from app.schemas.clues import NotificationClue, NotificationClueKind
 from app.services.base_events import BaseEvent, base_event_draft
 from app.services.calendar_guard import RESTORED_CALENDAR_DESCRIPTION
 from app.services.clue_bundles import TimelineClues
+from app.services.conversation_guard import MAX_CONVERSATION_EVENTS
 from app.services.location_metrics import SHORT_STAY_MAX
 from app.services.location_skeleton import SegmentKind
 from app.services.meal_guard import MEAL_STAY_MAX_DURATION
@@ -57,6 +59,11 @@ _MIN_OVERLAP = timedelta(minutes=30)
 #: 일정 기본 event 의 주인이 될 수 없는 종류. 사진·`보낸 시간` 은 일정이 말하는 일이 아니다.
 _NOT_CALENDAR_OWNER = frozenset({EventType.UNKNOWN, EventType.PHOTO_MOMENT})
 
+#: 위치 기록이 없는 날 그 자체로 event 가 되는 알림. 사용자가 했거나 끝낸 일을 말한다.
+_NOTIFICATION_EVENT_KINDS = frozenset(
+    {NotificationClueKind.PAYMENT, NotificationClueKind.RESERVATION, NotificationClueKind.ACTION_RESULT}
+)
+_RESTORED_CONFIDENCE = 0.6
 _TITLE_MAX = 30
 
 #: `merge_reason` 표지. 코드가 만들었거나 구조를 바꿔 Repair 가 글을 써야 하는 event 다.
@@ -150,6 +157,65 @@ def keep_calendar_base_events(
     if merged:
         draft.events = [event for event in draft.events if id(event) not in merged]
         logger.debug("일정 기본 event 지키기: %d건 합침", len(merged))
+
+
+def ensure_notification_events(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """위치 기록이 없는 날 빠진 결제·예약·완료 알림을 event 로 되살린다(in-place).
+
+    "위치가 없을 때도 v3 에서 나오는 거랑 거의 똑같이 나와야". 그날은 알림이 붙을 구간이 없어 알림이 그
+    자체로 그날의 일인데, Timeline 은 붙일 곳이 없다며 버렸다(v3 8회 22건, v4 12회 2건). 위치 기록이 있는
+    날에는 돌지 않는다. 대화와 소식은 Timeline 이 고른다 — 답글 알림까지 대화로 분류돼 코드가 고를 수 없다.
+    """
+
+    if clues.skeleton.has_location:
+        return
+    _restore_notifications(
+        draft, [clue for clue in clues.notifications if clue.kind in _NOTIFICATION_EVENT_KINDS]
+    )
+    # 사진도 일정도 결제도 없는 날은 남은 대화·소식이라도 그날의 기록이다(사용자 결정 2026-10-31).
+    # event 0건은 정상 결과로 저장돼 사용자에게 아무것도 보이지 않는다.
+    if not draft.events:
+        talks = sorted(
+            (clue for clue in clues.notifications if clue.kind is NotificationClueKind.CONVERSATION),
+            key=lambda clue: -len(clue.raw_ids),
+        )
+        news = [clue for clue in clues.notifications if clue.kind is NotificationClueKind.NEWS]
+        _restore_notifications(draft, [*talks[:MAX_CONVERSATION_EVENTS], *news])
+
+
+def _restore_notifications(draft: TimelineDraft, picked: list[NotificationClue]) -> None:
+    held = {ref.raw_id for event in draft.events for ref in event.source_refs}
+    sleeps = [event for event in draft.events if event.event_type is EventType.SLEEP]
+    for clue in picked:
+        at = clue.first_at
+        if at is None or held & set(clue.raw_ids):
+            continue
+        # 날짜를 모르는 예약은 오늘 일이 아니다. 수면과 겹친 event 는 확정이 지운다.
+        if clue.schedule_today is False or (
+            clue.kind is NotificationClueKind.RESERVATION and clue.schedule_today is None
+        ):
+            continue
+        if any(sleep.start_time <= at <= sleep.end_time for sleep in sleeps):
+            continue
+        draft.events.append(
+            TimelineEventDraft(
+                client_event_id=f"notification-restored-{clue.clue_id}",
+                event_type=EventType.UNKNOWN,
+                title=(clue.title or clue.counterpart or clue.kind.value)[:_TITLE_MAX],
+                description=clue.summary or "",
+                start_time=at,
+                end_time=at,
+                confidence=_RESTORED_CONFIDENCE,
+                inference_level=InferenceLevel.DIRECT,
+                source_refs=[
+                    SourceRef(source_type=EventSourceType.NOTIFICATION, raw_id=raw_id)
+                    for raw_id in clue.raw_ids
+                ],
+                merge_reason=NEEDS_WRITING,
+            )
+        )
 
 
 def hand_restored_events_to_repair(

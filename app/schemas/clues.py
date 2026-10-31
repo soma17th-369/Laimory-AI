@@ -50,6 +50,7 @@ class NotificationClueOutput(CamelModel):
     item_ids: list[str] = Field(alias="items", min_length=1)
     counterpart: str | None = Field(default=None, description="대화 상대·발신자·가맹점")
     summary: str = Field(description="민감정보를 가린 내용 요약")
+    title: str | None = Field(default=None, description="무슨 일인지 말하는 짧은 명사구")
     schedule_today: bool | None = Field(
         default=None,
         alias="scheduleToday",
@@ -91,6 +92,7 @@ class NotificationClue(CamelModel):
     app_names: list[str] = Field(default_factory=list, alias="appNames")
     counterpart: str | None = None
     summary: str | None = None
+    title: str | None = None
     schedule_today: bool | None = Field(default=None, alias="scheduleToday")
     first_at: datetime | None = Field(default=None, alias="firstAt")
     last_at: datetime | None = Field(default=None, alias="lastAt")

@@ -210,9 +210,10 @@ def assemble_notification_clues(
         )
         summary = output.summary.strip() if output and output.summary else None
         counterpart = output.counterpart.strip() if output and output.counterpart else None
-        if _sensitive(summary) or _sensitive(counterpart):
+        title = output.title.strip() if output and output.title else None
+        if _sensitive(summary) or _sensitive(counterpart) or _sensitive(title):
             stats["masked"] += 1
-            summary, counterpart = None, None
+            summary, counterpart, title = None, None, None
         rows.append(
             dict(
                 kind=output.kind if output else None,
@@ -220,6 +221,7 @@ def assemble_notification_clues(
                 app_names=_unique(item.app_name for item in group),
                 counterpart=counterpart or None,
                 summary=summary or None,
+                title=title or None,
                 schedule_today=output.schedule_today if output else None,
                 first_at=posted[0] if posted else None,
                 last_at=posted[-1] if posted else None,

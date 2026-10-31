@@ -62,6 +62,8 @@
 
 ## 요약
 
+`title`은 무슨 일인지 말하는 짧은 명사구입니다(`Amazon 결제`, `설문 제출`). 입력에 없는 말을 더하지 않습니다.
+
 `summary`는 다음 단계가 이 알림이 무슨 일이었는지 알 수 있게 쓴 한두 문장입니다. 무슨 일인지, 상대·발신자, 내용, 가맹점·금액, 예약 대상·날짜를 담습니다.
 
 - 인증번호, 토큰, 카드·계좌·전화번호, 상세 주소는 옮기지 않고 뜻만 남깁니다(`인증번호를 받았다`).
@@ -86,6 +88,7 @@ JSON 객체 하나를 출력합니다.
       "kind": "CONVERSATION|NEWS|PAYMENT|RESERVATION|ACTION_RESULT|PROMOTION",
       "items": ["g1"],
       "counterpart": "대화 상대·발신자·가맹점",
+      "title": "무슨 일인지 말하는 짧은 명사구",
       "summary": "민감정보를 가린 내용 요약",
       "scheduleToday": null
     }
