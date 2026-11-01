@@ -60,6 +60,20 @@ def test_maps_draft_event_to_contract_fields():
     assert event.source_raw_ids == [fixture_raw_id("result-1")]
 
 
+def test_a_calendar_event_is_saved_with_its_type_and_its_calendar():
+    """일정의 타입은 저장까지 그대로 가고 출처는 CALENDAR rawId 로 남는다(#184)."""
+
+    meeting = _event(
+        event_type=EventType.MEETING,
+        source_refs=[SourceRef(source_type=EventSourceType.CALENDAR, raw_id=fixture_raw_id("calendar-1"))],
+    )
+
+    [event] = _build(_draft(meeting)).events
+
+    assert event.event_type is EventType.MEETING
+    assert event.source_raw_ids == [fixture_raw_id("calendar-1")]
+
+
 def test_carries_the_record_question_to_the_contract():
     request = _build(
         _draft(_event(question="점심 자리에서 어떤 이야기가 기억에 남았나요?"))

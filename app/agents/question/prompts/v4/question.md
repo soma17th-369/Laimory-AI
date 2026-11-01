@@ -9,7 +9,7 @@
 `events` 는 앞 단계가 확정한 하루의 장면들입니다. 각 event 는 이만큼만 담고 있습니다.
 
 - `clientEventId`: 이 event 의 식별자입니다. 질문을 붙일 대상을 가리키며 그대로 되돌려 줍니다.
-- `eventType`: 장면의 종류입니다. `WAKE_UP`(기상), `SLEEP`(수면), `MOVEMENT`(이동), `CALENDAR_EVENT`(일정), `MEAL`(식사), `PHOTO_MOMENT`(사진으로 남긴 순간), `MEETING`(회의), `CLASS`(수업), `WORK`(일), `EXERCISE`(운동·산책), `SOCIAL`(사람과 보낸 시간), `REST`(휴식), `STAY`(무엇을 했는지 모르는 체류), `SHOPPING`(쇼핑), `CULTURE`(영화·공연·전시·경기 관람), `ERRAND`(병원·약국·은행 같은 볼일) 중 하나입니다.
+- `eventType`: 장면의 종류입니다. `WAKE_UP`(기상), `SLEEP`(수면), `MOVEMENT`(이동), `CALENDAR_EVENT`(어떤 활동인지 모르는 일정), `MEAL`(식사), `PHOTO_MOMENT`(사진으로 남긴 순간), `MEETING`(회의), `CLASS`(수업), `WORK`(일), `EXERCISE`(운동·산책), `SOCIAL`(사람과 보낸 시간), `REST`(휴식), `STAY`(무엇을 했는지 모르는 체류), `SHOPPING`(쇼핑), `CULTURE`(영화·공연·전시·경기 관람), `ERRAND`(병원·약국·은행 같은 볼일) 중 하나입니다.
 - `title`, `description`: **사용자가 읽을 일기 문장에서 장소를 뺀 것**입니다. 분석 메모가 아닙니다. 장소를 뺐기 때문에 짧거나 비어 있을 수 있습니다. 여기 적혀 있는 내용을 다시 확인하는 질문은 사용자에게 아무것도 남기지 못합니다.
 - `timeOfDay`: `9시~11시` 처럼 **시 단위로 뭉갠 대략의 시간대**입니다. 정확한 시각이 아니므로 질문에 시간을 인용하지 않습니다. 아침인지 저녁인지, 하루의 어디쯤이었는지를 가늠하는 데만 씁니다.
 

@@ -77,7 +77,11 @@ from app.services.draft_repair import (
     resolve_overlaps,
     sort_events,
 )
-from app.services.meal_guard import MEAL_STAY_MAX_DURATION, enforce_meal_duration
+from app.services.meal_guard import (
+    MEAL_STAY_MAX_DURATION,
+    enforce_meal_duration,
+    follows_calendar,
+)
 from app.services.skeleton_guard import NEEDS_WRITING
 from app.services.photo_guard import inspect_photo_assignment
 from app.core.error_codes import ErrorCode
@@ -334,6 +338,9 @@ def _require_meal_evidence_of(
         raise RepairToolError(
             "3시간이 넘는 event 는 식사가 아닙니다. 그 안의 식사는 split_event 로 따로 꺼냅니다."
         )
+    # 식사 약속 일정 그대로인 event 는 일정이 근거다(#184). 나눈 조각은 일정 시간과 달라 여기 들지 않는다.
+    if follows_calendar(start, end, refs, ctx.request):
+        return
     # 알림은 결제·예약만 식사의 근거다. 대화 알림만 가진 아침 체류가 `09:06 식사` 가 됐다.
     paid = {
         raw_id
@@ -708,7 +715,10 @@ _TOOLS: dict[str, RepairTool] = {
             "MEAL event 의 지속시간을 20~60분으로 되돌린다.",
             # 확정 pass 와 같은 기준이어야 한다. v3 는 식당에 머문 식사를 3시간까지 둔다(#163).
             lambda ctx: enforce_meal_duration(
-                ctx.draft, ctx.request, allow_stay_meal=ctx.extended
+                ctx.draft,
+                ctx.request,
+                allow_stay_meal=ctx.extended,
+                keep_calendar_meal=ctx.clues is not None,
             ),
         ),
         _service_tool(
@@ -735,7 +745,7 @@ _TOOLS: dict[str, RepairTool] = {
         _service_tool(
             "resolve_overlaps",
             "같은 사건을 가리키는 중복 event 를 병합하고, 모순되는 겹침은 경고로 남긴다.",
-            lambda ctx: resolve_overlaps(ctx.draft),
+            lambda ctx: resolve_overlaps(ctx.draft, by_calendar=ctx.clues is not None),
         ),
         _service_tool(
             "reinforce_calendar_location",

@@ -492,17 +492,53 @@ def test_timeline_v4_takes_a_meal_out_of_a_meeting():
 
     assert "만남·회의·일정 중이어도 사진의 `activity`가 먹었다고 말하거나 음식 결제가 있으면 `MEAL`로" in text
     assert "회의 장면 사진" in text
+    # #184: 이 문장을 `그 안에서 따로 한 일은` 으로 고치자 회의 날 두 판 모두 음식 사진을 회의에 담았다.
+    assert "배경 일정은 event로 하나 남기고 그 위에 실제 활동 event를 얹습니다" in text
 
 
 
-def test_timeline_v4_keeps_a_calendar_a_calendar():
-    """캘린더라면 캘린더 일정으로 저장한다(사용자 결정 2026-10-31). 수면 일정만 `SLEEP` 이다."""
+def test_timeline_v4_types_a_calendar_by_what_it_says():
+    """일정은 내용대로 타입을 고르고 길이는 이유가 아니다(#184, 2026-10-31 결정을 이 이슈가 뒤집었다)."""
 
     text = _timeline()
 
-    assert "캘린더 일정은 `CALENDAR_EVENT`로 남깁니다" in text
-    assert "회의는 `MEETING`" not in text
-    assert "수면 일정은 `SLEEP`입니다" in text
+    assert "캘린더 일정은 `CALENDAR_EVENT`로 남깁니다" not in text
+    assert "일정의 제목·메모가 말하는 활동으로 고릅니다" in text
+    for kind, event_type in (("회의", "MEETING"), ("수업", "CLASS"), ("업무", "WORK"), ("운동", "EXERCISE"), ("수면", "SLEEP")):
+        assert f"{kind}는 `{event_type}`" in text or f"{kind}은 `{event_type}`" in text
+    assert "종일 일정과 긴 일정도 같습니다" in text
+
+
+def test_timeline_v4_takes_meals_out_before_typing_a_calendar():
+    """틀의 타입을 뺐을 때 회의 날 식사가 사라졌다(#167). 틀은 두고 꺼낸 뒤에 고르게 한다."""
+
+    text = _timeline()
+
+    assert "기본 event의 `CALENDAR_EVENT`는 아직 고르지 않았다는 표시입니다" in text
+    assert "그 안의 식사·사진을 먼저 꺼낸 뒤 남은 일정의 타입을 고릅니다" in text
+
+
+def test_a_calendar_type_does_not_mean_it_happened():
+    """타입을 골랐다고 참석·완료를 확정하지 않는다(#184). 일정만 있는 식사는 먹었다고 쓰지 않는다."""
+
+    text = _timeline()
+
+    assert "타입은 무엇에 관한 일정인지이고 그 일을 했다는 뜻이 아닙니다" in text
+    assert "일정뿐이면 먹었다고 쓰지 않는다" in text
+    assert "일정이 있었다는 것과 참석했다는 것은 다릅니다" in text
+
+
+def test_timeline_and_repair_v4_define_the_calendar_fallback_alike():
+    for text in (_timeline(), _repair()):
+        assert "어떤 활동인지 알 수 없을 때만입니다" in text
+        assert "타입은 무엇에 관한 일정인지이고 그 일을 했다는 뜻이 아닙니다" in text
+
+
+def test_question_v4_reads_calendar_event_as_an_unclassified_calendar():
+    text = _read("agents/question/prompts/v4/question.md")
+
+    assert "`CALENDAR_EVENT`(어떤 활동인지 모르는 일정)" in text
+    assert "OO치과" not in text
 
 
 # --- eventType (#172) --------------------------------------------------------------
