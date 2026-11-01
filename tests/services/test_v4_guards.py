@@ -1592,9 +1592,10 @@ def test_a_conversation_with_a_short_record_counts_as_a_conversation():
     clue.raw_ids = [chat.raw_id]
     clues = _clues(request, [clue])
     assert clues.short_record_ids == {short.raw_id}
+    # `SOCIAL` 은 위치 근거가 있어도 대화 event 다(#183). 그 밖의 종류를 단독 기록이 가른다.
     event = _event(
         [(EventSourceType.STAY, short.raw_id), (EventSourceType.NOTIFICATION, chat.raw_id)],
-        start=_at(19, 2), end=_at(19, 2), event_type=EventType.SOCIAL, title="친구와 대화",
+        start=_at(19, 2), end=_at(19, 2), event_type=EventType.WORK, title="업무 대화",
     )
     draft = _draft(event)
 
