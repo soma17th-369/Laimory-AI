@@ -144,15 +144,20 @@ def keep_calendar_base_events(
         if not covering:
             continue
         calendar_id = base.calendar.raw_id
-        owner = next(
-            (e for e in covering if any(ref.raw_id == calendar_id for ref in e.source_refs)),
-            None,
-        ) or next((e for e in covering if _owns_calendar(e, base)), None)
+
+        def holds(event: TimelineEventDraft) -> bool:
+            return any(ref.raw_id == calendar_id for ref in event.source_refs)
+
+        # 활동을 쓴 event 가 일정을 갖지 않았어도 체류(`보낸 시간`)보다 먼저다(#184) — 체류가 일정을
+        # 가졌다고 주인이 되면 Timeline 이 고른 `MEETING` 이 체류에 합쳐져 사라진다.
+        owner = next((e for e in covering if holds(e) and _owns_calendar(e, base)), None) or next(
+            (e for e in covering if _owns_calendar(e, base)), None
+        )
         # 일정을 가진 event 라도 일정 event 로 남을 수 없으면 되돌린다. Repair 가 회의 event 를 식사로
         # 바꾸며 묶음 id 로 일정을 다시 담자, 식사 시간이 그 event 를 20분으로 줄여 회의 일정이
         # 17:24~17:44 가 됐고 일정이 참조되고 있어 캘린더 복원도 돌지 않았다.
-        if owner is None or not _owns_calendar(owner, base):
-            owner = owner or covering[0]
+        if owner is None:
+            owner = next((e for e in covering if holds(e)), covering[0])
             owner.event_type = base.event_type
             owner.merge_reason = NEEDS_WRITING
         if not any(ref.raw_id == calendar_id for ref in owner.source_refs):
@@ -641,6 +646,7 @@ def separate_movement_segments(
         if segment.kind is not SegmentKind.STAY
         for raw_id in segment.raw_ids
     }
+    walks = _walk_record_ids(clues)
     base_segments = {
         bundle.base_event.base_id: bundle.base_event.segment
         for bundle in clues.bundles
@@ -658,7 +664,7 @@ def separate_movement_segments(
     spans = _source_spans(request, tz)
     kept: list[TimelineEventDraft] = []
     for event in draft.events:
-        if event.event_type in (EventType.MOVEMENT, EventType.EXERCISE):
+        if _is_on_the_move(event, walks):
             kept.append(event)
             continue
         # 일정 event 의 시간은 바꾸지 않는다(사용자 결정) — 이동 기록만 빼고 자르지 않는다.
@@ -697,6 +703,29 @@ def separate_movement_segments(
         kept.append(event)
     draft.events = kept
     _keep_one_place(draft, clues, base_segments)
+
+
+def _walk_record_ids(clues: TimelineClues) -> set[str]:
+    return {
+        raw_id
+        for segment in clues.skeleton.segments
+        if segment.kind is SegmentKind.WALK
+        for raw_id in segment.raw_ids
+    }
+
+
+def _is_on_the_move(event: TimelineEventDraft, walks: set[str]) -> bool:
+    """이동·산책 구간이 그 event 의 시간인가.
+
+    운동 일정은 아니다(#184). `EXERCISE` 를 통째로 빼 두면 운동 일정이 앞뒤 이동 구간을 그대로 품는다.
+    산책 구간을 가진 운동 일정은 산책이 곧 그 운동이라 그대로다.
+    """
+
+    if event.event_type is EventType.MOVEMENT:
+        return True
+    if event.event_type is not EventType.EXERCISE:
+        return False
+    return not _has_calendar(event) or any(ref.raw_id in walks for ref in event.source_refs)
 
 
 def keep_one_event_per_journey(
@@ -850,8 +879,9 @@ def _keep_one_place(draft: TimelineDraft, clues: TimelineClues, base_segments) -
     def place_of(segment) -> str:
         return clues.address(segment.address) or segment.segment_id
 
+    walks = _walk_record_ids(clues)
     for event in draft.events:
-        if event.event_type in (EventType.MOVEMENT, EventType.EXERCISE):
+        if _is_on_the_move(event, walks):
             continue
         touched = {
             segment.segment_id: segment

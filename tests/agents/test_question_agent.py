@@ -294,6 +294,18 @@ def test_prompt_states_the_expected_question_count():
     assert "2개" in llm.calls[0].prompt
 
 
+def test_a_calendar_event_reaches_the_prompt_with_the_type_it_was_given():
+    """일정이 고른 타입으로 질문한다(#184). 타입이 `CALENDAR_EVENT` 로 덮이면 타입별 질문이 맞지 않는다."""
+
+    llm = FakeLLM([_text(_questions(("event-001", "회의에서 정해진 건 뭐예요?")))])
+    event = _event("event-001", event_type=EventType.MEETING, title="팀 회의")
+    event.source_refs = [SourceRef(source_type=EventSourceType.CALENDAR, raw_id=fixture_raw_id("c-1"))]
+
+    QuestionAgent(llm=llm).generate(make_request(), _draft(event))
+
+    assert '"eventType": "MEETING"' in llm.calls[0].prompt
+
+
 # --- v4: 장소 (#182) --------------------------------------------------------
 
 

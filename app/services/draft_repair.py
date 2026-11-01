@@ -104,7 +104,11 @@ from app.services.event_count_guard import (
 from app.services.location_link import link_location_evidence
 from app.services.location_only_overlap import find_location_only_overlaps
 from app.services.location_skeleton import LocationSkeleton
-from app.services.meal_guard import enforce_meal_duration, find_unsupported_meals
+from app.services.meal_guard import (
+    enforce_meal_duration,
+    find_unsupported_meals,
+    is_calendar_meal,
+)
 from app.services.movement_stay_guard import verify_movement_stay_boundary
 from app.services.narrative_guard import verify_narrative_length
 from app.services.narrative_place_guard import (
@@ -450,17 +454,32 @@ def _contains(outer: TimelineEventDraft, inner: TimelineEventDraft) -> bool:
     return outer.start_time <= inner.start_time and inner.end_time <= outer.end_time
 
 
-def _is_duplicate(left: TimelineEventDraft, right: TimelineEventDraft) -> bool:
+def _calendar_ids(event: TimelineEventDraft) -> set[str]:
+    return {ref.raw_id for ref in event.source_refs if ref.source_type is EventSourceType.CALENDAR}
+
+
+def _is_duplicate(
+    left: TimelineEventDraft, right: TimelineEventDraft, *, by_calendar: bool = False
+) -> bool:
     """같은 종류 + 같은 장소 + 시간이 겹치면 같은 사건을 두 번 쓴 것으로 본다.
 
     장소가 비어 있으면 장소로는 같은 곳인지 알 수 없다. 그때는 같은 근거(rawId)를 하나
     이상 함께 가질 때만 같은 사건으로 본다(#163). 빈 키를 같은 장소로 치면 근거가 알림뿐인
     event 들이 시간만 겹쳐도 합쳐진다 — 서로 다른 상대와의 대화 셋이 11시간짜리 대화
     하나가 됐다.
+
+    `by_calendar` 면(v4 세트, #184) 일정 근거를 가진 event 는 일정 근거와 시간이 모두 같을 때만
+    같은 사건이다. 일정이 활동 타입을 갖자 09:00~23:00 `WORK` 일정 안의 `WORK` event 가 같은
+    사건으로 합쳐져 사라졌다.
     """
 
     if left.event_type is not right.event_type or not _overlaps(left, right):
         return False
+    if by_calendar and (_calendar_ids(left) or _calendar_ids(right)):
+        if _calendar_ids(left) != _calendar_ids(right):
+            return False
+        if (left.start_time, left.end_time) != (right.start_time, right.end_time):
+            return False
     place = _place_key(left)
     if place != _place_key(right):
         return False
@@ -565,19 +584,26 @@ def merge_stay_events(draft: TimelineDraft, request: TimelineDraftRequest) -> No
     )
 
 
-def resolve_overlaps(draft: TimelineDraft) -> None:
+def resolve_overlaps(draft: TimelineDraft, *, by_calendar: bool = False) -> None:
     """중복 event 를 병합하고, 모순되는 부분 겹침은 경고로 남긴다(in-place).
 
     포함 관계(긴 체류 안의 짧은 식사 같은)는 정상이므로 손대지 않는다. 서로 다른
     장소를 같은 시간에 가리키는 부분 겹침은 사실 충돌이지만, 어느 쪽이 맞는지 코드가
-    알 수 없으므로 시간을 자르지 않고 사용자에게 알린다.
+    알 수 없으므로 시간을 자르지 않고 사용자에게 알린다. `by_calendar` 는 `_is_duplicate` 를 본다.
     """
 
     kept: list[TimelineEventDraft] = []
     merged_titles: list[str] = []
 
     for event in draft.events:
-        target = next((candidate for candidate in kept if _is_duplicate(candidate, event)), None)
+        target = next(
+            (
+                candidate
+                for candidate in kept
+                if _is_duplicate(candidate, event, by_calendar=by_calendar)
+            ),
+            None,
+        )
         if target is None:
             kept.append(event)
             continue
@@ -747,6 +773,10 @@ def _clue_correction_steps(
         # 체류·이동의 시간은 뼈대 구간 안의 시간이다 — 원래 시각으로 맞추면 정리한 이동이 되늘어난다.
         "지속시간 복원": partial(repair_durations, skeleton=clues.skeleton),
         "근거 구간 정렬": partial(align_location_events, skeleton=clues.skeleton),
+        # 식사 일정의 시간은 일정이 정한다(#184).
+        "식사 시간": partial(enforce_meal_duration, allow_stay_meal=True, keep_calendar_meal=True),
+        # 일정이 활동 타입을 가지므로 타입·장소가 같아도 일정이나 시간이 다르면 다른 사건이다(#184).
+        "중복 정리": lambda draft, request: resolve_overlaps(draft, by_calendar=True),
         # 사진 candidate 가 없어, 되살리는 사진은 이어 찍은 것끼리 묶고 같은 장면은 한 event 로 모은다.
         "사진 단일 귀속": enforce_photo_scenes,
         # 수면 일정은 계획이다 — 이동과 다른 장소의 체류는 겹쳐도 남긴다.
@@ -895,6 +925,9 @@ def _inspect(
     for overlap in [] if clue_contract else find_location_only_overlaps(draft, request):
         report.add_finding("LOCATION_ONLY_OVERLAP", overlap.detail, event=overlap.event)
     for meal in find_unsupported_meals(draft):
+        # v4 는 식사 약속 일정도 식사의 근거다(#184). 먹었다고 쓰는 것은 문장 규칙의 몫이다.
+        if clue_contract and is_calendar_meal(meal, request):
+            continue
         report.add_finding(
             "UNSUPPORTED_MEAL",
             {"sourceTypes": sorted({ref.source_type.value for ref in meal.source_refs})},

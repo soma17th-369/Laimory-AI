@@ -19,9 +19,10 @@ from app.schemas import (
     TimelineEventDraft,
 )
 from app.schemas.clues import NotificationClue, NotificationClueKind, PhotoClue
+from app.services.calendar_clues import build_calendar_clues
 from app.services.clue_bundles import build_timeline_clues
 from app.services.location_skeleton import build_location_skeleton
-from tests.fixtures.requests import make_request, notification_item, photo_item, stay_item
+from tests.fixtures.requests import calendar_item, make_request, notification_item, photo_item, stay_item
 
 _KST = timezone(timedelta(hours=9))
 
@@ -348,3 +349,75 @@ def test_repair_goes_on_while_writing_is_left():
 
     report.findings = [{"kind": "DURATION_OVER_LIMIT"}]
     assert not _writing_left(ctx)
+
+
+def _calendar_context(*, title="팀 점심 식사", end_hour=13, end_minute=30):
+    calendar = calendar_item("lunch", title, start="2026-06-20T12:00:00", end=f"2026-06-20T{end_hour}:{end_minute:02d}:00")
+    request = make_request(calendars=[calendar])
+    clues = build_timeline_clues(build_location_skeleton(request), build_calendar_clues(request), [], [])
+    event = TimelineEventDraft(
+        client_event_id="event-001",
+        event_type=EventType.CALENDAR_EVENT,
+        title=title,
+        description=f"{title} 일정이 있었다.",
+        start_time=datetime(2026, 6, 20, 12, 0, tzinfo=_KST),
+        end_time=datetime(2026, 6, 20, end_hour, end_minute, tzinfo=_KST),
+        confidence=0.7,
+        inference_level=InferenceLevel.EVIDENCE_BASED,
+        source_refs=[SourceRef(source_type=EventSourceType.CALENDAR, raw_id=calendar.raw_id)],
+    )
+    draft = TimelineDraft(user_id="u", date="2026-06-20", timezone="Asia/Seoul", events=[event])
+    return RepairContext(request=request, draft=draft, extended=True, clues=clues)
+
+
+def _update(ctx, fields):
+    [result] = execute_tool_calls(
+        ctx, [RepairToolCall(tool="update_event", args={"clientEventId": "event-001", "fields": fields}, reason="타입을 고른다")]
+    )
+    return result
+
+
+def test_update_event_takes_a_calendar_as_the_evidence_of_its_meal():
+    """일정 시간 그대로인 event 는 일정이 식사의 근거다(#184). 도구가 거절해 식사 일정을 분류할 수 없었다."""
+
+    ctx = _calendar_context()
+
+    result = _update(ctx, {"eventType": "MEAL"})
+
+    assert result.ok, result.message
+    assert ctx.draft.events[0].event_type is EventType.MEAL
+
+
+def test_update_event_will_not_make_a_meal_of_part_of_a_calendar():
+    """일정의 일부를 식사로 만들려면 지금처럼 사진·결제가 있어야 한다."""
+
+    ctx = _calendar_context()
+
+    result = _update(
+        ctx,
+        {"eventType": "MEAL", "startTime": "2026-06-20T12:30:00+09:00", "endTime": "2026-06-20T13:00:00+09:00"},
+    )
+
+    assert not result.ok
+    assert ctx.draft.events[0].event_type is EventType.CALENDAR_EVENT
+
+
+def test_update_event_will_not_make_a_meal_of_a_calendar_over_three_hours():
+    ctx = _calendar_context(title="워크숍", end_hour=16, end_minute=0)
+
+    assert not _update(ctx, {"eventType": "MEAL"}).ok
+
+
+def test_split_event_will_not_cut_a_meal_out_of_a_calendar_without_evidence():
+    ctx = _calendar_context(title="팀 회의", end_hour=15, end_minute=0)
+    parts = [
+        {"startTime": "2026-06-20T12:00:00+09:00", "endTime": "2026-06-20T13:00:00+09:00", "eventType": "MEAL", "title": "점심", "description": "점심을 먹었다."},
+        {"startTime": "2026-06-20T13:00:00+09:00", "endTime": "2026-06-20T15:00:00+09:00", "eventType": "MEETING", "title": "팀 회의", "description": "팀 회의 일정이 있었다."},
+    ]
+
+    [result] = execute_tool_calls(
+        ctx, [RepairToolCall(tool="split_event", args={"clientEventId": "event-001", "parts": parts}, reason="식사를 꺼낸다")]
+    )
+
+    assert not result.ok
+    assert len(ctx.draft.events) == 1
