@@ -356,6 +356,55 @@ def test_place_name_anywhere_in_the_title_is_removed():
     assert meal.title == "여수시 통제영3길에서 점심"
 
 
+def test_a_place_name_leaves_a_title_that_only_says_where():
+    """위치뿐인 event 는 근처 이름 후보밖에 없다. 그 이름을 제목에 쓰지 않고 지명으로 쓴다."""
+
+    from app.services.place_slots import place_names_in_title
+
+    stay = stay_item(
+        "day", start="2026-06-20T09:00:00", end="2026-06-20T12:00:00", places=["공덕 SK 리더스뷰"],
+        address="서울특별시 마포구 도화동 17-13",
+    )
+    request = make_request(stays=[stay])
+    clues = _clues(request)
+    event = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(9), end=_at(12), event_type=EventType.STAY,
+        title="공덕 SK 리더스뷰에서 시간을 보냄", description="{place}에서 시간을 보냈다.",
+    )
+    event.address = stay.address
+
+    assert place_names_in_title(event, request, clues) == ["공덕 SK 리더스뷰"]
+
+    fix_title_places(_draft(event), request, clues)
+
+    assert event.title == "마포구 도화동에서 시간을 보냄"
+
+
+def test_a_stay_title_never_keeps_a_place_name():
+    """사진이 붙은 체류도 제목에는 장소 이름을 쓰지 않는다(사용자 결정 — "장소명 쳐 쓰지 말라니까"). 지명으로 쓴다."""
+
+    from app.services.place_slots import keep_place_names_out, place_names_in_title
+
+    stay = stay_item(
+        "hall", start="2026-06-20T09:00:00", end="2026-06-20T10:30:00", places=["OO학원 강남캠퍼스"],
+        address="서울특별시 마포구 도화동 17-13",
+    )
+    sign = photo_item("sign", taken="2026-06-20T09:02:00")
+    request = make_request(stays=[stay], photos=[sign])
+    clues = _clues(request)
+    event = _event(
+        [(EventSourceType.STAY, stay.raw_id), (EventSourceType.PHOTO, sign.raw_id)], start=_at(9), end=_at(10, 30),
+        event_type=EventType.STAY, title="OO학원 강남캠퍼스에서 시간을 보냄", description="{place}에서 시간을 보냈다.",
+    )
+    event.address = stay.address
+
+    fix_title_places(_draft(event), request, clues)
+    keep_place_names_out(_draft(event), request, clues)
+
+    assert event.title == "마포구 도화동에서 시간을 보냄"
+    assert place_names_in_title(event, request, clues) == []
+
+
 def test_venue_words_never_stay_in_the_title():
     """`한식당 식사` 처럼 입력에 없는 가게 종류도 제목에는 장소다. 음식 종류는 남긴다."""
 
@@ -382,6 +431,185 @@ def test_movement_title_never_carries_a_place_name():
     assert move.title == "도화동으로 이동"
 
 
+# --- 활동을 아는 제목 (#179) ------------------------------------------------------------------
+
+
+def _meeting_day():
+    """사무실 체류 안의 회의 일정. 저녁에는 다른 동네에 있었다."""
+
+    office = stay_item(
+        "office", start="2026-06-20T09:00:00", end="2026-06-20T18:00:00", places=["공덕 SK 리더스뷰"],
+        address="서울특별시 마포구 도화동 17-13",
+    )
+    evening = stay_item(
+        "evening", start="2026-06-20T19:00:00", end="2026-06-20T20:00:00", lat=37.5, lon=127.03, places=[],
+        address="서울특별시 강남구 역삼동 737",
+    )
+    meeting = calendar_item("meeting", "프로젝트 회의", start="2026-06-20T10:00:00", end="2026-06-20T11:00:00")
+    return office, meeting, make_request(stays=[office, evening], calendars=[meeting])
+
+
+def _meeting_event(office, meeting, title, *, refs=None, event_type=EventType.CALENDAR_EVENT):
+    event = _event(
+        refs or [(EventSourceType.STAY, office.raw_id), (EventSourceType.CALENDAR, meeting.raw_id)],
+        start=_at(10), end=_at(11), event_type=event_type, title=title,
+        description="{place}에서 프로젝트 회의를 했다.",
+    )
+    event.address = office.address
+    event.place_candidates = ["공덕 SK 리더스뷰"]
+    return event
+
+
+@pytest.mark.parametrize(
+    "title, expected",
+    [
+        ("프로젝트 회의 참석", "프로젝트 회의 참석"),
+        ("프로젝트 회의에서 발표", "프로젝트 회의에서 발표"),
+        ("세미나에서 나온 이야기", "세미나에서 나온 이야기"),
+        ("사무실에서 업무", "사무실에서 업무"),
+        ("마포구 도화동에서 프로젝트 회의", "마포구 도화동에서 프로젝트 회의"),
+        ("한식당에서 저녁 식사", "마포구 도화동에서 저녁 식사"),
+        ("카페에서 회의", "마포구 도화동에서 회의"),
+        ("공덕 SK 리더스뷰에서 프로젝트 회의", "마포구 도화동에서 프로젝트 회의"),
+        ("강남구 역삼동에서 점심", "마포구 도화동에서 점심"),
+    ],
+)
+def test_a_title_that_knows_the_activity_keeps_it(title, expected):
+    """`프로젝트 회의에서 발표` 가 `마포구 도화동에서 발표` 가 되어 활동이 사라졌다. 장소일 때만 지명으로 바꾼다."""
+
+    office, meeting, request = _meeting_day()
+    event = _meeting_event(office, meeting, title)
+
+    fix_title_places(_draft(event), request, _clues(request))
+
+    assert event.title == expected
+
+
+@pytest.mark.parametrize(
+    "title, expected",
+    [
+        ("사무실에서 보낸 시간", "마포구 도화동에서 보낸 시간"),
+        ("프로젝트 회의에서 발표", "마포구 도화동에서 발표"),
+        ("강남구 역삼동에서 보낸 시간", "마포구 도화동에서 보낸 시간"),
+        ("마포구 도화동에서 보낸 시간", "마포구 도화동에서 보낸 시간"),
+    ],
+)
+def test_a_title_with_only_location_evidence_still_says_where(title, expected):
+    """근거가 위치뿐이면 어디였는지가 제목이다. 활동 제목을 지키는 규칙이 여기에 닿지 않는다."""
+
+    office, meeting, request = _meeting_day()
+    event = _meeting_event(
+        office, meeting, title, refs=[(EventSourceType.STAY, office.raw_id)], event_type=EventType.STAY,
+    )
+
+    fix_title_places(_draft(event), request, _clues(request))
+
+    assert event.title == expected
+
+
+def test_a_notification_about_another_day_does_not_make_a_title_an_activity():
+    """오늘 일이 아닌 알림은 그 체류에서 한 일을 말하지 않는다(#172). 활동 제목을 뒷받침하지 않는다."""
+
+    office, meeting, day = _meeting_day()
+    notice = notification_item("ticket", "CGV", "다음 주 예매", posted="2026-06-20T10:30:00")
+    request = make_request(stays=day.stays, calendars=day.calendars, notifications=[notice])
+    clue = _notification_clue("ticket", NotificationClueKind.RESERVATION)
+    clue.raw_ids, clue.schedule_today = [notice.raw_id], False
+    event = _meeting_event(
+        office, meeting, "영화관에서 관람",
+        refs=[(EventSourceType.STAY, office.raw_id), (EventSourceType.NOTIFICATION, notice.raw_id)],
+        event_type=EventType.CULTURE,
+    )
+
+    fix_title_places(_draft(event), request, _clues(request, [clue]))
+
+    assert event.title == "마포구 도화동에서 관람"
+
+
+def test_an_activity_title_is_not_sent_back_to_repair():
+    """고칠 제안이 남으면 Repair 가 반복 상한까지 돈다(`_writing_left`)."""
+
+    from app.services.text_suggestions import suggest_text_fixes
+
+    office, meeting, request = _meeting_day()
+    event = _meeting_event(office, meeting, "프로젝트 회의에서 발표")
+
+    assert suggest_text_fixes(_draft(event), request, _clues(request)) == []
+
+
+@pytest.mark.parametrize(
+    "title, expected",
+    [
+        ("{place}에서 프로젝트 회의", "마포구 도화동에서 프로젝트 회의"),
+        ("{place}의 프로젝트 회의", "마포구 도화동의 프로젝트 회의"),
+        ("공덕 SK 리더스뷰에서 프로젝트 회의", "마포구 도화동에서 프로젝트 회의"),
+        ("공덕 SK 리더스뷰 프로젝트 회의", "마포구 도화동에서 프로젝트 회의"),
+        ("프로젝트 회의에서 발표", "프로젝트 회의에서 발표"),
+        ("마포구 도화동에서 프로젝트 회의", "마포구 도화동에서 프로젝트 회의"),
+        ("프로젝트 회의를 함", "프로젝트 회의를 함"),
+        ("{place}", "마포구 도화동"),
+        ("공덕 SK 리더스뷰", "마포구 도화동"),
+    ],
+)
+def test_the_place_in_an_activity_title_becomes_the_area(title, expected):
+    """장소를 말한 자리는 지명이다(사용자 결정 2026-11-02). 장소를 말하지 않은 제목에는 더하지 않는다(#179)."""
+
+    from app.services.place_slots import keep_place_names_out
+
+    office, meeting, request = _meeting_day()
+    event = _meeting_event(office, meeting, title)
+
+    keep_place_names_out(_draft(event), request, _clues(request))
+
+    assert event.title == expected
+
+
+def _paid_day():
+    """사무실 체류 안의 결제. 가맹점은 알림에서 온 이름이라 장소 후보에 없다."""
+
+    office = stay_item(
+        "office", start="2026-06-20T09:00:00", end="2026-06-20T18:00:00", places=["공덕 SK 리더스뷰"],
+        address="서울특별시 마포구 도화동 17-13",
+    )
+    paid = notification_item("paid", "토스", "만쥬킹 결제", posted="2026-06-20T15:00:00")
+    request = make_request(stays=[office], notifications=[paid])
+    clue = _notification_clue("paid", NotificationClueKind.PAYMENT)
+    clue.raw_ids, clue.counterpart = [paid.raw_id], "만쥬킹"
+    clues = _clues(request, [clue])
+    event = _event(
+        [(EventSourceType.STAY, office.raw_id), (EventSourceType.NOTIFICATION, paid.raw_id)],
+        start=_at(15), end=_at(15, 30), event_type=EventType.MEAL, title="만쥬킹에서 간식을 먹음",
+        description="{place}에서 간식을 먹었다.",
+    )
+    event.address = office.address
+    return event, request, clues
+
+
+def test_a_merchant_in_the_title_becomes_the_area():
+    """제목에는 주소만 있어야 한다(사용자 결정 2026-11-02). 가맹점은 장소 후보에 없어도 장소 이름이다."""
+
+    from app.services.place_slots import keep_place_names_out, place_names_in_title
+
+    event, request, clues = _paid_day()
+
+    assert place_names_in_title(event, request, clues) == ["만쥬킹"]
+
+    keep_place_names_out(_draft(event), request, clues)
+
+    assert event.title == "마포구 도화동에서 간식을 먹음"
+    assert place_names_in_title(event, request, clues) == []
+
+
+def test_a_suggestion_also_turns_the_merchant_into_the_area():
+    from app.services.place_slots import fix_title_places
+
+    event, request, clues = _paid_day()
+
+    fix_title_places(_draft(event), request, clues)
+
+    assert event.title == "마포구 도화동에서 간식을 먹음"
+
+
 def test_a_slot_with_no_place_name_is_not_repairs_business():
     """이름 없는 칸은 저장할 때 코드가 지명으로 채운다. 제안하면 Repair 가 따르지 않은 채 반복 상한까지 돌았다."""
 
@@ -402,6 +630,53 @@ def test_a_slot_with_no_place_name_is_not_repairs_business():
     assert suggest_text_fixes(draft, request, _clues(request)) == []
     [saved] = build_result_request(draft, request).model_dump(by_alias=True, mode="json")["events"]
     assert saved["subtitle"] == "마포구 도화동에서 시간을 보냈다."
+
+
+def test_a_shortened_place_name_is_still_a_place_name_in_the_title():
+    """`그린컴퓨터아카데미와 세무법인 나은 건물을 봄` 은 후보와 글자가 달라 검사를 지나갔다."""
+
+    from app.services.place_slots import place_names_in_title
+
+    stay = stay_item(
+        "hall", start="2026-06-20T09:00:00", end="2026-06-20T10:00:00",
+        places=["그린컴퓨터아카데미 강남캠퍼스", "세무법인나은", "프롬프트 일청담점"],
+    )
+    request = make_request(stays=[stay])
+    signboard = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(9), end=_at(10), title="그린컴퓨터아카데미와 세무법인 나은 건물을 봄",
+    )
+    plain = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(9), end=_at(10), title="프롬프트를 작성함",
+    )
+
+    assert place_names_in_title(signboard, request) == ["그린컴퓨터아카데미 강남캠퍼스", "세무법인나은"]
+    assert place_names_in_title(plain, request) == [], "짧은 앞 어절은 보통 말일 수 있어 보지 않는다."
+
+
+def test_a_title_without_the_area_keeps_every_structured_value():
+    """제목에 지명이 없어도 장소·주소·후보·근거는 그대로 나간다. 코드는 제목으로 이 값을 정하지 않는다."""
+
+    from app.services.calendar_clues import build_calendar_clues
+    from app.services.timeline_result import build_result_request
+
+    office, meeting, request = _meeting_day()
+    clues = build_timeline_clues(build_location_skeleton(request), build_calendar_clues(request), [], [])
+
+    def saved(title):
+        event = _meeting_event(office, meeting, title)
+        draft = repair_draft(_draft(event), request, extended=True, clues=clues)
+        body = build_result_request(draft, request).model_dump(by_alias=True, mode="json")
+        return next(item for item in body["events"] if item["eventType"] == "CALENDAR_EVENT")
+
+    with_area, without_area = saved("마포구 도화동에서 프로젝트 회의"), saved("프로젝트 회의")
+
+    assert without_area["title"] == "프로젝트 회의"
+    assert without_area["place"] == "공덕 SK 리더스뷰"
+    assert without_area["address"] == office.address
+    assert [item["name"] for item in without_area["placeCandidates"]] == ["공덕 SK 리더스뷰"]
+    assert set(without_area["sourceRawIds"]) == {office.raw_id, meeting.raw_id}
+    for key in ("place", "address", "latitude", "longitude", "placeCandidates", "sourceRawIds", "subtitle"):
+        assert without_area.get(key) == with_area.get(key), key
 
 
 # --- 뼈대 구간 시간과 다른 장소 -------------------------------------------------------------------
@@ -1357,7 +1632,7 @@ def _title_day():
         ("{place}에서 점심", "마포구 도화동에서 점심"),
         ("{place} 점심", "마포구 도화동 점심"),
         ("공덕 SK 리더스뷰에서 매운 국물 요리와 만두", "마포구 도화동에서 매운 국물 요리와 만두"),
-        ("공덕 SK 리더스뷰 점심", "점심"),
+        ("공덕 SK 리더스뷰 점심", "마포구 도화동에서 점심"),
         ("마포구 도화동에서 점심", "마포구 도화동에서 점심"),
         ("회의에서 나온 이야기", "회의에서 나온 이야기"),
     ],

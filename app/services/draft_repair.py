@@ -905,7 +905,7 @@ def _inspect(
     if clue_contract:
         # 제목에는 장소명을 쓰지 않는다(사용자 결정). 고칠 칸이 없어 Repair 에 넘긴다.
         for event in draft.events:
-            if names := place_names_in_title(event, request):
+            if names := place_names_in_title(event, request, clues):
                 report.add_finding("PLACE_NAME_IN_TITLE", {"found": names}, event=event)
         ordered = sorted(draft.events, key=lambda event: event.start_time)
         for event, following in zip(ordered, ordered[1:]):
