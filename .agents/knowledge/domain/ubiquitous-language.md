@@ -45,7 +45,7 @@
 | 자동 검사 결과 (`ConfirmReport`) | 확정 pass 한 번이 고친 것(`corrected`), 지우거나 합친 것(`removed`), 새로 만든 것(`added`), 찾았지만 고치지 않은 것(`findings`)의 기록(#119). v3 Repair 프롬프트의 `[자동 검사 결과]` 절로 실린다. Warning과 다르다 — warning은 사람이 읽는 문장이고 이것은 event id·바뀐 값·경계를 담은 구조다. 저장하지 않는다. |
 | 대화 event | 근거가 전부 알림이고 eventType이 `MEAL`·`MOVEMENT`가 아닌 최종 event(#119, #163). v3는 메신저 정책이 있는 앱의 알림일 때, v4는 Notification 단서의 대화가 있을 때다. v4는 일정·사진 없이 대화를 가진 `SOCIAL`도 대화 event이고, 근거는 대화 알림뿐이며, 전체 10개에 세지 않는다(#183). 하루 최대 3개이고, 넘으면 코드가 알림이 많은 3개만 남긴다(v4는 같으면 글자 수가 많은 대화). Notification Agent 입력의 대화 묶음(`conversations`)이나 출력의 대화 candidate와 다른 말이다 — 그것들이 Timeline을 지나 남은 결과다. |
 | 기록할 대화·다른 event를 뒷받침하는 대화·남기지 않는 대화 | Timeline v4가 대화 단서마다 내용을 읽고 정하는 세 갈래(#183). 출력 `conversations[].decision`의 `RECORD`·`SUPPORT`·`LEAVE_OUT`이다. 앞은 대화 event가 되고, 가운데는 `STAY`·`CALENDAR_EVENT` 같은 다른 event의 근거가 되며, 뒤는 event도 근거도 아니다. |
-| 이동 사이 장시간 체류 | 하나의 candidate·event가 `MOVEMENT → 20분을 넘는 STAY → MOVEMENT`를 함께 품은 구조(#119). 20분 이하로 머문 짧은 체류(`shortStayRawIds`)와 같은 기준의 반대쪽이다. |
+| 이동 사이 장시간 체류 | 하나의 candidate·event가 `MOVEMENT → 20분을 넘는 STAY → MOVEMENT`를 함께 품은 구조(#119). 20분 이하로 머문 짧은 체류(`shortStayRawIds`)와 같은 기준의 반대쪽이다. v4는 20분 이상이다(#180). |
 | Question Agent | Repair가 확정한 모든 event에 사용자 회고 유도 질문을 하나씩 붙이는 Agent. |
 | 회고 유도 질문 | `TimelineEventDraft.question`/result event의 `question`. 사용자가 경험·감정·이유를 덧붙이도록 event에 중첩해 저장하는 질문. 예전의 내부 모호성 질문(`TimelineDraft.questions`)은 #118에서 제거됐다 — 읽어서 쓰는 곳이 없었고, 그 자리는 event `uncertainty`와 Timeline warning이 맡는다. |
 | `place` | 장소명. 파이프라인 전 구간이 이 한 이름을 쓴다 — 입력 `StayItem.place`/`GeoPlace.place`, draft event의 `place`, result event의 `place`. 예전 draft 필드명 `placeLabel`은 #72에서 통합됐고 back-compat alias로만 남는다. |

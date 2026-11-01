@@ -7,7 +7,9 @@ v3 Location 프롬프트의 규칙을 코드로 옮긴 것이므로, 계획의 �
 0.02 는 다른 장소(1km 초과)다.
 """
 
-from app.schemas import GeoPlace, MovementItem
+import pytest
+
+from app.schemas import GeoPlace, MovementItem, TimeWindow
 from app.services.location_skeleton import (
     EmptyTimeKind,
     SegmentKind,
@@ -155,9 +157,35 @@ def test_L3_overlapping_records_do_not_make_overlapping_segments():
 # --- 짧은 체류와 여정 (L5~L10·L12~L14) ------------------------------------------------
 
 
-def test_L5_exactly_45_minutes_apart_is_not_continuous():
+@pytest.mark.parametrize("resumed", ["10:14", "10:15", "10:37", "13:00"])
+def test_L5_movements_are_one_journey_across_any_gap(resumed):
+    """체류가 잡히지 않았으면 수집이 끊긴 것으로 보고 잇는다(#180, 사용자 결정 2026-11-01)."""
+
     first = _move("1", "09:00", "09:30", to_lat=_BASE_LAT + 0.02)
-    second = _move("2", "10:15", "10:45", from_lat=_BASE_LAT + 0.02, to_lat=_BASE_LAT + 0.04)
+    second = _move("2", resumed, "13:30", from_lat=_BASE_LAT + 0.05, to_lat=_BASE_LAT + 0.08)
+
+    skeleton = _skeleton(movements=[first, second])
+
+    assert _kinds(skeleton) == [(SegmentKind.MOVEMENT, 2)]
+    [journey] = skeleton.segments
+    assert (journey.start.hour, journey.end.hour) == (9, 13)
+    assert (journey.origin.latitude, journey.destination.latitude) == (_BASE_LAT, _BASE_LAT + 0.08)
+    assert [e for e in skeleton.empty_times if e.before and e.after] == []
+
+
+def test_L5_a_gap_under_20_minutes_at_the_same_place_is_still_the_journey():
+    first = _move("1", "09:00", "09:30", to_lat=_BASE_LAT + 0.02)
+    second = _move("2", "09:49", "10:15", from_lat=_BASE_LAT + 0.02, to_lat=_BASE_LAT + 0.04)
+
+    assert _kinds(_skeleton(movements=[first, second])) == [(SegmentKind.MOVEMENT, 2)]
+
+
+@pytest.mark.parametrize("resumed", ["09:50", "10:00", "10:15"])
+def test_L5_a_gap_of_20_minutes_at_the_same_place_is_a_stop(resumed):
+    """앞이 도착한 곳에서 뒤가 출발했으면 체류 기록이 없어도 머문 것이다."""
+
+    first = _move("1", "09:00", "09:30", to_lat=_BASE_LAT + 0.02)
+    second = _move("2", resumed, "10:45", from_lat=_BASE_LAT + 0.02, to_lat=_BASE_LAT + 0.04)
 
     assert _kinds(_skeleton(movements=[first, second])) == [
         (SegmentKind.MOVEMENT, 1),
@@ -165,11 +193,146 @@ def test_L5_exactly_45_minutes_apart_is_not_continuous():
     ]
 
 
-def test_L5_44_minutes_apart_is_one_journey():
-    first = _move("1", "09:00", "09:30", to_lat=_BASE_LAT + 0.02)
-    second = _move("2", "10:14", "10:45", from_lat=_BASE_LAT + 0.02, to_lat=_BASE_LAT + 0.04)
+def test_L5_coming_home_and_leaving_next_morning_is_not_one_journey():
+    """귀가 뒤 밤새 수집이 끊기면 이동 둘만 남는다. 이으면 밤 전체가 이동이 된다."""
 
-    assert _kinds(_skeleton(movements=[first, second])) == [(SegmentKind.MOVEMENT, 2)]
+    home = _BASE_LAT + 0.02
+    back = _move("back", "21:00", "21:30", to_lat=home)
+    out = MovementItem(
+        raw_id=fixture_raw_id("movement-out"),
+        start_at="2026-06-21T08:00:00",
+        end_at="2026-06-21T08:30:00",
+        start=GeoPlace(latitude=home, longitude=_BASE_LON),
+        end=GeoPlace(latitude=_BASE_LAT, longitude=_BASE_LON),
+        transports=["IN_VEHICLE"],
+    )
+    request = make_request(
+        movements=[back, out],
+        window=TimeWindow(start="2026-06-20T00:00:00+09:00", end="2026-06-22T00:00:00+09:00"),
+    )
+
+    skeleton = build_location_skeleton(request)
+
+    assert _kinds(skeleton) == [(SegmentKind.MOVEMENT, 1), (SegmentKind.MOVEMENT, 1)]
+    [gap] = [e for e in skeleton.empty_times if e.before and e.after]
+    assert gap.kind is EmptyTimeKind.COLLECTION_GAP and gap.same_place is True
+
+
+def test_L5_a_short_stay_past_a_gap_stays_off_the_journey():
+    """공백 너머의 짧은 체류를 이동에 붙이면 구간의 도착지가 어긋난다. 그 자리는 45분 기준 그대로다."""
+
+    movement = _move("m", "09:00", "09:30")
+    far_short = _stay("far", "11:00", "11:10", lat=_BASE_LAT + 0.5)
+
+    skeleton = _skeleton(stays=[far_short], movements=[movement])
+
+    assert _kinds(skeleton) == [(SegmentKind.MOVEMENT, 1)]
+    assert [record.raw_id for record in skeleton.isolated] == [far_short.raw_id]
+
+
+def test_a_movement_after_a_stay_and_a_gap_left_from_the_stay():
+    """동대구역 체류 → 끊김 → 세종에서 시작한 이동. 사이에 체류 정보가 없으니 역에서 출발한 이동이다."""
+
+    station = _stay("station", "08:44", "09:14")
+    train = _move("train", "10:12", "12:03", from_lat=_BASE_LAT + 1.2, to_lat=_BASE_LAT + 2.0)
+
+    skeleton = _skeleton(stays=[station], movements=[train])
+
+    stay, journey = skeleton.segments
+    assert (stay.kind, journey.kind) == (SegmentKind.STAY, SegmentKind.MOVEMENT)
+    assert (journey.start.hour, journey.start.minute) == (9, 14), "체류가 끝난 때 출발했다."
+    assert stay.end == journey.start
+    assert journey.origin.address == "주소 station"
+    assert skeleton.departures[train.raw_id].address == "주소 station"
+    assert skeleton.record_spans()[train.raw_id][0] == journey.start
+    assert [e for e in skeleton.empty_times if e.before and e.after] == []
+    assert sorted(skeleton.raw_ids()) == sorted([station.raw_id, train.raw_id])
+
+
+@pytest.mark.parametrize("apart", [0.002, 0.005], ids=["같은 장소", "250m~1km"])
+def test_a_movement_within_1km_of_the_stay_keeps_its_own_start(apart):
+    """그 안이면 체류를 떠났는지 모른다. 빈 시간으로 남는다."""
+
+    stay = _stay("office", "09:00", "12:00")
+    walk = _move("m", "13:30", "14:00", from_lat=_BASE_LAT + apart, to_lat=_BASE_LAT + 0.05)
+
+    skeleton = _skeleton(stays=[stay], movements=[walk])
+
+    assert (skeleton.segments[-1].start.hour, skeleton.segments[-1].start.minute) == (13, 30)
+    assert skeleton.segments[-1].origin.address == "출발 m"
+    assert skeleton.departures == {}
+    [gap] = [e for e in skeleton.empty_times if e.before and e.after]
+    assert gap.kind is EmptyTimeKind.COLLECTION_GAP
+
+
+def test_a_movement_right_after_a_stay_keeps_its_own_origin():
+    """기록이 끊기지 않았으면 입력의 출발지가 맞다."""
+
+    stay = _stay("office", "09:00", "12:00")
+    movement = _move("m", "12:00", "13:00", from_lat=_BASE_LAT + 0.5, to_lat=_BASE_LAT + 0.8)
+
+    skeleton = _skeleton(stays=[stay], movements=[movement])
+
+    assert skeleton.departures == {}
+    assert skeleton.segments[-1].origin.address == "출발 m"
+
+
+def test_movements_with_many_short_transfers_are_one_journey():
+    """환승마다 기록이 갈려도 여정은 하나고, 입력 rawId 는 빠지거나 겹치지 않는다."""
+
+    records = [
+        _move("1", "09:00", "09:20", to_lat=_BASE_LAT + 0.02),
+        _stay("t1", "09:20", "09:30", lat=_BASE_LAT + 0.02),
+        _move("2", "09:30", "09:50", from_lat=_BASE_LAT + 0.02, to_lat=_BASE_LAT + 0.04),
+        _stay("t2", "09:50", "10:05", lat=_BASE_LAT + 0.04),
+        _move("3", "10:05", "10:30", from_lat=_BASE_LAT + 0.04, to_lat=_BASE_LAT + 0.06),
+    ]
+    stays = [r for r in records if not isinstance(r, MovementItem)]
+    movements = [r for r in records if isinstance(r, MovementItem)]
+
+    skeleton = _skeleton(stays=stays, movements=movements)
+
+    assert _kinds(skeleton) == [(SegmentKind.MOVEMENT, 5)]
+    assert sorted(skeleton.segments[0].raw_ids) == sorted(r.raw_id for r in records)
+    assert skeleton.isolated == [] and skeleton.unplaced_raw_ids == []
+
+
+@pytest.mark.parametrize(
+    ("stay_end", "expected"),
+    [
+        ("2026-06-20T09:49:59", [(SegmentKind.MOVEMENT, 3)]),
+        (
+            "2026-06-20T09:50:00",
+            [(SegmentKind.MOVEMENT, 1), (SegmentKind.STAY, 1), (SegmentKind.MOVEMENT, 1)],
+        ),
+        (
+            "2026-06-20T09:50:01",
+            [(SegmentKind.MOVEMENT, 1), (SegmentKind.STAY, 1), (SegmentKind.MOVEMENT, 1)],
+        ),
+    ],
+    ids=["19분59초", "정확히 20분", "20분 초과"],
+)
+def test_20_minutes_is_where_a_stay_cuts_the_journey(stay_end, expected):
+    first = _move("1", "09:00", "09:30", to_lat=_BASE_LAT + 0.02)
+    stay = stay_item(
+        "station",
+        lat=_BASE_LAT + 0.02,
+        lon=_BASE_LON,
+        start="2026-06-20T09:30:00",
+        end=stay_end,
+        places=[],
+        address="주소 역",
+    )
+    second = MovementItem(
+        raw_id=fixture_raw_id("movement-2"),
+        start_at=stay_end,
+        end_at="2026-06-20T10:30:00",
+        start=GeoPlace(latitude=_BASE_LAT + 0.02, longitude=_BASE_LON),
+        end=GeoPlace(latitude=_BASE_LAT + 0.06, longitude=_BASE_LON),
+        transports=["IN_VEHICLE"],
+    )
+
+    assert _kinds(_skeleton(stays=[stay], movements=[first, second])) == expected
 
 
 def test_L6_short_stay_next_to_a_movement_goes_to_the_movement():

@@ -187,6 +187,16 @@ def test_timeline_v4_follows_the_base_events_without_being_told_to_merge():
     assert not re.search(r"합치|합쳐|합친|병합", text)
 
 
+def test_v4_prompts_say_what_the_journey_guard_does():
+    """이동 구간 하나는 이동 event 하나이고, 체류는 20분 이상이면 끊는다(#180). 코드와 같은 말을 한다."""
+
+    repair = _repair()
+    for text in (_timeline(), repair):
+        assert "이동 구간 하나는 이동 event 하나" in text
+    assert "20분 이상 체류" in repair
+    assert not re.search(r"20분 이하|20분을 넘", repair)
+
+
 def test_repair_v4_tells_places_apart_by_the_code_address():
     """다른 장소인지는 코드가 같은 장소마다 하나로 맞춘 주소로 가른다 — 장소 이름은 후보라 기준이 못 된다."""
 
@@ -515,12 +525,68 @@ def test_v4_prompts_do_not_offer_unknown():
         assert "UNKNOWN" not in text
 
 
-@pytest.mark.parametrize("event_type", ["STAY", "SHOPPING", "CULTURE", "ERRAND"])
-def test_question_v4_has_an_example_for_each_new_boundary(event_type: str):
+@pytest.mark.parametrize(
+    "event_type", [member.value for member in EventType if member is not EventType.UNKNOWN]
+)
+def test_question_v4_has_an_example_for_each_event_type(event_type: str):
     question = _read("agents/question/prompts/v4/question.md")
 
     assert f"| `{event_type}` |" in question
     assert f"`{event_type}`(" in question
+
+
+#: 사용자가 직접 정한 질문이다(#182, 2026-11-02). 표기까지 그대로 싣는다.
+_USER_WRITTEN_QUESTIONS = [
+    "오늘 먹은 김밥은 맛있었어요?",
+    "오늘 식사에서 제일 맛있었던 건 뭐예요?",
+    "출근길에 무슨 생각을 하셨나요?",
+    "무슨 일로 여기까지 가셨나요??",
+    "배포 준비하면서 제일 오래 붙든 부분은 뭐였어요?",
+    "오늘 일은 잘 마무리 하셨나요?",
+    "2분기 회의에서 이번 계획에 대해 제일 신경 중요한 건 뭐예요?",
+    "회의는 문제 없이 잘 끝났나요?",
+    "자료구조 수업에서 배운 것 중 어떤 것이 기억에 남았나요?",
+    "수업에서 배운 건 어떤건가요?",
+    "민수랑 나눈 얘기 중에 다시 떠오르는 게 있어요?",
+    "이번 대화에서 제일 기억에 남는 말은 뭐예요?",
+    "걸으면서 어떤 생각이 들었어요?",
+    "끝나고 몸은 어떤 느낌이었어요?",
+    "드라마에서 제일 기억에 남는 장면은 뭐예요?",
+    "쉬는 동안 뭘 하면서 쉬셨나요?",
+    "잠들기 전에 마지막으로 떠올린 건 뭐였어요?",
+    "오늘은 어떤 기분으로 잠들었어요?",
+    "눈 떴을 때 제일 먼저 떠오른 건 뭐였어요?",
+    "일어났을 때 몸은 어떤 느낌이었어요?",
+    "검진에서 들은 얘기 중에 기억에 남는 것은 무엇인가요?",
+    "이 일정을 무사히 잘 보내셨나요?",
+    "그 노을을 찍고 싶었던 이유는 무엇 이였나요?",
+    "이 순간을 왜 남겨 두고 싶었던 이유는 뮤엇이였나요?",
+    "이곳에서 무엇을 하셨나요?",
+    "이곳에서 있는 시간은 어떤 시간이였나요?",
+    "이곳에 있는 동안 어떤 기분이였나요?",
+    "이번에 산 것 중에 제일 마음에 든 건 뭐예요?",
+    "어떤 것을 구매하셨나요?",
+    "영화를 보고 제일 기억에 오래 남은 장면이 뭐예요?",
+    "보고 나서 어떤 생각이 들었어요?",
+    "이 볼일은 무슨 이유로 챙기게 되셨나요?",
+    "볼일을 보고 나서 어떤 기분이셨나요?",
+]
+
+
+@pytest.mark.parametrize("sentence", _USER_WRITTEN_QUESTIONS)
+def test_question_v4_keeps_the_questions_the_user_wrote(sentence: str):
+    assert sentence in _read("agents/question/prompts/v4/question.md")
+
+
+def test_question_v4_examples_name_no_place():
+    """모델은 예시의 말투를 따른다. 예시에 장소가 있으면 금지 문장이 있어도 장소를 쓴다."""
+
+    question = _read("agents/question/prompts/v4/question.md")
+
+    assert "{place}" not in question
+    assert "`place`" not in question
+    for word in ("강남역", "김밥천국", "오산천", "성수동", "마포", "올리브영", "CGV", "약국까지", "한강공원"):
+        assert word not in question
 
 
 def test_v4_prompts_no_longer_send_a_stay_to_unknown():
