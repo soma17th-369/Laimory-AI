@@ -187,6 +187,16 @@ def test_timeline_v4_follows_the_base_events_without_being_told_to_merge():
     assert not re.search(r"합치|합쳐|합친|병합", text)
 
 
+def test_v4_prompts_say_what_the_journey_guard_does():
+    """이동 구간 하나는 이동 event 하나이고, 체류는 20분 이상이면 끊는다(#180). 코드와 같은 말을 한다."""
+
+    repair = _repair()
+    for text in (_timeline(), repair):
+        assert "이동 구간 하나는 이동 event 하나" in text
+    assert "20분 이상 체류" in repair
+    assert not re.search(r"20분 이하|20분을 넘", repair)
+
+
 def test_repair_v4_tells_places_apart_by_the_code_address():
     """다른 장소인지는 코드가 같은 장소마다 하나로 맞춘 주소로 가른다 — 장소 이름은 후보라 기준이 못 된다."""
 
