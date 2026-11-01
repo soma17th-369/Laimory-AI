@@ -5,7 +5,8 @@ Repair Agent 는 draft 를 직접 다시 쓰지 않는다. **이미 있는 결�
 
     1. 조회   : `lookup_source` 로 근거 원본을 되짚는다.
     2. 편집   : `update_event` / `delete_event` / `split_event` / `absorb_location_event`
-                로 event 를 고치거나 지우거나 나누거나 체류 카드를 흡수한다.
+                로 event 를 고치거나 지우거나 나누거나 체류 카드를 흡수한다. v4 는
+                `add_conversation_event` 로 쓰이지 않은 대화를 event 로 만든다.
     3. 재적용 : `enforce_sleep_boundary`, `resolve_places` 같은 결정론 서비스를 다시 돌린다.
     4. 재실행 : `rerun_event_agent` / `rerun_timeline_agent` 로 상류 Agent 를 다시 돌린다.
 
@@ -61,8 +62,10 @@ from app.services.clue_bundles import (
 )
 from app.services.calendar_location import reinforce_calendar_location
 from app.services.confirm_report import ConfirmReport, reports_to_prompt
+from app.services.conversation_guard import MAX_CONVERSATION_EVENTS, conversation_events
 from app.services.draft_edit import (
     absorb_location_event,
+    add_conversation_event,
     delete_event,
     split_event,
     update_event,
@@ -430,6 +433,33 @@ def _with_expanded_evidence(ctx: RepairContext, fields: dict, client_event_id: s
     return updated
 
 
+def _add_conversation_event(ctx: RepairContext, args: dict) -> str:
+    """쓰이지 않은 대화로 대화 event 를 만든다(v4, #183). 시간과 근거는 코드가 단서에서 정한다."""
+
+    identifier = str(args.get("conversation") or "").strip()
+    title = str(args.get("title") or "").strip()
+    description = str(args.get("description") or "").strip()
+    if not identifier or not title or not description:
+        raise RepairToolError("conversation, title, description 인자가 필요합니다.")
+
+    clue = next((c for c in ctx.clues.notifications if c.clue_id == identifier), None)
+    if clue is None or clue.kind is not NotificationClueKind.CONVERSATION:
+        raise RepairToolError(f"{identifier} 는 대화 단서가 아닙니다. 대화만 event 로 만들 수 있습니다.")
+    held = {ref.raw_id for event in ctx.draft.events for ref in event.source_refs}
+    if held & set(clue.raw_ids):
+        raise RepairToolError(f"{identifier} 는 이미 event 의 근거입니다.")
+    talks = conversation_events(
+        ctx.draft, ctx.request, ctx.clues.conversation_ids, aside=ctx.clues.short_record_ids
+    )
+    if len(talks) >= MAX_CONVERSATION_EVENTS:
+        raise RepairToolError(
+            f"대화 event 가 이미 {MAX_CONVERSATION_EVENTS}개입니다. 더 남기려면 먼저 하나를 지웁니다."
+        )
+
+    event = add_conversation_event(ctx.draft, clue, title, description)
+    return f"{identifier} 로 대화 event 를 만들었습니다: {event.title}"
+
+
 def _delete_event(ctx: RepairContext, args: dict) -> str:
     client_event_id = args.get("clientEventId")
     if not client_event_id:
@@ -663,7 +693,10 @@ _TOOLS: dict[str, RepairTool] = {
         _service_tool(
             "repair_durations",
             "지속시간이 0 인 event 를 근거 원본의 시간으로 되살리고, 순간이어야 할 event 를 시작 시각으로 되돌린다.",
-            lambda ctx: repair_durations(ctx.draft, ctx.request),
+            # 확정 pass 와 같은 기준이다. v4 는 뼈대 구간의 시간을 쓰고 알림뿐인 event 를 한 점으로 둔다.
+            lambda ctx: repair_durations(
+                ctx.draft, ctx.request, skeleton=ctx.clues.skeleton if ctx.clues else None
+            ),
         ),
         _service_tool(
             "align_location_events",
@@ -776,6 +809,27 @@ _CLUE_TOOLS: dict[str, RepairTool] = {
     ]
 }
 
+#: v4 세트에만 있는 도구. v3 프롬프트는 이 도구를 모른다.
+_CLUE_ONLY_TOOLS: dict[str, RepairTool] = {
+    tool.name: tool
+    for tool in [
+        RepairTool(
+            name="add_conversation_event",
+            usage=(
+                'add_conversation_event(conversation="N5", title="OO와 대화", '
+                'description="OO에게서 주말 계획 메시지를 받았다.")'
+            ),
+            description=(
+                "어느 event 에도 쓰이지 않은 대화 단서 하나로 대화 event 를 만든다. 글은 인자로 주고 "
+                "eventType(SOCIAL)·시간·근거는 코드가 그 단서에서 정한다. 근거는 그 대화 알림뿐이다. "
+                "대화 event 는 전체 10개에 세지 않는다. 대화가 아니거나, 이미 어느 event 의 근거이거나, "
+                "대화 event 가 3개 찼으면 거절한다."
+            ),
+            run=_add_conversation_event,
+        ),
+    ]
+}
+
 
 def available_tools(ctx: RepairContext) -> dict[str, RepairTool]:
     """이 실행에서 쓸 수 있는 도구. 카탈로그에 싣는 것과 실행을 허용하는 것이 같아야 한다."""
@@ -788,9 +842,12 @@ def available_tools(ctx: RepairContext) -> dict[str, RepairTool]:
     if ctx.clues is None:
         return tools
     return {
-        name: _CLUE_TOOLS.get(name, tool)
-        for name, tool in tools.items()
-        if name not in _CLUE_EXCLUDED_TOOLS
+        **{
+            name: _CLUE_TOOLS.get(name, tool)
+            for name, tool in tools.items()
+            if name not in _CLUE_EXCLUDED_TOOLS
+        },
+        **_CLUE_ONLY_TOOLS,
     }
 
 
@@ -979,7 +1036,8 @@ def clue_evidence_text(ctx: RepairContext) -> str:
 
     묶음 본문은 Timeline v4 가 본 것과 같은 모양으로 한 번만 싣는다. event 는 id 로 가리킨다.
     어느 event 도 쓰지 않은 단서는 `unusedClues` 다 — Timeline 이 일부러 쓰지 않았을 수 있고,
-    그 이유는 warning 에 있다.
+    그 이유는 warning 에 있다. 묶음 id 는 위치 구간의 것만 싣는다. 대화·사진·일정의 자기 묶음은 단서
+    id 와 같은 것을 가리키는데 근거에 단서 id 로 잡혀, 쓴 뒤에도 쓰이지 않은 것으로 보였다(#183).
     """
 
     clues = ctx.clues
@@ -1003,7 +1061,7 @@ def clue_evidence_text(ctx: RepairContext) -> str:
             entry["mergeReason"] = event.merge_reason
         events.append(entry)
 
-    every = [bundle.bundle_id for bundle in clues.bundles]
+    every = [bundle.bundle_id for bundle in clues.bundles if bundle.segment is not None]
     every.extend(photo.clue_id for photo in clues.photos)
     every.extend(calendar.clue_id for calendar in clues.calendars)
     every.extend(clue.clue_id for clue in clues.notifications)
@@ -1015,6 +1073,11 @@ def clue_evidence_text(ctx: RepairContext) -> str:
         "events": events,
         "unusedClues": [identifier for identifier in every if identifier not in used],
     }
+    if ctx.draft.conversation_reviews:
+        payload["conversationReviews"] = [
+            {"id": review.clue_id, "decision": review.decision.value, "reason": review.reason}
+            for review in ctx.draft.conversation_reviews
+        ]
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
