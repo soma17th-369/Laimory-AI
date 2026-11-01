@@ -1843,3 +1843,141 @@ def test_an_exercise_calendar_keeps_the_walk_it_is_about():
     [walk] = draft.events
     assert walk.event_type is EventType.EXERCISE
     assert _holds(walk, out) and _holds(walk, back)
+
+
+def _long_work_day(*, all_day=False):
+    office = stay_item("office", lat=37.50, start="2026-06-20T09:00:00", end="2026-06-20T18:00:00", places=["OO타워"], address="서울 마포구 도화동 1")
+    dinner = stay_item("dinner", lat=37.55, start="2026-06-20T18:30:00", end="2026-06-20T22:00:00", places=["XX식당"], address="서울 마포구 망원동 1")
+    if all_day:
+        calendar = CalendarItem(
+            raw_id=fixture_raw_id("calendar-trip"), start_at="2026-06-20T00:00:00", end_at="2026-06-21T00:00:00",
+            title="부산 출장", all_day=True,
+        )
+    else:
+        calendar = calendar_item("dev", "프로젝트 개발", start="2026-06-20T09:00:00", end="2026-06-20T23:00:00")
+    return office, dinner, calendar, make_request(stays=[office, dinner], calendars=[calendar])
+
+
+@pytest.mark.parametrize(("all_day", "start", "end"), [(False, _at(9), _at(23)), (True, _at(0), _at(23, 59))])
+def test_a_day_long_calendar_takes_its_type_and_leaves_the_stays_alone(all_day, start, end):
+    """길이는 타입을 정할 이유가 아니다(사용자 지적 2026-11-02). 배경 일정의 뜻은 구조가 지킨다."""
+
+    office, dinner, calendar, request = _long_work_day(all_day=all_day)
+    clues = _calendar_clues(request)
+    draft = _draft(
+        _event(
+            [(EventSourceType.CALENDAR, calendar.raw_id)],
+            start=start, end=end, event_type=EventType.WORK, title=calendar.title, description=f"{calendar.title} 일정이 있었다.",
+        ),
+        _event(
+            [(EventSourceType.STAY, office.raw_id)],
+            start=_at(9), end=_at(18), event_type=EventType.STAY, title="도화동에서 보낸 시간",
+            description="{place}에서 시간을 보냈다.", base=["E1"],
+        ),
+        _event(
+            [(EventSourceType.STAY, dinner.raw_id)],
+            start=_at(18, 30), end=_at(22), event_type=EventType.STAY, title="망원동에서 보낸 시간",
+            description="{place}에서 시간을 보냈다.", base=["E3"],
+        ),
+    )
+
+    _confirm_twice(draft, request, clues)
+
+    assert not any(bundle.base_event and bundle.base_event.calendar for bundle in clues.bundles), "체류의 주인이 되지 않는다."
+    long_event = next(event for event in draft.events if _holds(event, calendar))
+    assert (long_event.event_type, long_event.start_time, long_event.end_time) == (EventType.WORK, start, end)
+    assert sum(event.event_type is EventType.STAY for event in draft.events) == 2
+
+
+def test_work_inside_a_long_work_calendar_stays_when_they_share_a_stay():
+    """타입·장소가 같다고 합치자 09:00~23:00 `WORK` 일정 안의 `배포 준비` 가 사라졌다."""
+
+    office, dinner, calendar, request = _long_work_day()
+    draft = _draft(
+        _event(
+            [(EventSourceType.CALENDAR, calendar.raw_id), (EventSourceType.STAY, office.raw_id)],
+            start=_at(9), end=_at(23), event_type=EventType.WORK, title="프로젝트 개발",
+            description="{place}에서 프로젝트 개발 일정이 있었다.",
+        ),
+        _event(
+            [(EventSourceType.STAY, office.raw_id)],
+            start=_at(13), end=_at(15), event_type=EventType.WORK, title="배포 준비",
+            description="{place}에서 배포를 준비했다.", base=["E1"],
+        ),
+    )
+
+    _confirm_twice(draft, request, _calendar_clues(request))
+
+    assert {"프로젝트 개발", "배포 준비"} <= {event.title for event in draft.events}
+
+
+def test_work_inside_a_long_work_calendar_stays_when_they_cite_the_same_calendar():
+    """위치가 없는 날에는 같은 일정을 근거로 가졌다는 것이 합치는 이유가 됐다."""
+
+    calendar = calendar_item("dev", "프로젝트 개발", start="2026-06-20T09:00:00", end="2026-06-20T23:00:00")
+    request = make_request(calendars=[calendar])
+    draft = _draft(
+        _event(
+            [(EventSourceType.CALENDAR, calendar.raw_id)],
+            start=_at(9), end=_at(23), event_type=EventType.WORK, title="프로젝트 개발", description="프로젝트 개발 일정이 있었다.",
+        ),
+        _event(
+            [(EventSourceType.CALENDAR, calendar.raw_id)],
+            start=_at(13), end=_at(15), event_type=EventType.WORK, title="배포 준비", description="배포를 준비했다.",
+        ),
+    )
+
+    _confirm_twice(draft, request, _calendar_clues(request))
+
+    assert {event.title for event in draft.events} == {"프로젝트 개발", "배포 준비"}
+
+
+def _same_place_meetings(first, second):
+    events = [
+        _event(
+            [(EventSourceType.CALENDAR, calendar.raw_id)],
+            start=_at(14), end=_at(15), event_type=EventType.MEETING, title=title, description="회의 일정이 있었다.",
+        )
+        for title, calendar in (("첫째", first), ("둘째", second))
+    ]
+    for event in events:
+        event.place = "OO타워"
+    return _draft(*events)
+
+
+def test_two_calendars_of_one_type_and_place_are_two_events():
+    first = calendar_item("a", "주간 회의", start="2026-06-20T14:00:00", end="2026-06-20T15:00:00")
+    second = calendar_item("b", "면담", start="2026-06-20T14:00:00", end="2026-06-20T15:00:00")
+    draft = _same_place_meetings(first, second)
+
+    resolve_overlaps(draft, by_calendar=True)
+
+    assert len(draft.events) == 2
+
+
+def test_the_same_calendar_written_twice_is_one_event():
+    calendar = calendar_item("a", "주간 회의", start="2026-06-20T14:00:00", end="2026-06-20T15:00:00")
+    draft = _same_place_meetings(calendar, calendar)
+
+    resolve_overlaps(draft, by_calendar=True)
+
+    assert len(draft.events) == 1
+
+
+def test_v3_still_cuts_a_meal_calendar_and_merges_events_of_one_type():
+    """v3 는 그대로다. 식사 일정 예외와 일정별 중복 판정은 v4 경로에만 있다."""
+
+    lunch = calendar_item("lunch", "팀 점심 식사", start="2026-06-20T12:00:00", end="2026-06-20T13:30:00")
+    meal = _event(
+        [(EventSourceType.CALENDAR, lunch.raw_id)],
+        start=_at(12), end=_at(13, 30), event_type=EventType.MEAL, title="팀 점심 식사", description="점심 약속이 있었다.",
+    )
+    meals = _draft(meal)
+    repair_draft(meals, make_request(calendars=[lunch]), extended=True)
+    assert meals.events[0].end_time == _at(13)
+
+    first = calendar_item("a", "주간 회의", start="2026-06-20T14:00:00", end="2026-06-20T15:00:00")
+    second = calendar_item("b", "면담", start="2026-06-20T14:00:00", end="2026-06-20T15:00:00")
+    draft = _same_place_meetings(first, second)
+    resolve_overlaps(draft)
+    assert len(draft.events) == 1

@@ -712,7 +712,7 @@ _TOOLS: dict[str, RepairTool] = {
         _service_tool(
             "resolve_overlaps",
             "같은 사건을 가리키는 중복 event 를 병합하고, 모순되는 겹침은 경고로 남긴다.",
-            lambda ctx: resolve_overlaps(ctx.draft),
+            lambda ctx: resolve_overlaps(ctx.draft, by_calendar=ctx.clues is not None),
         ),
         _service_tool(
             "reinforce_calendar_location",
