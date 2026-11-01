@@ -632,6 +632,64 @@ def test_a_slot_with_no_place_name_is_not_repairs_business():
     assert saved["subtitle"] == "마포구 도화동에서 시간을 보냈다."
 
 
+def _stay_word_day():
+    stay = stay_item(
+        "day", start="2026-06-20T09:00:00", end="2026-06-20T12:00:00", places=["공덕 SK 리더스뷰"],
+        address="서울특별시 마포구 도화동 17-13",
+    )
+    return stay, make_request(stays=[stay])
+
+
+def test_timeline_cannot_leave_the_stay_word_in_a_title():
+    """Timeline 이 쓴 `체류` 도 나가지 않는다. Repair 가 고치지 않고 끝나도 체류 틀로 돌아간다."""
+
+    from app.services.skeleton_guard import keep_stay_word_out
+
+    stay, request = _stay_word_day()
+    event = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(9), end=_at(12), event_type=EventType.STAY,
+        title="오후 체류", description="{place}에서 시간을 보냈다.",
+    )
+    event.address = stay.address
+
+    keep_stay_word_out(_draft(event), request, _clues(request))
+
+    assert event.title == "마포구 도화동에서 시간을 보냄"
+
+
+def test_an_activity_with_the_stay_word_goes_back_to_repair():
+    """활동을 말하던 event 는 틀 제목으로 끝내지 않고 Repair 가 다시 쓰게 넘긴다."""
+
+    from app.services.skeleton_guard import keep_stay_word_out
+
+    stay, request = _stay_word_day()
+    photo = photo_item("lunch", taken="2026-06-20T10:00:00")
+    event = _event(
+        [(EventSourceType.STAY, stay.raw_id), (EventSourceType.PHOTO, photo.raw_id)], start=_at(10), end=_at(10, 30),
+        event_type=EventType.MEAL, title="점심 체류", description="{place}에서 점심을 먹었다.",
+    )
+    event.address = stay.address
+
+    keep_stay_word_out(_draft(event), request, _clues(request))
+
+    assert "체류" not in event.title
+    assert event.merge_reason == NEEDS_WRITING
+
+
+def test_the_confirm_pass_never_lets_the_stay_word_out():
+    """확정을 지난 draft 의 제목에는 `체류` 가 없다. 어느 단계가 썼든 같다."""
+
+    stay, request = _stay_word_day()
+    event = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(9), end=_at(12), event_type=EventType.STAY,
+        title="오후 체류", description="{place}에서 시간을 보냈다.",
+    )
+
+    draft = repair_draft(_draft(event), request, extended=True, clues=_clues(request))
+
+    assert draft.events and not [item.title for item in draft.events if "체류" in item.title]
+
+
 def test_a_shortened_place_name_is_still_a_place_name_in_the_title():
     """`그린컴퓨터아카데미와 세무법인 나은 건물을 봄` 은 후보와 글자가 달라 검사를 지나갔다."""
 

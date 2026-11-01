@@ -34,13 +34,14 @@ from app.schemas import (
     TimelineWarningSeverity,
 )
 from app.schemas.clues import NotificationClue, NotificationClueKind
-from app.services.base_events import BaseEvent, base_event_draft
+from app.services.base_events import BaseEvent, base_event_draft, stay_title
 from app.services.calendar_guard import RESTORED_CALENDAR_DESCRIPTION
 from app.services.clue_bundles import TimelineClues, place_only_raw_ids
 from app.services.conversation_guard import MAX_CONVERSATION_EVENTS, notification_only
 from app.services.location_metrics import SHORT_STAY_MAX
 from app.services.location_skeleton import SegmentKind
 from app.services.meal_guard import MEAL_STAY_MAX_DURATION
+from app.services.narrative_place_guard import has_stay_word
 from app.services.photo_guard import CREATED_PHOTO_TITLE
 from app.services.source_lookup import raw_id_of
 from app.services.validator import parse_datetime, resolve_timezone
@@ -406,6 +407,23 @@ def restore_place_only_text(
             or not _PLACE_ONLY_SENTENCE.fullmatch(event.description)
         ):
             _back_to_frame(event, clues)
+
+
+def keep_stay_word_out(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """제목에 `체류` 를 남기지 않는다(in-place, v4, 사용자 결정 2026-11-01).
+
+    "오후 체류는 절대 안돼", "timeline 이 체류라고 쓰면 안되는데". 재실행의 `체류` 제목은 Repair 가 마지막 반복에
+    쓴 것이라 찾아도 고칠 기회가 없었다. 장소 자리처럼 코드가 지키는 자리다. 체류 틀로 되돌리기만 하고, 활동을
+    말하던 event 는 Repair 가 다시 쓰게 넘긴다.
+    """
+
+    for event in draft.events:
+        if has_stay_word(event.title):
+            event.title = stay_title(clues.area(event.address))
+            if event.event_type is not EventType.STAY:
+                event.merge_reason = NEEDS_WRITING
 
 
 def _keep_notifications_on_one_event(draft: TimelineDraft, request: TimelineDraftRequest) -> None:

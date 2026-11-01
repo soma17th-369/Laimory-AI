@@ -132,6 +132,7 @@ from app.services.skeleton_guard import (
     ensure_skeleton_segments,
     hand_restored_events_to_repair,
     keep_calendar_base_events,
+    keep_stay_word_out,
     remove_events_outside_evidence,
     remove_notification_events,
     remove_unrecorded_movements,
@@ -819,6 +820,7 @@ def _clue_correction_steps(
             # 제목과 이동 글에는 장소 이름이 절대 남지 않는다(사용자 결정 2026-10-31).
             extended.append(("문장 장소 칸", partial(fill_place_slots, clues=clues, slots_only=True)))
             extended.append(("제목·이동 장소 이름", partial(_skeleton_step, keep_place_names_out, clues=clues)))
+            extended.append(("제목 체류 표현", partial(_skeleton_step, keep_stay_word_out, clues=clues)))
         else:
             extended.append((name, overrides.get(name, step)))
             if name == "대화 개수 제한":
