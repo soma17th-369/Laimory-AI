@@ -97,6 +97,20 @@ def test_threshold_is_the_location_metric_constant():
     assert SHORT_STAY_MAX.total_seconds() == 20 * 60
 
 
+def test_exactly_20_minutes_cuts_only_in_v4():
+    """v4 는 20분 이상이면 끊는다(#180). v3 동작은 그대로 20분을 넘어야 한다."""
+
+    def draft():
+        return _draft(_event(OUT, OFFICE, BACK))
+
+    request = _request("09:00", "09:20")
+
+    assert verify_movement_stay_boundary(draft(), request) == []
+    v4 = draft()
+    assert len(verify_movement_stay_boundary(v4, request, limit_is_long=True)) == 1
+    assert "20분 이상 체류는" in _warnings(v4)[0].message
+
+
 def test_hours_long_stay_between_movements_is_a_violation():
     found = find_movement_stay_violations([OUT, OFFICE, BACK], _request())
 

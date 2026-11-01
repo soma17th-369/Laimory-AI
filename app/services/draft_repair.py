@@ -136,6 +136,7 @@ from app.services.skeleton_guard import (
     ensure_skeleton_segments,
     hand_restored_events_to_repair,
     keep_calendar_base_events,
+    keep_one_event_per_journey,
     remove_events_outside_evidence,
     remove_notification_events,
     remove_unrecorded_movements,
@@ -814,6 +815,8 @@ def _clue_correction_steps(
         ("일정 근거 없는 일정 정리", partial(_skeleton_step, remove_calendar_events_without_calendar, clues=clues)),
         ("위치 근거 없는 체류 정리", partial(_skeleton_step, remove_stays_without_location, clues=clues)),
         ("이동 구간 분리", partial(_skeleton_step, separate_movement_segments, clues=clues)),
+        # 복원보다 앞이어야 한다. 일부만 쓴 이동을 넓히지 않으면 복원이 겹치는 이동을 하나 더 만든다.
+        ("이동 구간 하나로 맞추기", partial(_skeleton_step, keep_one_event_per_journey, clues=clues)),
         ("근거 시간 밖 event 정리", partial(_skeleton_step, remove_events_outside_evidence, clues=clues)),
         ("위치 구간 복원", partial(_skeleton_step, ensure_skeleton_segments, clues=clues)),
         *steps[position:],
@@ -912,7 +915,7 @@ def _inspect(
     if not extended:
         return
 
-    for found in verify_movement_stay_boundary(draft, request):
+    for found in verify_movement_stay_boundary(draft, request, limit_is_long=clue_contract):
         # 나눌 자리는 event 의 시간 안으로 맞춘 값이라 최종 시간이 정해진 뒤에 만든다.
         report.add_finding("LONG_STAY_BETWEEN_MOVEMENTS", found.detail, event=found.event)
 
