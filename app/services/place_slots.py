@@ -56,7 +56,7 @@ from app.services.place_resolver import (
     touches_event,
     unique_place_names,
 )
-from app.services.place_text import normalize_place_text, place_text_contains
+from app.services.place_text import normalize_place_text, place_text_contains, place_tokens
 from app.services.source_lookup import raw_id_of
 from app.services.validator import parse_datetime, resolve_timezone
 
@@ -410,6 +410,57 @@ def _day_place_names(request: TimelineDraftRequest) -> set[str]:
         *(split_location_text(c.location_text)[0] for c in request.calendars),
     ]
     return {name.strip() for name in names if name and len(name.strip()) >= 2}
+
+
+@dataclass(frozen=True)
+class DayPlaceWords:
+    """Question 이 입력에서 빼고 결과에서 찾는 그날의 장소 말(#182, v4).
+
+    입력에서 확인되는 말만 갖는다. User Memory·일정 제목 속 장소는 문장이라 코드가 가려낼 수
+    없어 프롬프트가 막는다. 장소명은 통째로만 본다 — 어절로 쪼개면 `필라테스 스튜디오` 때문에
+    `필라테스` 끝나고를 묻는 질문이 걸린다. 지명은 `대현동` 처럼 어절로도 쓰여 세 글자 이상
+    어절을 함께 보고, 두 글자 어절(`이동`)은 `이동하는 동안` 에 걸리므로 보지 않는다.
+    접미사(`~동`·`~로`·`~역`)로 찾지 않는다 — `퇴근길`·`여자친구`·`산책로` 가 장소가 된다.
+    """
+
+    words: tuple[str, ...]
+
+    def removed_from(self, text: str) -> str:
+        """글에서 장소 말을 뒤의 조사와 함께 뺀다. 사용자가 읽는 글이 아니라 프롬프트 입력에 쓴다."""
+
+        return " ".join(_without_place_names(text, list(self.words)).split())
+
+    def found_in(self, text: str) -> bool:
+        compact = normalize_place_text(text)
+        return any(normalize_place_text(word) in compact for word in self.words)
+
+
+def day_place_words(
+    request: TimelineDraftRequest, events: list[TimelineEventDraft]
+) -> DayPlaceWords:
+    """그날 입력과 event 에 있는 장소명·주소·지명. 지운 조각이 남지 않게 긴 말부터 둔다."""
+
+    addresses = {
+        address.strip()
+        for address in (*_day_raw_addresses(request), *(event.address for event in events))
+        if address and address.strip()
+    }
+    # 지명은 두 꼴로 쓰인다. 제목은 그날 시·도가 둘이면 시·도를 붙이고 칸을 채운 문장은 붙이지 않는다.
+    areas = {
+        area
+        for namer in (AreaNamer(), area_namer(addresses))
+        for address in addresses
+        if (area := namer.name(address))
+    }
+    names = {
+        name.strip()
+        for event in events
+        for name in (event.place, *event.place_candidates)
+        if name and len(name.strip()) >= 2
+    }
+    area_words = {word for area in areas for word in place_tokens(area)}
+    words = names | _day_place_names(request) | addresses | areas | area_words
+    return DayPlaceWords(tuple(sorted(words, key=lambda word: (-len(word), word))))
 
 
 def place_names_in_title(event: TimelineEventDraft, request: TimelineDraftRequest) -> list[str]:
