@@ -693,6 +693,8 @@ def _notification_dict(clue: NotificationClue) -> dict[str, object]:
     for key, value in (("counterpart", clue.counterpart), ("summary", clue.summary)):
         if value:
             payload[key] = value
+    if clue.kind is NotificationClueKind.CONVERSATION:
+        payload["messageCount"] = len(clue.raw_ids)
     if clue.schedule_today is not None:
         payload["scheduleToday"] = clue.schedule_today
     if clue.first_at is not None:

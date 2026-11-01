@@ -397,6 +397,65 @@ def test_timeline_v4_uses_notifications_as_evidence_not_events():
     assert "`PROMOTION`" not in text and "`unread`" not in text
 
 
+def test_timeline_v4_judges_each_conversation_by_its_content():
+    """대화가 다른 일을 입증하는지만 따져 13개를 모두 뺐다(#183). 세 갈래로 판단하고 근거는 대화뿐이다."""
+
+    text = _timeline()
+
+    for name in ("**기록할 대화**(`RECORD`)", "**다른 event를 뒷받침하는 대화**(`SUPPORT`)", "**남기지 않는 대화**(`LEAVE_OUT`)"):
+        assert name in text
+    assert "`events`를 쓰기 전에 하나씩 읽고 `conversations`에 아래 순서로 정합니다" in text
+    assert "오늘 있었던 일을 입증하지 못해도, 앞으로의 일을 말해도" in text
+    assert text.index('"conversations": [') < text.index('"events": [')
+    assert text.index("(`SUPPORT`)") < text.index("(`RECORD`)") < text.index("(`LEAVE_OUT`)")
+    assert "근거는 그 대화뿐이고 시간은 그 대화가 온 시간입니다" in text
+    assert "개수를 채우려고 남기거나 억지로 근거로 붙이지 않습니다" in text
+    assert "보조 근거입니다" not in text
+
+
+def test_timeline_v4_keeps_what_a_received_message_can_say():
+    """받은 메시지를 답장·만남으로, 미래 약속을 오늘 한 일로 쓰지 않는다(#183)."""
+
+    timeline, repair = _timeline(), _repair()
+
+    for text in (timeline, repair):
+        assert "`{사람}에게서 {주제} 메시지를 받았다.`" in text
+        assert "이야기했다.` | `OO와 대화`" not in text
+        assert "일정·사진이 말하는 만남" in text
+        assert "결과 확인·과제 수행·답장·만남 같은 행동으로 바꾸지 않습니다" in text
+        assert "대화 알림은 받은 메시지뿐이라 `주고받았다`, `이야기했다`로 쓰지 않습니다" in text
+    assert "**미래의 약속을 오늘 한 것처럼 쓰지 않습니다.**" in timeline
+    assert "일정·사진 없이 대화와 체류뿐이면 만남이 아니다" in timeline
+
+
+def test_v4_says_conversations_do_not_count_toward_ten_events():
+    """대화는 전체 10개와 상관없이 들어간다(사용자 결정 2026-11-02)."""
+
+    assert "대화 event는 이 개수에 들지 않습니다" in _timeline()
+    assert "대화 event는 10개에 들지 않습니다" in _repair()
+    assert "대화 event부터 뺍니다" not in _timeline()
+
+
+def test_timeline_v4_says_why_a_conversation_was_left_out():
+    """개수 때문에 뺀 대화와 내용 때문에 뺀 대화를 가른다. warning 예시의 이유는 모델이 그대로 옮겨 적었다."""
+
+    text = _timeline()
+
+    assert "기록할 만하지만 3개를 넘어 뺀 대화도 여기 두고 `reason`에 개수 때문이라고 적습니다" in text
+    assert "`evidence`에 없는 단서를 근거로 썼다고 적지 않습니다" in text
+    assert "이모티콘만 있어 기록할 내용이 없다" not in text
+
+
+def test_repair_v4_reviews_unused_conversations_without_forcing_them():
+    text = _repair()
+
+    assert "#### `CONVERSATIONS_UNUSED`" in text
+    assert "`add_conversation_event`" in text
+    assert "전부 제외가 맞는 날도 있습니다" in text
+    assert "`SAME_TITLE_IN_A_ROW`·`CONVERSATIONS_UNUSED`는 남아 있어도 됩니다" in text
+    assert "`conversationReviews`가 `RECORD`인 대화 event는 지우지 않습니다" in text
+
+
 def test_notification_v4_keeps_only_what_is_needed():
     """필요한 알림만 남기고 나머지는 `dropped` 에 id 만 적는다(#173)."""
 
