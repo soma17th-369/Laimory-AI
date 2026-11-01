@@ -354,6 +354,112 @@ def test_v4_leaves_the_text_users_read_alone(v4):
     assert result.events[0].model_dump() == {**before, "question": "출근길에 무슨 생각을 하셨나요?"}
 
 
+@pytest.mark.parametrize(
+    "question",
+    [
+        "정든식당 음식은 어땠어요?",
+        "정든 식당 음식은 어땠어요?",
+        "포스트타워마포에서 뭘 했어요?",
+        "도화동엔 무슨 일로 갔어요?",
+        "마포구 도화동까지 가는 길은 어땠어요?",
+        "서울 마포구 도화동 33 근처에서 뭘 했어요?",
+    ],
+)
+def test_v4_asks_again_when_the_question_names_a_place(v4, question: str):
+    good = "오늘 식사에서 제일 맛있었던 건 뭐예요?"
+    llm = FakeLLM([_text(_questions(("event-001", question))), _text(_questions(("event-001", good)))])
+
+    result = QuestionAgent(llm=llm).generate(make_request(), _draft(_place_event()))
+
+    assert len(llm.calls) == 2
+    assert result.events[0].question == good
+    assert result.warnings == []
+
+
+def test_v4_finds_a_place_only_the_request_knows(v4):
+    request = make_request(stays=[stay_item("s", place="공덕 리더스뷰")])
+    event = _place_event(place=None, place_candidates=[], address=None)
+    agent = _agent(
+        _questions(("event-001", "공덕 리더스뷰에선 뭘 했어요?")),
+        _questions(("event-001", "이곳에서 무엇을 하셨나요?")),
+    )
+
+    result = agent.generate(request, _draft(event))
+
+    assert result.events[0].question == "이곳에서 무엇을 하셨나요?"
+
+
+def test_v4_place_left_after_the_retry_leaves_the_question_empty(v4):
+    agent = _agent(
+        _questions(("event-001", "정든식당 음식은 어땠어요?")),
+        _questions(("event-001", "정든식당 분위기는 어땠어요?")),
+    )
+
+    result = _run(agent, _draft(_place_event()))
+
+    assert result.events[0].question is None
+    [warning] = result.warnings
+    assert "1개" in warning.message
+
+
+def test_v4_retry_keeps_valid_questions_and_shows_them_without_their_ids(v4):
+    kept = "출근길에 무슨 생각을 하셨나요?"
+    llm = FakeLLM(
+        [
+            _text(_questions(("event-001", kept), ("event-002", "정든식당 음식은 어땠어요?"))),
+            _text(_questions(("event-002", "오늘 식사에서 제일 맛있었던 건 뭐예요?"))),
+        ]
+    )
+    draft = _draft(_place_event("event-001"), _place_event("event-002"))
+
+    result = QuestionAgent(llm=llm).generate(make_request(), draft)
+
+    assert result.events[0].question == kept
+    assert result.events[1].question == "오늘 식사에서 제일 맛있었던 건 뭐예요?"
+    retry_prompt = llm.calls[1].prompt
+    assert kept in retry_prompt
+    assert "쓸 수 있는 질문을 받지 못했습니다" in retry_prompt
+    assert "event-001" not in retry_prompt
+    assert "event-002" in retry_prompt
+
+
+def test_v4_retry_with_nothing_kept_has_no_kept_questions_block(v4):
+    llm = FakeLLM(
+        [
+            _text(_questions(("event-001", "정든식당 음식은 어땠어요?"))),
+            _text(_questions(("event-001", "오늘 식사에서 제일 맛있었던 건 뭐예요?"))),
+        ]
+    )
+
+    QuestionAgent(llm=llm).generate(make_request(), _draft(_place_event()))
+
+    assert "[이미 만든 질문]" not in llm.calls[1].prompt
+
+
+@pytest.mark.parametrize(
+    ("overrides", "question"),
+    [
+        (
+            {"place": "필라테스 스튜디오", "place_candidates": ["필라테스 스튜디오"]},
+            "필라테스 끝나고 몸은 어떤 느낌이었어요?",
+        ),
+        ({"address": "경기 수원시 이동 11"}, "이동하는 동안 무슨 생각이 들었어요?"),
+        ({}, "퇴근길에 무슨 생각을 하셨나요?"),
+        ({}, "여자친구랑 나눈 얘기 중에 다시 떠오르는 게 있어요?"),
+        ({}, "산책로를 걸으면서 어떤 생각이 들었어요?"),
+        ({}, "이곳에서 무엇을 하셨나요?"),
+        ({}, "무슨 일로 여기까지 가셨나요??"),
+    ],
+)
+def test_v4_keeps_questions_that_only_look_like_places(v4, overrides: dict, question: str):
+    llm = FakeLLM([_text(_questions(("event-001", question)))])
+
+    result = QuestionAgent(llm=llm).generate(make_request(), _draft(_place_event(**overrides)))
+
+    assert len(llm.calls) == 1
+    assert result.events[0].question == question
+
+
 def test_v4_user_memory_reaches_the_prompt_as_the_same_string(v4):
     """Timeline 과 같은 문자열을 본다. User Memory 속 장소는 프롬프트가 막는다."""
 
@@ -376,3 +482,18 @@ def test_v3_prompt_still_carries_the_place_and_keeps_such_questions(v3):
     assert '"place": "정든식당"' in prompt
     assert len(llm.calls) == 1
     assert result.events[0].question == "정든식당 음식은 어땠어요?"
+
+
+def test_v3_retry_wording_is_unchanged(v3):
+    llm = FakeLLM(
+        [
+            _text(_questions(("event-001", "점심은 어떤 자리였나요?"))),
+            _text(_questions(("event-002", "그 시간은 어떻게 보내셨나요?"))),
+        ]
+    )
+
+    QuestionAgent(llm=llm).generate(make_request(), _draft(_event("event-001"), _event("event-002")))
+
+    retry_prompt = llm.calls[1].prompt
+    assert "아래 event 들은 앞선 요청에서 질문을 받지 못했습니다." in retry_prompt
+    assert "점심은 어떤 자리였나요?" not in retry_prompt

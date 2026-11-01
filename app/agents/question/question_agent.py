@@ -38,7 +38,8 @@ Repair 가 event 를 병합·삭제하고 `clientEventId` 를 다시 매기기 �
 
 v4 세트는 장소도 뺀다(#182). 질문은 장소가 아니라 그때의 경험을 묻는다. `place` 를 싣지
 않고, `{place}` 칸은 채우지 않고 지우고, 제목·문장에서 그날의 장소 말을 지운다. 프롬프트
-입력만 그렇고 사용자가 읽는 글은 그대로다.
+입력만 그렇고 사용자가 읽는 글은 그대로다. 그래도 질문에 나온 장소 말은 코드가 버려
+재요청으로 넘긴다. 재요청 뒤에도 남으면 질문은 ``None`` 이다 — 코드는 문장을 쓰지 않는다.
 
 ## 실패
 
@@ -102,11 +103,16 @@ def build_question_prompt(
     events: list[dict],
     *,
     retry: bool = False,
+    taken: list[str] | None = None,
 ) -> str:
     """질문 생성 user prompt 를 만든다.
 
     ``retry`` 는 1차 응답에서 질문을 받지 못한 event 만 다시 묻는 경우다. 같은
     지시를 반복하는 대신 "빠뜨렸다" 는 사실을 알려 준다.
+
+    ``taken`` 은 v4 재요청에서 이미 만든 질문이다(#182). 재요청은 일부 event 만 보므로 이것이
+    없으면 하루의 다른 질문과 겹쳐도 알 수 없다. ``clientEventId`` 없이 문장만 실어 다시 답할
+    대상으로 읽히지 않게 한다. v3 는 넘기지 않아 재요청 문구가 그대로다.
 
     User Memory 를 함께 준다(#65). 무엇을 물을지가 아니라 **어떻게 물을지**를 고르는
     자료다 — 같은 event 라도 사람마다 남기고 싶은 말이 다르고, 그 결이
@@ -114,17 +120,30 @@ def build_question_prompt(
     projection 을 쓴다.
     """
 
-    tail = (
-        "아래 event 들은 앞선 요청에서 질문을 받지 못했습니다. "
-        "빠짐없이 하나씩 다시 만들어 주세요."
-        if retry
-        else "event 는 사용자가 오늘 실제로 겪은 일입니다."
+    if taken is not None:
+        # v4 의 재요청에는 빠진 event 말고 장소 때문에 버린 event 도 있다.
+        tail = (
+            "아래 event 들은 앞선 요청에서 쓸 수 있는 질문을 받지 못했습니다. "
+            "장소를 쓰지 말고 빠짐없이 하나씩 다시 만들어 주세요."
+        )
+    elif retry:
+        tail = (
+            "아래 event 들은 앞선 요청에서 질문을 받지 못했습니다. "
+            "빠짐없이 하나씩 다시 만들어 주세요."
+        )
+    else:
+        tail = "event 는 사용자가 오늘 실제로 겪은 일입니다."
+    made = (
+        f"[이미 만든 질문]\n{json.dumps(taken, ensure_ascii=False, indent=2)}\n\n"
+        "이 질문들과 겹치지 않게 다른 지점을 잡으세요. "
+        if taken
+        else ""
     )
     return (
         f"[date]\n{request.date}\n\n"
         f"[user memory]\n{user_memory_to_text(request.user_memory)}\n\n"
         f"[events]\n{json.dumps(events, ensure_ascii=False, indent=2)}\n\n"
-        f"{tail} "
+        f"{made}{tail} "
         "**모든 event 에 질문을 하나씩** 만드세요. 건너뛰는 event 가 있으면 안 됩니다. "
         f"입력 event 가 {len(events)}개이므로 질문도 {len(events)}개여야 합니다."
     )
@@ -275,15 +294,19 @@ class QuestionAgent(Agent):
     ) -> None:
         """``events`` 에 대해 질문을 받아 draft 에 적용한다."""
 
+        taken = None
+        if retry and place_words is not None:
+            taken = [event.question for event in draft.events if event.question]
         prompt = build_question_prompt(
             request,
             [project_event(event, place_words) for event in events],
             retry=retry,
+            taken=taken,
         )
         text = self.llm.complete_json(
             prompt, QuestionSet, system=_SYSTEM_PROMPT, temperature=0.4
         )
-        self._apply(draft, parse_questions(text), retry=retry)
+        self._apply(draft, parse_questions(text), retry=retry, place_words=place_words)
 
     def _apply(
         self,
@@ -291,12 +314,14 @@ class QuestionAgent(Agent):
         questions: list[EventQuestion],
         *,
         retry: bool = False,
+        place_words: DayPlaceWords | None = None,
     ) -> None:
         """질문을 event 에 붙인다. 규칙을 어긴 질문은 조용히 버리지 않고 남긴다.
 
         - 알 수 없는 ``clientEventId`` 는 버린다. 사라진 event 를 되살리지 않는다.
         - 이미 질문이 붙은 event 는 건드리지 않는다(같은 event 에 둘 이상이면 첫 질문).
         - 물음표로 끝나지 않거나 길이 상한을 넘는 질문은 버린다.
+        - v4 는 그날의 장소 말이 들어 있는 질문도 버린다(#182).
         """
 
         by_id = {event.client_event_id: event for event in draft.events}
@@ -318,6 +343,9 @@ class QuestionAgent(Agent):
                 continue
             if len(question) > _MAX_QUESTION_LENGTH:
                 skipped["tooLong"] = skipped.get("tooLong", 0) + 1
+                continue
+            if place_words is not None and place_words.found_in(question):
+                skipped["placeInQuestion"] = skipped.get("placeInQuestion", 0) + 1
                 continue
 
             event.question = question
