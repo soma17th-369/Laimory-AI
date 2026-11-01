@@ -38,10 +38,12 @@ from app.schemas.source_snapshot import (
 )
 from app.schemas.task import TaskStatus, TimelineCallbackPayload
 from app.schemas.timeline import (
+    ConversationDecision,
     TimelineAgentEvent,
     TimelineAgentOutput,
     TimelineClueEvent,
     TimelineClueOutput,
+    TimelineConversationReview,
     TimelineDraft,
     TimelineDraftEvent,
     TimelineEventDraft,
@@ -106,8 +108,10 @@ __all__ = [
     "TimelineAgentEvent",
     "TimelineAgentOutput",
     "TimelineCallbackPayload",
+    "ConversationDecision",
     "TimelineClueEvent",
     "TimelineClueOutput",
+    "TimelineConversationReview",
     "TimelineDraft",
     "TimelineDraftEvent",
     "TimelineDraftRequest",
