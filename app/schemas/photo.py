@@ -25,9 +25,16 @@ Langfuse 에서 Photo Agent 결과를 검증하려면 어느 사진을 보고 �
 pydantic 이 조용히 무시한다.
 """
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
-from app.schemas.common import CamelModel, Latitude, Longitude, RawId
+from app.schemas.common import (
+    CamelModel,
+    Latitude,
+    Longitude,
+    PlacePoint,
+    RawId,
+    split_place_objects,
+)
 
 
 class PhotoItem(CamelModel):
@@ -41,7 +48,10 @@ class PhotoItem(CamelModel):
     #: 촬영 지점의 장소명 후보와 주소(이슈 #80). **둘 다 안 들어올 수 있다.**
     #: 없으면 없는 대로 두고, 촬영 시각으로 STAY 를 대조하는 기존 경로가 답한다.
     places: list[str] = Field(default_factory=list)
+    place_points: list[PlacePoint] = Field(default_factory=list, alias="placePoints")
     address: str | None = None
     description: str | None = None
     #: S3 이미지 URL. 요청 덤프에는 남고 프롬프트 경계에서 뺀다(위 docstring 참고).
     photo_url: str | None = Field(default=None, alias="photoUrl")
+
+    _split_places = model_validator(mode="before")(split_place_objects)

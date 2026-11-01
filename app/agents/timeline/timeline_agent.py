@@ -12,6 +12,8 @@ draft used when the LLM response is unusable.
 """
 
 import json
+from datetime import timedelta
+from uuid import UUID
 
 from pydantic import ValidationError
 
@@ -30,19 +32,37 @@ from app.core.structured import StructuredOutputError
 from app.core.llm_stages import LLMStage
 from app.schemas import (
     AgentEventResult,
+    ConversationDecision,
+    PRE_CLUE_EVENT_TYPES,
     TimelineAgentOutput,
+    TimelineClueEvent,
+    TimelineClueOutput,
+    TimelineConversationReview,
     TimelineDraft,
     TimelineDraftRequest,
     TimelineEventDraft,
     TimelineWarning,
     TimelineWarningSeverity,
 )
+from app.schemas.clues import NotificationClueKind
+from app.services.clue_bundles import (
+    TimelineClues,
+    expand_evidence,
+    misplaced_clues,
+    timeline_input_sections,
+)
+from app.services.draft_edit import add_conversation_event
+from app.services.skeleton_guard import NEEDS_WRITING
+
 logger = get_logger(__name__)
 
 _SYSTEM_PROMPT = load_prompt(__file__, "timeline.md")
 
 _DEFAULT_USER_ID = "user-1234"
 _DEFAULT_TIMEZONE = "Asia/Seoul"
+
+#: 글이 빈 대화 event 의 제목 길이. 단서의 말을 옮겨 둘 뿐이고 Repair 가 다시 쓴다.
+_TITLE_MAX = 30
 
 
 def build_timeline_prompt(
@@ -78,6 +98,253 @@ def build_timeline_prompt(
         "through warnings and uncertainty. "
         "Do not copy example dates; use the metadata date and the provided candidate times."
     )
+
+
+def build_timeline_clue_prompt(
+    request: TimelineDraftRequest,
+    user_memory_text: str,
+    clues: TimelineClues,
+) -> str:
+    """v4 세트의 user prompt(#169). 입력은 Event Agent candidate 대신 근거 묶음이다."""
+
+    sections = timeline_input_sections(clues)
+    window_start = request.window.start if request.window else "정보 없음"
+    window_end = request.window.end if request.window else "정보 없음"
+
+    def dump(value: object) -> str:
+        return json.dumps(value, ensure_ascii=False, indent=2)
+
+    return (
+        "[draft metadata]\n"
+        f"date: {request.date}\n"
+        f"timezone: {_DEFAULT_TIMEZONE}\n"
+        f"windowStart: {window_start}\n"
+        f"windowEnd: {window_end}\n\n"
+        f"[하루]\n{dump(sections['day'])}\n\n"
+        f"[근거 묶음]\n{dump(sections['bundles'])}\n\n"
+        f"[빈 시간]\n{dump(sections['emptyTimes'])}\n\n"
+        f"[알림]\n{dump(sections['notifications'])}\n\n"
+        f"[user memory]\n{user_memory_text}\n\n"
+        "위 근거 묶음으로 이날의 하루를 TimelineDraft JSON 으로 옮겨 적으세요. "
+        "근거는 묶음·단서 id 로 가리키고, 예시의 날짜를 옮기지 말고 metadata 의 날짜와 "
+        "묶음의 시각을 쓰세요."
+    )
+
+
+def parse_timeline_clue_draft(
+    text: str, request: TimelineDraftRequest, clues: TimelineClues
+) -> TimelineDraft:
+    """v4 LLM 응답을 draft 로 파싱하고 근거 id 를 rawId 로 펼친다(#169).
+
+    v3 의 `parse_timeline_draft` 와 같이 부분 손상에 강하다. 깨진 event 는 그것만 건너뛴다.
+    근거 id 가 하나도 입력의 rawId 로 펼쳐지지 않은 event 도 건너뛴다 — 근거 없는 event 다.
+    장소는 비워 둔다. 확정 pass 가 근거로 정한다(#171).
+    """
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        raise StructuredOutputError("LLM 응답에서 JSON 객체를 찾지 못했습니다.")
+    payload = json.loads(text[start : end + 1])
+
+    skipped: list[TimelineWarning] = []
+    parsed: list[TimelineClueEvent] = []
+    for index, raw in enumerate(payload.get("events") or [], start=1):
+        if not isinstance(raw, dict):
+            skipped.append(_invalid_item_warning("event", index))
+            continue
+        try:
+            parsed.append(TimelineClueEvent.model_validate(raw))
+        except ValidationError as exc:
+            _report_skipped_item("event", index, exc)
+            skipped.append(_invalid_item_warning("event", index))
+
+    # 기본 event 는 그 event 의 시간과 겹칠 때만 출처다. 실제 Timeline 은 오전 11:24 작업 사진 event 에
+    # 16:59 체류의 `E1` 을 적었고, 그 체류 기록이 근거로 붙자 길이 0 복원이 event 를 16:59 로 옮겨
+    # 사진이 떨어져 나갔다. 겹치지 않는 출처는 시간 판단이 아니라 잘못 적은 것이라 버린다.
+    segments = {b.base_event.base_id: b.base_event.segment for b in clues.bundles if b.base_event}
+    edge = timedelta(minutes=1)
+    bases_by_event = [
+        [
+            base
+            for base in event.base_event_ids
+            if (segment := segments.get(base.strip())) is not None
+            and segment.start - edge <= event.end_time
+            and event.start_time <= segment.end + edge
+        ]
+        for event in parsed
+    ]
+    # `from` 을 비운 사진 event 는 그 사진이 붙은 위치 구간에서 온 것이다(사용자 결정 2026-10-31 — 단서를
+    # 위치에 잇는 것은 코드가 한다). 사진 입력에서 장소를 뺀 뒤, Timeline 이 꺼낸 식사의 `from` 을 비우자
+    # 그 식사가 장소도 지명도 없는 `점심을 먹었다` 가 됐다. 사진이 붙은 구간 중 event 시간과 겹치는 것만 쓴다.
+    photo_bases = {
+        photo.clue_id: [b.base_event.base_id for b in clues.bundles if b.base_event and photo in b.photos]
+        for photo in clues.photos
+    }
+    for event, bases in zip(parsed, bases_by_event):
+        if bases:
+            continue
+        bases.extend(
+            base
+            for base in dict.fromkeys(
+                base for clue_id in event.evidence for base in photo_bases.get(clue_id.strip(), [])
+            )
+            if segments[base].start - edge <= event.end_time
+            and event.start_time <= segments[base].end + edge
+        )
+    refs_by_event = expand_evidence(
+        clues, [event.evidence for event in parsed], request, bases_by_event
+    )
+    events: list[TimelineEventDraft] = []
+    for index, (event, refs, bases) in enumerate(
+        zip(parsed, refs_by_event, bases_by_event), start=1
+    ):
+        # 시간·장소가 맞지 않는 사진·일정은 그 event 의 근거가 아니다(사용자 결정 2026-10-30·31).
+        misplaced = misplaced_clues(clues, event.start_time, event.end_time, refs)
+        if misplaced:
+            refs = [ref for ref in refs if ref.raw_id not in misplaced]
+            skipped.append(
+                TimelineWarning(
+                    warning_id=f"warning-misplaced-evidence-{index:03d}",
+                    severity=TimelineWarningSeverity.LOW,
+                    message=(
+                        f"LLM 응답의 event 항목({index}번)이 시간·장소가 맞지 않는 근거 "
+                        f"{', '.join(sorted(misplaced.values()))} 를 적어 뺐습니다."
+                    ),
+                )
+            )
+        if not refs:
+            skipped.append(
+                TimelineWarning(
+                    warning_id=f"warning-invalid-evidence-{index:03d}",
+                    severity=TimelineWarningSeverity.MEDIUM,
+                    message=(
+                        f"LLM 응답의 event 항목({index}번)이 입력에 없는 근거만 가리켜 "
+                        "제외했습니다."
+                    ),
+                )
+            )
+            continue
+        events.append(
+            TimelineEventDraft(
+                client_event_id=f"event-{len(events) + 1:03d}",
+                event_type=event.event_type,
+                title=event.title,
+                description=event.description,
+                start_time=event.start_time,
+                end_time=event.end_time,
+                confidence=event.confidence,
+                inference_level=event.inference_level,
+                source_refs=refs,
+                uncertainty=list(event.uncertainty),
+                place_candidates=[n.strip() for n in event.place_candidates if n.strip()],
+                merge_reason=event.merge_reason.strip() or None,
+                base_event_ids=[base.strip() for base in bases],
+            )
+        )
+
+    warnings: list[TimelineWarning] = []
+    for index, raw in enumerate(payload.get("warnings") or [], start=1):
+        if not isinstance(raw, dict):
+            continue
+        item = {**raw}
+        item.setdefault("warningId", f"warning-{len(warnings) + 1:03d}")
+        item.setdefault("severity", TimelineWarningSeverity.MEDIUM.value)
+        # v4 는 근거를 묶음·단서 id 로 가리킨다. warning 에 그 id 를 적으면 rawId 로 펼친다 —
+        # 그대로 두면 rawId 검증에 걸려 warning 이 통째로 버려진다(재실행에서 본 것).
+        if item.get("sourceRefs"):
+            item["sourceRefs"] = _warning_refs(item["sourceRefs"], clues, request)
+        try:
+            warnings.append(TimelineWarning.model_validate(item))
+        except ValidationError as exc:
+            _report_skipped_item("warning", index, exc)
+
+    draft = TimelineDraft(
+        user_id=_DEFAULT_USER_ID,
+        date=request.date,
+        timezone=request.timezone or _DEFAULT_TIMEZONE,
+        events=events,
+        warnings=[*warnings, *skipped],
+        conversation_reviews=_conversation_reviews(payload),
+    )
+    _add_recorded_conversations(draft, clues)
+    return draft
+
+
+def _add_recorded_conversations(draft: TimelineDraft, clues: TimelineClues) -> None:
+    """`RECORD` 로 정한 대화를 event 로 만든다(#183). 판단과 글은 Timeline 의 것이고 구조만 코드가 잡는다.
+
+    시간과 근거는 그 대화에서 정한다. 이미 어느 event 의 근거인 대화는 만들지 않는다. 글이 비었어도 판단은
+    살린다 — 단서의 말을 옮겨 두고 Repair 가 쓴다(`EVENT_TO_WRITE`). 개수는 확정 pass 가 맞춘다.
+    """
+
+    by_id = {
+        clue.clue_id: clue
+        for clue in clues.notifications
+        if clue.kind is NotificationClueKind.CONVERSATION and clue.first_at is not None
+    }
+    for review in draft.conversation_reviews:
+        clue = by_id.get(review.clue_id)
+        if review.decision is not ConversationDecision.RECORD or clue is None:
+            continue
+        held = {ref.raw_id for event in draft.events for ref in event.source_refs}
+        if held & set(clue.raw_ids):
+            continue
+        title = review.title.strip()
+        description = review.description.strip()
+        event = add_conversation_event(
+            draft,
+            clue,
+            (title or clue.title or clue.counterpart or clue.clue_id)[:_TITLE_MAX],
+            description or clue.summary or review.content.strip() or "",
+        )
+        event.client_event_id = f"event-{len(draft.events):03d}"
+        event.merge_reason = (review.reason.strip() or None) if title and description else NEEDS_WRITING
+
+
+def _conversation_reviews(payload: dict) -> list[TimelineConversationReview]:
+    """대화 판단. 깨진 항목은 그것만 건너뛴다 — 없어도 event 는 그대로 쓸 수 있다."""
+
+    reviews: list[TimelineConversationReview] = []
+    for index, raw in enumerate(payload.get("conversations") or [], start=1):
+        try:
+            reviews.append(TimelineConversationReview.model_validate(raw))
+        except ValidationError as exc:
+            _report_skipped_item("conversation", index, exc)
+    return reviews
+
+
+def _warning_refs(
+    source_refs: list, clues: TimelineClues, request: TimelineDraftRequest
+) -> list[dict]:
+    """warning 의 근거 id 를 rawId 로 펼친다. 모델이 적은 이유는 남긴다.
+
+    일부러 쓰지 않은 근거의 이유는 Repair 가 다시 판단할 때 읽는 값이다(#183). 예전에는 단서의 종류
+    이름(`대화 알림`)으로 덮였다. 단서 id 와 rawId 가 섞여 와도 된다. rawId 는 근거 묶음에 없는 id 라
+    그대로 둔다.
+    """
+
+    expanded: dict[str, dict] = {}
+    for ref in source_refs:
+        if not isinstance(ref, (str, dict)):
+            continue
+        identifier = ref if isinstance(ref, str) else str(ref.get("rawId", ""))
+        reason = ref.get("reason") if isinstance(ref, dict) else None
+        [refs] = expand_evidence(clues, [[identifier]], request)
+        for found in refs:
+            dumped = found.model_dump(by_alias=True, mode="json")
+            expanded.setdefault(found.raw_id, {**dumped, "reason": reason} if reason else dumped)
+        if not refs and isinstance(ref, dict) and _is_uuid(identifier):
+            expanded.setdefault(identifier, ref)
+    return list(expanded.values())
+
+
+def _is_uuid(value: object) -> bool:
+    try:
+        UUID(str(value))
+    except ValueError:
+        return False
+    return True
 
 
 def _invalid_item_warning(kind: str, index: int) -> TimelineWarning:
@@ -142,8 +409,13 @@ def parse_timeline_draft(text: str, request: TimelineDraftRequest) -> TimelineDr
         item.pop("eventId", None)
         item["clientEventId"] = f"event-{len(events) + 1:03d}"
         try:
-            events.append(TimelineEventDraft.model_validate(item))
-        except ValidationError as exc:
+            event = TimelineEventDraft.model_validate(item)
+            # 이 함수는 v1~v3 경로다(v4 는 `parse_timeline_clue_draft`). 13종 밖의 값은 모르는
+            # 문자열과 똑같이 그 항목만 뺀다 — draft 가 공용 enum 이라 검증을 통과한다(#172).
+            if event.event_type not in PRE_CLUE_EVENT_TYPES:
+                raise ValueError(f"unknown eventType: {event.event_type.value}")
+            events.append(event)
+        except (ValidationError, ValueError) as exc:
             _report_skipped_item("event", index, exc)
             skipped.append(_invalid_item_warning("event", index))
 
@@ -218,6 +490,55 @@ class TimelineAgent(Agent):
                             f"{self.name} agent 실행 실패: "
                             f"{message_for(failure_code)}"
                         ),
+                    ),
+                ],
+            )
+
+    def generate_from_clues(
+        self,
+        request: TimelineDraftRequest,
+        clues: TimelineClues,
+    ) -> TimelineDraft:
+        """v4 세트(#169): 근거 묶음으로 draft 를 만든다. 실패 흡수는 `generate` 와 같다."""
+
+        carried = [
+            TimelineWarning(
+                warning_id=f"warning-upstream-{index:03d}",
+                severity=TimelineWarningSeverity.MEDIUM,
+                message=f"[{warning.agent_name}] {warning.message}",
+            )
+            for index, warning in enumerate(clues.warnings, start=1)
+        ]
+        try:
+            if not clues.bundles and not clues.day_notifications:
+                return _empty_draft(request, warnings=carried)
+            prompt = build_timeline_clue_prompt(
+                request, user_memory_to_text(request.user_memory), clues
+            )
+            text = self.llm.complete_json(
+                prompt, TimelineClueOutput, system=_SYSTEM_PROMPT, temperature=0.2
+            )
+            draft = parse_timeline_clue_draft(text, request, clues)
+            draft.warnings = [*carried, *draft.warnings]
+            return draft
+        except Exception as exc:
+            failure_code = code_of_or(exc, ErrorCode.TIMELINE_AGENT_FAILED)
+            report_error(
+                logger,
+                failure_code,
+                "Timeline Agent 실행 실패",
+                exc=exc,
+                context={"fallback": "empty_draft", "contract": "clue"},
+                exc_info=True,
+            )
+            return _empty_draft(
+                request,
+                warnings=[
+                    *carried,
+                    TimelineWarning(
+                        warning_id="warning-timeline-001",
+                        severity=TimelineWarningSeverity.HIGH,
+                        message=f"{self.name} agent 실행 실패: {message_for(failure_code)}",
                     ),
                 ],
             )

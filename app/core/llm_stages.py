@@ -54,6 +54,8 @@ class LLMStage(StrEnum):
     #: **이 단계만 이미지 입력을 쓴다.** 이 단계가 속한 티어의 모델은 vision 을
     #: 지원해야 한다.
     PHOTO_DESCRIBE = "photo_describe"
+    #: deprecated(2026-10-29). 수면·걸음을 더 수집하지 않아 v4 는 이 단계를 부르지 않는다.
+    #: v1~v3 이 쓰므로 값은 남긴다. `LOCATION`·`CALENDAR` 도 v4 에서는 부르지 않는다(#167·#168).
     SLEEP_ACTIVITY = "sleep_activity"
     NOTIFICATION = "notification"
     TIMELINE = "timeline"

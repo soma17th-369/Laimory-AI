@@ -517,7 +517,7 @@ async def _process_observed(
                     # 입력에 없는 rawId 가 결과에 남아 있으면 저장 요청을 보내지 않는다.
                     # App Server 가 거절할 참조를 굳이 왕복시킬 이유가 없다.
                     ensure_timeline_valid_for_storage(draft, source_raw_ids(snapshot))
-                    result_request = build_result_request(draft)
+                    result_request = build_result_request(draft, request)
                     await client.submit_result(task_id, token, result_request)
                 except Exception as exc:
                     update_observation(

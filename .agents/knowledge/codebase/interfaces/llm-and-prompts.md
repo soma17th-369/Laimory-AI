@@ -40,9 +40,13 @@ Bedrock 구조화 호출은 `temperature`를 0으로 잠그고 `inferenceConfig.
 
 LLM call은 provider/model/version, duration, 사용 가능한 token bucket을 Langfuse generation에 기록한다. Langfuse가 꺼져 있으면 token 정보는 DEBUG 진단에만 남는다. provider SDK가 제공하지 않은 token 종류를 추측해 채우지 않는다.
 
-`PROMPT_VERSION`은 현재 `v1`·`v2`·`v3` 중 하나이고 모든 Agent가 같은 세트를 사용한다. loader는 module 옆 `prompts/{version}/{정확한 파일명}`만 UTF-8로 읽는다. version과 filename에 nested path를 허용하지 않으며, 파일이 없을 때 다른 version으로 fallback하지 않는다. v3은 v2의 활성 파일을 복사해 시작한 세트다(#112·#114). v2 디렉터리의 동결본(`timeline_v2.0.0.md` 등)은 v2의 이력이라 v3으로 옮기지 않았다.
+`PROMPT_VERSION`은 현재 `v1`·`v2`·`v3`·`v4` 중 하나이고 모든 Agent가 같은 세트를 사용한다. loader는 module 옆 `prompts/{version}/{정확한 파일명}`만 UTF-8로 읽는다. version과 filename에 nested path를 허용하지 않으며, 파일이 없을 때 다른 version으로 fallback하지 않는다. v3은 v2의 활성 파일을 복사해 시작한 세트다(#112·#114). v2 디렉터리의 동결본(`timeline_v2.0.0.md` 등)은 v2의 이력이라 v3으로 옮기지 않았다.
+
+**v4 세트(#167~#171)는 데이터별 단서 계약이다.** 갈리는 기준은 `prompt_loader.uses_clue_contract`(v1~v3이 아니면 참) 하나이고, v4는 `uses_legacy_contract`가 거짓이라 v3의 #119 이후 계약을 그대로 이어받는다. v4에는 Location·Calendar·Sleep/Activity Agent의 프롬프트가 없다 — 위치·일정은 코드가 만들고 수면·걸음은 더 수집하지 않는다. 세 Agent는 프롬프트를 import 때가 아니라 처음 부를 때 읽어 v4로도 기동한다(v1~v3은 읽는 시점만 늦다). Photo v4 `prompt.md`는 사진마다 사용자가 한 일 한 문장(`PhotoInterpretationSet`)을, Notification v4는 알림 단서(`NotificationClueSet`)를 내며 둘 다 입력의 짧은 id로 항목을 가리킨다. Timeline v4 출력은 `TimelineClueOutput`으로 v3의 `TimelineAgentOutput`과 따로 둔다(스키마는 추가만 한다) — 근거를 묶음·단서 id(`evidence`)로 가리키고 `mergeReason`·`placeCandidates`를 쓰며 `place`·`address`·`tags`가 없다. 대화별 판단 `conversations`가 `events`보다 먼저 온다(#183) — 추론이 꺼진 모델은 schema 순서로 쓰므로 순서가 곧 계약이다. Timeline·Repair v4 prompt는 역할로 시작해 처음부터 다시 짰고, 문장 형식 표가 둘 사이에 같은지·입력 키가 코드와 같은지·검토 기준이 `DURATION_LIMITS`와 같은지·User Memory 필드 정의가 쓰는 쪽과 같은지를 `tests/agents/test_v4_prompts.py`가 고정한다. v4의 Question·User Memory prompt와 사진 vision 설명 prompt는 v3 복사본이다.
 
 Timeline Agent가 provider에 싣는 구조화 출력 스키마는 내부 draft가 아니라 `TimelineAgentOutput`(`events`·`warnings`)이다(#118). 내부 모호성 질문의 자유형 `timeRange` dict가 없어져 OpenAI 경로는 strict schema로 잠글 수 있다. 이 계약은 버전을 가리지 않는다 — v2 프롬프트가 여전히 `questions`·`userId`를 내라고 하지만 parse가 무시한다. v3 Timeline·Question 프롬프트는 #118에서 v2와 갈라졌다(판단 순서대로 읽히는 여섯 단계, eventType별 절·예시, User Memory 별도 단계, Question eventType별 예시, 수면 미처리). Timeline·Repair v3는 #134에서 수면을 다시 다룬다 — 출력 eventType은 13종 전부이고 Question v3만 수면 예시가 없다. v3 Timeline은 말투 규정을 v2처럼 입력 절 앞에 두지 않고 문장을 쓰는 5단계에 둔다 — `tests/agents/test_prompt_sets.py`가 버전별 자리를 고정한다. v3 Timeline은 User Memory 필드마다 뜻을 한 줄씩 적는다. 정본은 User Memory Agent 프롬프트의 필드 정의 표이고 두 곳의 문장이 같아야 한다. `tests/agents/test_timeline_v3_prompt.py`가 그 계약과 v2 무변경을 고정한다.
+
+`EventType`은 세트 공용 enum이고 17종이다(#172). 다만 enum의 JSON schema는 언제나 13종(`PRE_CLUE_EVENT_TYPES`)을 보이고, v4 출력 모델 `TimelineClueEvent`만 `WithJsonSchema`로 `UNKNOWN`을 뺀 16종을 연다(#173). 그래서 `TimelineAgentOutput`·`AgentEventResult`의 schema는 OpenAI strict 변환까지 #172 전과 글자 그대로 같다(`tests/fixtures/pre_clue_provider_schemas.json`을 `tests/agents/test_event_type_sets.py`가 대조한다). `EventType`의 docstring은 schema의 `description`으로 나가므로 고치면 이 대조가 깨진다. 값을 더하는 것은 draft·결과·guard가 같은 enum을 쓰기 때문이고, LLM이 적어 낸 새 값은 v1~v3의 입구 세 곳이 거절한다. 세트가 바뀌는 것을 schema 층이 몰라도 되게 전역 설정을 읽지 않는다.
 
 prompt 세트에는 현재 Timeline, Repair, Question, UserMemory, Calendar, Notification, Location, SleepActivity, Photo Agent가 실제 로드하는 파일이 모두 있어야 한다. v1 Location/Sleep은 review prompt를 사용하지만 v2 이후는 단일 structured 호출이라 review 파일이 없어야 한다. Photo는 version마다 infer, metadata fallback, vision prompt가 필요하다.
 
@@ -79,7 +83,7 @@ UserMemory의 digest와 schema 상한은 버전을 가리지 않는다. 하루 �
 
 ## Known Gaps
 
-- 지원 version이 Settings의 `Literal["v1", "v2", "v3"]`와 테스트 상수에 수동으로 중복돼 있다.
+- 지원 version이 Settings의 `Literal["v1", "v2", "v3", "v4"]`와 테스트 상수에 수동으로 중복돼 있다.
 - gemini에는 티어 필드가 없다. `GEMINI_MODEL_FAST` 같은 값을 넣어도 `extra="ignore"`로 조용히 무시된다.
 - 실제 provider 품질·비용·schema 준수는 opt-in live test 없이는 검증되지 않는다.
 - provider model availability, 가격, service quota는 저장소 밖의 시점 의존 정보다.

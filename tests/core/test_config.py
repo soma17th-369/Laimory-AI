@@ -109,11 +109,12 @@ def test_supported_prompt_versions_are_accepted() -> None:
     assert _settings(prompt_version="v2").prompt_version == "v2"
     assert _settings(prompt_version=" V2 ").prompt_version == "v2"
     assert _settings(prompt_version="v3").prompt_version == "v3"
+    assert _settings(prompt_version="v4").prompt_version == "v4"
 
 
 def test_unknown_prompt_version_is_rejected() -> None:
     with pytest.raises(ValidationError):
-        _settings(prompt_version="v4")
+        _settings(prompt_version="v5")
 
 
 def test_app_server_max_attempts_must_be_at_least_one() -> None:

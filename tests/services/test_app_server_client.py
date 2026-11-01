@@ -27,6 +27,7 @@ from app.services.source_contract import SourceBatchError
 from tests.fixtures.requests import fixture_raw_id
 
 _BASE = "https://app.example/s/api/v1"
+_INPUT_BASE = "https://app.example/s/api/v2"
 _TASK_ID = "task-1"
 
 
@@ -103,7 +104,7 @@ async def test_fetch_input_calls_contract_path_with_token_header():
     snapshot = await _client(handler).fetch_input(_TASK_ID, TaskToken("tok-1"))
 
     assert seen[0].method == "GET"
-    assert str(seen[0].url) == f"{_BASE}/timeline/drafts/{_TASK_ID}/input"
+    assert str(seen[0].url) == f"{_INPUT_BASE}/timeline/drafts/{_TASK_ID}/input"
     assert seen[0].headers[TASK_TOKEN_HEADER] == "tok-1"
     assert snapshot.task_id == _TASK_ID
     assert len(snapshot.source_items) == 1
@@ -118,7 +119,7 @@ async def test_task_id_is_url_encoded():
 
     await _client(handler).fetch_input("a/b?c", TaskToken("tok-1"))
 
-    assert str(seen[0].url) == f"{_BASE}/timeline/drafts/a%2Fb%3Fc/input"
+    assert str(seen[0].url) == f"{_INPUT_BASE}/timeline/drafts/a%2Fb%3Fc/input"
 
 
 async def test_submit_result_posts_events_body():
@@ -720,3 +721,35 @@ async def test_user_memory_message_is_distinct_from_the_timeline_calls(caplog):
     )
     assert messages == ["App Server User Memory 결과 저장 성공"]
     assert "타임라인" not in messages[0]
+
+
+async def test_only_the_input_goes_to_v2():
+    """입력 조회만 `places` 가 객체인 v2 를 부른다. 결과 저장·콜백은 기본 URL 의 버전 그대로다(명세 2026-10-30)."""
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"taskToken": "tok-2"})
+
+    await _client(handler).submit_result(_TASK_ID, TaskToken("tok-1"), TimelineResultRequest(events=[]))
+
+    assert str(seen[0].url) == f"{_BASE}/timeline/drafts/{_TASK_ID}/result"
+
+
+async def test_the_short_prefix_also_moves_to_v2():
+    """배포 환경의 접두사는 `/s/api/v1` 과 `/s/v1` 로 갈린다. 끝의 버전만 바꾼다."""
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=_input_body())
+
+    client = HttpAppServerClient(
+        "http://10.0.0.1:8080/s/v1", transport=httpx.MockTransport(handler),
+        timeout_sec=1.0, max_attempts=1, backoff_sec=0.0,
+    )
+    await client.fetch_input(_TASK_ID, TaskToken("tok-1"))
+
+    assert str(seen[0].url) == f"http://10.0.0.1:8080/s/v2/timeline/drafts/{_TASK_ID}/input"

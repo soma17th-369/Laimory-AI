@@ -9,6 +9,7 @@ description의 앞뒤 공백을 제외한 길이가 120자를 넘을 때만 LOW 
 """
 
 from app.schemas import TimelineDraft, TimelineWarning, TimelineWarningSeverity
+from app.services.place_slots import filled_description
 
 DESCRIPTION_WARNING_LENGTH = 120
 _WARNING_ID_PREFIX = "warning-narrative-length-"
@@ -25,7 +26,8 @@ def verify_narrative_length(draft: TimelineDraft) -> None:
 
     sequence = 0
     for event in draft.events:
-        length = len((event.description or "").strip())
+        # v4 의 장소 칸은 채운 문장으로 잰다(#171). v3 문장에는 칸이 없어 그대로다.
+        length = len(filled_description(event).strip())
         if length <= DESCRIPTION_WARNING_LENGTH:
             continue
 

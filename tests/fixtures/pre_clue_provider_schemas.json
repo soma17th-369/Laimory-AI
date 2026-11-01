@@ -1,0 +1,962 @@
+{
+  "TimelineAgentOutput": {
+    "$defs": {
+      "EventSourceType": {
+        "description": "AI Event 후보가 참조하는 근거 source 도메인.",
+        "enum": [
+          "STAY",
+          "MOVEMENT",
+          "CALENDAR",
+          "PHOTO",
+          "SLEEP",
+          "ACTIVITY",
+          "NOTIFICATION"
+        ],
+        "title": "EventSourceType",
+        "type": "string"
+      },
+      "EventType": {
+        "description": "AI Event 후보 종류.",
+        "enum": [
+          "WAKE_UP",
+          "SLEEP",
+          "MOVEMENT",
+          "CALENDAR_EVENT",
+          "MEAL",
+          "PHOTO_MOMENT",
+          "MEETING",
+          "CLASS",
+          "WORK",
+          "EXERCISE",
+          "SOCIAL",
+          "REST",
+          "UNKNOWN"
+        ],
+        "title": "EventType",
+        "type": "string"
+      },
+      "InferenceLevel": {
+        "description": "후보가 만들어진 추론 수준.",
+        "enum": [
+          "DIRECT",
+          "EVIDENCE_BASED",
+          "INFERRED",
+          "UNCERTAIN"
+        ],
+        "title": "InferenceLevel",
+        "type": "string"
+      },
+      "SourceRef": {
+        "additionalProperties": false,
+        "description": "후보 또는 draft event의 근거 source 참조.",
+        "properties": {
+          "sourceType": {
+            "$ref": "#/$defs/EventSourceType"
+          },
+          "rawId": {
+            "title": "Rawid",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "이 source가 후보 또는 draft event의 근거가 되는 이유",
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "sourceType",
+          "rawId"
+        ],
+        "title": "SourceRef",
+        "type": "object"
+      },
+      "TimelineAgentEvent": {
+        "description": "Timeline Agent(LLM)가 쓰는 event 한 건. 코드가 덧붙이는 필드는 여기 없다.",
+        "properties": {
+          "eventType": {
+            "$ref": "#/$defs/EventType"
+          },
+          "title": {
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Address"
+          },
+          "place": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Place"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "startTime": {
+            "format": "date-time",
+            "title": "Starttime",
+            "type": "string"
+          },
+          "endTime": {
+            "format": "date-time",
+            "title": "Endtime",
+            "type": "string"
+          },
+          "confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "inferenceLevel": {
+            "$ref": "#/$defs/InferenceLevel"
+          },
+          "sourceRefs": {
+            "items": {
+              "$ref": "#/$defs/SourceRef"
+            },
+            "minItems": 1,
+            "title": "Sourcerefs",
+            "type": "array"
+          },
+          "uncertainty": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Uncertainty",
+            "type": "array"
+          }
+        },
+        "required": [
+          "eventType",
+          "title",
+          "startTime",
+          "endTime",
+          "confidence",
+          "inferenceLevel",
+          "sourceRefs"
+        ],
+        "title": "TimelineAgentEvent",
+        "type": "object"
+      },
+      "TimelineWarning": {
+        "description": "Recoverable quality warning for a generated draft.",
+        "properties": {
+          "warningId": {
+            "minLength": 1,
+            "title": "Warningid",
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/$defs/TimelineWarningSeverity",
+            "default": "MEDIUM"
+          },
+          "message": {
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "sourceRefs": {
+            "items": {
+              "$ref": "#/$defs/SourceRef"
+            },
+            "title": "Sourcerefs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "warningId",
+          "message"
+        ],
+        "title": "TimelineWarning",
+        "type": "object"
+      },
+      "TimelineWarningSeverity": {
+        "description": "Warning severity for a recoverable draft quality issue.",
+        "enum": [
+          "LOW",
+          "MEDIUM",
+          "HIGH"
+        ],
+        "title": "TimelineWarningSeverity",
+        "type": "string"
+      }
+    },
+    "description": "Timeline Agent 의 LLM 출력 계약(#118).\n\n``warnings`` 는 Timeline 만 아는 판단 — 근거가 충돌해 한쪽을 고른 곳, 일부러 쓰지\n않은 근거와 그 이유 — 을 담는다. Agent 실패·sourceRefs 누락·민감정보처럼 코드가\n이미 남기는 것은 여기 적을 이유가 없다.",
+    "properties": {
+      "events": {
+        "items": {
+          "$ref": "#/$defs/TimelineAgentEvent"
+        },
+        "title": "Events",
+        "type": "array"
+      },
+      "warnings": {
+        "items": {
+          "$ref": "#/$defs/TimelineWarning"
+        },
+        "title": "Warnings",
+        "type": "array"
+      }
+    },
+    "title": "TimelineAgentOutput",
+    "type": "object"
+  },
+  "TimelineAgentOutput.strict": {
+    "$defs": {
+      "EventSourceType": {
+        "description": "AI Event 후보가 참조하는 근거 source 도메인.",
+        "enum": [
+          "STAY",
+          "MOVEMENT",
+          "CALENDAR",
+          "PHOTO",
+          "SLEEP",
+          "ACTIVITY",
+          "NOTIFICATION"
+        ],
+        "type": "string"
+      },
+      "EventType": {
+        "description": "AI Event 후보 종류.",
+        "enum": [
+          "WAKE_UP",
+          "SLEEP",
+          "MOVEMENT",
+          "CALENDAR_EVENT",
+          "MEAL",
+          "PHOTO_MOMENT",
+          "MEETING",
+          "CLASS",
+          "WORK",
+          "EXERCISE",
+          "SOCIAL",
+          "REST",
+          "UNKNOWN"
+        ],
+        "type": "string"
+      },
+      "InferenceLevel": {
+        "description": "후보가 만들어진 추론 수준.",
+        "enum": [
+          "DIRECT",
+          "EVIDENCE_BASED",
+          "INFERRED",
+          "UNCERTAIN"
+        ],
+        "type": "string"
+      },
+      "SourceRef": {
+        "additionalProperties": false,
+        "description": "후보 또는 draft event의 근거 source 참조.",
+        "properties": {
+          "sourceType": {
+            "$ref": "#/$defs/EventSourceType"
+          },
+          "rawId": {
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "이 source가 후보 또는 draft event의 근거가 되는 이유"
+          }
+        },
+        "required": [
+          "sourceType",
+          "rawId",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "TimelineAgentEvent": {
+        "description": "Timeline Agent(LLM)가 쓰는 event 한 건. 코드가 덧붙이는 필드는 여기 없다.",
+        "properties": {
+          "eventType": {
+            "$ref": "#/$defs/EventType"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "place": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "startTime": {
+            "type": "string"
+          },
+          "endTime": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "number"
+          },
+          "inferenceLevel": {
+            "$ref": "#/$defs/InferenceLevel"
+          },
+          "sourceRefs": {
+            "items": {
+              "$ref": "#/$defs/SourceRef"
+            },
+            "type": "array"
+          },
+          "uncertainty": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "eventType",
+          "title",
+          "description",
+          "address",
+          "place",
+          "tags",
+          "startTime",
+          "endTime",
+          "confidence",
+          "inferenceLevel",
+          "sourceRefs",
+          "uncertainty"
+        ],
+        "type": "object",
+        "additionalProperties": false
+      },
+      "TimelineWarning": {
+        "description": "Recoverable quality warning for a generated draft.",
+        "properties": {
+          "warningId": {
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/$defs/TimelineWarningSeverity"
+          },
+          "message": {
+            "type": "string"
+          },
+          "sourceRefs": {
+            "items": {
+              "$ref": "#/$defs/SourceRef"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "warningId",
+          "severity",
+          "message",
+          "sourceRefs"
+        ],
+        "type": "object",
+        "additionalProperties": false
+      },
+      "TimelineWarningSeverity": {
+        "description": "Warning severity for a recoverable draft quality issue.",
+        "enum": [
+          "LOW",
+          "MEDIUM",
+          "HIGH"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "Timeline Agent 의 LLM 출력 계약(#118).\n\n``warnings`` 는 Timeline 만 아는 판단 — 근거가 충돌해 한쪽을 고른 곳, 일부러 쓰지\n않은 근거와 그 이유 — 을 담는다. Agent 실패·sourceRefs 누락·민감정보처럼 코드가\n이미 남기는 것은 여기 적을 이유가 없다.",
+    "properties": {
+      "events": {
+        "items": {
+          "$ref": "#/$defs/TimelineAgentEvent"
+        },
+        "type": "array"
+      },
+      "warnings": {
+        "items": {
+          "$ref": "#/$defs/TimelineWarning"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "events",
+      "warnings"
+    ]
+  },
+  "AgentEventResult": {
+    "$defs": {
+      "AgentWarning": {
+        "description": "Agent 실행 중 복구 가능한 실패나 누락을 전달하는 경고.",
+        "properties": {
+          "agentName": {
+            "minLength": 1,
+            "title": "Agentname",
+            "type": "string"
+          },
+          "message": {
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agentName",
+          "message"
+        ],
+        "title": "AgentWarning",
+        "type": "object"
+      },
+      "AiEventCandidate": {
+        "description": "데이터별 Event Agent가 반환하는 AI Event 후보.\n\n후보는 최종 timeline event가 아니다. Timeline Agent가 여러 후보와 단서를 병합하고\n검토해 최종 draft event를 만든다.\n\n``places``/``address`` 는 **Agent 가 채우는 필드가 아니다**(이슈 #72). 코드가\n``sourceRefs`` 로 근거 입력을 찾아 문자열을 그대로 복사한다\n(:func:`app.services.place_resolver.resolve_candidate_places`).\n\nAgent 에게 맡기지 않는 이유는, 한 지점에 장소명이 여럿일 때 **어느 것이 맞는지\nEvent Agent 가 판단할 근거가 없기** 때문이다. Location Agent 는 위치 데이터만 본다.\n고르는 것은 User Memory 를 가진 Timeline Agent 의 일이므로, 후보를 줄이지 않고\n``places`` 로 전부 넘긴다.\n\n**단수 필드를 두지 않는 것도 같은 이유다.** ``places`` 는 고를 후보(입력)이고, 고른\n결과는 draft 의 ``place``(출력)이다. 후보 단계에 대표값을 하나 더 두면 같은 값이\n두 키로 중복되고, 모델은 둘 중 무엇을 믿어야 하는지 알 수 없다.\n\n근거 요약(``evidenceSummary``)과 의미 태그(``semanticTags``)도 두지 않는다(#114).\n둘 다 ``description`` 과 같은 사실을 다른 모양으로 한 번 더 적는 자리였다. 사진에서\n읽은 상호명이나 일정의 종일 여부처럼 Timeline 이 병합에 쓸 자세한 묘사는\n``description`` 하나에 담는다.",
+        "properties": {
+          "eventType": {
+            "$ref": "#/$defs/EventType"
+          },
+          "timeRange": {
+            "$ref": "#/$defs/CandidateTimeRange"
+          },
+          "title": {
+            "description": "사용자가 읽을 후보 제목",
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "description": {
+            "description": "후보 판단 근거와 해석",
+            "title": "Description",
+            "type": "string"
+          },
+          "places": {
+            "description": "이 후보의 장소가 될 수 있는 이름들. 근거가 확실한 순서로 담긴다. 이동은 도착지 이름만 담는다. 입력에서 그대로 복사된다. Agent 는 비워 둔다.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Places",
+            "type": "array"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "근거 입력에 기록된 정확한 주소. 입력에서 그대로 복사된다. Agent 는 비워 둔다.",
+            "title": "Address"
+          },
+          "sourceRefs": {
+            "description": "후보의 근거 source 참조 목록",
+            "items": {
+              "$ref": "#/$defs/SourceRef"
+            },
+            "minItems": 1,
+            "title": "Sourcerefs",
+            "type": "array"
+          },
+          "confidence": {
+            "description": "후보 확신도. 근거가 약하면 보기 좋게 높이지 않는다.",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "inferenceLevel": {
+            "$ref": "#/$defs/InferenceLevel"
+          },
+          "uncertainty": {
+            "description": "불확실한 이유. UNCERTAIN 후보는 최소 1개 이상 필요하다.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Uncertainty",
+            "type": "array"
+          }
+        },
+        "required": [
+          "eventType",
+          "timeRange",
+          "title",
+          "description",
+          "sourceRefs",
+          "confidence",
+          "inferenceLevel"
+        ],
+        "title": "AiEventCandidate",
+        "type": "object"
+      },
+      "CandidateTimeRange": {
+        "description": "AI Event 후보 또는 단서가 걸쳐 있는 시간 구간.",
+        "properties": {
+          "startTime": {
+            "format": "date-time",
+            "title": "Starttime",
+            "type": "string"
+          },
+          "endTime": {
+            "format": "date-time",
+            "title": "Endtime",
+            "type": "string"
+          }
+        },
+        "required": [
+          "startTime",
+          "endTime"
+        ],
+        "title": "CandidateTimeRange",
+        "type": "object"
+      },
+      "EventSourceType": {
+        "description": "AI Event 후보가 참조하는 근거 source 도메인.",
+        "enum": [
+          "STAY",
+          "MOVEMENT",
+          "CALENDAR",
+          "PHOTO",
+          "SLEEP",
+          "ACTIVITY",
+          "NOTIFICATION"
+        ],
+        "title": "EventSourceType",
+        "type": "string"
+      },
+      "EventType": {
+        "description": "AI Event 후보 종류.",
+        "enum": [
+          "WAKE_UP",
+          "SLEEP",
+          "MOVEMENT",
+          "CALENDAR_EVENT",
+          "MEAL",
+          "PHOTO_MOMENT",
+          "MEETING",
+          "CLASS",
+          "WORK",
+          "EXERCISE",
+          "SOCIAL",
+          "REST",
+          "UNKNOWN"
+        ],
+        "title": "EventType",
+        "type": "string"
+      },
+      "InferenceLevel": {
+        "description": "후보가 만들어진 추론 수준.",
+        "enum": [
+          "DIRECT",
+          "EVIDENCE_BASED",
+          "INFERRED",
+          "UNCERTAIN"
+        ],
+        "title": "InferenceLevel",
+        "type": "string"
+      },
+      "SourceFragment": {
+        "additionalProperties": false,
+        "description": "candidate보다 불확실하지만 하루 event일 가능성이 있는 추측/단서.\n\nSourceFragment는 원본 데이터를 그대로 요약하는 필드가 아니다. 데이터별 Event Agent가\n자기 도메인에서 \"event일 수 있지만 아직 후보로 확정하기에는 근거가 약한\" 단서를\n``rawId``와 짧은 해석으로 남긴다. Timeline Agent는 이 단서를 다른 후보와 함께\n비교해 question, warning, 낮은 confidence event, 또는 보강 근거로 활용한다.",
+        "properties": {
+          "sourceType": {
+            "$ref": "#/$defs/EventSourceType"
+          },
+          "rawId": {
+            "title": "Rawid",
+            "type": "string"
+          },
+          "summary": {
+            "description": "candidate보다 불확실한 하루 event 단서에 대한 짧은 해석",
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          },
+          "timeRange": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CandidateTimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "단서가 걸쳐 있는 시간 정보. 시간 구간이 없으면 생략한다."
+          }
+        },
+        "required": [
+          "sourceType",
+          "rawId",
+          "summary"
+        ],
+        "title": "SourceFragment",
+        "type": "object"
+      },
+      "SourceRef": {
+        "additionalProperties": false,
+        "description": "후보 또는 draft event의 근거 source 참조.",
+        "properties": {
+          "sourceType": {
+            "$ref": "#/$defs/EventSourceType"
+          },
+          "rawId": {
+            "title": "Rawid",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "이 source가 후보 또는 draft event의 근거가 되는 이유",
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "sourceType",
+          "rawId"
+        ],
+        "title": "SourceRef",
+        "type": "object"
+      }
+    },
+    "description": "데이터별 Event Agent 반환 계약.",
+    "properties": {
+      "candidates": {
+        "items": {
+          "$ref": "#/$defs/AiEventCandidate"
+        },
+        "title": "Candidates",
+        "type": "array"
+      },
+      "fragments": {
+        "items": {
+          "$ref": "#/$defs/SourceFragment"
+        },
+        "title": "Fragments",
+        "type": "array"
+      },
+      "warnings": {
+        "items": {
+          "$ref": "#/$defs/AgentWarning"
+        },
+        "title": "Warnings",
+        "type": "array"
+      }
+    },
+    "title": "AgentEventResult",
+    "type": "object"
+  },
+  "AgentEventResult.strict": {
+    "$defs": {
+      "AgentWarning": {
+        "description": "Agent 실행 중 복구 가능한 실패나 누락을 전달하는 경고.",
+        "properties": {
+          "agentName": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agentName",
+          "message"
+        ],
+        "type": "object",
+        "additionalProperties": false
+      },
+      "AiEventCandidate": {
+        "description": "데이터별 Event Agent가 반환하는 AI Event 후보.\n\n후보는 최종 timeline event가 아니다. Timeline Agent가 여러 후보와 단서를 병합하고\n검토해 최종 draft event를 만든다.\n\n``places``/``address`` 는 **Agent 가 채우는 필드가 아니다**(이슈 #72). 코드가\n``sourceRefs`` 로 근거 입력을 찾아 문자열을 그대로 복사한다\n(:func:`app.services.place_resolver.resolve_candidate_places`).\n\nAgent 에게 맡기지 않는 이유는, 한 지점에 장소명이 여럿일 때 **어느 것이 맞는지\nEvent Agent 가 판단할 근거가 없기** 때문이다. Location Agent 는 위치 데이터만 본다.\n고르는 것은 User Memory 를 가진 Timeline Agent 의 일이므로, 후보를 줄이지 않고\n``places`` 로 전부 넘긴다.\n\n**단수 필드를 두지 않는 것도 같은 이유다.** ``places`` 는 고를 후보(입력)이고, 고른\n결과는 draft 의 ``place``(출력)이다. 후보 단계에 대표값을 하나 더 두면 같은 값이\n두 키로 중복되고, 모델은 둘 중 무엇을 믿어야 하는지 알 수 없다.\n\n근거 요약(``evidenceSummary``)과 의미 태그(``semanticTags``)도 두지 않는다(#114).\n둘 다 ``description`` 과 같은 사실을 다른 모양으로 한 번 더 적는 자리였다. 사진에서\n읽은 상호명이나 일정의 종일 여부처럼 Timeline 이 병합에 쓸 자세한 묘사는\n``description`` 하나에 담는다.",
+        "properties": {
+          "eventType": {
+            "$ref": "#/$defs/EventType"
+          },
+          "timeRange": {
+            "$ref": "#/$defs/CandidateTimeRange"
+          },
+          "title": {
+            "description": "사용자가 읽을 후보 제목",
+            "type": "string"
+          },
+          "description": {
+            "description": "후보 판단 근거와 해석",
+            "type": "string"
+          },
+          "places": {
+            "description": "이 후보의 장소가 될 수 있는 이름들. 근거가 확실한 순서로 담긴다. 이동은 도착지 이름만 담는다. 입력에서 그대로 복사된다. Agent 는 비워 둔다.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "근거 입력에 기록된 정확한 주소. 입력에서 그대로 복사된다. Agent 는 비워 둔다."
+          },
+          "sourceRefs": {
+            "description": "후보의 근거 source 참조 목록",
+            "items": {
+              "$ref": "#/$defs/SourceRef"
+            },
+            "type": "array"
+          },
+          "confidence": {
+            "description": "후보 확신도. 근거가 약하면 보기 좋게 높이지 않는다.",
+            "type": "number"
+          },
+          "inferenceLevel": {
+            "$ref": "#/$defs/InferenceLevel"
+          },
+          "uncertainty": {
+            "description": "불확실한 이유. UNCERTAIN 후보는 최소 1개 이상 필요하다.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "eventType",
+          "timeRange",
+          "title",
+          "description",
+          "places",
+          "address",
+          "sourceRefs",
+          "confidence",
+          "inferenceLevel",
+          "uncertainty"
+        ],
+        "type": "object",
+        "additionalProperties": false
+      },
+      "CandidateTimeRange": {
+        "description": "AI Event 후보 또는 단서가 걸쳐 있는 시간 구간.",
+        "properties": {
+          "startTime": {
+            "type": "string"
+          },
+          "endTime": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "startTime",
+          "endTime"
+        ],
+        "type": "object",
+        "additionalProperties": false
+      },
+      "EventSourceType": {
+        "description": "AI Event 후보가 참조하는 근거 source 도메인.",
+        "enum": [
+          "STAY",
+          "MOVEMENT",
+          "CALENDAR",
+          "PHOTO",
+          "SLEEP",
+          "ACTIVITY",
+          "NOTIFICATION"
+        ],
+        "type": "string"
+      },
+      "EventType": {
+        "description": "AI Event 후보 종류.",
+        "enum": [
+          "WAKE_UP",
+          "SLEEP",
+          "MOVEMENT",
+          "CALENDAR_EVENT",
+          "MEAL",
+          "PHOTO_MOMENT",
+          "MEETING",
+          "CLASS",
+          "WORK",
+          "EXERCISE",
+          "SOCIAL",
+          "REST",
+          "UNKNOWN"
+        ],
+        "type": "string"
+      },
+      "InferenceLevel": {
+        "description": "후보가 만들어진 추론 수준.",
+        "enum": [
+          "DIRECT",
+          "EVIDENCE_BASED",
+          "INFERRED",
+          "UNCERTAIN"
+        ],
+        "type": "string"
+      },
+      "SourceFragment": {
+        "additionalProperties": false,
+        "description": "candidate보다 불확실하지만 하루 event일 가능성이 있는 추측/단서.\n\nSourceFragment는 원본 데이터를 그대로 요약하는 필드가 아니다. 데이터별 Event Agent가\n자기 도메인에서 \"event일 수 있지만 아직 후보로 확정하기에는 근거가 약한\" 단서를\n``rawId``와 짧은 해석으로 남긴다. Timeline Agent는 이 단서를 다른 후보와 함께\n비교해 question, warning, 낮은 confidence event, 또는 보강 근거로 활용한다.",
+        "properties": {
+          "sourceType": {
+            "$ref": "#/$defs/EventSourceType"
+          },
+          "rawId": {
+            "type": "string"
+          },
+          "summary": {
+            "description": "candidate보다 불확실한 하루 event 단서에 대한 짧은 해석",
+            "type": "string"
+          },
+          "timeRange": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CandidateTimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "단서가 걸쳐 있는 시간 정보. 시간 구간이 없으면 생략한다."
+          }
+        },
+        "required": [
+          "sourceType",
+          "rawId",
+          "summary",
+          "timeRange"
+        ],
+        "type": "object"
+      },
+      "SourceRef": {
+        "additionalProperties": false,
+        "description": "후보 또는 draft event의 근거 source 참조.",
+        "properties": {
+          "sourceType": {
+            "$ref": "#/$defs/EventSourceType"
+          },
+          "rawId": {
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "이 source가 후보 또는 draft event의 근거가 되는 이유"
+          }
+        },
+        "required": [
+          "sourceType",
+          "rawId",
+          "reason"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "데이터별 Event Agent 반환 계약.",
+    "properties": {
+      "candidates": {
+        "items": {
+          "$ref": "#/$defs/AiEventCandidate"
+        },
+        "type": "array"
+      },
+      "fragments": {
+        "items": {
+          "$ref": "#/$defs/SourceFragment"
+        },
+        "type": "array"
+      },
+      "warnings": {
+        "items": {
+          "$ref": "#/$defs/AgentWarning"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "candidates",
+      "fragments",
+      "warnings"
+    ]
+  }
+}

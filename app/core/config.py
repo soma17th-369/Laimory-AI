@@ -102,7 +102,7 @@ class Settings(BaseSettings):
 
     # 모든 Agent가 함께 사용할 프롬프트 세트 버전. 버전별 파일은 각 Agent의
     # `prompts/{version}/` 아래에 두며, 일부 Agent만 다른 버전을 쓰지 않는다.
-    prompt_version: Literal["v1", "v2", "v3"] = "v1"
+    prompt_version: Literal["v1", "v2", "v3", "v4"] = "v1"
 
     # provider 별 자격 증명/모델.
     # 실제로 사용하는 provider 것만 채우면 되므로 기본값은 빈 값("")이며,
@@ -282,6 +282,11 @@ class Settings(BaseSettings):
     # 없으므로 기동 시점에 실패하는 편이 낫다.
     app_server_api_url: str
 
+    # 입력 조회 API 버전. 입력 조회만 `places` 가 이름+좌표 객체 배열인 v2 로 부르고, 결과 저장·콜백은
+    # `app_server_api_url` 의 버전을 그대로 쓴다(App Server 명세 2026-10-30 — v2 전환 뒤에도 그 경로는
+    # v1 을 써도 된다). 환경마다 전환 시점이 다를 수 있어 설정으로 둔다.
+    app_server_input_api_version: str = "v2"
+
     # App Server API 요청 timeout(초). 입력 조회·결과 저장·콜백·User Memory 결과 저장에
     # 공통 적용한다.
     #
@@ -328,6 +333,14 @@ class Settings(BaseSettings):
             )
 
         return normalized.rstrip("/")
+
+    @field_validator("app_server_input_api_version", mode="before")
+    @classmethod
+    def validate_app_server_input_api_version(cls, value: object) -> str:
+        normalized = str(value or "").strip().lower()
+        if re.fullmatch(r"v\d+", normalized) is None:
+            raise ValueError("APP_SERVER_INPUT_API_VERSION은 v{숫자} 형식이어야 합니다.")
+        return normalized
 
     @field_validator("app_server_max_attempts")
     @classmethod

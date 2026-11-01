@@ -3,6 +3,11 @@
 수집 스냅샷의 `itemType=HEALTH` 를 분리한 뒤의 형태를 정의한다. 같은 HEALTH
 항목이라도 `metric` 으로 걸음 수/수면 등을 구분하며, 지표별로 채워지는 값이
 달라(`value` vs `durationMinutes`) 둘 다 선택 값으로 둔다.
+
+**deprecated(2026-10-29).** 수면·걸음은 더 수집하지 않는다. v4 세트는 HEALTH 를 읽지 않고,
+들어와도 실패하지 않고 무시한다. v1~v3 은 그대로 읽는다(HEALTH 가 비면 Sleep/Activity
+Agent 가 LLM 을 부르지 않는다). 스키마는 추가만 한다는 원칙에 따라 지우지 않고, v3 를
+내릴 때 함께 지운다.
 """
 
 from pydantic import Field

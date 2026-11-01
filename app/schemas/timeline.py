@@ -21,11 +21,25 @@ event 의 ``uncertainty`` 와 Timeline 의 warning 이 대신한다. 사용자�
 """
 
 from enum import Enum
+from typing import Annotated
 
-from pydantic import AliasChoices, AwareDatetime, Field, model_validator
+from pydantic import AliasChoices, AwareDatetime, Field, WithJsonSchema, model_validator
 
 from app.schemas.common import CamelModel
 from app.schemas.event_candidate import EventType, InferenceLevel, SourceRef
+
+#: v4 Timeline 출력의 eventType. `EventType` 의 schema 는 v1~v3 를 위해 13종만 보이므로
+#: 여기서 새 4종을 연다(#172). `UNKNOWN` 은 v4 에서 쓰지 않아 뺀다(#173, 사용자 결정 2026-10-31).
+#: 모델이 내면 확정 pass 가 근거로 종류를 정한다. v4 에서 LLM 이 eventType 을 내는 모델은 이것 하나다.
+_ClueEventType = Annotated[
+    EventType,
+    WithJsonSchema(
+        {
+            "type": "string",
+            "enum": [member.value for member in EventType if member is not EventType.UNKNOWN],
+        }
+    ),
+]
 
 
 class TimelineWarningSeverity(str, Enum):
@@ -95,6 +109,15 @@ class TimelineEventDraft(TimelineAgentEvent):
             "Timeline Agent 의 LLM 출력 계약에는 없다 — Timeline 이 쓰는 값이 아니다."
         ),
     )
+    #: v4 세트(#171)에서 Timeline 이 고른 장소 후보, 우선순위 순서. 확정 pass 가 근거 묶음의
+    #: 장소 후보 풀 밖의 이름을 버리고, 다른 근거로 장소를 확정하면 비운다. v3 이하는 비어 있다.
+    place_candidates: list[str] = Field(default_factory=list, alias="placeCandidates")
+    #: v4 세트(#169)에서 Timeline 이 쓴 "왜 이렇게 묶거나 나눴는지". 내부·관측용이며 Repair v4
+    #: 가 읽는다. 결과 저장 계약에는 나가지 않는다(승인 결정 4).
+    merge_reason: str | None = Field(default=None, alias="mergeReason")
+    #: v4 세트에서 이 event 가 어느 기본 event(`E1`…)에서 왔는지(#169). 기본 event 는 코드가
+    #: 뼈대 구간마다 만든 구조다. 내부·관측용이며 결과 저장 계약에는 나가지 않는다.
+    base_event_ids: list[str] = Field(default_factory=list, alias="baseEventIds")
 
 
 # Backward-compatible export name used by existing imports.
@@ -113,6 +136,69 @@ class TimelineAgentOutput(CamelModel):
     warnings: list[TimelineWarning] = Field(default_factory=list)
 
 
+class TimelineClueEvent(CamelModel):
+    """Timeline v4 가 쓰는 event 한 건. 근거는 묶음·단서 id 로 가리킨다."""
+
+    event_type: _ClueEventType = Field(alias="eventType")
+    title: str = Field(min_length=1)
+    description: str = Field(default="")
+    #: 이 event 가 온 기본 event(`E1`…). 새로 만든 event 는 비어 있다.
+    base_event_ids: list[str] = Field(default_factory=list, alias="from")
+    evidence: list[str] = Field(default_factory=list)
+    start_time: AwareDatetime = Field(alias="startTime")
+    end_time: AwareDatetime = Field(alias="endTime")
+    confidence: float = Field(ge=0.0, le=1.0)
+    inference_level: InferenceLevel = Field(alias="inferenceLevel")
+    uncertainty: list[str] = Field(default_factory=list)
+    merge_reason: str = Field(default="", alias="mergeReason")
+    place_candidates: list[str] = Field(default_factory=list, alias="placeCandidates")
+
+    @model_validator(mode="after")
+    def _validate_range(self) -> "TimelineClueEvent":
+        if self.end_time < self.start_time:
+            raise ValueError("endTime must be greater than or equal to startTime")
+        if not self.base_event_ids and not self.evidence:
+            raise ValueError("event needs a base event (from) or evidence")
+        return self
+
+
+class ConversationDecision(str, Enum):
+    """대화 하나를 어떻게 남기는지."""
+
+    RECORD = "RECORD"
+    SUPPORT = "SUPPORT"
+    LEAVE_OUT = "LEAVE_OUT"
+
+
+class TimelineConversationReview(CamelModel):
+    """대화 하나를 읽고 정한 것."""
+
+    clue_id: str = Field(alias="id", min_length=1)
+    content: str = Field(default="")
+    reason: str = Field(default="")
+    decision: ConversationDecision
+    title: str = Field(default="")
+    description: str = Field(default="")
+
+
+class TimelineClueOutput(CamelModel):
+    """Timeline v4 의 LLM 출력 계약(#169).
+
+    v3 의 `TimelineAgentOutput` 을 고치지 않고 따로 둔다(스키마는 추가만 한다). 근거를 rawId
+    대신 묶음·단서 id 로 가리키고, `place`·`address`·`tags` 를 쓰지 않는다 — 장소는 코드가
+    근거로 정하고 Timeline 은 후보의 순서만 고른다.
+    """
+
+    # `events` 보다 먼저여야 한다(#183). 추론이 꺼진 모델은 출력 말고 생각할 자리가 없어, 대화를 맨 뒤
+    # warning 에서 다루게 두자 event 를 다 쓴 뒤 13개를 한 문장으로 쓸어 담았다. 내용을 쓰고, 이유를 쓰고,
+    # 그다음 정하는 순서도 같은 이유다. User Memory v3 의 `reason` 을 먼저 쓰게 한 것과 같은 방법이다.
+    # 기록할 대화의 글(`title`·`description`)도 여기 쓴다. event 는 코드가 만든다 — `RECORD` 로 정하고도
+    # `events` 에는 쓰지 않는 일이 잦았고, 코드가 만들면 근거가 대화뿐인 것이 처음부터 맞다.
+    conversations: list[TimelineConversationReview] = Field(default_factory=list)
+    events: list[TimelineClueEvent] = Field(default_factory=list)
+    warnings: list[TimelineWarning] = Field(default_factory=list)
+
+
 class TimelineDraft(CamelModel):
     """Top-level daily timeline draft shown to the user for review."""
 
@@ -121,3 +207,6 @@ class TimelineDraft(CamelModel):
     timezone: str = Field(min_length=1)
     events: list[TimelineEventDraft] = Field(default_factory=list)
     warnings: list[TimelineWarning] = Field(default_factory=list)
+    # Timeline v4 가 대화마다 정한 것(#183). 확정 pass 와 Repair 만 읽는다. dump 에 넣지 않는다 — v3 의
+    # Repair 프롬프트가 draft 를 그대로 싣고, 결과 저장 계약에도 없는 값이다.
+    conversation_reviews: list[TimelineConversationReview] = Field(default_factory=list, exclude=True)

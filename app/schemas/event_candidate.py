@@ -7,11 +7,17 @@
 
 from enum import Enum
 
-from pydantic import AwareDatetime, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.common import CamelModel, RawId
 
 
+# 값을 더해도 v1~v3 의 provider schema 는 한 글자도 달라지면 안 된다(#172). 그 세트의 프롬프트는
+# 13종만 말하고, 운영 세트이며, App Server 는 13종 밖의 값을 받으면 task 를 FAILED 로 만든다.
+# 그래서 enum 의 JSON schema 는 언제나 13종을 보이고(`__get_pydantic_json_schema__`), v4 출력
+# 모델(`TimelineClueEvent`)만 새 4종을 연다. 필드를 좁히지 않는 것은 draft·결과·guard 가 세트와
+# 상관없이 이 enum 하나를 쓰기 때문이다. LLM 이 적어 낸 값은 v1~v3 의 입구에서 따로 거절한다.
+# 아래 docstring 은 schema 로 provider 에 나가므로 고치면 v3 schema 가 달라진다.
 class EventType(str, Enum):
     """AI Event 후보 종류."""
 
@@ -28,6 +34,28 @@ class EventType(str, Enum):
     SOCIAL = "SOCIAL"
     REST = "REST"
     UNKNOWN = "UNKNOWN"
+    STAY = "STAY"
+    SHOPPING = "SHOPPING"
+    CULTURE = "CULTURE"
+    ERRAND = "ERRAND"
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema, handler):
+        schema = handler(core_schema)
+        handler.resolve_ref_schema(schema)["enum"] = [
+            member.value for member in cls if member in PRE_CLUE_EVENT_TYPES
+        ]
+        return schema
+
+
+#: v1~v3 세트가 낼 수 있는 타입. App Server 가 지금 받는 값이기도 하다.
+#: 세트의 경계는 `prompt_loader.PRE_CLUE_PROMPT_VERSIONS` 와 같다.
+PRE_CLUE_EVENT_TYPES = frozenset(EventType) - {
+    EventType.STAY,
+    EventType.SHOPPING,
+    EventType.CULTURE,
+    EventType.ERRAND,
+}
 
 
 class EventSourceType(str, Enum):
@@ -134,6 +162,14 @@ class AiEventCandidate(CamelModel):
         default_factory=list,
         description="불확실한 이유. UNCERTAIN 후보는 최소 1개 이상 필요하다.",
     )
+
+    @field_validator("event_type")
+    @classmethod
+    def _reject_type_outside_the_set(cls, value: EventType) -> EventType:
+        # candidate 는 v1~v3 만 만든다. 13종 밖의 값은 모르는 문자열과 똑같이 검증 실패다.
+        if value not in PRE_CLUE_EVENT_TYPES:
+            raise ValueError(f"unknown eventType: {value.value}")
+        return value
 
     @model_validator(mode="after")
     def _validate_inference(self) -> "AiEventCandidate":

@@ -15,6 +15,7 @@ from app.schemas.event_candidate import (
     EventSourceType,
     EventType,
     InferenceLevel,
+    PRE_CLUE_EVENT_TYPES,
     SourceFragment,
     SourceRef,
 )
@@ -37,8 +38,12 @@ from app.schemas.source_snapshot import (
 )
 from app.schemas.task import TaskStatus, TimelineCallbackPayload
 from app.schemas.timeline import (
+    ConversationDecision,
     TimelineAgentEvent,
     TimelineAgentOutput,
+    TimelineClueEvent,
+    TimelineClueOutput,
+    TimelineConversationReview,
     TimelineDraft,
     TimelineDraftEvent,
     TimelineEventDraft,
@@ -51,7 +56,11 @@ from app.schemas.timeline_input import (
     TimelineInputWindow,
 )
 from app.schemas.timeline_request import TimelineDraftRequest, TimeWindow
-from app.schemas.timeline_result import TimelineResultEvent, TimelineResultRequest
+from app.schemas.timeline_result import (
+    PlaceCandidate,
+    TimelineResultEvent,
+    TimelineResultRequest,
+)
 from app.schemas.user_memory import UserMemory
 from app.schemas.user_memory_update import (
     DailyTimeline,
@@ -82,9 +91,11 @@ __all__ = [
     "ItemType",
     "Latitude",
     "Longitude",
+    "PRE_CLUE_EVENT_TYPES",
     "MovementItem",
     "NotificationItem",
     "PhotoItem",
+    "PlaceCandidate",
     "RepairIssue",
     "RepairPlan",
     "RepairToolCall",
@@ -97,6 +108,10 @@ __all__ = [
     "TimelineAgentEvent",
     "TimelineAgentOutput",
     "TimelineCallbackPayload",
+    "ConversationDecision",
+    "TimelineClueEvent",
+    "TimelineClueOutput",
+    "TimelineConversationReview",
     "TimelineDraft",
     "TimelineDraftEvent",
     "TimelineDraftRequest",

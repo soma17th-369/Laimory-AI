@@ -56,6 +56,8 @@ from app.schemas.user_memory import (
     CUSTOM_ATTRIBUTE_MAX_LENGTH,
     NARRATIVE_FIELDS,
     NARRATIVE_MAX_LENGTH,
+    PLACE_LIST_FIELD,
+    PLACE_NAME_MAX_LENGTH,
     UserMemory,
     UserMemoryChange,
     UserMemoryChangeAction,
@@ -67,6 +69,7 @@ from app.schemas.user_memory_update import (
     DailyTimelineEvent,
 )
 from app.services.notification_guard import SENSITIVE_PATTERNS
+from app.services.place_text import normalize_place_text
 
 #: 갱신본 전체의 직렬화 문자 수 상한(#121 에서 1,200 → 5,000).
 #:
@@ -447,6 +450,30 @@ def _has_sensitive_value(text: str) -> bool:
     return any(pattern.search(text) for _, pattern in SENSITIVE_PATTERNS)
 
 
+def add_places(memory: UserMemory, names: list[str]) -> tuple[UserMemory, int]:
+    """이번 기록의 장소 이름을 리스트 뒤에 잇는다(#181). (새 문서, 뺀 이름 수)를 돌려준다.
+
+    이미 있는 이름은 더하지 않는다. 띄어쓰기만 다른 이름도 같은 이름이다(후보와 견줄 때와 같은
+    정규화). 지점이 다르면 글자가 달라 다른 이름이다. 빈 이름은 세지 않고, 길이를 넘거나 민감한
+    값이 있는 이름은 뺀다. 리스트의 길이는 제한하지 않는다.
+    """
+
+    kept = list(memory.notable_places)
+    seen = {normalize_place_text(name) for name in kept}
+    dropped = 0
+    for raw in names:
+        name = raw.strip()
+        key = normalize_place_text(name)
+        if not key or key in seen:
+            continue
+        if len(name) > PLACE_NAME_MAX_LENGTH or _has_sensitive_value(name):
+            dropped += 1
+            continue
+        kept.append(name)
+        seen.add(key)
+    return memory.model_copy(update={"notable_places": kept}), dropped
+
+
 #: 항목 값이 길이 제한에 이만큼 가까우면 갱신 요청에서 알린다.
 ITEM_LIMIT_MARGIN = 100
 
@@ -627,6 +654,7 @@ def _sensitive_hits(memory: UserMemory) -> list[tuple[str, str]]:
         for key, value in memory.custom_attributes.items()
         if value
     )
+    texts.extend((PLACE_LIST_FIELD, name) for name in memory.notable_places)
 
     return [
         (field, label)

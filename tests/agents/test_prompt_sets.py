@@ -1,4 +1,4 @@
-"""프롬프트 세트(v1/v2/v3)의 완전성과 버전별 Agent 구조 계약 (#56, #114).
+"""프롬프트 세트(v1/v2/v3/v4)의 완전성과 버전별 Agent 구조 계약 (#56, #114).
 
 `load_prompt` 는 요청한 파일이 없으면 다른 버전으로 대체하지 않고 실패한다. 그래서
 어떤 버전이든 그 버전을 쓰는 Agent 가 읽는 파일이 **모두** 있어야 기동한다. 파일 하나가
@@ -28,12 +28,19 @@ _REQUIRED_PROMPTS: dict[str, dict[str, set[str]]] = {
         "v1": {"timeline.md"},
         "v2": {"timeline.md"},
         "v3": {"timeline.md"},
+        "v4": {"timeline.md"},
     },
-    "agents/repair": {"v1": {"prompt.md"}, "v2": {"prompt.md"}, "v3": {"prompt.md"}},
+    "agents/repair": {
+        "v1": {"prompt.md"},
+        "v2": {"prompt.md"},
+        "v3": {"prompt.md"},
+        "v4": {"prompt.md"},
+    },
     "agents/question": {
         "v1": {"question.md"},
         "v2": {"question.md"},
         "v3": {"question.md"},
+        "v4": {"question.md"},
     },
     # User Memory 갱신(#64)은 타임라인 파이프라인 밖이지만 `PROMPT_VERSION` 은 전역이라
     # 모든 세트가 있어야 한다. 없는 버전으로 기동하면 import 시점에 죽는다.
@@ -41,27 +48,35 @@ _REQUIRED_PROMPTS: dict[str, dict[str, set[str]]] = {
         "v1": {"prompt.md"},
         "v2": {"prompt.md"},
         "v3": {"prompt.md"},
+        "v4": {"prompt.md"},
     },
     "agents/events/calendar": {
         "v1": {"prompt.md"},
         "v2": {"prompt.md"},
         "v3": {"prompt.md"},
+        # v4 는 일정 단서를 코드가 만든다(#168). 프롬프트가 없다.
+        "v4": set(),
     },
     "agents/events/notification": {
         "v1": {"prompt.md"},
         "v2": {"prompt.md"},
         "v3": {"prompt.md"},
+        "v4": {"prompt.md"},
     },
     "agents/events/location": {
         # review.md 는 v1 전용이다.
         "v1": {"prompt.md", "review.md"},
         "v2": {"prompt.md"},
         "v3": {"prompt.md"},
+        # v4 는 위치 뼈대를 코드가 만든다(#167). 프롬프트가 없다.
+        "v4": set(),
     },
     "agents/events/sleep_activity": {
         "v1": {"prompt.md", "review.md"},
         "v2": {"prompt.md"},
         "v3": {"prompt.md"},
+        # 수면·걸음은 더 수집하지 않아 v4 는 이 Agent 를 부르지 않는다.
+        "v4": set(),
     },
     "agents/events/photo": {
         # 두 파일 다 버전 무관 필수다(#59). 모든 사진이 describe_vision_prompt.md 로
@@ -69,13 +84,14 @@ _REQUIRED_PROMPTS: dict[str, dict[str, set[str]]] = {
         "v1": {"prompt.md", "describe_prompt.md", "describe_vision_prompt.md"},
         "v2": {"prompt.md", "describe_prompt.md", "describe_vision_prompt.md"},
         "v3": {"prompt.md", "describe_prompt.md", "describe_vision_prompt.md"},
+        "v4": {"prompt.md", "describe_prompt.md", "describe_vision_prompt.md"},
     },
 }
 
-_VERSIONS = ("v1", "v2", "v3")
+_VERSIONS = ("v1", "v2", "v3", "v4")
 
 #: review 단계 없이 단일 structured 호출로 가는 버전(#56).
-_SINGLE_CALL_VERSIONS = ("v2", "v3")
+_SINGLE_CALL_VERSIONS = ("v2", "v3", "v4")
 
 
 @pytest.mark.parametrize("version", _VERSIONS)
@@ -92,6 +108,19 @@ def test_prompt_set_has_every_file_the_agent_loads(agent_dir: str, version: str)
         f"{agent_dir} 의 {version} 세트에 {sorted(missing)} 이(가) 없습니다. "
         f"load_prompt 는 다른 버전으로 대체하지 않으므로 PROMPT_VERSION={version} 기동이 실패합니다."
     )
+
+
+@pytest.mark.parametrize(
+    "agent_dir",
+    ["agents/events/calendar", "agents/events/location", "agents/events/sleep_activity"],
+)
+def test_v4_has_no_prompt_for_agents_replaced_by_code(agent_dir: str) -> None:
+    """v4 는 위치·일정을 코드로 만들고 수면·걸음은 다루지 않는다(#167·#168).
+
+    이 세 Agent 의 v4 프롬프트가 생기면 v4 가 아직 그 Agent 를 부르는 것처럼 읽힌다.
+    """
+
+    assert not (APP_ROOT / agent_dir / "prompts" / "v4").exists()
 
 
 @pytest.mark.parametrize("version", _VERSIONS)

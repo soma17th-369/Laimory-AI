@@ -21,17 +21,23 @@ event 를 따로 만든다" 를 안내하고, 이 모듈이 draft repair 단계�
     - 시점 근거가 없는 `MEAL` 은 **길이와 무관하게** `confidence` 를 0.6 이하로 묶는다
       (#118). 식사 시각을 특정할 근거가 없다는 뜻이기 때문이다. 캘린더만 근거인
       식사도 여기 든다 — 일정은 계획이지 먹은 시점이 아니다.
+    - 예외(v4 세트, #184): **식사 일정 그대로인 식사**는 길이를 고치지 않는다
+      (`is_calendar_meal`). 시간은 일정이 정한다 — 12:00~13:30 점심 약속을 60분으로 자르면
+      일정과 어긋난다. 그 일정이 식사 약속인지는 Timeline·Repair 가 판단하고, 코드는 event 의
+      시간이 근거로 댄 일정의 시간과 같은지만 본다.
 
 조정한 event 에는 `uncertainty` 를 남기고, 시간을 바꾼 것은 draft `warnings` 로 알린다.
 이 가드는 요청 window 검증 **앞**에서 돌아, 늘어난 시간의 최종 경계는 window 검증이 정한다.
 """
 
+import re
 from datetime import datetime, timedelta, tzinfo
 
 from app.core.logging import get_logger
 from app.schemas import (
     EventSourceType,
     EventType,
+    SourceRef,
     TimelineDraft,
     TimelineDraftRequest,
     TimelineEventDraft,
@@ -213,16 +219,51 @@ def is_stay_meal(event: TimelineEventDraft, request: TimelineDraftRequest) -> bo
     )
 
 
+def follows_calendar(
+    start: datetime, end: datetime, refs: list[SourceRef], request: TimelineDraftRequest
+) -> bool:
+    """이 시간이 근거로 댄 일정의 시간 그대로인가(#184, v4 세트).
+
+    일정이 시간을 정한 event 와 일정의 일부를 나눈 조각을 가른다.
+    """
+
+    tz = resolve_timezone(request.timezone)
+    cited = {ref.raw_id for ref in refs if ref.source_type is EventSourceType.CALENDAR}
+    for item in request.calendars:
+        if raw_id_of(item) not in cited:
+            continue
+        calendar_start = parse_datetime(item.start_at, tz)
+        calendar_end = parse_datetime(item.end_at, tz)
+        if calendar_start is None or calendar_end is None:
+            continue
+        if (
+            abs(start - calendar_start) <= _STAY_TOLERANCE
+            and abs(end - calendar_end) <= _STAY_TOLERANCE
+        ):
+            return True
+    return False
+
+
+def is_calendar_meal(event: TimelineEventDraft, request: TimelineDraftRequest) -> bool:
+    """식사 일정 그대로인 `MEAL` 인가(#184, v4 세트)."""
+
+    return event.event_type is EventType.MEAL and follows_calendar(
+        event.start_time, event.end_time, event.source_refs, request
+    )
+
+
 def enforce_meal_duration(
     draft: TimelineDraft,
     request: TimelineDraftRequest,
     *,
     allow_stay_meal: bool = False,
+    keep_calendar_meal: bool = False,
 ) -> None:
     """draft 의 `MEAL` event 지속시간을 20~60분으로 강제한다(in-place).
 
     `allow_stay_meal` 이면(v3 세트) 식당에 머문 식사(`is_stay_meal`)는 60분을 넘어도
-    그대로 둔다. 시점 근거가 없는 식사는 길이가 범위 안이어도 confidence 를 묶는다(#118).
+    그대로 둔다. `keep_calendar_meal` 이면(v4 세트) 식사 일정 그대로인 식사의 길이를 고치지
+    않는다(#184). 시점 근거가 없는 식사는 길이가 범위 안이어도 confidence 를 묶는다(#118).
     """
 
     tz = resolve_timezone(request.timezone)
@@ -235,7 +276,9 @@ def enforce_meal_duration(
 
         moments = _event_anchors(event, anchors, tz)
         before = event.end_time - event.start_time
-        if before > MEAL_MAX_DURATION and not (
+        if keep_calendar_meal and is_calendar_meal(event, request):
+            pass
+        elif before > MEAL_MAX_DURATION and not (
             allow_stay_meal and is_stay_meal(event, request)
         ):
             _shrink(event, moments)
@@ -271,6 +314,34 @@ def enforce_meal_duration(
 
 
 #: 식사가 있었다고 말해 주는 근거의 종류. 시점 근거(`_anchor_times`)와 같은 둘이다.
+#: 식사가 아닌 긴 event 의 식사 표현을 `먹고 시간을 보냈다` 꼴로 바꾼다.
+_LONG_STAY_MEAL_WORDS = (
+    (re.compile(r"먹으며"), "먹고"),
+    (re.compile(r"식사하며"), "식사하고"),
+    (re.compile(r"먹었다\.?$"), "먹고 시간을 보냈다."),
+    (re.compile(r"식사했다\.?$"), "식사하고 시간을 보냈다."),
+)
+
+
+def word_long_stay_meals(draft: TimelineDraft) -> None:
+    """식사 사진을 품은 긴 체류의 문장을 `점심을 먹고 시간을 보냈다` 꼴로 맞춘다(in-place, v4).
+
+    "긴 체류에 사진을 넣는 것은 좋아 근데 문장 구성을 점심을 먹고 시간을 보냈다 이런 식으로 하라니까"
+    (사용자 결정 2026-10-31). `점심을 먹었다` 로 두면 7시간 전체가 점심으로 읽힌다. 식당에 머문 `MEAL` 은 그
+    시간이 식사라 `먹었다` 그대로이고(#163), 일정 event 는 일정을 말하는 문장이라 건드리지 않는다.
+    """
+
+    for event in draft.events:
+        if (
+            event.event_type is EventType.MEAL
+            or event.end_time - event.start_time <= MEAL_MAX_DURATION
+            or any(ref.source_type is EventSourceType.CALENDAR for ref in event.source_refs)
+        ):
+            continue
+        for pattern, replacement in _LONG_STAY_MEAL_WORDS:
+            event.description = pattern.sub(replacement, event.description)
+
+
 _MEAL_EVIDENCE = (EventSourceType.PHOTO, EventSourceType.NOTIFICATION)
 
 

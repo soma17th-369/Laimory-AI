@@ -41,6 +41,8 @@ from app.agents.parsing import SupportsComplete, default_llm, user_memory_to_tex
 from app.agents.prompt_loader import load_prompt, uses_legacy_contract
 from app.agents.repair.tools import (
     RepairContext,
+    clue_evidence_text,
+    dropped_notification_ids,
     confirm_report_text,
     event_evidence_text,
     execute_tool_calls,
@@ -66,6 +68,7 @@ from app.schemas import (
     TimelineWarning,
     TimelineWarningSeverity,
 )
+from app.services.clue_bundles import TimelineClues
 from app.services.confirm_report import ConfirmReport
 from app.services.draft_repair import repair_draft
 from app.services.fragment_guard import verify_fragment_usage
@@ -108,6 +111,14 @@ def parse_repair_plan(text: str) -> RepairPlan:
 _EXTENDED_INPUT = not uses_legacy_contract()
 
 
+def _writing_left(ctx: RepairContext) -> bool:
+    """마지막 확정이 Repair 에 맡긴 글이 남았는가(v4). 코드는 글을 쓰지 않아 Repair 가 마지막 기회다."""
+
+    return bool(ctx.reports) and any(
+        finding["kind"] in ("EVENT_TO_WRITE", "TEXT_CORRECTION") for finding in ctx.reports[-1].findings
+    )
+
+
 def build_repair_prompt(ctx: RepairContext, remaining: int) -> str:
     """분석 요청(user prompt): 확정된 draft + 근거 원본 + 도구 + 지금까지의 실행 로그.
 
@@ -130,6 +141,22 @@ def build_repair_prompt(ctx: RepairContext, remaining: int) -> str:
             f"[지금까지 실행한 도구]\n{tool_log_text(ctx)}\n\n"
             f"[남은 반복 횟수] 이번 차례를 포함해 {remaining}번\n\n"
             "이 draft 의 문제를 근거 원본과 대조해 찾고, 고칠 도구 호출 계획을 JSON 으로 내세요. "
+            "고칠 것이 없으면 done 을 true 로 하고 toolCalls 를 비웁니다."
+        )
+
+    if ctx.clues is not None:
+        # v4(#169): 근거는 candidate 대신 근거 묶음과 단서이고, Timeline 의 병합 이유가 붙는다.
+        return (
+            f"[draft]\n{draft_text}\n\n"
+            f"[자동 검사 결과]\n{confirm_report_text(ctx)}\n\n"
+            f"[event 근거]\n{clue_evidence_text(ctx)}\n\n"
+            f"[user memory]\n{user_memory_to_text(ctx.request.user_memory)}\n\n"
+            f"[근거 원본]\n{source_index_text(ctx.request, hidden=dropped_notification_ids(ctx))}\n\n"
+            f"[사용 가능한 도구]\n{tool_catalog_text(ctx)}\n\n"
+            f"[지금까지 실행한 도구]\n{tool_log_text(ctx)}\n\n"
+            f"[남은 반복 횟수] 이번 차례를 포함해 {remaining}번\n\n"
+            "코드가 고친 것과 찾은 것을 먼저 읽고, 어색해진 내용과 문장을 다듬고 남은 검사 "
+            "결과를 해소할 도구 호출 계획을 JSON 으로 내세요. "
             "고칠 것이 없으면 done 을 true 로 하고 toolCalls 를 비웁니다."
         )
 
@@ -228,6 +255,7 @@ def _confirm(ctx: RepairContext) -> None:
         extended=ctx.extended,
         issued_ids=ctx.issued_ids,
         candidates=_candidates(ctx),
+        clues=ctx.clues,
     )
     ctx.reports.append(report)
     # 확정된 event 를 대상으로 본다. 병합·삭제로 구성이 바뀐 뒤라야 "이 event 의 근거가
@@ -279,6 +307,7 @@ class RepairAgent(Agent):
         event_agents: dict[str, EventAgent] | None = None,
         timeline_agent: TimelineAgent | None = None,
         on_confirm: Callable[[TimelineDraft], None] | None = None,
+        clues: TimelineClues | None = None,
     ) -> TimelineDraft:
         """확정·개선을 마친 최종 `TimelineDraft` 를 돌려준다.
 
@@ -292,6 +321,8 @@ class RepairAgent(Agent):
             on_confirm: 확정된 draft 복사본을 받을 콜백(이슈 #76). 매 확정마다 불린다.
                 호출자가 제한 시간으로 이 실행을 취소해도 마지막 확정본을 저장할 수 있게
                 하는 통로다.
+            clues: v4 세트의 근거 묶음(#169). 주면 v4 계약으로 돈다 — 확정 pass 가 장소
+                칸을 확정하고, Repair 는 묶음·단서와 병합 이유를 근거로 읽는다.
 
         `event_results` 와 `event_agents` 는 **같은 이름 키**를 써야 한다. 이름이
         어긋나면 다시 돌린 Agent 의 결과가 이전 결과를 대체하지 못하고 나란히 쌓여,
@@ -310,6 +341,7 @@ class RepairAgent(Agent):
                 if self._extended_input is None
                 else self._extended_input
             ),
+            clues=clues,
         )
 
         # LLM 이 무엇을 하든, 코드 확정은 반드시 한 번은 지나간다.
@@ -545,7 +577,10 @@ class RepairAgent(Agent):
             return "execute" if state["plan"].tool_calls else END
 
         def after_execute(state: _State) -> str:
-            if state["plan"].done or state["iteration"] >= max_iterations:
+            if state["iteration"] >= max_iterations:
+                return END
+            # 마지막 확정이 글을 맡긴 event 를 만들었으면 `done` 이어도 한 번 더 쓴다.
+            if state["plan"].done and not _writing_left(ctx):
                 return END
             return "analyze"
 

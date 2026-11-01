@@ -273,7 +273,7 @@ def test_question_failure_keeps_the_timeline():
     """질문 생성이 깨져도 타임라인은 그대로 남고 warning 만 붙는다."""
 
     class _BoomQuestionAgent(QuestionAgent):
-        def generate(self, request, draft):
+        def generate(self, request, draft, clues=None):
             raise RuntimeError("의도된 실패")
 
     draft = asyncio.run(

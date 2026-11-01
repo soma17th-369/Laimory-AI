@@ -27,25 +27,32 @@ PHOTO 의 장소는 안 들어올 수 있고, 그때는 그냥 후보를 내놓�
 """
 
 import json
-from collections.abc import Callable, Iterator
+import re
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
+from datetime import timedelta, tzinfo
 from typing import Any
 
 from app.core.logging import get_logger
 from app.schemas import (
     AgentEventResult,
     CalendarItem,
+    EventSourceType,
+    EventType,
     MovementItem,
     PhotoItem,
     SourceRef,
     StayItem,
     TimelineDraft,
     TimelineDraftRequest,
+    TimelineEventDraft,
     TimelineWarning,
     TimelineWarningSeverity,
 )
+from app.services.location_metrics import SAME_PLACE_MAX_METERS, distance_between
 from app.services.place_text import normalize_place_text, place_text_contains
 from app.services.source_lookup import raw_id_of
+from app.services.validator import parse_datetime
 
 logger = get_logger(__name__)
 
@@ -110,6 +117,64 @@ def _collect(request: TimelineDraftRequest) -> _Evidence:
             if (identifier := raw_id_of(item))
         },
     )
+
+
+#: 읍·면·동·리·가 어절. 지번 주소에 있다.
+_NEIGHBORHOOD_TOKEN = re.compile(r"(?:^|\s)[가-힣][가-힣0-9]*(?:동|리|가|읍|면)(?=\s|$)")
+
+
+def same_place_addresses(request: TimelineDraftRequest, tz: tzinfo) -> dict[str, str]:
+    """하루 안에서 같은 장소의 주소를 하나로 맞춘 표. 키는 입력의 주소, 값은 그 장소의 주소다.
+
+    같은 장소는 사용자가 정한 거리 기준(250m 이내, `SAME_PLACE_MAX_METERS`)으로 본다. 같은 건물이
+    지점마다 다른 주소로 온다 — 사진은 도로명(`마포대로 89`), 체류는 지번(`도화동 17-14`)이고 체류
+    기록끼리도 번지가 다르다. 그대로 두면 같은 사무실이 오전과 오후에 다른 주소·지명으로 나온다.
+    그 장소의 주소는 동이 있는 주소(지번)이고, 여럿이면 가장 오래 머문 쪽이다. 지번이 없으면 가장
+    오래 머문 지점의 주소다. 이 표는 주소 데이터만 맞추고, 문장은 Timeline 이 쓴다(사용자 결정
+    2026-10-29).
+    """
+
+    evidence = _collect(request)
+    points: list[tuple[float, str, tuple[float, float]]] = []
+    for stay in evidence.stays.values():
+        start = parse_datetime(stay.start_at, tz)
+        end = parse_datetime(stay.end_at, tz) if stay.end_at else start
+        weight = (end - start).total_seconds() if start and end else 0.0
+        points.append((weight, stay.address, (stay.latitude, stay.longitude)))
+    for movement in evidence.movements.values():
+        for spot in (movement.start, movement.end):
+            if spot is not None:
+                points.append((0.0, spot.address, (spot.latitude, spot.longitude)))
+    for photo in evidence.photos.values():
+        points.append((0.0, photo.address, (photo.latitude, photo.longitude)))
+
+    # 1) 지점을 같은 장소로 묶는다. 가장 오래 머문 지점이 묶음의 기준점이다.
+    groups: list[tuple[tuple[float, float], list[tuple[float, str]]]] = []
+    for weight, address, point in sorted(points, key=lambda item: -item[0]):
+        if not is_exact_address(address) or point[0] is None or point[1] is None:
+            continue
+        group = next(
+            (
+                members
+                for anchor_point, members in groups
+                if (distance := distance_between(point, anchor_point)) is not None
+                and distance <= SAME_PLACE_MAX_METERS
+            ),
+            None,
+        )
+        if group is None:
+            groups.append((point, []))
+            group = groups[-1][1]
+        group.append((weight, address.strip()))
+    # 2) 묶음의 주소는 동이 있는 주소(지번)를 먼저 고른다 — 제목의 지명이 `도화동` 이지 `마포대로`
+    #    가 아니다(사용자 결정). 지번이 여럿이면 오래 머문 쪽, 없으면 기준점의 주소다.
+    table: dict[str, str] = {}
+    for _, members in groups:
+        jibun = [address for _, address in members if _NEIGHBORHOOD_TOKEN.search(address)]
+        chosen = jibun[0] if jibun else members[0][1]
+        for _, address in members:
+            table.setdefault(address, chosen)
+    return table
 
 
 def is_vague_place_label(label: str | None) -> bool:
@@ -438,6 +503,41 @@ def resolve_candidate_places(
     )
 
 
+#: 긴 이름에서 짧은 이름을 뺀 나머지가 이 모양이면 같은 건물의 다른 표기다
+#: (`동백호수공원 두산위브더제니스` / `동백호수공원두산위브더제니스아파트 106동`). 나머지가
+#: `카페`·`주차장` 처럼 다른 장소를 가리키면 둘 다 남긴다(`신라스테이 마포 카페`).
+_UNIT_SUFFIX = re.compile(r"^(아파트|빌라|오피스텔)?(\d+(동|호|층))?$")
+
+
+def unique_place_names(values: Iterable[str | None]) -> list[str]:
+    """장소 후보 이름을 순서를 지키며 정리한다(#167, #171).
+
+    `_unique_labels` 처럼 정규화가 같은 이름과 얼버무림을 빼고, 한 이름이 다른 이름에 건물
+    표기(`아파트`, `106동`)만 더한 것이면 짧은 쪽 하나만 남긴다. 짧은 쪽이 먼저 나왔든
+    나중에 나왔든 먼저 나온 자리에 둔다.
+    """
+
+    kept: list[str] = []
+    for label in _unique_labels(iter(values)):
+        key = normalize_place_text(label)
+        for index, existing in enumerate(kept):
+            existing_key = normalize_place_text(existing)
+            if _is_unit_variant(key, existing_key):
+                break
+            if _is_unit_variant(existing_key, key):
+                kept[index] = label
+                break
+        else:
+            kept.append(label)
+    return kept
+
+
+def _is_unit_variant(longer: str, shorter: str) -> bool:
+    if longer == shorter or not longer.startswith(shorter):
+        return False
+    return bool(_UNIT_SUFFIX.match(longer[len(shorter) :]))
+
+
 def _unique_labels(values: Iterator[str | None]) -> list[str]:
     """장소명 후보를 순서를 지키며 디듀프한다. 얼버무림과 빈 값은 뺀다."""
 
@@ -453,6 +553,181 @@ def _unique_labels(values: Iterator[str | None]) -> list[str]:
         seen.add(key)
         labels.append(stripped)
     return labels
+
+
+@dataclass(frozen=True)
+class Coordinates:
+    """event 의 대표 지점 좌표."""
+
+    latitude: float
+    longitude: float
+
+
+@dataclass(frozen=True)
+class _Point:
+    """좌표를 가진 근거 지점 하나와 그 지점의 이름·주소."""
+
+    coordinates: Coordinates
+    address: str | None
+    names: tuple[str, ...]
+
+
+def representative_coordinates(
+    event: TimelineEventDraft, request: TimelineDraftRequest, tz: tzinfo
+) -> Coordinates | None:
+    """event 의 대표 지점 좌표를 최종 `sourceRefs` 로 입력에서 찾는다(#175).
+
+    대표 지점은 사용자가 실제로 있던 곳이다. 이동 event 는 마지막 이동의 **도착 지점**이고,
+    도착지에 좌표가 없으면 경유지로 넘어가지 않고 비운다(장소·주소와 같은 원칙). 그 밖에는
+    event 의 `address`·`place` 와 같은 지점을 고른다. 좌표가 장소·주소와 다른 곳을 가리키지
+    않게 하려는 것이다. 그래서 `address` 가 있는데 맞는 지점이 없으면 좌표도 없다.
+    둘 다 없으면 가장 오래 머문 체류, 그다음 이동 도착지, 사진 순이다. `PHOTO_MOMENT` 는
+    사진 지점을 먼저 본다.
+
+    좌표는 결과를 만드는 순간 계산하므로 프롬프트에 실리는 경로가 없다(#80).
+    """
+
+    evidence = _collect(request)
+    refs = event.source_refs
+    if event.event_type is EventType.MOVEMENT:
+        movements = list(_referenced(refs, evidence.movements))
+        if movements:
+            last = max(movements, key=lambda item: _sort_time(item.end_at or item.start_at, tz))
+            return _coordinates_of(last.end.latitude, last.end.longitude) if last.end else None
+
+    points = _event_points(
+        event, evidence, tz, photo_first=event.event_type is EventType.PHOTO_MOMENT
+    )
+    if event.address:
+        # 같은 장소의 주소로 맞춘 event(v4)는 그 주소의 지점이 이 event 의 근거 밖에 있을 수 있다.
+        return _matching_address(points, event.address) or _matching_address(
+            _event_points(_all_refs_event(event, evidence), evidence, tz, photo_first=False),
+            event.address,
+        )
+    if event.place and not is_vague_place_label(event.place):
+        key = normalize_place_text(event.place)
+        for point in points:
+            if any(normalize_place_text(name) == key for name in point.names):
+                return point.coordinates
+    return points[0].coordinates if points else None
+
+
+def _all_refs_event(event: TimelineEventDraft, evidence: _Evidence) -> TimelineEventDraft:
+    """그날의 모든 체류·이동·사진을 근거로 가진 것처럼 본 event. 지점을 찾는 데만 쓴다."""
+
+    refs = [
+        SourceRef(source_type=source_type, raw_id=raw_id)
+        for source_type, items in (
+            (EventSourceType.STAY, evidence.stays),
+            (EventSourceType.MOVEMENT, evidence.movements),
+            (EventSourceType.PHOTO, evidence.photos),
+        )
+        for raw_id in items
+    ]
+    return event.model_copy(update={"source_refs": refs})
+
+
+def _event_points(
+    event: TimelineEventDraft, evidence: _Evidence, tz: tzinfo, *, photo_first: bool
+) -> list[_Point]:
+    refs = event.source_refs
+    stays = stays_by_overlap(list(_referenced(refs, evidence.stays)), event, tz)
+    stay_points = [
+        _Point(coordinates, stay.address, tuple(name for name in _stay_places(stay) if name))
+        for stay in stays
+        if (coordinates := _coordinates_of(stay.latitude, stay.longitude))
+    ]
+    arrival_points = [
+        _Point(
+            coordinates,
+            movement.end.address,
+            tuple(name for name in _movement_places(movement) if name),
+        )
+        for movement in _referenced(refs, evidence.movements)
+        if movement.end
+        and (coordinates := _coordinates_of(movement.end.latitude, movement.end.longitude))
+    ]
+    photo_points = [
+        _Point(coordinates, photo.address, tuple(photo.places))
+        for photo in _referenced(refs, evidence.photos)
+        if (coordinates := _coordinates_of(photo.latitude, photo.longitude))
+    ]
+    if photo_first:
+        return [*photo_points, *stay_points, *arrival_points]
+    return [*stay_points, *arrival_points, *photo_points]
+
+
+def _matching_address(points: list[_Point], address: str) -> Coordinates | None:
+    """주소가 같은 지점. 정규화한 문자열이 같은 것을 먼저 보고, 없으면 한쪽이 품는 것이다."""
+
+    key = normalize_place_text(address)
+    for point in points:
+        if point.address and normalize_place_text(point.address) == key:
+            return point.coordinates
+    for point in points:
+        if place_text_contains(point.address, address):
+            return point.coordinates
+    return None
+
+
+def _coordinates_of(latitude: float | None, longitude: float | None) -> Coordinates | None:
+    """한 축만 있는 좌표는 지점으로 치지 않는다."""
+
+    if latitude is None or longitude is None:
+        return None
+    return Coordinates(latitude=latitude, longitude=longitude)
+
+
+def stays_by_overlap(
+    stays: list[StayItem], event: TimelineEventDraft, tz: tzinfo
+) -> list[StayItem]:
+    """event 시간과 많이 겹치는 체류부터 줄 세운다. 겹침이 같으면 오래 머문 체류가 앞이다.
+
+    체류 구간 하나를 Timeline 이 나눠 쓰면(점심과 긴 체류) 두 event 가 같은 체류 기록들을
+    근거로 갖는다. 그때 오래 머문 순서로만 고르면 9시간 체류 event 에 점심 기록의 이름·지점이
+    붙는다(#171 재실행). 순간 event 는 그 시각을 품는 체류를 겹친 것으로 본다.
+    """
+
+    def overlap(stay: StayItem) -> float:
+        start = parse_datetime(stay.start_at, tz)
+        end = parse_datetime(stay.end_at, tz) if stay.end_at else start
+        if start is None or end is None:
+            return -1.0
+        if event.start_time == event.end_time:
+            return 0.0 if start <= event.start_time <= end else -1.0
+        seconds = (min(end, event.end_time) - max(start, event.start_time)).total_seconds()
+        return seconds if seconds > 0 else -1.0
+
+    return sorted(
+        stays,
+        key=lambda stay: (overlap(stay), _stay_duration(stay, tz)),
+        reverse=True,
+    )
+
+
+def touches_event(stay: StayItem, event: TimelineEventDraft, tz: tzinfo) -> bool:
+    """체류가 event 시간과 겹치거나(순간 event 는) 그 시각을 품는가."""
+
+    start = parse_datetime(stay.start_at, tz)
+    end = parse_datetime(stay.end_at, tz) if stay.end_at else start
+    if start is None or end is None:
+        return False
+    if event.start_time == event.end_time:
+        return start <= event.start_time <= end
+    return start < event.end_time and event.start_time < end
+
+
+def _stay_duration(stay: StayItem, tz: tzinfo) -> timedelta:
+    start = parse_datetime(stay.start_at, tz)
+    end = parse_datetime(stay.end_at, tz) if stay.end_at else None
+    if start is None or end is None or end < start:
+        return timedelta(0)
+    return end - start
+
+
+def _sort_time(value: str, tz: tzinfo) -> float:
+    parsed = parse_datetime(value, tz)
+    return parsed.timestamp() if parsed else float("-inf")
 
 
 def _user_memory_text(request: TimelineDraftRequest) -> str:

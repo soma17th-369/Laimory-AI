@@ -27,11 +27,13 @@ from app.core.logging import get_logger
 from app.schemas import (
     EventSourceType,
     EventType,
+    InferenceLevel,
     SourceRef,
     TimelineDraft,
     TimelineDraftRequest,
     TimelineEventDraft,
 )
+from app.schemas.clues import NotificationClue
 from app.services.location_link import (
     LINK_REASON,
     activity_notification_ids,
@@ -46,6 +48,9 @@ logger = get_logger(__name__)
 
 #: 하루의 어디에 있었는지를 말하는 근거.
 _LOCATION_SOURCES = frozenset({EventSourceType.STAY, EventSourceType.MOVEMENT})
+
+#: 대화 단서로 만든 event 의 confidence. 대화가 왔다는 것은 입력이 직접 말한다.
+_CONVERSATION_CONFIDENCE = 0.7
 
 #: Repair Agent 가 바꿀 수 있는 event 필드(입력 JSON 의 camelCase 이름).
 _EDITABLE_FIELDS = frozenset(
@@ -62,6 +67,8 @@ _EDITABLE_FIELDS = frozenset(
         "inferenceLevel",
         "sourceRefs",
         "uncertainty",
+        # v4 의 장소 후보(#171). 확정 pass 가 근거의 후보 풀 밖의 이름을 버린다.
+        "placeCandidates",
     }
 )
 
@@ -121,6 +128,42 @@ def update_event(
         ", ".join(sorted(fields)),
     )
     return updated
+
+
+def add_conversation_event(
+    draft: TimelineDraft, clue: NotificationClue, title: str, description: str
+) -> TimelineEventDraft:
+    """대화 단서 하나로 대화 event 를 만든다(in-place, v4, #183).
+
+    글은 호출자가 쓰고 시간과 근거는 그 단서에서 정한다. 근거는 그 대화 알림뿐이다. 도구가 아니면
+    Repair 가 Timeline 의 잘못된 제외를 찾아도 대화를 되살릴 방법이 없었다. id 는 임시 값이고 확정
+    pass 가 쓴 적 없는 새 번호를 준다.
+    """
+
+    if clue.first_at is None:
+        raise DraftEditError(f"{clue.clue_id} 는 받은 시각을 읽을 수 없어 event 를 만들 수 없습니다.")
+    try:
+        event = TimelineEventDraft(
+            client_event_id=f"conversation-{clue.clue_id}",
+            event_type=EventType.SOCIAL,
+            title=title,
+            description=description,
+            start_time=clue.first_at,
+            end_time=clue.last_at or clue.first_at,
+            confidence=_CONVERSATION_CONFIDENCE,
+            inference_level=InferenceLevel.DIRECT,
+            source_refs=[
+                SourceRef(
+                    source_type=EventSourceType.NOTIFICATION, raw_id=raw_id, reason="대화 알림"
+                )
+                for raw_id in clue.raw_ids
+            ],
+        )
+    except ValidationError as exc:
+        raise DraftEditError(f"대화 event 가 스키마 검증에 실패했습니다: {exc}") from exc
+    draft.events.append(event)
+    logger.debug("Repair: 대화 event 추가 clue=%s", clue.clue_id)
+    return event
 
 
 def delete_event(
@@ -306,6 +349,7 @@ _PART_FIELDS = frozenset(
         "inferenceLevel",
         "uncertainty",
         "tags",
+        "placeCandidates",
     }
 )
 

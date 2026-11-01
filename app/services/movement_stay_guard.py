@@ -33,7 +33,7 @@ from app.schemas import (
     TimelineWarning,
     TimelineWarningSeverity,
 )
-from app.services.location_metrics import COVERAGE_GAP_MIN, SHORT_STAY_MAX
+from app.services.location_metrics import SHORT_STAY_MAX, is_continuous
 from app.services.source_lookup import raw_id_of
 from app.services.validator import parse_datetime, resolve_timezone
 
@@ -55,6 +55,8 @@ class SourceSpan:
     place: str | None = None
     #: 입력의 종류. 체류인지 이동인지.
     kind: str = _STAY
+    #: 정확히 20분인 체류도 긴 체류인가(v4, #180). v3 는 20분을 넘어야 긴 체류다.
+    limit_is_long: bool = False
 
     @property
     def minutes(self) -> int:
@@ -62,7 +64,10 @@ class SourceSpan:
 
     @property
     def is_long_stay(self) -> bool:
-        return self.kind == _STAY and self.end - self.start > SHORT_STAY_MAX
+        if self.kind != _STAY:
+            return False
+        duration = self.end - self.start
+        return duration >= SHORT_STAY_MAX if self.limit_is_long else duration > SHORT_STAY_MAX
 
     def as_dict(self) -> dict[str, str | int]:
         payload: dict[str, str | int] = {
@@ -133,7 +138,9 @@ class _LocationIndex:
     movements: dict[str, SourceSpan]
 
 
-def _index(request: TimelineDraftRequest, tz: tzinfo) -> _LocationIndex:
+def _index(
+    request: TimelineDraftRequest, tz: tzinfo, *, limit_is_long: bool = False
+) -> _LocationIndex:
     """구간을 읽을 수 있는 STAY·MOVEMENT 만 rawId 로 찾을 수 있게 모은다."""
 
     def spans(items, kind: str) -> dict[str, SourceSpan]:
@@ -147,7 +154,7 @@ def _index(request: TimelineDraftRequest, tz: tzinfo) -> _LocationIndex:
             if start is None or end is None or end <= start:
                 continue
             place = (item.place or item.address) if kind == _STAY else None
-            found[identifier] = SourceSpan(identifier, start, end, place, kind)
+            found[identifier] = SourceSpan(identifier, start, end, place, kind, limit_is_long)
         return found
 
     return _LocationIndex(
@@ -221,14 +228,14 @@ class _Layout:
 def _runs(spans: list[_Placed]) -> list[list[_Placed]]:
     """수집이 끊기지 않고 이어진 근거끼리 묶는다.
 
-    `COVERAGE_GAP_MIN` 이상 기록이 없으면 끊긴 것으로 본다. 끊긴 구간을 사이에 둔 두
-    근거는 이어진 이동이 아니다.
+    `location_metrics.is_continuous` 가 거짓인 만큼 기록이 없으면 끊긴 것으로 본다. 끊긴
+    구간을 사이에 둔 두 근거는 이어진 이동이 아니다.
     """
 
     runs: list[list[_Placed]] = []
     reached: datetime | None = None
     for span in spans:
-        if reached is None or span.start - reached >= COVERAGE_GAP_MIN:
+        if reached is None or not is_continuous(span.start - reached):
             runs.append([])
         runs[-1].append(span)
         reached = span.end if reached is None else max(reached, span.end)
@@ -310,12 +317,14 @@ def find_movement_stay_violations(
 
 
 def verify_movement_stay_boundary(
-    draft: TimelineDraft, request: TimelineDraftRequest
+    draft: TimelineDraft, request: TimelineDraftRequest, *, limit_is_long: bool = False
 ) -> list[EventViolation]:
     """draft 의 event 를 검사해 위반을 warning 으로 남기고 돌려준다.
 
     반복마다 자기 이전 warning 을 지우고 다시 잰다. Repair 가 event 를 나눈 뒤에도 앞
     회차의 지적이 남으면 이미 해소한 위반을 또 고치려 든다.
+
+    `limit_is_long` 은 v4 의 경계다. 정확히 20분인 체류도 이동을 끊는다(#180).
     """
 
     draft.warnings = [
@@ -327,7 +336,8 @@ def verify_movement_stay_boundary(
         return []
 
     tz = resolve_timezone(request.timezone)
-    index = _index(request, tz)
+    index = _index(request, tz, limit_is_long=limit_is_long)
+    limit = "20분 이상" if limit_is_long else "20분을 넘는"
 
     found: list[EventViolation] = []
     sequence = 0
@@ -347,7 +357,7 @@ def verify_movement_stay_boundary(
                     severity=TimelineWarningSeverity.HIGH,
                     message=(
                         f"'{event.title}' event 가 이동 사이에 {violation.stay.minutes}분 "
-                        "머문 체류를 함께 품고 있습니다. 20분을 넘는 체류는 앞 이동·체류·"
+                        f"머문 체류를 함께 품고 있습니다. {limit} 체류는 앞 이동·체류·"
                         "뒤 이동으로 나눠야 합니다."
                     ),
                     source_refs=[

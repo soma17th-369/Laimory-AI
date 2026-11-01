@@ -10,6 +10,10 @@
   위치·캘린더·사진·수면·활동·알림 등 데이터별 Agent 가 각자의 source item 을 해석해
   내놓는 **후보**다.
 - Timeline Agent 가 여러 Agent 의 후보를 **병합·분할·검증**해 최종 draft 를 만든다.
+- **v4 세트(`PROMPT_VERSION=v4`, #167~#171)는 이 후보를 쓰지 않는다.** 위치는 코드가 만든
+  위치 뼈대(`app/services/location_skeleton.py`), 일정은 일정 단서(`calendar_clues.py`)이고,
+  사진·알림은 LLM 이 읽은 데이터별 단서(`app/schemas/clues.py`)다. 코드가 이것들을 근거
+  묶음(`clue_bundles.py`)으로 묶어 Timeline v4 에 넘긴다. 이 문서는 v1~v3 의 계약이다.
 - 후보에는 아직 **안정적인 `eventId` 가 없다.** 최종 `eventId` / `clientEventId` 는
   Timeline Agent 가 draft 를 만들 때 부여된다. run 내부 추적이 필요하면 DTO 본질
   필드가 아니라 `candidateIndex` / `traceId` 같은 별도 수단으로 다룬다.
@@ -39,10 +43,12 @@
 `PHOTO_MOMENT`, `MEETING`, `CLASS`, `WORK`, `EXERCISE`, `SOCIAL`, `REST`, `UNKNOWN`
 
 - UI 타입 확정이 아니라 **Timeline Agent 가 병합·해석하기 쉽게 분류**하는 것이 목적이다.
-- `STAY` 는 eventType 이 아니다. 체류는 센서 상태이지 사건이 아니므로, 체류의 **의미**로
-  분류한다. `sourceType` 의 `STAY` 와 혼동하지 않는다.
-- 근거가 약하면 단정하지 말고 더 굵은 종류(예: `REST`)나 낮은 confidence 로 둔다.
-  - 예: 위치만으로 식당 체류가 잡히면 바로 `MEAL` 로 단정하지 않는다. `REST` 또는
+- v1~v3 에서 `STAY` 는 eventType 이 아니다. 체류는 센서 상태이지 사건이 아니므로, 체류의
+  **의미**로 분류한다. v4 는 활동 근거가 없는 체류를 eventType `STAY` 로 둔다(#172). 어느
+  쪽이든 `sourceType` 의 `STAY` 와 혼동하지 않는다.
+- 근거가 약하면 단정하지 말고 `UNKNOWN` 이나 낮은 confidence 로 둔다. `REST` 는 쉬었다는
+  근거가 있을 때만 쓴다(#150).
+  - 예: 위치만으로 식당 체류가 잡히면 바로 `MEAL` 로 단정하지 않는다. `UNKNOWN` 또는
     낮은 confidence 의 `MEAL` 후보로 두고, 음식 사진·결제·캘린더 등 근거가 합쳐질 때
     Timeline Agent 가 최종 draft 에서 `MEAL` 로 확정한다.
 - `MEAL` 은 보통 20~60분이다. 회사·집·카페·쇼핑몰처럼 식당이 아닌 곳에 오래 머물렀으면
@@ -55,8 +61,10 @@
   합치고, 코드(`is_stay_meal`)는 그 판단을 뒷받침하는 근거만 본다 — 식사가 자기 체류 근거를
   갖고, 그 체류 안에 사진이나 결제·예약 앱 알림이 있고, 3시간 이하일 때만 60분을 넘겨 둔다.
 - 어디에도 맞지 않으면 `UNKNOWN` 으로 둔다. 쇼핑·진료·미용실처럼 13종에 없는 활동도
-  `UNKNOWN` 이며 무엇을 했는지는 title·description 이 말한다(#118). 새 타입을 만들지
-  않는다 — App Server 는 이 13종만 받는다.
+  `UNKNOWN` 이며 무엇을 했는지는 title·description 이 말한다(#118).
+- v1~v3 의 eventType 은 이 13종이다. v4 는 `STAY`·`SHOPPING`·`CULTURE`·`ERRAND` 를 더하고
+  `UNKNOWN` 을 뺀 16종이다(#172, #173). v1~v3 의 구조화 출력에는 13종만 보이고, 새 값을 적어 내면 입구에서 모르는
+  문자열과 똑같이 거절한다.
 
 ## eventType 별 지속시간 (#118, #119, #134)
 
@@ -85,6 +93,10 @@ LLM 이 경계 없는 9.5시간 체류를 같은 문장의 조각 다섯 개로 
 | `SOCIAL` | 일정 시간, 일정이 없으면 체류 구간 | 검토 기준 8시간 |
 | `REST` | 체류 구간 | 검토 기준 12시간 |
 | `UNKNOWN` | 체류 구간 | 검토 기준 12시간 |
+| `STAY` | 체류 구간(v4) | 검토 기준 12시간 |
+| `SHOPPING` | 체류 구간(v4) | 검토 기준 4시간 |
+| `CULTURE` | 체류 구간(v4) | 검토 기준 4시간 |
+| `ERRAND` | 체류 구간(v4) | 검토 기준 4시간 |
 
 `duration_guard` 는 **재기만 하고 자르거나 나누지 않는다.** 기준을 넘은 event 를 warning 과
 검사 결과로 짚어 Repair 가 먼저 다시 보게 할 뿐이고, 묻힌 사건이 있는지와 어디서 끊을지는
@@ -183,11 +195,11 @@ rawId를 만들면 해당 참조를 제거하고, 유효한 근거가 하나도 
 
 ## source type 별 후보 예시
 
-### 위치 — `REST`
+### 위치 — `UNKNOWN`
 
 ```json
 {
-  "eventType": "REST",
+  "eventType": "UNKNOWN",
   "timeRange": {
     "startTime": "2026-06-20T11:00:00+09:00",
     "endTime": "2026-06-20T18:00:00+09:00"

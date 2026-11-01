@@ -41,7 +41,9 @@ def confirm_only_repair_agent() -> RepairAgent:
 class _SilentQuestionAgent(QuestionAgent):
     """LLM 을 부르지 않고 draft 를 그대로 돌려주는 Question Agent."""
 
-    def generate(self, request: TimelineDraftRequest, draft: TimelineDraft) -> TimelineDraft:
+    def generate(
+        self, request: TimelineDraftRequest, draft: TimelineDraft, clues=None
+    ) -> TimelineDraft:
         return draft
 
 

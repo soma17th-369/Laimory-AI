@@ -230,9 +230,9 @@ async def _run_timeline(task_id: str) -> Any:
     # 감사용으로 한 벌 붙잡아 둔다.
     original_build = timeline_runner.build_result_request
 
-    def capture(draft: Any) -> Any:
+    def capture(draft: Any, request: Any) -> Any:
         app_server.draft = draft.model_copy(deep=True)
-        return original_build(draft)
+        return original_build(draft, request)
 
     timeline_runner.build_result_request = capture
     try:

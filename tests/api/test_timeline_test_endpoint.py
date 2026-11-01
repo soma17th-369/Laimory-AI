@@ -126,6 +126,16 @@ def test_returns_the_result_save_request_shape(app_server, fake_main_agent):
     assert TIMED_OUT_HEADER not in response.headers
 
 
+def test_response_carries_the_representative_coordinates(app_server, fake_main_agent):
+    """비동기 저장과 같은 변환이라 좌표도 같이 실린다(#175). 값은 근거 STAY 의 좌표다."""
+
+    response = TestClient(app).post(_PATH, json=_body())
+
+    [event] = response.json()["events"]
+    assert (event["latitude"], event["longitude"]) == (37.5, 127.0)
+    assert "placeCandidates" not in event
+
+
 def test_does_not_touch_the_app_server(app_server, fake_main_agent):
     """입력 조회·결과 저장·완료 콜백 중 어느 것도 일어나지 않는다."""
 

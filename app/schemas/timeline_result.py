@@ -20,8 +20,42 @@ timeline.TimelineQuestion`)이다. 이름이 비슷한 :attr:`TimelineResultEven
 
 from pydantic import AwareDatetime, Field, model_validator
 
-from app.schemas.common import CamelModel, RawId
+from app.schemas.common import CamelModel, Latitude, Longitude, RawId
 from app.schemas.event_candidate import EventType
+
+
+#: 문장의 장소 칸(App Server 공지 2026-10-29). 자리 표시는 이 하나뿐이다.
+PLACE_SLOT = "{place}"
+
+
+#: event 하나에 내보내는 후보의 최대 개수(사용자 결정 2026-10-30). App Server 공지의 권장은 2~4개다.
+MAX_PLACE_CANDIDATES = 5
+
+#: App Server 저장 컬럼 한도. 제목·문장·장소·주소·질문·후보 이름이 같다.
+TEXT_MAX = 255
+
+
+def _absent(value: object) -> bool:
+    return value is None
+
+
+class PlaceCandidate(CamelModel):
+    """사용자가 고를 후보 장소 하나(App Server 공지 2026-10-29, 좌표는 명세 2026-10-30).
+
+    좌표는 입력 `places` 의 그 원소 좌표를 그대로 싣는다. 입력 `places` 밖에서 만든 후보(일정 장소명)는
+    좌표가 없어 키를 싣지 않는다. 둘 다 있거나 둘 다 없고, App Server 는 한쪽만 있거나 범위 밖이면
+    결과 batch 전체를 400 으로 거절한다.
+    """
+
+    name: str = Field(min_length=1, max_length=TEXT_MAX)
+    latitude: Latitude | None = Field(default=None, exclude_if=_absent)
+    longitude: Longitude | None = Field(default=None, exclude_if=_absent)
+
+    @model_validator(mode="after")
+    def _validate_pair(self) -> "PlaceCandidate":
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("candidate latitude and longitude must be sent together")
+        return self
 
 
 class TimelineResultEvent(CamelModel):
@@ -39,24 +73,47 @@ class TimelineResultEvent(CamelModel):
     확정해 놓고도 내보내지 않아 Repair 가 근거로 확정한 장소가 저장되지 않고 버려졌다.
     ``place`` 는 사용자가 알아보는 장소명(``집``, ``두꺼비 감자탕 지산점``)이고
     ``address`` 는 입력 근거에 실재하는 주소만 담는다 — 근거로 뒷받침되지 않는 주소는
-    ``place_resolver`` 가 저장 전에 지운다. ``places`` 는 내보내지 않는다. 여러 후보 중
-    고르는 것은 AI 의 일이고 App Server 에는 확정된 하나만 준다.
+    ``place_resolver`` 가 저장 전에 지운다.
+
+    ``latitude``·``longitude`` 는 event 의 **대표 지점** 좌표다(#175). 사용자가 실제로 있던
+    위치이고, 이동 event 는 도착지다. 후보의 좌표는 그 후보 장소의 좌표로 따로 싣는다(지도 마커용,
+    명세 2026-10-30). App Server 는 1번 후보에 좌표가 있으면 event 좌표를 그 값으로 덮어쓰고 2번
+    이하 후보의 좌표는 쓰지 않는다. 그래서 AI 가 대표 좌표를 1번 후보에 맞출 필요가 없다. 둘 다
+    있거나 둘 다 없다. App Server 는 한쪽만 온 결과를 통째로 거절한다.
+
+    ``placeCandidates`` 는 장소가 애매할 때 사용자가 고를 후보 장소다(#171). 우선순위가
+    높은 순서이고, App Server 는 후보가 하나라도 있으면 ``place`` 를 1번 후보로 덮어쓴다.
+    그래서 장소를 다른 근거로 확정한 event 와, ``place`` 를 1번 후보로 바꿔서는 안 되는
+    v3 세트는 후보를 싣지 않는다.
+
+    새 필드 셋은 값이 없으면 body 에 키를 싣지 않는다. 위치 근거가 없는 event 의 body 가
+    필드를 더하기 전과 같게 하려는 것이다. 기존 필드의 ``null`` 은 그대로 나간다.
     """
 
     event_type: EventType = Field(alias="eventType")
-    title: str = Field(min_length=1)
-    subtitle: str | None = None
-    place: str | None = None
-    address: str | None = None
+    title: str = Field(min_length=1, max_length=TEXT_MAX)
+    subtitle: str | None = Field(default=None, max_length=TEXT_MAX)
+    place: str | None = Field(default=None, max_length=TEXT_MAX)
+    address: str | None = Field(default=None, max_length=TEXT_MAX)
+    latitude: Latitude | None = Field(default=None, exclude_if=_absent)
+    longitude: Longitude | None = Field(default=None, exclude_if=_absent)
+    place_candidates: list[PlaceCandidate] | None = Field(
+        default=None, alias="placeCandidates", max_length=MAX_PLACE_CANDIDATES, exclude_if=_absent
+    )
     start_at: AwareDatetime = Field(alias="startAt")
     end_at: AwareDatetime = Field(alias="endAt")
     source_raw_ids: list[RawId] = Field(alias="sourceRawIds", min_length=1)
-    question: str | None = None
+    question: str | None = Field(default=None, max_length=TEXT_MAX)
 
     @model_validator(mode="after")
     def _validate_range(self) -> "TimelineResultEvent":
         if self.end_at < self.start_at:
             raise ValueError("endAt must be greater than or equal to startAt")
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("latitude and longitude must be sent together")
+        if PLACE_SLOT in (self.subtitle or "") and not (self.place or self.place_candidates):
+            # App Server 는 칸이 남은 채 장소가 없는 결과를 통째로 400 으로 거절한다(#171).
+            raise ValueError("subtitle with {place} needs a place or placeCandidates")
         return self
 
 

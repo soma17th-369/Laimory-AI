@@ -5,6 +5,8 @@
 에서 읽어 연결한다.
 """
 
+from functools import cache
+
 from app.agents.events.base_event_agent import EventAgent
 from app.agents.parsing import (
     SupportsComplete,
@@ -16,7 +18,12 @@ from app.agents.prompt_loader import load_prompt
 from app.schemas import AgentEventResult, TimelineDraftRequest
 from app.core.llm_stages import LLMStage
 
-_SYSTEM_PROMPT = load_prompt(__file__, "prompt.md")
+#: 프롬프트는 import 때가 아니라 처음 부를 때 읽는다. v4 세트에는 이 Agent 의
+#: 프롬프트가 없다 — v4 는 일정 단서 코드가 대신한다(#168). import 때 읽으면 v4 로
+#: 기동조차 못 한다. v1~v3 은 읽는 시점만 늦어질 뿐 같은 파일을 읽는다.
+@cache
+def _system_prompt() -> str:
+    return load_prompt(__file__, "prompt.md")
 
 
 class CalendarEventAgent(EventAgent):
@@ -46,5 +53,5 @@ class CalendarEventAgent(EventAgent):
             window_end=request.window.end if request.window else None,
         )
         return self.llm.complete_structured(
-            infer_prompt, AgentEventResult, system=_SYSTEM_PROMPT, temperature=0.2
+            infer_prompt, AgentEventResult, system=_system_prompt(), temperature=0.2
         )

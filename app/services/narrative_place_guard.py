@@ -63,6 +63,14 @@ _ADDRESS_SHAPES = (
 )
 
 
+def looks_like_address(text: str | None) -> bool:
+    """도로명+건물번호나 지번 모양이 들어 있는가. 일정 `locationText` 의 장소명·주소를 가른다(#168)."""
+
+    if not text:
+        return False
+    return any(pattern.search(text) for pattern in _ADDRESS_SHAPES[:2])
+
+
 def _variants(address: str) -> Iterator[str]:
     """입력 주소와, 문장에 옮겨 적힐 수 있는 그 뒷부분.
 
@@ -121,7 +129,7 @@ def _input_addresses(request: TimelineDraftRequest) -> dict[str, list[tuple[str,
     return addresses
 
 
-def _local_area(address: str) -> str | None:
+def local_area(address: str) -> str | None:
     """주소의 가장 좁은 동·도로명. `서울특별시 예시구 예시로 123` → `예시로`.
 
     건물번호·지번은 뺀다. 번호 붙은 길은 기본 도로명으로 줄인다(`지범로17길` → `지범로`,
@@ -145,7 +153,7 @@ def _replacement(event: TimelineEventDraft, address: str) -> str | None:
     if place and not is_vague_place_label(place) and place not in address:
         if not _looks_like_address(place):
             return place
-    return _local_area(address)
+    return local_area(address)
 
 
 def replace_input_addresses(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
@@ -188,6 +196,12 @@ class NarrativeFinding:
 
     def detail(self) -> dict:
         return {"found": list(self.found)}
+
+
+def has_stay_word(title: str) -> bool:
+    """제목에 체류 표현이 있는가."""
+
+    return bool(_STAY_WORD.search(title))
 
 
 def find_narrative_labels(draft: TimelineDraft) -> list[NarrativeFinding]:

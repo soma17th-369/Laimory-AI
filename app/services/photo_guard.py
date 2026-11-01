@@ -46,6 +46,7 @@ from app.schemas import (
     TimelineWarningSeverity,
 )
 from app.services.location_link import LINK_REASON
+from app.services.location_metrics import same_photo_scene
 from app.services.source_lookup import raw_id_of
 from app.services.validator import parse_datetime, resolve_timezone
 
@@ -61,7 +62,7 @@ _CREATED_CONFIDENCE = 0.4
 #: 코드가 만든 사진 event 의 문장. candidate 에서 만들어도 이 틀을 쓴다(#163) — candidate
 #: 문장은 Event Agent 의 보고라 분 단위 시각·추정 표현·종결형 제목이 들어 있어 사용자에게
 #: 그대로 보일 수 없다. Repair 가 돌면 그 candidate 를 보고 다시 쓴다.
-_CREATED_TITLE = "사진으로 남긴 순간"
+CREATED_PHOTO_TITLE = "사진으로 남긴 순간"
 _CREATED_DESCRIPTION = "사진을 남겼다."
 _CREATED_NOTE = (
     "사진을 담을 event 가 없어 촬영 시각으로 만든 기록이다. 사진 내용은 확인하지 못했다."
@@ -318,7 +319,7 @@ def _create_event(
         # 임시 id 다. 확정 마지막이 정식 번호를 준다.
         client_event_id=f"event-photo-{sequence:03d}",
         event_type=EventType.PHOTO_MOMENT,
-        title=_CREATED_TITLE,
+        title=CREATED_PHOTO_TITLE,
         description=_CREATED_DESCRIPTION,
         place=next((name for name in first.places if name and name.strip()), None),
         address=first.address,
@@ -355,10 +356,21 @@ def _dropped_candidates(
     return dropped
 
 
+def _created_by_code(event: TimelineEventDraft) -> bool:
+    """촬영 시각만으로 코드가 만든 사진 event 인가."""
+
+    return event.event_type is EventType.PHOTO_MOMENT and all(
+        ref.reason == _REASON_CREATED for ref in event.source_refs
+    )
+
+
 def enforce_photo_assignment(
     draft: TimelineDraft,
     request: TimelineDraftRequest,
     candidates: Sequence[AiEventCandidate] = (),
+    join_created_within: timedelta | None = None,
+    *,
+    prefer_extracted: bool = False,
 ) -> PhotoEnforcement:
     """입력의 모든 사진이 정확히 한 event 에만 있게 만든다(in-place).
 
@@ -376,6 +388,18 @@ def enforce_photo_assignment(
            시간이다(#163).
         4. 남은 사진은 촬영 시각을 포함하는 event 에 붙이고, 그런 event 가 없으면 촬영
            시각의 `PHOTO_MOMENT` 를 만들어 담는다.
+
+    `join_created_within` 이 있으면 4 에서 새로 만드는 사진 event 를 이어진 사진끼리 하나로
+    만든다 — 직전에 만든 사진 event 가 끝난 뒤 이 시간 안에 찍힌 사진은, 그 event 의 사진과
+    같은 장면(`same_photo_scene`, 같은 곳)일 때 그 event 에 담는다. 시각만 보면 10분 간격으로
+    11km 떨어진 사진이 한 event 가 됐다.
+    v4 세트는 사진 candidate 가 없어 3 이 돌지 않으므로, 같은 장면을 연달아 찍은 사진이 카드
+    여러 장이 되지 않게 이것으로 묶는다.
+
+    `prefer_extracted`(v4)이면 1 의 "다른 근거가 있는 event 먼저" 를 쓰지 않고 촬영 시각을 품는
+    가장 짧은 event 에 남긴다 — 그 사진으로 꺼낸 event 다(사용자 결정 2026-10-30, "꺼냈으면 원래거는
+    지워야지"). Timeline 이 음식 사진으로 식사를 꺼내고 같은 사진을 회의 근거에도 남기자, 다른 근거가
+    있는 회의가 사진을 가져가 사진뿐이던 식사가 지워졌다.
 
     **가장 가까운 event 에는 붙이지 않는다(#163).** 시각이 가깝다고 같은 사건이 아니다.
     22:56 저녁 사진이 22:01 에 끝난 대화에 붙어 저녁이 하루에서 사라졌고, Repair 는 그
@@ -406,7 +430,7 @@ def enforce_photo_assignment(
         keeper = min(
             owners,
             key=lambda event: (
-                not _has_other_evidence(event, photo_ids),
+                False if prefer_extracted else not _has_other_evidence(event, photo_ids),
                 *_by_time(event, taken),
             ),
         )
@@ -442,7 +466,11 @@ def enforce_photo_assignment(
         enforcement.created.append(created)
         missing.difference_update(raw_ids)
 
-    for raw_id in sorted(missing):
+    order = sorted(missing)
+    if join_created_within is not None:
+        # 이어진 사진끼리 묶으려면 촬영 순서대로 돌아야 한다.
+        order.sort(key=lambda r: (taken_at[r] is None, taken_at[r].timestamp() if taken_at[r] else 0))
+    for raw_id in order:
         taken = taken_at[raw_id]
         containing = (
             [event for event in draft.events if _gap(event, taken) == timedelta(0)]
@@ -462,6 +490,31 @@ def enforce_photo_assignment(
             enforcement.attached.append(raw_id)
             continue
         moment = _created_time(taken, request, tz)
+        # 앞선 확정에서 만든 사진 event 도 묶는 대상이다 — 사진이 확정마다 하나씩 빠질 수 있다.
+        previous = (
+            next(
+                (
+                    event
+                    for event in draft.events
+                    if _created_by_code(event)
+                    and event.start_time - join_created_within
+                    <= moment
+                    <= event.end_time + join_created_within
+                    and _same_scene_as_any(raw_id, event, photos, taken_at)
+                ),
+                None,
+            )
+            if join_created_within is not None
+            else None
+        )
+        if previous is not None:
+            previous.source_refs = [
+                *previous.source_refs,
+                SourceRef(source_type=EventSourceType.PHOTO, raw_id=raw_id, reason=_REASON_CREATED),
+            ]
+            previous.start_time = min(previous.start_time, moment)
+            previous.end_time = max(previous.end_time, moment)
+            continue
         created = _create_event(
             [photos[raw_id]],
             moment,
@@ -515,3 +568,111 @@ def enforce_photo_assignment(
         ),
     )
     return enforcement
+
+
+def _same_scene_as_any(raw_id: str, event: TimelineEventDraft, photos, taken_at) -> bool:
+    """사진이 event 에 담긴 사진 중 하나와 같은 장면인가."""
+
+    item = photos[raw_id]
+    return any(
+        same_photo_scene(
+            taken_at.get(ref.raw_id),
+            (other.latitude, other.longitude),
+            taken_at[raw_id],
+            (item.latitude, item.longitude),
+        )
+        for ref in event.source_refs
+        if (other := photos.get(ref.raw_id)) is not None
+    )
+
+
+def merge_photo_scenes(draft: TimelineDraft, request: TimelineDraftRequest) -> list[str]:
+    """같은 장면 사진이 여러 event 에 나뉘어 있으면 한 event 로 모은다(in-place, v4).
+
+    같은 장면은 `location_metrics.same_photo_scene` 이 정한다. 사진을 가장 많이 가진 event 가
+    모으는 쪽이고, 같으면 사진 순간이 아닌 event(식사처럼 사진이 말하는 활동), 짧은 event(그 사진으로
+    꺼낸 event — 꺼냈으면 원래 event 에서는 뺀다, 사용자 결정 2026-10-30), 먼저 시작한 event 순이다.
+    Timeline 이 같은 장면(12:49)에서 점심과 사진 순간을 함께 꺼냈을 때 짧은 사진 순간이 사진을 모두
+    가져가 점심이 사진 없는 식사가 됐다. 다른 event
+    에서는 그 사진을 빼고, 근거가 남지 않으면 지운다. 모은 event 의 시간은 장면의 촬영 시각을 품게
+    넓힌다. 모은 사진의 rawId 를 돌려준다.
+    """
+
+    tz = resolve_timezone(request.timezone)
+    photos = sorted(
+        (
+            (taken, raw_id, (item.latitude, item.longitude))
+            for item in request.photos
+            if (raw_id := raw_id_of(item)) is not None
+            and (taken := parse_datetime(item.taken_at, tz)) is not None
+        ),
+        key=lambda photo: photo[0],
+    )
+    scenes: list[list[tuple[datetime, str, tuple]]] = []
+    for photo in photos:
+        last = scenes[-1][-1] if scenes else None
+        if last is not None and same_photo_scene(last[0], last[2], photo[0], photo[2]):
+            scenes[-1].append(photo)
+        else:
+            scenes.append([photo])
+
+    moved: list[str] = []
+    photo_ids = {raw_id for _, raw_id, _ in photos}
+    for scene in scenes:
+        scene_ids = {raw_id for _, raw_id, _ in scene}
+        holders = [
+            event
+            for event in draft.events
+            if any(ref.raw_id in scene_ids for ref in event.source_refs)
+        ]
+        if len(scene) < 2 or len(holders) < 2:
+            continue
+        target = max(
+            holders,
+            key=lambda event: (
+                sum(ref.raw_id in scene_ids for ref in event.source_refs),
+                event.event_type is not EventType.PHOTO_MOMENT,
+                -(event.end_time - event.start_time).total_seconds(),
+                -event.start_time.timestamp(),
+            ),
+        )
+        held = {ref.raw_id for ref in target.source_refs}
+        for event in holders:
+            if event is target:
+                continue
+            taken = [ref for ref in event.source_refs if ref.raw_id in scene_ids]
+            event.source_refs = [ref for ref in event.source_refs if ref.raw_id not in scene_ids]
+            for ref in taken:
+                if ref.raw_id not in held:
+                    target.source_refs = [*target.source_refs, ref]
+                    held.add(ref.raw_id)
+                    moved.append(ref.raw_id)
+        times = [taken for taken, raw_id, _ in scene]
+        target.start_time = min(target.start_time, *times)
+        target.end_time = max(target.end_time, *times)
+        draft.events = [
+            event
+            for event in draft.events
+            if event is target or any(_is_own_evidence(ref) for ref in event.source_refs)
+        ]
+    if moved:
+        draft.warnings.append(
+            TimelineWarning(
+                warning_id=f"warning-photo-scene-{len(draft.warnings) + 1:03d}",
+                severity=TimelineWarningSeverity.LOW,
+                message=f"같은 장면 사진 {len(moved)}장이 다른 event 에 나뉘어 있어 한 event 로 모았습니다.",
+            )
+        )
+    return moved
+
+
+def enforce_photo_scenes(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
+    """v4 의 사진 단일 귀속: 단일 귀속을 강제하고, 되살린 사진은 이어 찍은 것끼리 묶고, 같은 장면은
+    한 event 로 모은다."""
+
+    from app.services.location_metrics import SHORT_STAY_MAX
+
+    enforce_photo_assignment(
+        draft, request, join_created_within=SHORT_STAY_MAX, prefer_extracted=True
+    )
+    merge_photo_scenes(draft, request)

@@ -30,6 +30,14 @@
 
 Agent별 이름은 Repair의 `rerun_event_agent`가 특정 결과만 교체하는 key다. 이름이 중복되면 suffix를 붙이며, `event_agents`와 `event_results`는 같은 key를 유지해야 한다.
 
+### v4 경로 (#167~#171)
+
+v4 세트(`uses_clue_contract`)에서는 `run_event_agents`가 Event Agent 다섯 대신 사진·알림 단서 호출(`PhotoClueAgent`·`NotificationClueAgent`)만 병렬로 돌린다. `merge_results` 자리에서 코드가 위치 뼈대(`location_skeleton`)와 일정 단서(`calendar_clues`)를 만들고, 넷을 근거 묶음(`clue_bundles`)으로 묶어 `TimelineClues`로 state에 싣는다. Timeline은 `generate_from_clues`로 묶음을 읽고, Repair는 같은 `TimelineClues`를 문맥(`RepairContext.clues`)으로 받는다. Event Agent 결과(`event_results`)는 비어 있어 사진 단일 귀속은 버려진 사진 candidate 대신 촬영 시각 경로를 쓴다. `NotificationClueAgent`는 필요한 알림만 단서로 남긴다(#173). 앱 사전은 알림을 세 입력 목록으로 나누고 정책 설명을 싣는 데만 쓰이며, 종류는 LLM이 내용을 읽고 정한다. 단서가 되지 않은 알림은 Timeline·Repair 입력에 없다.
+
+확정 pass는 `repair_draft(..., clues=...)`로 v4임을 안다. v4에서 코드는 제목·문장을 쓰지 않는다(사용자 결정 2026-10-31). 코드가 강제하는 것은 장소 자리뿐이다 — 문장의 장소 이름을 `{place}` 칸으로 바꾸고, 제목과 이동 글에서 칸과 장소 이름을 지명으로 바꾸거나 뺀다(`keep_place_names_out`). 제목에서 장소를 말한 자리는 결제·예약 가맹점까지 지명으로 바꾸고, 장소를 말하지 않은 활동 제목에 지명을 더하지는 않는다(#179). 장소 이름이 없는 칸은 저장할 때 코드가 채우므로 Repair에 제안하지 않는다. 제목의 `체류`는 확정의 `제목 체류 표현`이 체류 틀로 되돌린다. v4 코드는 Repair를 거절하지 않는다(사용자 결정 2026-11-02). 남은 오류는 실행할 수 없는 호출뿐이다. 글 규칙은 `text_suggestions`가 사본에서 돌려 `TEXT_CORRECTION`으로, 코드가 만들거나 구조를 바꾼 event는 `EVENT_TO_WRITE`로 Repair에 넘긴다. 묶음에는 구간마다 코드가 만든 기본 event(`base_events`, `E1`…, 틀 문장. 체류는 eventType `STAY`, #172)가 실리고, Timeline v4는 그 틀을 따라 근거를 더하고 내용을 채우며 그 안의 다른 사건은 근거가 있으면 꺼낸다(event마다 `from`). 합치라는 말은 프롬프트에 없다(사용자 결정 2026-10-30). 캘린더 일정 복원 뒤에 기본 event 구조를 지키는 다섯 단계(`skeleton_guard`: 근거 없는 이동 정리 → 이동 구간 분리 → 이동 구간 하나로 맞추기 → 근거 시간 밖 event 정리 → 위치 구간 복원)가 돈다. 사용자가 정한 규칙만 검사하고 어긴 변경 하나만 되돌린다. 이동 구간 분리는 주소가 다른 체류 구간을 함께 가진 event도 가장 오래 겹친 장소만 남기고 끊는다(일정 event는 시간을 두고 다른 장소의 근거만 뺀다). 주소는 코드가 250m 묶음마다 하나로 맞춘 값이라 다른 장소인지 가르는 기준이다. 이동 구간 하나로 맞추기(#180)는 뼈대의 이동 구간 하나를 이동 event 하나로 맞춘다. 조각은 합치고, 일부만 쓴 event는 구간 전체로 넓히고, 여러 구간에 걸친 event는 가장 오래 겹치는 구간으로 줄여 나머지를 복원에 맡긴다. 근거가 바뀌면 글은 Repair에 넘긴다. `지속시간 복원`·`근거 구간 정렬`·`근거 시간 밖 event 정리`는 체류·이동의 시간으로 뼈대 구간 안의 시간을 쓴다. 체류 뒤에 끊겼다가 다른 곳에서 시작한 이동은 뼈대에서 그 체류가 끝난 때 출발한 것이 되고, 이동 경로도 `LocationSkeleton.departures`의 출발지를 쓴다. 위치 구간 복원은 기록이 덮는 시간만 되살리고, 시간을 바꾸는 단계(식사 시간·수면)가 끝난 뒤 `위치 구간 다시 확인`으로 한 번 더 돈다. `수면과 겹친 event 제거`는 v4에서 이동과 수면 장소가 아닌 곳의 체류를 남긴다(`spares_from_sleep`). 복원은 기본 event의 시간이 **덮였는지**로 본다(근거에 기록이 들어 있는지로 보면 일부만 쓴 시간이 비었다). `위치 근거 연결`과 `체류 병합`을 돌리지 않고(뼈대가 이미 묶었다), `장소 확정`은 장소 칸 확정(`place_slots.confirm_place_slots`), `문장 주소 정리`는 `문장 장소 칸`(`fill_place_slots(slots_only=True)`, 장소 이름·주소를 칸으로 바꾸기만)이다. 일정이 덮은 체류는 묶음을 만들 때 일정 기본 event가 되고(일정이 주인, 체류는 근거), `일정 기본 event 지키기`가 캘린더 일정 복원 바로 앞에서 그 기본 event의 체류를 덮는 event를 일정 event 하나로 합친다(시간은 일정 시간). 근거는 시간과 장소를 둘 다 본다(`misplaced_clues`) — Timeline 파싱과 Repair `update_event`는 묶음 id로 딸려 온 맞지 않는 사진·일정 근거를 뺀다. Repair가 직접 적은 근거는 둔다. v4 사진 단일 귀속은 꺼낸 event(촬영 시각을 품는 가장 짧은 event)가 사진을 갖는다. v4는 `LOCATION_ONLY_OVERLAP`을 내지 않는다. 이동 제목·문장은 LLM이 같은 출발·도착 지명으로 쓰고, 기록의 경로와 다르면 `TEXT_CORRECTION`으로 Repair가 고친다. 검사는 v4에서 `ADDRESS_IN_NARRATION`을 내지 않고(주소를 문장에 쓸 수 있다) 제목의 장소명을 `PLACE_NAME_IN_TITLE`로 낸다. Repair v4 도구에는 `rerun_event_agent`·`merge_stay_events`가 없고, `update_event`는 `evidence`(묶음·단서 id와 rawId)를 받아 `expand_evidence`로 펼친다. `add_conversation_event`는 v4에만 있고 쓰이지 않은 대화 단서 하나로 대화 event를 만든다 — 글만 받고 시간·근거는 단서에서 정하며, 대화가 아니거나 이미 쓰였거나 대화 event가 3개 찼으면 거절한다(#183). `rerun_timeline_agent`는 같은 묶음으로 Timeline만 다시 돈다.
+
+대화 event의 근거는 대화 알림뿐이다(#183, 사용자 결정 2026-11-02). `대화 근거 지키기`(`keep_conversation_evidence`)가 두 번 돈다. `일정 기본 event 지키기` 앞에서 돌아 `from`을 적은 대화가 이동 구간 분리·근거 시간 밖 정리에서 지워지지 않게 하고, `대화 개수 제한` 앞에서 다시 돌아 사진 단일 귀속이 사진을 옮기고 남은 체류와 대화를 푼다. 다른 근거를 빼고 `from`을 비우고 시간을 그 대화가 온 시간으로 맞추며, 근거를 뺐으면 글은 `EVENT_TO_WRITE`로 Repair에 넘긴다. 대화 event의 뜻은 `conversation_guard.is_conversation_event` 한 곳이다. Timeline v4는 출력의 `conversations`에 대화마다 내용·이유·판단(`RECORD`·`SUPPORT`·`LEAVE_OUT`)을 **`events`보다 먼저** 쓴다. 추론이 꺼진 모델은 출력 말고 생각할 자리가 없어, warning에서 다루게 두자 event를 다 쓴 뒤 13개를 한 문장으로 쓸어 담았다. `RECORD`는 그 항목의 글로 파싱이 event를 만든다(`_add_recorded_conversations`) — 판단과 글은 Timeline, 구조는 코드이고, 글이 비면 단서의 말을 옮겨 두고 `EVENT_TO_WRITE`로 넘긴다. 판단은 `TimelineDraft.conversation_reviews`로 Repair까지 가고 dump에는 나가지 않는다. 쓰이지 않은 대화는 `CONVERSATIONS_UNUSED`로 찾기만 한다 — 남기기로 정하고 잇지 않은 대화, 그런 대화가 없을 때 하나도 쓰이지 않은 남긴 대화 전부, `mergeReason`이 적었는데 그 event 근거에 없는 대화다. 대화 event가 3개 찬 날의 `RECORD`는 개수로 빠진 것이라 찾지 않는다. v4의 대화 개수 제한은 메시지 수가 같으면 글자 수가 많은 대화를 남긴다. 대화 event의 `주고받았다`·`이야기했다`는 `TEXT_CORRECTION`으로 넘긴다. 대화 event는 전체 10개와 상관없이 들어간다(사용자 결정 2026-11-02) — `event 개수 정리`와 개수 검사가 세지도 지우지도 않아 v4 하루는 최대 13개다. User Memory digest의 하루 10개는 세트 공용 값이라 그대로이고, 13개인 날은 메모 없는 오래된 event부터 digest에서 빠진다. 무엇을 남길지는 내용을 읽어야 하는 판단이라 코드가 고르지 않고, 검토를 마쳤으면 남아 있어도 된다.
+
 ### Event Agent 경계
 
 각 Event Agent 실패는 전체 pipeline을 중단하지 않고 빈 결과와 warning으로 흡수한다. 정상 결과도 다음 코드 검사를 거친다.
@@ -52,7 +60,7 @@ v3 Timeline 프롬프트는 판단 순서대로 읽힌다. 작업을 하루 구�
 
 Repair는 시작할 때 LLM 호출 여부와 무관하게 `repair_draft`를 한 번 실행한다. 이후 반복은 `analyze → execute tools → confirm`이고, tool call이 없거나 `done`, 반복 상한에 도달하면 끝난다. LLM·parse 실패 시 마지막으로 확정된 deep copy로 되돌아가 warning을 추가한다. 개별 tool 실패는 tool result로 남아 다음 분석 입력이 된다. 순서는 언제나 코드 → LLM → 코드이고 마지막 단계는 코드 확정이다.
 
-확정 pass는 **고치는 것과 찾는 것을 나눈다**(#119). 무엇을 고칠지가 규칙으로 정해져 있으면 코드가 고치고, 어디서 끊고 무엇을 남길지가 의미 판단이면 찾아서 Repair에 넘긴다. 이동 사이의 장시간 체류와 상한을 넘긴 event를 나누는 것은 뒤쪽이다. 그래서 Repair가 고치지 못하면(LLM 실패, 제한 시간, 반복 소진) 그 위반은 warning과 함께 그대로 저장된다. 코드가 강제하는 것은 사진 단일 귀속, 대화 event 하루 3개, 그리고 10개를 넘을 때 근거가 알림뿐인 event부터 지우는 것(#163)이다. 뒤의 둘은 기준이 알림 수 하나라 코드가 고를 수 있다.
+확정 pass는 **고치는 것과 찾는 것을 나눈다**(#119). 무엇을 고칠지가 규칙으로 정해져 있으면 코드가 고치고, 어디서 끊고 무엇을 남길지가 의미 판단이면 찾아서 Repair에 넘긴다. 이동 사이의 장시간 체류와 상한을 넘긴 event를 나누는 것은 뒤쪽이다. 그래서 Repair가 고치지 못하면(LLM 실패, 제한 시간, 반복 소진) 그 위반은 warning과 함께 그대로 저장된다. 코드가 강제하는 것은 사진 단일 귀속, 대화 event 하루 3개, 그리고 10개를 넘을 때 근거가 알림뿐인 event부터 지우는 것(#163)이다. 뒤의 둘은 기준이 알림 수 하나라 코드가 고를 수 있다. v4는 대화 event의 근거가 대화 알림뿐이게도 강제하고(#183), 대화 event를 10개 제한에서 뺀다. v4는 `대화 개수 제한` 뒤와 `근거 정리` 뒤의 `알림 event 정리`(`remove_notification_events`, #173)가 틀이 있는 날 대화가 아닌 알림으로 만든 event를 지우고, `알림 event 복원`은 틀이 하나도 없는 날에만 돈다.
 
 체류 카드와 일정·사진 event(#138)도 이 나눔을 따른다. 겹치는 체류를 일정·사진 event 의 위치 근거로 붙이는 것은 규칙이라 코드가 하고, 따로 남은 체류 카드가 같은 방문을 그린 것인지(흡수)와 더 긴 다른 시간인지(근무 체류 안의 회의·점심, 둘 다 남김)는 의미 판단이라 Repair 가 `absorb_location_event` 로 정한다. 일정·사진 event 는 어떤 단계도 지우거나 합치지 않는다. 장소를 말하지 않는 일정에는 그 시간에 가장 오래 머문 장소의 체류만 붙인다(#145). 체류 카드 판정은 알림을 보조 근거로 보고 세지 않으며, 결제·예약 앱(알림 앱 사전에서 메신저가 아닌 정책)의 알림이 붙은 event 만 체류 카드에서 뺀다(#145). 확정 pass 가 붙인 체류는 `reason` 표지로 가려지며 사진 단일 귀속은 그것을 그 event 의 근거로 치지 않는다 — 사진을 잃은 event 가 체류 카드로 살아남지 않게 한다.
 
@@ -96,11 +104,13 @@ v3 Repair 프롬프트는 코드가 이미 본 것을 다시 검증하지 않는
 
 ### Question Agent
 
-회고 질문은 Repair가 event를 삭제·병합하고 ID를 확정한 뒤 생성한다. 모든 event가 대상이며 종류에 따른 예외는 없다. LLM에는 event의 ID, 종류, title, 시간대, 선택적 description/place만 주며 confidence, inference level, uncertainty, sourceRef는 주지 않는다.
+회고 질문은 Repair가 event를 삭제·병합하고 ID를 확정한 뒤 생성한다. 모든 event가 대상이며 종류에 따른 예외는 없다. LLM에는 event의 ID, 종류, title, 시간대, 선택적 description/place만 주며 confidence, inference level, uncertainty, sourceRef는 주지 않는다. v4는 장소도 주지 않는다(#182). `place`를 싣지 않고 `{place}` 칸을 지우며 제목·문장에서 그날의 장소 말(`day_place_words`: 장소명, 주소, 지명, 결제·예약 가맹점)을 지운다. 프롬프트 입력만 그렇고 사용자가 읽는 글은 그대로다.
 
-질문은 물음표로 끝나야 하고 255자 이하여야 하며 event당 첫 질문 하나만 적용한다. 모르는 event ID와 중복은 제외하고, 1차에서 빠진 event는 한 번 더 묻는다. Question Agent 실패는 warning을 남기고 질문 없는 draft로 저장을 계속한다.
+질문은 물음표로 끝나야 하고 255자 이하여야 하며 event당 첫 질문 하나만 적용한다. 모르는 event ID와 중복은 제외하고, 1차에서 빠진 event는 한 번 더 묻는다. v4는 장소 말이 든 질문도 제외해 같은 재요청으로 넘기고, 재요청에는 이미 만든 질문을 `clientEventId` 없이 함께 싣는다. 재요청 뒤에도 장소가 남으면 그 event의 질문은 null이고 warning이 남는다. Question Agent 실패는 warning을 남기고 질문 없는 draft로 저장을 계속한다.
 
 v3 Question 프롬프트는 수면을 뺀 eventType마다 예시를 두고, 한 질문에 두 가지를 이어 묻는 것을 허용하며, 무엇을 했는지가 빠진 event는 그것을 먼저 묻는다(#118). 내부 모호성 질문(`TimelineDraft.questions`)은 #118에서 제거됐다.
+
+v4 Question 프롬프트는 `UNKNOWN`을 뺀 16종 eventType마다 물어볼 것, 입력이 말해 줄 때와 부족할 때의 예시, 피할 것을 표로 둔다(#182). 표의 질문은 사용자가 직접 정한 문장이고 표기까지 테스트가 고정한다. 장소 이름 대신 `이곳`·`그곳`·`여기`만 쓴다. User Memory·일정 제목 속 장소는 코드가 가려낼 수 없어 프롬프트가 막는다.
 
 ## Invariants
 

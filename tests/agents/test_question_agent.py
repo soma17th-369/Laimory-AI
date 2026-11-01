@@ -6,9 +6,12 @@
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
+import app.agents.question.question_agent as question_module
+from app.agents.parsing import user_memory_to_text
 from app.agents.question import QuestionAgent
 from app.schemas import (
     EventSourceType,
@@ -17,9 +20,11 @@ from app.schemas import (
     SourceRef,
     TimelineDraft,
     TimelineEventDraft,
+    UserMemory,
 )
+from app.schemas.clues import NotificationClue, NotificationClueKind
 from tests.fixtures.fake_llm import FakeLLM
-from tests.fixtures.requests import fixture_raw_id, make_request
+from tests.fixtures.requests import fixture_raw_id, make_request, stay_item
 
 
 def _event(
@@ -287,3 +292,271 @@ def test_prompt_states_the_expected_question_count():
     QuestionAgent(llm=llm).generate(make_request(), draft)
 
     assert "2개" in llm.calls[0].prompt
+
+
+def test_a_calendar_event_reaches_the_prompt_with_the_type_it_was_given():
+    """일정이 고른 타입으로 질문한다(#184). 타입이 `CALENDAR_EVENT` 로 덮이면 타입별 질문이 맞지 않는다."""
+
+    llm = FakeLLM([_text(_questions(("event-001", "회의에서 정해진 건 뭐예요?")))])
+    event = _event("event-001", event_type=EventType.MEETING, title="팀 회의")
+    event.source_refs = [SourceRef(source_type=EventSourceType.CALENDAR, raw_id=fixture_raw_id("c-1"))]
+
+    QuestionAgent(llm=llm).generate(make_request(), _draft(event))
+
+    assert '"eventType": "MEETING"' in llm.calls[0].prompt
+
+
+# --- v4: 장소 (#182) --------------------------------------------------------
+
+
+@pytest.fixture
+def v4(monkeypatch):
+    monkeypatch.setattr(question_module, "uses_clue_contract", lambda: True)
+
+
+@pytest.fixture
+def v3(monkeypatch):
+    monkeypatch.setattr(question_module, "uses_clue_contract", lambda: False)
+
+
+def _place_event(client_event_id: str = "event-001", **overrides) -> TimelineEventDraft:
+    event = _event(client_event_id, title="서대문구 대현동에서 마포구 도화동으로 출근")
+    fields = {
+        "description": "{place}에서 제육볶음을 먹었다.",
+        "place": "정든식당",
+        "place_candidates": ["정든식당", "포스트타워마포"],
+        "address": "서울 마포구 도화동 33",
+        **overrides,
+    }
+    return event.model_copy(update=fields)
+
+
+def _payment_clues(name: str, *others: NotificationClue) -> SimpleNamespace:
+    payment = NotificationClue(
+        clue_id="N1",
+        kind=NotificationClueKind.PAYMENT,
+        raw_ids=[fixture_raw_id("n-1")],
+        counterpart=name,
+    )
+    return SimpleNamespace(notifications=[payment, *others])
+
+
+def test_v4_prompt_carries_no_place(v4):
+    llm = FakeLLM([_text(_questions(("event-001", "출근길에 무슨 생각을 하셨나요?")))])
+    request = make_request(stays=[stay_item("s", address="서울 서대문구 대현동 11")])
+
+    QuestionAgent(llm=llm).generate(request, _draft(_place_event()))
+
+    prompt = llm.calls[0].prompt
+    assert '"place"' not in prompt
+    assert "{place}" not in prompt
+    for word in ("정든식당", "대현동", "도화동", "마포구", "서대문구"):
+        assert word not in prompt
+    assert '"title": "출근"' in prompt
+    assert '"description": "제육볶음을 먹었다."' in prompt
+
+
+def test_v4_keeps_the_event_when_only_a_place_was_written(v4):
+    llm = FakeLLM([_text(_questions(("event-001", "오늘 식사에서 제일 맛있었던 건 뭐예요?")))])
+    event = _place_event(title="정든식당", description="{place}")
+
+    QuestionAgent(llm=llm).generate(make_request(), _draft(event))
+
+    prompt = llm.calls[0].prompt
+    assert '"title": ""' in prompt
+    assert '"description"' not in prompt
+    assert '"eventType": "MEAL"' in prompt
+
+
+def test_v4_leaves_the_text_users_read_alone(v4):
+    event = _place_event()
+    before = event.model_dump()
+    agent = _agent(_questions(("event-001", "출근길에 무슨 생각을 하셨나요?")))
+
+    result = _run(agent, _draft(event))
+
+    assert result.events[0].model_dump() == {**before, "question": "출근길에 무슨 생각을 하셨나요?"}
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "정든식당 음식은 어땠어요?",
+        "정든 식당 음식은 어땠어요?",
+        "포스트타워마포에서 뭘 했어요?",
+        "도화동엔 무슨 일로 갔어요?",
+        "마포구 도화동까지 가는 길은 어땠어요?",
+        "서울 마포구 도화동 33 근처에서 뭘 했어요?",
+    ],
+)
+def test_v4_asks_again_when_the_question_names_a_place(v4, question: str):
+    good = "오늘 식사에서 제일 맛있었던 건 뭐예요?"
+    llm = FakeLLM([_text(_questions(("event-001", question))), _text(_questions(("event-001", good)))])
+
+    result = QuestionAgent(llm=llm).generate(make_request(), _draft(_place_event()))
+
+    assert len(llm.calls) == 2
+    assert result.events[0].question == good
+    assert result.warnings == []
+
+
+def test_v4_finds_a_place_only_the_request_knows(v4):
+    request = make_request(stays=[stay_item("s", place="공덕 리더스뷰")])
+    event = _place_event(place=None, place_candidates=[], address=None)
+    agent = _agent(
+        _questions(("event-001", "공덕 리더스뷰에선 뭘 했어요?")),
+        _questions(("event-001", "이곳에서 무엇을 하셨나요?")),
+    )
+
+    result = agent.generate(request, _draft(event))
+
+    assert result.events[0].question == "이곳에서 무엇을 하셨나요?"
+
+
+def test_v4_place_left_after_the_retry_leaves_the_question_empty(v4):
+    agent = _agent(
+        _questions(("event-001", "정든식당 음식은 어땠어요?")),
+        _questions(("event-001", "정든식당 분위기는 어땠어요?")),
+    )
+
+    result = _run(agent, _draft(_place_event()))
+
+    assert result.events[0].question is None
+    [warning] = result.warnings
+    assert "1개" in warning.message
+
+
+def test_v4_retry_keeps_valid_questions_and_shows_them_without_their_ids(v4):
+    kept = "출근길에 무슨 생각을 하셨나요?"
+    llm = FakeLLM(
+        [
+            _text(_questions(("event-001", kept), ("event-002", "정든식당 음식은 어땠어요?"))),
+            _text(_questions(("event-002", "오늘 식사에서 제일 맛있었던 건 뭐예요?"))),
+        ]
+    )
+    draft = _draft(_place_event("event-001"), _place_event("event-002"))
+
+    result = QuestionAgent(llm=llm).generate(make_request(), draft)
+
+    assert result.events[0].question == kept
+    assert result.events[1].question == "오늘 식사에서 제일 맛있었던 건 뭐예요?"
+    retry_prompt = llm.calls[1].prompt
+    assert kept in retry_prompt
+    assert "쓸 수 있는 질문을 받지 못했습니다" in retry_prompt
+    assert "event-001" not in retry_prompt
+    assert "event-002" in retry_prompt
+
+
+def test_v4_retry_with_nothing_kept_has_no_kept_questions_block(v4):
+    llm = FakeLLM(
+        [
+            _text(_questions(("event-001", "정든식당 음식은 어땠어요?"))),
+            _text(_questions(("event-001", "오늘 식사에서 제일 맛있었던 건 뭐예요?"))),
+        ]
+    )
+
+    QuestionAgent(llm=llm).generate(make_request(), _draft(_place_event()))
+
+    assert "[이미 만든 질문]" not in llm.calls[1].prompt
+
+
+@pytest.mark.parametrize(
+    ("overrides", "question"),
+    [
+        (
+            {"place": "필라테스 스튜디오", "place_candidates": ["필라테스 스튜디오"]},
+            "필라테스 끝나고 몸은 어떤 느낌이었어요?",
+        ),
+        ({"address": "경기 수원시 이동 11"}, "이동하는 동안 무슨 생각이 들었어요?"),
+        ({}, "퇴근길에 무슨 생각을 하셨나요?"),
+        ({}, "여자친구랑 나눈 얘기 중에 다시 떠오르는 게 있어요?"),
+        ({}, "산책로를 걸으면서 어떤 생각이 들었어요?"),
+        ({}, "이곳에서 무엇을 하셨나요?"),
+        ({}, "무슨 일로 여기까지 가셨나요??"),
+    ],
+)
+def test_v4_keeps_questions_that_only_look_like_places(v4, overrides: dict, question: str):
+    llm = FakeLLM([_text(_questions(("event-001", question)))])
+
+    result = QuestionAgent(llm=llm).generate(make_request(), _draft(_place_event(**overrides)))
+
+    assert len(llm.calls) == 1
+    assert result.events[0].question == question
+
+
+def test_v4_treats_a_payment_merchant_as_a_place(v4):
+    llm = FakeLLM(
+        [
+            _text(_questions(("event-001", "만쥬킹 음식은 어떤 맛이었어요?"))),
+            _text(_questions(("event-001", "오늘 식사에서 제일 맛있었던 건 뭐예요?"))),
+        ]
+    )
+    event = _place_event(title="만쥬킹 식사", description="만쥬킹 음식을 먹었다.")
+
+    result = QuestionAgent(llm=llm).generate(
+        make_request(), _draft(event), _payment_clues("만쥬킹")
+    )
+
+    assert "만쥬킹" not in llm.calls[0].prompt
+    assert result.events[0].question == "오늘 식사에서 제일 맛있었던 건 뭐예요?"
+
+
+def test_v4_a_friend_who_was_paid_is_not_a_merchant(v4):
+    """송금 받은 친구와 같은 날 대화했으면 그 이름은 사람이다."""
+
+    chat = NotificationClue(
+        clue_id="N2",
+        kind=NotificationClueKind.CONVERSATION,
+        raw_ids=[fixture_raw_id("n-2")],
+        counterpart="김기현",
+    )
+    question = "김기현이랑 나눈 얘기 중에 다시 떠오르는 게 있어요?"
+    llm = FakeLLM([_text(_questions(("event-001", question)))])
+
+    result = QuestionAgent(llm=llm).generate(
+        make_request(),
+        _draft(_place_event(title="김기현과 대화")),
+        _payment_clues("김기현", chat),
+    )
+
+    assert '"title": "김기현과 대화"' in llm.calls[0].prompt
+    assert result.events[0].question == question
+
+
+def test_v4_user_memory_reaches_the_prompt_as_the_same_string(v4):
+    """Timeline 과 같은 문자열을 본다. User Memory 속 장소는 프롬프트가 막는다."""
+
+    memory = UserMemory(life_context="회사는 강남구 역삼동 센터필드에 있음.")
+    llm = FakeLLM([_text(_questions(("event-001", "오늘 식사에서 제일 맛있었던 건 뭐예요?")))])
+
+    QuestionAgent(llm=llm).generate(make_request(user_memory=memory), _draft(_place_event()))
+
+    assert user_memory_to_text(memory) in llm.calls[0].prompt
+
+
+def test_v3_prompt_still_carries_the_place_and_keeps_such_questions(v3):
+    event = _event("event-001", title="정든식당에서 점심").model_copy(update={"place": "정든식당"})
+    llm = FakeLLM([_text(_questions(("event-001", "정든식당 음식은 어땠어요?")))])
+
+    result = QuestionAgent(llm=llm).generate(make_request(), _draft(event))
+
+    prompt = llm.calls[0].prompt
+    assert '"title": "정든식당에서 점심"' in prompt
+    assert '"place": "정든식당"' in prompt
+    assert len(llm.calls) == 1
+    assert result.events[0].question == "정든식당 음식은 어땠어요?"
+
+
+def test_v3_retry_wording_is_unchanged(v3):
+    llm = FakeLLM(
+        [
+            _text(_questions(("event-001", "점심은 어떤 자리였나요?"))),
+            _text(_questions(("event-002", "그 시간은 어떻게 보내셨나요?"))),
+        ]
+    )
+
+    QuestionAgent(llm=llm).generate(make_request(), _draft(_event("event-001"), _event("event-002")))
+
+    retry_prompt = llm.calls[1].prompt
+    assert "아래 event 들은 앞선 요청에서 질문을 받지 못했습니다." in retry_prompt
+    assert "점심은 어떤 자리였나요?" not in retry_prompt
