@@ -5,10 +5,16 @@ v4 Repair 는 candidate 대신 근거 묶음과 Timeline 의 병합 이유를 �
 이미 묶어 `merge_stay_events` 도 없다.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 
 from app.agents.repair.repair_agent import build_repair_prompt
-from app.agents.repair.tools import RepairContext, available_tools, execute_tool_calls
+from app.agents.repair.tools import (
+    RepairContext,
+    available_tools,
+    clue_evidence_text,
+    execute_tool_calls,
+)
 from app.schemas import (
     EventSourceType,
     EventType,
@@ -87,6 +93,147 @@ def test_v4_tools_have_no_event_agent_rerun_or_stay_merge():
     assert "rerun_event_agent" not in tools
     assert "merge_stay_events" not in tools
     assert "evidence" in tools["update_event"].description
+
+
+def test_unused_clues_list_only_location_bundles_and_clues():
+    """대화·사진의 자기 묶음 id 는 근거에 단서 id 로 잡혀, 쓴 뒤에도 쓰이지 않은 것으로 보였다(#183)."""
+
+    ctx, item, _ = _talking_context()
+    ctx.draft.events[0].source_refs.append(
+        SourceRef(source_type=EventSourceType.NOTIFICATION, raw_id=item.raw_id)
+    )
+
+    unused = json.loads(clue_evidence_text(ctx))["unusedClues"]
+
+    assert unused == ["N2"]
+
+
+def _talking_context():
+    """체류 event 하나와 쓰이지 않은 대화 둘."""
+
+    office = stay_item("office", start="2026-06-20T09:00:00", end="2026-06-20T18:00:00", places=["OO타워"])
+    first = notification_item("a", "카카오톡", "민수", posted="2026-06-20T12:00:00")
+    second = notification_item("b", "카카오톡", "지수", posted="2026-06-20T13:00:00")
+    request = make_request(stays=[office], notifications=[first, second])
+    clues = build_timeline_clues(
+        build_location_skeleton(request),
+        [],
+        [],
+        [
+            NotificationClue(
+                id=f"N{number}", kind=NotificationClueKind.CONVERSATION, rawIds=[item.raw_id], summary="주말 계획",
+                firstAt=datetime(2026, 6, 20, 11 + number, 0, tzinfo=_KST),
+                lastAt=datetime(2026, 6, 20, 11 + number, 10, tzinfo=_KST),
+            )
+            for number, item in enumerate([first, second], start=1)
+        ],
+    )
+    frame = TimelineEventDraft(
+        client_event_id="event-001",
+        event_type=EventType.STAY,
+        title="보낸 시간",
+        description="{place}에서 시간을 보냈다.",
+        start_time=datetime(2026, 6, 20, 9, 0, tzinfo=_KST),
+        end_time=datetime(2026, 6, 20, 18, 0, tzinfo=_KST),
+        confidence=0.7,
+        inference_level=InferenceLevel.EVIDENCE_BASED,
+        source_refs=[SourceRef(source_type=EventSourceType.STAY, raw_id=office.raw_id)],
+    )
+    draft = TimelineDraft(user_id="u", date="2026-06-20", timezone="Asia/Seoul", events=[frame])
+    return RepairContext(request=request, draft=draft, extended=True, clues=clues), first, second
+
+
+def _add(ctx, conversation="N1"):
+    [result] = execute_tool_calls(
+        ctx,
+        [
+            RepairToolCall(
+                tool="add_conversation_event",
+                args={"conversation": conversation, "title": "민수와 대화", "description": "민수에게서 주말 계획 메시지를 받았다."},
+                reason="구체적인 주제가 있다",
+            )
+        ],
+    )
+    return result
+
+
+def test_add_conversation_event_takes_time_and_evidence_from_the_clue():
+    ctx, item, _ = _talking_context()
+
+    result = _add(ctx)
+
+    assert result.ok, result.message
+    event = ctx.draft.events[-1]
+    assert event.event_type is EventType.SOCIAL
+    assert [ref.raw_id for ref in event.source_refs] == [item.raw_id]
+    assert (event.start_time, event.end_time) == (
+        datetime(2026, 6, 20, 12, 0, tzinfo=_KST),
+        datetime(2026, 6, 20, 12, 10, tzinfo=_KST),
+    )
+
+
+def test_add_conversation_event_rejects_what_is_not_a_conversation():
+    ctx, _, _ = _talking_context()
+    ctx.clues.notifications[0].kind = NotificationClueKind.PAYMENT
+
+    assert not _add(ctx).ok
+    assert not _add(ctx, "N9").ok
+    assert len(ctx.draft.events) == 1
+
+
+def test_add_conversation_event_rejects_a_conversation_already_used():
+    ctx, item, _ = _talking_context()
+    ctx.draft.events[0].source_refs.append(
+        SourceRef(source_type=EventSourceType.NOTIFICATION, raw_id=item.raw_id)
+    )
+
+    assert not _add(ctx).ok
+
+
+def test_add_conversation_event_rejects_a_fourth_conversation():
+    ctx, _, _ = _talking_context()
+    for number in range(3):
+        extra = notification_item(f"x{number}", "카카오톡", "친구", posted=f"2026-06-20T1{number}:00:00")
+        ctx.request.notifications.append(extra)
+        ctx.clues.notifications.append(
+            NotificationClue(id=f"N{number + 3}", kind=NotificationClueKind.CONVERSATION, rawIds=[extra.raw_id])
+        )
+        ctx.draft.events.append(
+            ctx.draft.events[0].model_copy(
+                update={
+                    "client_event_id": f"event-t{number}",
+                    "event_type": EventType.SOCIAL,
+                    "source_refs": [SourceRef(source_type=EventSourceType.NOTIFICATION, raw_id=extra.raw_id)],
+                }
+            )
+        )
+
+    result = _add(ctx)
+
+    assert not result.ok
+    assert "3개" in result.message
+
+
+def test_add_conversation_event_is_not_held_back_by_the_event_limit():
+    """대화는 전체 10개와 상관없이 들어간다(사용자 결정 2026-11-02)."""
+
+    ctx, _, _ = _talking_context()
+    ctx.draft.events.extend(
+        ctx.draft.events[0].model_copy(update={"client_event_id": f"event-f{number}"}) for number in range(9)
+    )
+
+    result = _add(ctx)
+
+    assert result.ok, result.message
+    assert len(ctx.draft.events) == 11
+
+
+def test_add_conversation_event_is_a_v4_tool():
+    ctx, _, _ = _talking_context()
+    assert "add_conversation_event" in available_tools(ctx)
+
+    legacy = RepairContext(request=ctx.request, draft=ctx.draft, extended=True)
+    assert "add_conversation_event" not in available_tools(legacy)
 
 
 def test_update_event_expands_clue_ids_into_source_refs():
