@@ -483,5 +483,3 @@ def test_update_event_takes_a_calendar_as_the_evidence_of_its_meal():
 
     assert result.ok, result.message
     assert ctx.draft.events[0].event_type is EventType.MEAL
-
-
