@@ -9,15 +9,32 @@
 (`fill_place_slots(slots_only=True)`), 제목과 이동 글에서 장소 이름을 뺀다(`keep_place_names_out`).
 """
 
+import re
 from collections.abc import Callable
 from functools import partial
 from typing import Any
 
 from app.schemas import TimelineDraft, TimelineDraftRequest, TimelineEventDraft
 from app.services.clue_bundles import TimelineClues
+from app.services.conversation_guard import is_conversation_event
 from app.services.meal_guard import word_long_stay_meals
 from app.services.place_slots import fill_place_slots, fix_counterpart_particles, fix_title_places
 from app.services.skeleton_guard import restore_place_only_text
+
+#: 받은 메시지를 주고받은 것처럼 쓴 말. 앞은 `주말 계획을 이야기했다` 꼴이라 목적격 조사까지 바꾼다.
+_TWO_WAY_WITH_TOPIC = re.compile(r"[을를] (?:이야기|대화)했다")
+_TWO_WAY = re.compile(r"(?:메시지|이야기|대화)를 (?:주고받았다|나눴다)|(?:이야기|대화)했다")
+_RECEIVED = "메시지를 받았다"
+
+
+def _word_received_messages(draft: TimelineDraft, clues: TimelineClues) -> None:
+    """대화 event 의 문장을 받은 메시지로 맞춘다(#183). 대화 알림은 받은 메시지뿐이다."""
+
+    conversation_ids = clues.conversation_ids
+    for event in draft.events:
+        if is_conversation_event(event, conversation_ids, clues.short_record_ids):
+            text = _TWO_WAY_WITH_TOPIC.sub(f" {_RECEIVED}", event.description)
+            event.description = _TWO_WAY.sub(_RECEIVED, text)
 
 
 def suggest_text_fixes(
@@ -30,6 +47,7 @@ def suggest_text_fixes(
         ("근거가 위치뿐인 event 는 어디에 있었는지만 말한다", partial(restore_place_only_text, probe, request, clues)),
         ("이동은 기록의 경로", partial(fill_place_slots, probe, request, clues=clues)),
         ("대화 상대 뒤 조사는 받침에 맞춘다", partial(fix_counterpart_particles, probe, request, clues=clues)),
+        ("대화는 받은 메시지만 말한다", partial(_word_received_messages, probe, clues)),
         ("제목의 장소 자리는 그 event 의 지명으로 쓴다", partial(fix_title_places, probe, request, clues)),
         ("식사 사진을 품은 긴 체류는 `점심을 먹고 시간을 보냈다` 꼴", partial(word_long_stay_meals, probe)),
     )

@@ -115,8 +115,7 @@ def _writing_left(ctx: RepairContext) -> bool:
     """마지막 확정이 Repair 에 맡긴 글이 남았는가(v4). 코드는 글을 쓰지 않아 Repair 가 마지막 기회다."""
 
     return bool(ctx.reports) and any(
-        finding["kind"] in ("EVENT_TO_WRITE", "TEXT_CORRECTION", "CONVERSATION_ON_OTHER_EVENT")
-        for finding in ctx.reports[-1].findings
+        finding["kind"] in ("EVENT_TO_WRITE", "TEXT_CORRECTION") for finding in ctx.reports[-1].findings
     )
 
 

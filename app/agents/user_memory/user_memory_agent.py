@@ -10,6 +10,9 @@ App Server 로 나가는 것은 언제나 문서 전체이고, 그것이 기존 
   기존 문서에 끼워 넣는다. 목록에 없는 항목은 글자 하나 바뀌지 않는다.
 - **v1·v2** 는 문서 전체를 다시 출력한다. 그 프롬프트가 그렇게 적혀 있고 v2 는 운영
   세트다.
+- **v4** 는 변경 목록과 함께 그날 기록에 나온 장소의 이름을 낸다
+  (:class:`~app.schemas.user_memory.UserMemoryPlacesPatch`). 코드가 중복을 빼고
+  ``notablePlaces`` 리스트에 잇는다(#181).
 
 전체를 다시 쓰게 하면 바뀐 것이 한 줄이어도 나머지 필드를 전부 다시 쓴다. 건드릴 이유가
 없던 내용이 조금씩 달라지거나 빠지고(실측에서 "사는 곳" 이 줄이는 과정에서 사라졌다),
@@ -54,15 +57,21 @@ from __future__ import annotations
 import json
 
 from app.agents.parsing import SupportsComplete, default_llm, user_memory_to_text
-from app.agents.prompt_loader import load_prompt, uses_legacy_contract
+from app.agents.prompt_loader import load_prompt, uses_clue_contract, uses_legacy_contract
 from app.core.execution_context import ExecutionStage, execution_scope
 from app.core.logging import get_logger, log_fields
 from app.core.llm_stages import LLMStage
-from app.schemas.user_memory import NARRATIVE_MAX_LENGTH, UserMemory, UserMemoryPatch
+from app.schemas.user_memory import (
+    NARRATIVE_MAX_LENGTH,
+    UserMemory,
+    UserMemoryPatch,
+    UserMemoryPlacesPatch,
+)
 from app.services.user_memory_limits import (
     USER_MEMORY_MAX_CHARS,
     USER_MEMORY_TARGET_CHARS,
     DailyTimelineDigest,
+    add_places,
     apply_changes,
     items_near_limit,
     serialized_chars,
@@ -92,6 +101,10 @@ _MEMO_ONLY_TRAITS = uses_legacy_contract()
 #: v3 부터 그렇다. v1·v2 프롬프트는 문서 전체를 출력하라고 적혀 있어 그대로 전체를 받는다.
 #: 두 분기값은 같은 기준에서 나오지만 하는 일이 달라 이름을 따로 둔다.
 _PATCH_OUTPUT = not uses_legacy_contract()
+
+#: 변경 목록을 받는 세트의 출력 모델. v4 는 장소 이름을 함께 낸다(#181). v3 는 운영 세트라
+#: provider 로 나가는 schema 가 그대로여야 한다.
+_PATCH_MODEL = UserMemoryPlacesPatch if uses_clue_contract() else UserMemoryPatch
 
 
 def _size_section(existing: UserMemory | None) -> str | None:
@@ -152,6 +165,11 @@ def build_update_prompt(existing: UserMemory | None, digest: DailyTimelineDigest
         f"[dailyTimelines]\n{json.dumps(digest.daily_timelines, ensure_ascii=False, indent=2)}",
     ]
 
+    # 장소 리스트는 프로필 projection 에 없다. 같은 곳인지 판단하는 이 호출에만 따로 싣는다.
+    if _PATCH_MODEL is UserMemoryPlacesPatch and existing and existing.notable_places:
+        names = json.dumps(existing.notable_places, ensure_ascii=False)
+        sections.append(f"[saved places]\n{names}")
+
     size_section = _size_section(existing)
     if size_section:
         sections.append(size_section)
@@ -171,12 +189,15 @@ def build_update_prompt(existing: UserMemory | None, digest: DailyTimelineDigest
     # 세트마다 다르다. 여기서 고정하는 것은 **출력의 모양**뿐이다 — 변경 목록인지
     # 문서 전체인지.
     if _PATCH_OUTPUT:
-        sections.append(
+        instruction = (
             "위 기록을 반영해 기존 프로필에서 **바꿀 항목만** `changes` 에 담아 "
             "출력하세요. 변경마다 왜 바꾸는지를 `reason` 에 먼저 적고, `text` 에는 그 "
             "항목의 전체 문장을 적습니다. 바꾸지 않는 항목은 적지 않습니다. 바꿀 것이 "
             "없으면 `changes` 를 빈 목록으로 둡니다."
         )
+        if _PATCH_MODEL is UserMemoryPlacesPatch:
+            instruction += " 기록에 나온 장소의 이름은 모두 `places` 에 적습니다."
+        sections.append(instruction)
     else:
         sections.append(
             "위 기록을 반영해 **User Memory 전체**를 다시 만드세요. "
@@ -244,13 +265,17 @@ class UserMemoryAgent:
 
             patch = self.llm.complete_structured(
                 prompt,
-                UserMemoryPatch,
+                _PATCH_MODEL,
                 system=_SYSTEM_PROMPT,
                 temperature=_TEMPERATURE,
             )
             # 규칙을 어긴 변경은 그것만 뺀다. 그 항목은 기존 내용 그대로 남고 나머지
             # 변경은 적용된다 — 변경 하나 때문에 그날의 갱신을 통째로 버리지 않는다.
             memory, dropped = apply_changes(patch, existing)
+            if isinstance(patch, UserMemoryPlacesPatch):
+                memory, dropped_places = add_places(memory, patch.places)
+                if dropped_places:
+                    dropped = {**dropped, "placeName": dropped_places}
             if dropped:
                 # 어느 항목이었는지는 본문에 가까워 남기지 않는다. 이유와 개수만 남긴다.
                 logger.info(

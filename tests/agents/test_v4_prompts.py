@@ -14,7 +14,7 @@ import pytest
 from app.agents.events.notification.clue_agent import build_notification_clue_payload
 from app.schemas import EventType, GeoPlace, MovementItem, NotificationItem
 from app.schemas.clues import NotificationClue, NotificationClueKind, PhotoClue
-from app.schemas.user_memory import NARRATIVE_FIELDS
+from app.schemas.user_memory import NARRATIVE_FIELDS, UserMemoryPatch, UserMemoryPlacesPatch
 from app.services.calendar_clues import build_calendar_clues
 from app.services.clue_bundles import build_timeline_clues, timeline_input_sections
 from app.services.duration_guard import DURATION_LIMITS
@@ -96,7 +96,7 @@ def test_timeline_v4_no_longer_attaches_life_place_names():
 
 
 def test_timeline_v4_defines_every_user_memory_field_as_the_writer_does():
-    writer = _read("agents/user_memory/prompts/v3/prompt.md")
+    writer = _read("agents/user_memory/prompts/v4/prompt.md")
     definitions = {
         name: definition
         for name, definition in re.findall(
@@ -108,6 +108,33 @@ def test_timeline_v4_defines_every_user_memory_field_as_the_writer_does():
         assert set(definitions) == set(NARRATIVE_FIELDS)
         for name, definition in definitions.items():
             assert f"- `{name}`: {definition}" in text, f"`{name}` 의 뜻이 쓰는 쪽과 다릅니다."
+
+
+def test_only_the_v4_writer_knows_about_places():
+    """장소 리스트는 코드만 읽는다(#181). 읽는 프롬프트가 생기면 모델이 순서를 흔든다."""
+
+    writer = _read("agents/user_memory/prompts/v4/prompt.md")
+
+    assert "`places`" in writer
+    assert '"places": ["OO타워", "OO클라이밍"]' in writer
+    for text in (
+        writer,
+        _timeline(),
+        _repair(),
+        _read("agents/user_memory/prompts/v3/prompt.md"),
+        _read("agents/timeline/prompts/v3/timeline.md"),
+        _read("agents/repair/prompts/v3/prompt.md"),
+    ):
+        assert "notablePlaces" not in text
+        assert "자주 감" not in text
+    assert "`places` 를 냅니다" not in _read("agents/user_memory/prompts/v3/prompt.md")
+
+
+def test_v3_output_schema_does_not_gain_the_places_field():
+    """v3 는 운영 세트다. provider 로 나가는 출력 schema 가 그대로여야 한다."""
+
+    assert "places" not in UserMemoryPatch.model_json_schema()["properties"]
+    assert "places" in UserMemoryPlacesPatch.model_json_schema()["properties"]
 
 
 def test_timeline_v4_states_the_event_limit_the_code_enforces():
@@ -226,21 +253,6 @@ def test_v4_a_photo_of_a_building_is_not_an_activity():
     assert "`STAY`와 체류 뼈대로 씁니다" in _repair()
 
 
-def test_v4_a_conversation_is_evidence_only_of_its_own_event():
-    """대화는 알림으로만 이루어진 event 다(사용자 결정 2026-11-02). 표의 다른 타입이 대화를 근거로 말하지 않는다."""
-
-    text = _timeline()
-
-    assert "**대화로 만든 event의 근거는 대화뿐이고, 대화는 다른 event의 근거가 되지 않습니다.**" in text
-    assert "체류 시간 안에 온 메시지여도 그 체류의 `evidence`에 적지 않습니다" in text
-    assert "대화 id는 대화로 만든 event에만 씁니다" in _repair()
-    assert "`CONVERSATION_ON_OTHER_EVENT`" in _repair()
-    table = text.split("### eventType 표", 1)[1].split("#### `MEAL`과 `SLEEP`", 1)[0]
-    for name in ("`MEAL`", "`MEETING`", "`WORK`"):
-        row = next(line for line in table.splitlines() if line.startswith(f"| {name} |"))
-        assert "대화" not in row.split(" | ")[2], row
-
-
 def test_v4_a_photo_of_a_place_is_not_an_activity():
     """간판과 `고사실` 표지 사진으로 `컴퓨터 교육` 을 쓴 실제 출력. 사진 해석은 "둘러봤다" 까지였다."""
 
@@ -273,6 +285,16 @@ def test_timeline_v4_follows_the_base_events_without_being_told_to_merge():
     text = _timeline()
     assert "기본 event 하나가 하루의 event 하나" in text
     assert not re.search(r"합치|합쳐|합친|병합", text)
+
+
+def test_v4_prompts_say_what_the_journey_guard_does():
+    """이동 구간 하나는 이동 event 하나이고, 체류는 20분 이상이면 끊는다(#180). 코드와 같은 말을 한다."""
+
+    repair = _repair()
+    for text in (_timeline(), repair):
+        assert "이동 구간 하나는 이동 event 하나" in text
+    assert "20분 이상 체류" in repair
+    assert not re.search(r"20분 이하|20분을 넘", repair)
 
 
 def test_repair_v4_tells_places_apart_by_the_code_address():
@@ -397,7 +419,6 @@ def test_repair_v4_explains_every_finding_the_v4_confirm_pass_reports():
     for kind in (
         "LONG_STAY_BETWEEN_MOVEMENTS",
         "DURATION_OVER_LIMIT",
-        "CONVERSATION_ON_OTHER_EVENT",
         "UNSUPPORTED_MEAL",
         "STAY_WORD_IN_TITLE",
         "TIME_IN_TITLE",
@@ -486,6 +507,65 @@ def test_timeline_v4_uses_notifications_as_evidence_not_events():
     assert "`PROMOTION`" not in text and "`unread`" not in text
 
 
+def test_timeline_v4_judges_each_conversation_by_its_content():
+    """대화가 다른 일을 입증하는지만 따져 13개를 모두 뺐다(#183). 세 갈래로 판단하고 근거는 대화뿐이다."""
+
+    text = _timeline()
+
+    for name in ("**기록할 대화**(`RECORD`)", "**다른 event를 뒷받침하는 대화**(`SUPPORT`)", "**남기지 않는 대화**(`LEAVE_OUT`)"):
+        assert name in text
+    assert "`events`를 쓰기 전에 하나씩 읽고 `conversations`에 아래 순서로 정합니다" in text
+    assert "오늘 있었던 일을 입증하지 못해도, 앞으로의 일을 말해도" in text
+    assert text.index('"conversations": [') < text.index('"events": [')
+    assert text.index("(`SUPPORT`)") < text.index("(`RECORD`)") < text.index("(`LEAVE_OUT`)")
+    assert "근거는 그 대화뿐이고 시간은 그 대화가 온 시간입니다" in text
+    assert "개수를 채우려고 남기거나 억지로 근거로 붙이지 않습니다" in text
+    assert "보조 근거입니다" not in text
+
+
+def test_timeline_v4_keeps_what_a_received_message_can_say():
+    """받은 메시지를 답장·만남으로, 미래 약속을 오늘 한 일로 쓰지 않는다(#183)."""
+
+    timeline, repair = _timeline(), _repair()
+
+    for text in (timeline, repair):
+        assert "`{사람}에게서 {주제} 메시지를 받았다.`" in text
+        assert "이야기했다.` | `OO와 대화`" not in text
+        assert "일정·사진이 말하는 만남" in text
+        assert "결과 확인·과제 수행·답장·만남 같은 행동으로 바꾸지 않습니다" in text
+        assert "대화 알림은 받은 메시지뿐이라 `주고받았다`, `이야기했다`로 쓰지 않습니다" in text
+    assert "**미래의 약속을 오늘 한 것처럼 쓰지 않습니다.**" in timeline
+    assert "일정·사진 없이 대화와 체류뿐이면 만남이 아니다" in timeline
+
+
+def test_v4_says_conversations_do_not_count_toward_ten_events():
+    """대화는 전체 10개와 상관없이 들어간다(사용자 결정 2026-11-02)."""
+
+    assert "대화 event는 이 개수에 들지 않습니다" in _timeline()
+    assert "대화 event는 10개에 들지 않습니다" in _repair()
+    assert "대화 event부터 뺍니다" not in _timeline()
+
+
+def test_timeline_v4_says_why_a_conversation_was_left_out():
+    """개수 때문에 뺀 대화와 내용 때문에 뺀 대화를 가른다. warning 예시의 이유는 모델이 그대로 옮겨 적었다."""
+
+    text = _timeline()
+
+    assert "기록할 만하지만 3개를 넘어 뺀 대화도 여기 두고 `reason`에 개수 때문이라고 적습니다" in text
+    assert "`evidence`에 없는 단서를 근거로 썼다고 적지 않습니다" in text
+    assert "이모티콘만 있어 기록할 내용이 없다" not in text
+
+
+def test_repair_v4_reviews_unused_conversations_without_forcing_them():
+    text = _repair()
+
+    assert "#### `CONVERSATIONS_UNUSED`" in text
+    assert "`add_conversation_event`" in text
+    assert "전부 제외가 맞는 날도 있습니다" in text
+    assert "`SAME_TITLE_IN_A_ROW`·`CONVERSATIONS_UNUSED`는 남아 있어도 됩니다" in text
+    assert "`conversationReviews`가 `RECORD`인 대화 event는 지우지 않습니다" in text
+
+
 def test_notification_v4_keeps_only_what_is_needed():
     """필요한 알림만 남기고 나머지는 `dropped` 에 id 만 적는다(#173)."""
 
@@ -512,17 +592,53 @@ def test_timeline_v4_takes_a_meal_out_of_a_meeting():
 
     assert "만남·회의·일정 중이어도 사진의 `activity`가 먹었다고 말하거나 음식 결제가 있으면 `MEAL`로" in text
     assert "회의 장면 사진" in text
+    # #184: 이 문장을 `그 안에서 따로 한 일은` 으로 고치자 회의 날 두 판 모두 음식 사진을 회의에 담았다.
+    assert "배경 일정은 event로 하나 남기고 그 위에 실제 활동 event를 얹습니다" in text
 
 
 
-def test_timeline_v4_keeps_a_calendar_a_calendar():
-    """캘린더라면 캘린더 일정으로 저장한다(사용자 결정 2026-10-31). 수면 일정만 `SLEEP` 이다."""
+def test_timeline_v4_types_a_calendar_by_what_it_says():
+    """일정은 내용대로 타입을 고르고 길이는 이유가 아니다(#184, 2026-10-31 결정을 이 이슈가 뒤집었다)."""
 
     text = _timeline()
 
-    assert "캘린더 일정은 `CALENDAR_EVENT`로 남깁니다" in text
-    assert "회의는 `MEETING`" not in text
-    assert "수면 일정은 `SLEEP`입니다" in text
+    assert "캘린더 일정은 `CALENDAR_EVENT`로 남깁니다" not in text
+    assert "일정의 제목·메모가 말하는 활동으로 고릅니다" in text
+    for kind, event_type in (("회의", "MEETING"), ("수업", "CLASS"), ("업무", "WORK"), ("운동", "EXERCISE"), ("수면", "SLEEP")):
+        assert f"{kind}는 `{event_type}`" in text or f"{kind}은 `{event_type}`" in text
+    assert "종일 일정과 긴 일정도 같습니다" in text
+
+
+def test_timeline_v4_takes_meals_out_before_typing_a_calendar():
+    """틀의 타입을 뺐을 때 회의 날 식사가 사라졌다(#167). 틀은 두고 꺼낸 뒤에 고르게 한다."""
+
+    text = _timeline()
+
+    assert "기본 event의 `CALENDAR_EVENT`는 아직 고르지 않았다는 표시입니다" in text
+    assert "그 안의 식사·사진을 먼저 꺼낸 뒤 남은 일정의 타입을 고릅니다" in text
+
+
+def test_a_calendar_type_does_not_mean_it_happened():
+    """타입을 골랐다고 참석·완료를 확정하지 않는다(#184). 일정만 있는 식사는 먹었다고 쓰지 않는다."""
+
+    text = _timeline()
+
+    assert "타입은 무엇에 관한 일정인지이고 그 일을 했다는 뜻이 아닙니다" in text
+    assert "일정뿐이면 먹었다고 쓰지 않는다" in text
+    assert "일정이 있었다는 것과 참석했다는 것은 다릅니다" in text
+
+
+def test_timeline_and_repair_v4_define_the_calendar_fallback_alike():
+    for text in (_timeline(), _repair()):
+        assert "어떤 활동인지 알 수 없을 때만입니다" in text
+        assert "타입은 무엇에 관한 일정인지이고 그 일을 했다는 뜻이 아닙니다" in text
+
+
+def test_question_v4_reads_calendar_event_as_an_unclassified_calendar():
+    text = _read("agents/question/prompts/v4/question.md")
+
+    assert "`CALENDAR_EVENT`(어떤 활동인지 모르는 일정)" in text
+    assert "OO치과" not in text
 
 
 # --- eventType (#172) --------------------------------------------------------------
@@ -545,12 +661,68 @@ def test_v4_prompts_do_not_offer_unknown():
         assert "UNKNOWN" not in text
 
 
-@pytest.mark.parametrize("event_type", ["STAY", "SHOPPING", "CULTURE", "ERRAND"])
-def test_question_v4_has_an_example_for_each_new_boundary(event_type: str):
+@pytest.mark.parametrize(
+    "event_type", [member.value for member in EventType if member is not EventType.UNKNOWN]
+)
+def test_question_v4_has_an_example_for_each_event_type(event_type: str):
     question = _read("agents/question/prompts/v4/question.md")
 
     assert f"| `{event_type}` |" in question
     assert f"`{event_type}`(" in question
+
+
+#: 사용자가 직접 정한 질문이다(#182, 2026-11-02). 표기까지 그대로 싣는다.
+_USER_WRITTEN_QUESTIONS = [
+    "오늘 먹은 김밥은 맛있었어요?",
+    "오늘 식사에서 제일 맛있었던 건 뭐예요?",
+    "출근길에 무슨 생각을 하셨나요?",
+    "무슨 일로 여기까지 가셨나요??",
+    "배포 준비하면서 제일 오래 붙든 부분은 뭐였어요?",
+    "오늘 일은 잘 마무리 하셨나요?",
+    "2분기 회의에서 이번 계획에 대해 제일 신경 중요한 건 뭐예요?",
+    "회의는 문제 없이 잘 끝났나요?",
+    "자료구조 수업에서 배운 것 중 어떤 것이 기억에 남았나요?",
+    "수업에서 배운 건 어떤건가요?",
+    "민수랑 나눈 얘기 중에 다시 떠오르는 게 있어요?",
+    "이번 대화에서 제일 기억에 남는 말은 뭐예요?",
+    "걸으면서 어떤 생각이 들었어요?",
+    "끝나고 몸은 어떤 느낌이었어요?",
+    "드라마에서 제일 기억에 남는 장면은 뭐예요?",
+    "쉬는 동안 뭘 하면서 쉬셨나요?",
+    "잠들기 전에 마지막으로 떠올린 건 뭐였어요?",
+    "오늘은 어떤 기분으로 잠들었어요?",
+    "눈 떴을 때 제일 먼저 떠오른 건 뭐였어요?",
+    "일어났을 때 몸은 어떤 느낌이었어요?",
+    "검진에서 들은 얘기 중에 기억에 남는 것은 무엇인가요?",
+    "이 일정을 무사히 잘 보내셨나요?",
+    "그 노을을 찍고 싶었던 이유는 무엇 이였나요?",
+    "이 순간을 왜 남겨 두고 싶었던 이유는 뮤엇이였나요?",
+    "이곳에서 무엇을 하셨나요?",
+    "이곳에서 있는 시간은 어떤 시간이였나요?",
+    "이곳에 있는 동안 어떤 기분이였나요?",
+    "이번에 산 것 중에 제일 마음에 든 건 뭐예요?",
+    "어떤 것을 구매하셨나요?",
+    "영화를 보고 제일 기억에 오래 남은 장면이 뭐예요?",
+    "보고 나서 어떤 생각이 들었어요?",
+    "이 볼일은 무슨 이유로 챙기게 되셨나요?",
+    "볼일을 보고 나서 어떤 기분이셨나요?",
+]
+
+
+@pytest.mark.parametrize("sentence", _USER_WRITTEN_QUESTIONS)
+def test_question_v4_keeps_the_questions_the_user_wrote(sentence: str):
+    assert sentence in _read("agents/question/prompts/v4/question.md")
+
+
+def test_question_v4_examples_name_no_place():
+    """모델은 예시의 말투를 따른다. 예시에 장소가 있으면 금지 문장이 있어도 장소를 쓴다."""
+
+    question = _read("agents/question/prompts/v4/question.md")
+
+    assert "{place}" not in question
+    assert "`place`" not in question
+    for word in ("강남역", "김밥천국", "오산천", "성수동", "마포", "올리브영", "CGV", "약국까지", "한강공원"):
+        assert word not in question
 
 
 def test_v4_prompts_no_longer_send_a_stay_to_unknown():

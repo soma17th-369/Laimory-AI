@@ -93,7 +93,13 @@ from app.services.calendar_guard import ensure_calendar_events
 from app.services.calendar_location import reinforce_calendar_location
 from app.services.clue_bundles import TimelineClues
 from app.services.confirm_report import ConfirmReport
-from app.services.conversation_guard import enforce_conversation_limit
+from app.services.conversation_guard import (
+    MAX_CONVERSATION_EVENTS,
+    conversation_events,
+    enforce_conversation_limit,
+    find_unused_conversations,
+    notification_only,
+)
 from app.services.duration_guard import verify_event_duration
 from app.services.event_count_guard import (
     LEGACY_MAX_EVENT_COUNT,
@@ -104,7 +110,11 @@ from app.services.event_count_guard import (
 from app.services.location_link import link_location_evidence
 from app.services.location_only_overlap import find_location_only_overlaps
 from app.services.location_skeleton import LocationSkeleton
-from app.services.meal_guard import enforce_meal_duration, find_unsupported_meals
+from app.services.meal_guard import (
+    enforce_meal_duration,
+    find_unsupported_meals,
+    is_calendar_meal,
+)
 from app.services.movement_stay_guard import verify_movement_stay_boundary
 from app.services.narrative_guard import verify_narrative_length
 from app.services.narrative_place_guard import (
@@ -128,12 +138,13 @@ from app.services.skeleton_guard import (
     remove_calendar_events_without_calendar,
     remove_stays_without_location,
     NEEDS_WRITING,
-    conversations_on_other_events,
     ensure_notification_events,
     ensure_skeleton_segments,
     hand_restored_events_to_repair,
     keep_calendar_base_events,
     keep_stay_word_out,
+    keep_conversation_evidence,
+    keep_one_event_per_journey,
     remove_events_outside_evidence,
     remove_notification_events,
     remove_unrecorded_movements,
@@ -330,6 +341,8 @@ def repair_durations(
             continue  # 정상 구간
         if event.event_type in _INSTANT_EVENT_TYPES:
             continue  # 사진 순간은 0 이 정상
+        if skeleton is not None and notification_only(event):
+            continue  # v4 의 알림뿐인 event 는 받은 시각 한 점이다. 메시지 한 건인 대화가 그렇다(#183)
 
         span = _referenced_span(event, spans)
         if span is None:
@@ -451,17 +464,32 @@ def _contains(outer: TimelineEventDraft, inner: TimelineEventDraft) -> bool:
     return outer.start_time <= inner.start_time and inner.end_time <= outer.end_time
 
 
-def _is_duplicate(left: TimelineEventDraft, right: TimelineEventDraft) -> bool:
+def _calendar_ids(event: TimelineEventDraft) -> set[str]:
+    return {ref.raw_id for ref in event.source_refs if ref.source_type is EventSourceType.CALENDAR}
+
+
+def _is_duplicate(
+    left: TimelineEventDraft, right: TimelineEventDraft, *, by_calendar: bool = False
+) -> bool:
     """같은 종류 + 같은 장소 + 시간이 겹치면 같은 사건을 두 번 쓴 것으로 본다.
 
     장소가 비어 있으면 장소로는 같은 곳인지 알 수 없다. 그때는 같은 근거(rawId)를 하나
     이상 함께 가질 때만 같은 사건으로 본다(#163). 빈 키를 같은 장소로 치면 근거가 알림뿐인
     event 들이 시간만 겹쳐도 합쳐진다 — 서로 다른 상대와의 대화 셋이 11시간짜리 대화
     하나가 됐다.
+
+    `by_calendar` 면(v4 세트, #184) 일정 근거를 가진 event 는 일정 근거와 시간이 모두 같을 때만
+    같은 사건이다. 일정이 활동 타입을 갖자 09:00~23:00 `WORK` 일정 안의 `WORK` event 가 같은
+    사건으로 합쳐져 사라졌다.
     """
 
     if left.event_type is not right.event_type or not _overlaps(left, right):
         return False
+    if by_calendar and (_calendar_ids(left) or _calendar_ids(right)):
+        if _calendar_ids(left) != _calendar_ids(right):
+            return False
+        if (left.start_time, left.end_time) != (right.start_time, right.end_time):
+            return False
     place = _place_key(left)
     if place != _place_key(right):
         return False
@@ -566,19 +594,26 @@ def merge_stay_events(draft: TimelineDraft, request: TimelineDraftRequest) -> No
     )
 
 
-def resolve_overlaps(draft: TimelineDraft) -> None:
+def resolve_overlaps(draft: TimelineDraft, *, by_calendar: bool = False) -> None:
     """중복 event 를 병합하고, 모순되는 부분 겹침은 경고로 남긴다(in-place).
 
     포함 관계(긴 체류 안의 짧은 식사 같은)는 정상이므로 손대지 않는다. 서로 다른
     장소를 같은 시간에 가리키는 부분 겹침은 사실 충돌이지만, 어느 쪽이 맞는지 코드가
-    알 수 없으므로 시간을 자르지 않고 사용자에게 알린다.
+    알 수 없으므로 시간을 자르지 않고 사용자에게 알린다. `by_calendar` 는 `_is_duplicate` 를 본다.
     """
 
     kept: list[TimelineEventDraft] = []
     merged_titles: list[str] = []
 
     for event in draft.events:
-        target = next((candidate for candidate in kept if _is_duplicate(candidate, event)), None)
+        target = next(
+            (
+                candidate
+                for candidate in kept
+                if _is_duplicate(candidate, event, by_calendar=by_calendar)
+            ),
+            None,
+        )
         if target is None:
             kept.append(event)
             continue
@@ -742,12 +777,17 @@ def _clue_correction_steps(
     overrides: dict[str, Callable[[TimelineDraft, TimelineDraftRequest], object]],
     clues: TimelineClues,
 ) -> tuple[tuple[str, Callable[[TimelineDraft, TimelineDraftRequest], object]], ...]:
+    conversation_ids = clues.conversation_ids
     overrides = {
         **overrides,
         "장소 확정": partial(_confirm_place_slots, clues=clues),
         # 체류·이동의 시간은 뼈대 구간 안의 시간이다 — 원래 시각으로 맞추면 정리한 이동이 되늘어난다.
         "지속시간 복원": partial(repair_durations, skeleton=clues.skeleton),
         "근거 구간 정렬": partial(align_location_events, skeleton=clues.skeleton),
+        # 식사 일정의 시간은 일정이 정한다(#184).
+        "식사 시간": partial(enforce_meal_duration, allow_stay_meal=True, keep_calendar_meal=True),
+        # 일정이 활동 타입을 가지므로 타입·장소가 같아도 일정이나 시간이 다르면 다른 사건이다(#184).
+        "중복 정리": lambda draft, request: resolve_overlaps(draft, by_calendar=True),
         # 사진 candidate 가 없어, 되살리는 사진은 이어 찍은 것끼리 묶고 같은 장면은 한 event 로 모은다.
         "사진 단일 귀속": enforce_photo_scenes,
         # 수면 일정은 계획이다 — 이동과 다른 장소의 체류는 겹쳐도 남긴다.
@@ -756,16 +796,12 @@ def _clue_correction_steps(
         # 단독 위치 기록은 보태기만 하는 근거라 알림뿐인 event 를 가를 때 세지 않는다(#173).
         "대화 개수 제한": partial(
             enforce_conversation_limit,
-            conversation_ids={
-                raw_id
-                for clue in clues.notifications
-                if clue.kind is NotificationClueKind.CONVERSATION
-                for raw_id in clue.raw_ids
-            },
+            conversation_ids=conversation_ids,
             aside=clues.short_record_ids,
         ),
+        # 대화 event 는 10개와 상관없이 들어간다(#183, 사용자 결정 2026-11-02).
         "event 개수 정리": lambda draft, request: enforce_event_count(
-            draft, aside=clues.short_record_ids
+            draft, aside=clues.short_record_ids, conversation_ids=conversation_ids
         ),
     }
     steps = tuple(
@@ -779,6 +815,8 @@ def _clue_correction_steps(
     position = [name for name, _ in steps].index("캘린더 일정 복원") + 1
     steps = (
         *steps[: position - 1],
+        # 구조를 지키는 단계보다 먼저다 — `from` 을 적은 대화는 위치 근거 때문에 체류처럼 다뤄져 지워진다.
+        ("대화 근거 지키기", partial(_skeleton_step, keep_conversation_evidence, clues=clues)),
         ("일정 기본 event 지키기", partial(_skeleton_step, keep_calendar_base_events, clues=clues)),
         *steps[position - 1 : position],
         # 뼈대가 정한 구조를 Timeline 이 어긴 것을 바로잡은 뒤에 빠진 구간을 복원한다.
@@ -786,6 +824,8 @@ def _clue_correction_steps(
         ("일정 근거 없는 일정 정리", partial(_skeleton_step, remove_calendar_events_without_calendar, clues=clues)),
         ("위치 근거 없는 체류 정리", partial(_skeleton_step, remove_stays_without_location, clues=clues)),
         ("이동 구간 분리", partial(_skeleton_step, separate_movement_segments, clues=clues)),
+        # 복원보다 앞이어야 한다. 일부만 쓴 이동을 넓히지 않으면 복원이 겹치는 이동을 하나 더 만든다.
+        ("이동 구간 하나로 맞추기", partial(_skeleton_step, keep_one_event_per_journey, clues=clues)),
         ("근거 시간 밖 event 정리", partial(_skeleton_step, remove_events_outside_evidence, clues=clues)),
         ("위치 구간 복원", partial(_skeleton_step, ensure_skeleton_segments, clues=clues)),
         *steps[position:],
@@ -823,6 +863,11 @@ def _clue_correction_steps(
             extended.append(("제목·이동 장소 이름", partial(_skeleton_step, keep_place_names_out, clues=clues)))
             extended.append(("제목 체류 표현", partial(_skeleton_step, keep_stay_word_out, clues=clues)))
         else:
+            if name == "대화 개수 제한":
+                # 사진 단일 귀속이 사진을 옮기면 체류와 대화만 남은 `SOCIAL` 이 새로 생긴다.
+                extended.append(
+                    ("대화 근거 다시 지키기", partial(_skeleton_step, keep_conversation_evidence, clues=clues))
+                )
             extended.append((name, overrides.get(name, step)))
             if name == "대화 개수 제한":
                 # 알림은 틀의 근거다. 단독 event 로 남는 알림은 대화 3개뿐이다(#173).
@@ -879,13 +924,16 @@ def _inspect(
     for finding in verify_event_duration(draft, request, by_type=extended):
         report.add_finding("DURATION_OVER_LIMIT", finding.detail(), event=finding.event)
     verify_event_count(
-        draft, limit=MAX_EVENT_COUNT if extended else LEGACY_MAX_EVENT_COUNT
+        draft,
+        limit=MAX_EVENT_COUNT if extended else LEGACY_MAX_EVENT_COUNT,
+        aside=clues.short_record_ids if clues is not None else frozenset(),
+        conversation_ids=clues.conversation_ids if clues is not None else None,
     )
 
     if not extended:
         return
 
-    for found in verify_movement_stay_boundary(draft, request):
+    for found in verify_movement_stay_boundary(draft, request, limit_is_long=clue_contract):
         # 나눌 자리는 event 의 시간 안으로 맞춘 값이라 최종 시간이 정해진 뒤에 만든다.
         report.add_finding("LONG_STAY_BETWEEN_MOVEMENTS", found.detail, event=found.event)
 
@@ -895,6 +943,9 @@ def _inspect(
     for overlap in [] if clue_contract else find_location_only_overlaps(draft, request):
         report.add_finding("LOCATION_ONLY_OVERLAP", overlap.detail, event=overlap.event)
     for meal in find_unsupported_meals(draft):
+        # v4 는 식사 약속 일정도 식사의 근거다(#184). 먹었다고 쓰는 것은 문장 규칙의 몫이다.
+        if clue_contract and is_calendar_meal(meal, request):
+            continue
         report.add_finding(
             "UNSUPPORTED_MEAL",
             {"sourceTypes": sorted({ref.source_type.value for ref in meal.source_refs})},
@@ -910,8 +961,6 @@ def _inspect(
         for event in draft.events:
             if names := place_names_in_title(event, request, clues):
                 report.add_finding("PLACE_NAME_IN_TITLE", {"found": names}, event=event)
-        for event, conversations in conversations_on_other_events(draft, clues):
-            report.add_finding("CONVERSATION_ON_OTHER_EVENT", {"found": conversations}, event=event)
         ordered = sorted(draft.events, key=lambda event: event.start_time)
         for event, following in zip(ordered, ordered[1:]):
             # 같은 일이면 괜찮다(사용자 결정 2026-10-31). 무엇이 다른지는 Repair 가 판단한다.
@@ -933,6 +982,16 @@ def _inspect(
         for event, suggestion in suggest_text_fixes(draft, request, clues):
             if event.merge_reason != NEEDS_WRITING:
                 report.add_finding("TEXT_CORRECTION", suggestion, event=event)
+        conversations = [
+            clue for clue in clues.notifications if clue.kind is NotificationClueKind.CONVERSATION
+        ]
+        room = len(
+            conversation_events(
+                draft, request, clues.conversation_ids, aside=clues.short_record_ids
+            )
+        ) < MAX_CONVERSATION_EVENTS
+        for unused in find_unused_conversations(draft, conversations, room=room):
+            report.add_finding("CONVERSATIONS_UNUSED", unused.detail(), event=unused.event)
 
 
 def repair_draft(

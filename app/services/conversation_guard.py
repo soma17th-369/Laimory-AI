@@ -25,8 +25,13 @@ Notification Agent 가 candidate 를 고르는 기준("대화 내용이 많을�
 정한 뒤에는 LLM 이 판단할 것이 남지 않아 코드로 옮겼다.
 """
 
+import re
+from dataclasses import dataclass
+from typing import Any
+
 from app.core.logging import get_logger, log_fields
 from app.schemas import (
+    ConversationDecision,
     EventSourceType,
     EventType,
     TimelineDraft,
@@ -35,6 +40,7 @@ from app.schemas import (
     TimelineWarning,
     TimelineWarningSeverity,
 )
+from app.schemas.clues import NotificationClue
 from app.services.source_lookup import raw_id_of
 
 logger = get_logger(__name__)
@@ -44,6 +50,12 @@ MAX_CONVERSATION_EVENTS = 3
 
 #: 메신저로 온 결제·예약 안내로 만든 event 의 타입. 대화가 아니라 세지 않는다.
 _TRANSACTION_EVENT_TYPES = frozenset({EventType.MEAL, EventType.MOVEMENT})
+
+#: 일정·사진이 있으면 대화가 아니라 실제로 있었던 일이다. 대화는 그 일의 보조 근거다.
+_ACTIVITY_SOURCE_TYPES = frozenset({EventSourceType.CALENDAR, EventSourceType.PHOTO})
+
+#: `mergeReason` 에 적은 알림 단서 id(`N5`).
+_NOTIFICATION_ID = re.compile(r"(?<![0-9A-Za-z])N\d+(?![0-9A-Za-z])")
 
 _WARNING_ID_PREFIX = "warning-conversation-limit-"
 
@@ -77,6 +89,27 @@ def notification_only(
     return bool(refs) and all(ref.source_type is EventSourceType.NOTIFICATION for ref in refs)
 
 
+def is_conversation_event(
+    event: TimelineEventDraft,
+    conversation_ids: set[str],
+    aside: frozenset[str] | set[str] = frozenset(),
+) -> bool:
+    """v4 의 대화 event 인가(#183). 대화 자체를 기록한 event 다.
+
+    대화 알림을 가졌고 일정·사진이 없으며, 근거가 알림뿐이거나 `SOCIAL` 이다. 일정·사진 없이 체류와
+    대화뿐인 `SOCIAL` 도 대화 event 다 — 받은 메시지와 그 시간의 체류만으로는 만났다고 할 수 없다.
+    `STAY`·`WORK` 처럼 틀이 있는 event 에 붙은 대화는 그 event 의 보조 근거라 여기 들지 않는다.
+    """
+
+    if event.event_type in _TRANSACTION_EVENT_TYPES:
+        return False
+    if not any(ref.raw_id in conversation_ids for ref in event.source_refs):
+        return False
+    if any(ref.source_type in _ACTIVITY_SOURCE_TYPES for ref in event.source_refs):
+        return False
+    return event.event_type is EventType.SOCIAL or notification_only(event, aside)
+
+
 def conversation_events(
     draft: TimelineDraft,
     request: TimelineDraftRequest,
@@ -92,14 +125,12 @@ def conversation_events(
     """
 
     if conversation_ids is not None:
-        # 근거가 모두 알림이고 그중 대화가 있으면 대화 event 다. 대화에 거래 알림(당근)이 함께 붙어도
-        # 대화 event 로 센다 — 대화만 세면 그런 event 가 빠져 4개가 남았다.
+        # 대화에 거래 알림(당근)이 함께 붙어도 대화 event 로 센다 — 대화만 세면 그런 event 가 빠져
+        # 4개가 남았다. 붙은 알림은 `keep_conversation_evidence` 가 뺀다(#183).
         return [
             event
             for event in draft.events
-            if event.event_type not in _TRANSACTION_EVENT_TYPES
-            and notification_only(event, aside)
-            and any(ref.raw_id in conversation_ids for ref in event.source_refs)
+            if is_conversation_event(event, conversation_ids, aside)
         ]
 
     # 앱 분류의 정본은 Notification Agent 가 쓰는 사전이다. guard 가 분류를 따로 가지면
@@ -135,6 +166,60 @@ def conversation_events(
     return found
 
 
+@dataclass(frozen=True)
+class UnusedConversations:
+    """남긴 대화가 쓰이지 않은 자리. `event` 가 있으면 그 event 가 쓴다고 적고 잇지 않은 대화다."""
+
+    conversation_ids: list[str]
+    event: TimelineEventDraft | None = None
+
+    def detail(self) -> dict[str, Any]:
+        return {"conversationIds": list(self.conversation_ids)}
+
+
+def find_unused_conversations(
+    draft: TimelineDraft, conversations: list[NotificationClue], *, room: bool = True
+) -> list[UnusedConversations]:
+    """Timeline·Repair 가 다시 볼 대화를 찾는다(v4, #183). 고치지 않는다.
+
+    Timeline 이 남기기로 정하고 어느 event 에도 잇지 않은 대화, 그런 대화가 없을 때 하나도 쓰이지 않은
+    남긴 대화 전부, `mergeReason` 이 `N5` 처럼 적었는데 그 event 의 근거에 없는 대화다. 무엇을 기록할지와
+    어디에 이을지는 내용을 읽어야 하는 판단이라 코드가 고르지 않는다. 실제 Timeline 은 13개를 어디에도
+    잇지 않고 warning 에 "보조 근거로만 두었다" 고만 적었다. 전부 제외가 맞는 날도 있어 Repair 가 보고
+    그대로 둘 수 있다.
+
+    `room` 이 거짓이면 대화 event 를 더 만들 수 없는 날이다(대화 3개). `RECORD` 인데 쓰이지 않은 대화는
+    개수로 빠진 것이라 찾지 않는다 — 다시 보여도 도구가 거절할 뿐이다.
+    """
+
+    if not conversations:
+        return []
+
+    by_id = {clue.clue_id: clue for clue in conversations}
+    held = {ref.raw_id for event in draft.events for ref in event.source_refs}
+    unused = [clue.clue_id for clue in conversations if not held & set(clue.raw_ids)]
+    kept = {
+        review.clue_id
+        for review in draft.conversation_reviews
+        if review.decision is ConversationDecision.SUPPORT
+        or (review.decision is ConversationDecision.RECORD and room)
+    }
+    found: list[UnusedConversations] = []
+    decided = [identifier for identifier in unused if identifier in kept]
+    if decided or (room and len(unused) == len(by_id)):
+        found.append(UnusedConversations(decided or unused))
+    for event in draft.events:
+        own = {ref.raw_id for ref in event.source_refs}
+        named = [
+            identifier
+            for identifier in dict.fromkeys(_NOTIFICATION_ID.findall(event.merge_reason or ""))
+            if identifier in by_id and not own & set(by_id[identifier].raw_ids)
+        ]
+        if named:
+            found.append(UnusedConversations(named, event))
+    return found
+
+
 def _keep_order(event: TimelineEventDraft):
     """알림이 많은 대화가 먼저다. 같으면 먼저 시작한 대화다."""
 
@@ -157,7 +242,21 @@ def enforce_conversation_limit(
     if len(conversations) <= MAX_CONVERSATION_EVENTS:
         return []
 
-    ranked = sorted(conversations, key=_keep_order)
+    if conversation_ids is None:
+        ranked = sorted(conversations, key=_keep_order)
+    else:
+        # v4 는 메시지 수가 같으면 내용이 많은 대화를 남긴다(#183). 한 건짜리 대화끼리는 먼저 시작한 것이
+        # 남아 `6월 말이었네` 같은 한마디가 멘토의 긴 조언을 밀어냈다.
+        chars = {raw_id_of(item): len(item.text or "") for item in request.notifications}
+        ranked = sorted(
+            conversations,
+            key=lambda event: (
+                -notification_count(event),
+                -sum(chars.get(ref.raw_id, 0) for ref in event.source_refs),
+                event.start_time,
+                event.title,
+            ),
+        )
     removed = ranked[MAX_CONVERSATION_EVENTS:]
     removed_ids = {id(event) for event in removed}  # clientEventId 는 아직 중복일 수 있다
     draft.events = [event for event in draft.events if id(event) not in removed_ids]

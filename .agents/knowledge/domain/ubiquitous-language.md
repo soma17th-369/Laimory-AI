@@ -43,8 +43,9 @@
 | Confirm/확정 pass | `repair_draft`와 fragment 검사를 실행해 source·시간·정렬·ID 등 결정론 규칙을 재적용하는 단계. |
 | Guard | 특정 불변식을 검사·보정하거나 warning으로 드러내는 결정론 service. 모든 guard가 값을 자동 수정하는 것은 아니다. 무엇을 고칠지가 규칙으로 정해져 있으면 고치고, 의미 판단이 필요하면 찾기만 한다. |
 | 자동 검사 결과 (`ConfirmReport`) | 확정 pass 한 번이 고친 것(`corrected`), 지우거나 합친 것(`removed`), 새로 만든 것(`added`), 찾았지만 고치지 않은 것(`findings`)의 기록(#119). v3 Repair 프롬프트의 `[자동 검사 결과]` 절로 실린다. Warning과 다르다 — warning은 사람이 읽는 문장이고 이것은 event id·바뀐 값·경계를 담은 구조다. 저장하지 않는다. |
-| 대화 event | 근거가 전부 알림이고 eventType이 `MEAL`·`MOVEMENT`가 아닌 최종 event(#119, #163). v3는 메신저 정책이 있는 앱의 알림일 때, v4는 Notification 단서의 대화가 있을 때다. 하루 최대 3개이고, 넘으면 코드가 알림이 많은 3개만 남긴다. Notification Agent 입력의 대화 묶음(`conversations`)이나 출력의 대화 candidate와 다른 말이다 — 그것들이 Timeline을 지나 남은 결과다. |
-| 이동 사이 장시간 체류 | 하나의 candidate·event가 `MOVEMENT → 20분을 넘는 STAY → MOVEMENT`를 함께 품은 구조(#119). 20분 이하로 머문 짧은 체류(`shortStayRawIds`)와 같은 기준의 반대쪽이다. |
+| 대화 event | 근거가 전부 알림이고 eventType이 `MEAL`·`MOVEMENT`가 아닌 최종 event(#119, #163). v3는 메신저 정책이 있는 앱의 알림일 때, v4는 Notification 단서의 대화가 있을 때다. v4는 일정·사진 없이 대화를 가진 `SOCIAL`도 대화 event이고, 근거는 대화 알림뿐이며, 전체 10개에 세지 않는다(#183). 하루 최대 3개이고, 넘으면 코드가 알림이 많은 3개만 남긴다(v4는 같으면 글자 수가 많은 대화). Notification Agent 입력의 대화 묶음(`conversations`)이나 출력의 대화 candidate와 다른 말이다 — 그것들이 Timeline을 지나 남은 결과다. |
+| 기록할 대화·다른 event를 뒷받침하는 대화·남기지 않는 대화 | Timeline v4가 대화 단서마다 내용을 읽고 정하는 세 갈래(#183). 출력 `conversations[].decision`의 `RECORD`·`SUPPORT`·`LEAVE_OUT`이다. 앞은 대화 event가 되고, 가운데는 `STAY`·`CALENDAR_EVENT` 같은 다른 event의 근거가 되며, 뒤는 event도 근거도 아니다. |
+| 이동 사이 장시간 체류 | 하나의 candidate·event가 `MOVEMENT → 20분을 넘는 STAY → MOVEMENT`를 함께 품은 구조(#119). 20분 이하로 머문 짧은 체류(`shortStayRawIds`)와 같은 기준의 반대쪽이다. v4는 20분 이상이다(#180). |
 | Question Agent | Repair가 확정한 모든 event에 사용자 회고 유도 질문을 하나씩 붙이는 Agent. |
 | 회고 유도 질문 | `TimelineEventDraft.question`/result event의 `question`. 사용자가 경험·감정·이유를 덧붙이도록 event에 중첩해 저장하는 질문. 예전의 내부 모호성 질문(`TimelineDraft.questions`)은 #118에서 제거됐다 — 읽어서 쓰는 곳이 없었고, 그 자리는 event `uncertainty`와 Timeline warning이 맡는다. |
 | `place` | 장소명. 파이프라인 전 구간이 이 한 이름을 쓴다 — 입력 `StayItem.place`/`GeoPlace.place`, draft event의 `place`, result event의 `place`. 예전 draft 필드명 `placeLabel`은 #72에서 통합됐고 back-compat alias로만 남는다. |
@@ -56,10 +57,10 @@
 | 빈 시간 | 뼈대 구간 사이에 위치 기록이 없는 시간. 수집 공백(`COLLECTION_GAP`)과 기록되지 않은 이동(`UNRECORDED_MOVEMENT`)이 있다. 앞뒤 event로 메우지 않는다. |
 | 단서 | v4에서 데이터마다 그 데이터가 말하는 것만 담은 값. 위치 구간·일정 단서는 코드가, 사진·알림 단서는 LLM이 읽어 만든다. v3의 candidate와 달리 사건 종류와 문장을 정하지 않는다. v3까지의 Fragment 정의에 쓰인 "단서"와 다른 말이다. |
 | 근거 묶음 | 뼈대 구간 하나와 거기 붙은 사진·일정·알림 단서(`ClueBundle`, id `B1`…). 붙을 구간이 없는 단서와 대화는 자기 묶음이다. 대화가 아닌 알림은 처음 받은 시각을 품는 구간 하나에 붙고, 구간 밖 시각이나 다른 날 일정의 알림은 하루 목록으로 간다. |
-| 틀 | v4에서 알림뿐이 아닌 event. 위치 구간·사진·일정으로 만들어진다. 알림은 틀의 근거이고, 틀이 있는 날 단독 event로 남는 알림은 대화뿐이다(#173). |
+| 틀 | v4에서 알림뿐이 아닌 event. 위치 구간·사진·일정으로 만들어진다. 알림은 틀의 근거이고, 틀이 있는 날 그 자체로 event가 되는 알림은 대화뿐이다(#173, #183). |
 | 같은 장소의 주소 | v4에서 하루 안 250m 이내 지점들이 함께 쓰는 한 주소(동이 있는 주소 우선, `same_place_addresses`). |
 | 지명(`area`) | v4 제목에서 어디였는지 말할 때 쓰는 그 장소의 이름 아닌 위치 표현. 같은 장소 묶음마다 코드가 하나 고른다: 구 + 동, 동이 없으면 구 + 도로명(건물번호 제외, 도로명 안 숫자는 둔다). 그날 시·도가 둘 이상이면 시·도를 짧게 붙인다. 제목에서 장소를 말한 자리는 언제나 이것이다(결제·예약 가맹점 자리도 같다). 근거가 위치뿐인 event의 제목은 이것을 그대로 쓰고, 장소를 말하지 않는 활동 제목에는 필수가 아니다(#179). |
-| 기본 event | v4에서 코드가 뼈대 구간마다 만든 event 구조(`E1`…, 틀 문장). Timeline은 그 틀을 따라 근거를 더하고 내용을 채우며 그 안의 다른 사건은 근거가 있으면 꺼내고, 결과 event마다 온 기본 event를 `from`(`baseEventIds`)으로 적는다. 기본 event 둘을 한 event로 합치지 않는다 — 체류 기본 event가 따로라는 것은 다른 장소이거나 사이에 이동·빈 시간이 있다는 뜻이다. 일정이 덮은 체류의 기본 event는 **일정 기본 event**(`calendar`, 일정 시간)다. |
+| 기본 event | v4에서 코드가 뼈대 구간마다 만든 event 구조(`E1`…, 틀 문장). Timeline은 그 틀을 따라 근거를 더하고 내용을 채우며 그 안의 다른 사건은 근거가 있으면 꺼내고, 결과 event마다 온 기본 event를 `from`(`baseEventIds`)으로 적는다. 기본 event 둘을 한 event로 합치지 않는다 — 체류 기본 event가 따로라는 것은 다른 장소이거나 사이에 이동·빈 시간이 있다는 뜻이다. 일정이 덮은 체류의 기본 event는 **일정 기본 event**(`calendar`, 일정 시간)다. 그 `CALENDAR_EVENT`는 아직 타입을 고르지 않았다는 표시이고 최종 타입은 일정 내용으로 정한다(#184). |
 | 장소 칸 | v4 문장의 장소 자리 `{place}`. 이름은 코드가 근거로 확정하거나 `placeCandidates`로 사용자가 고른다. 칸을 쓸 수 없으면 지명(구 + 동, 건물번호 없음)으로 바꾼다. |
 | 대표 좌표 | result event의 `latitude`·`longitude`(#175). 사용자가 실제로 있던 지점 하나의 좌표이고, 이동은 도착지다. 후보마다 좌표를 두지 않는다. 코드가 최종 근거에서 채우며 프롬프트에 싣지 않는다. |
 | `placeCandidates` | result event의 장소 후보(`[{name, latitude?, longitude?}]`, App Server 공지 2026-10-29·명세 2026-10-30, 최대 5개). 우선순위 순서이고 App Server는 1번 후보로 `place`와 event 좌표를 덮어쓴다. 입력의 `places`(근처 이름 목록)와 다른 값이다 — `places`는 고를 재료, `placeCandidates`는 사용자에게 보일 후보다. 좌표는 입력 `placePoints`의 그 원소 값이다. v4 세트에서만 보낸다. |
@@ -81,6 +82,7 @@
 | 부분 갱신 (`UserMemoryPatch`) | v3 세트에서 모델이 내는 출력. 변경 목록(`changes`)을 담는다. AI 서버 안의 계약이며 코드가 변경 목록을 기존 문서에 끼워 넣어 갱신본을 만든다. 저장·전송 형식이 아니다. |
 | 변경 목록 (`changes`) | 부분 갱신의 내용. 한 건은 `item`·`action`·`reason`·`text`다. 바꿀 항목만 담기고, 바꿀 것이 없으면 빈 목록이다. |
 | 항목 (`item`) | 변경 목록에서 바꾸는 단위. 고정 필드 하나(이름 그대로) 또는 `customAttributes`의 속성 하나(`customAttributes.<키>`)다. 문장 단위가 아니다. |
+| 주요 장소 (`notablePlaces`) | 기록에 나온 장소의 이름을 모두 누적한 리스트 필드(#181). 집·회사·학교의 이름도 담고, 언제·몇 번 갔는지는 담지 않는다. v4 세트만 채우고 Timeline·Repair·Question은 보지 않는다. 장소 후보(`placeCandidates`)와 다르다 — 후보는 그날 입력의 이름이고, 주요 장소는 지난 기록에서 모은 것이라 후보의 순서만 바꾼다. |
 | 동작 (`action`) | 항목을 어떻게 바꿀지. `추가`(없던 항목을 처음 채움)·`수정`(있는 항목을 전체 문장으로 바꿔 끼움)·`삭제`(항목을 비움, 속성은 키째로 지움) 셋이다. `삭제`는 기존 문서가 목표 크기를 넘어 줄여야 할 때만 적용되고, 그 밖에는 코드가 적용하지 않는다. |
 | 이유 (`reason`) | 변경 한 건을 왜 하는지. 모델이 `text`를 쓰기 전에 적는 판단 과정이며 `견준 결과: 이번 기록의 사실` 한 문장이다(견준 결과는 새로움·합침·반복·충돌). 코드는 읽지 않는다. Repair의 자동 검사 결과에 있는 `findings`(코드가 찾은 것)와 다른 것이다. |
 | App Server | source, Timeline 결과 persistence, User Memory, task 상태를 소유하는 외부 서버. AI 서버의 제품 데이터 경계다. |

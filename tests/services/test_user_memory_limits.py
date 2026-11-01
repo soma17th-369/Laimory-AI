@@ -15,6 +15,7 @@ import pytest
 from app.schemas.user_memory import (
     NARRATIVE_FIELDS,
     NARRATIVE_MAX_LENGTH,
+    PLACE_NAME_MAX_LENGTH,
     UserMemory,
     UserMemoryPatch,
 )
@@ -31,6 +32,7 @@ from app.services.user_memory_limits import (
     USER_MEMORY_MAX_CHARS,
     ITEM_LIMIT_MARGIN,
     USER_MEMORY_TARGET_CHARS,
+    add_places,
     apply_changes,
     build_daily_timeline_digest,
     drop_removals,
@@ -1093,3 +1095,64 @@ def test_items_near_the_limit_are_named_with_their_size_only():
 
 def test_no_item_is_near_the_limit_in_a_small_profile():
     assert items_near_limit(_small_profile()) == []
+
+
+def _listed(*names: str) -> UserMemory:
+    return UserMemory(notable_places=list(names))
+
+
+def test_new_places_join_the_end_of_the_list():
+    memory, dropped = add_places(_listed("망원시장"), ["OO서점", "OO공원"])
+
+    assert memory.notable_places == ["망원시장", "OO서점", "OO공원"]
+    assert dropped == 0
+
+
+def test_a_place_already_listed_is_not_added_again():
+    """띄어쓰기만 다른 이름도 같은 이름이다. 후보와 견줄 때와 같은 정규화를 쓴다(#181)."""
+
+    memory, dropped = add_places(_listed("OO서점 합정점"), ["OO서점합정점", " 망원시장 ", "망원시장", ""])
+
+    assert memory.notable_places == ["OO서점 합정점", "망원시장"]
+    assert dropped == 0
+
+
+def test_another_branch_is_another_place_in_the_list():
+    memory, _ = add_places(_listed("OO커피 망원점"), ["OO커피 합정점"])
+
+    assert memory.notable_places == ["OO커피 망원점", "OO커피 합정점"]
+
+
+def test_a_name_too_long_or_sensitive_is_left_out_of_the_list():
+    memory, dropped = add_places(_listed(), ["가" * (PLACE_NAME_MAX_LENGTH + 1), "010-1234-5678", "OO서점"])
+
+    assert memory.notable_places == ["OO서점"]
+    assert dropped == 2
+
+
+def test_the_list_grows_past_what_a_text_field_could_hold():
+    """모든 방문 장소를 누적한다(사용자 결정). 글자 칸으로 뒀을 때는 500자에서 멈췄다(#181)."""
+
+    names = [f"OO가게{i:03d}" for i in range(300)]
+
+    memory, dropped = add_places(_listed(), names)
+
+    assert memory.notable_places == names
+    assert dropped == 0
+    assert len(", ".join(names)) > NARRATIVE_MAX_LENGTH
+
+
+def test_the_list_does_not_count_toward_the_document_size():
+    """프롬프트에 실리지 않는 값이다. 세면 리스트가 늘수록 모델이 프로필을 줄이게 된다."""
+
+    without = UserMemory(routines="평일 아침 출근.")
+    with_places = without.model_copy(update={"notable_places": [f"OO가게{i:03d}" for i in range(2000)]})
+
+    assert serialized_chars(with_places) == serialized_chars(without)
+    assert find_violations(with_places) == []
+    assert shrink_budget(with_places) == shrink_budget(without)
+    assert items_near_limit(with_places) == []
+
+
+def test_a_sensitive_name_in_a_received_list_is_a_violation():
+    assert find_violations(_listed("010-1234-5678"))

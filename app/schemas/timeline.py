@@ -162,6 +162,25 @@ class TimelineClueEvent(CamelModel):
         return self
 
 
+class ConversationDecision(str, Enum):
+    """대화 하나를 어떻게 남기는지."""
+
+    RECORD = "RECORD"
+    SUPPORT = "SUPPORT"
+    LEAVE_OUT = "LEAVE_OUT"
+
+
+class TimelineConversationReview(CamelModel):
+    """대화 하나를 읽고 정한 것."""
+
+    clue_id: str = Field(alias="id", min_length=1)
+    content: str = Field(default="")
+    reason: str = Field(default="")
+    decision: ConversationDecision
+    title: str = Field(default="")
+    description: str = Field(default="")
+
+
 class TimelineClueOutput(CamelModel):
     """Timeline v4 의 LLM 출력 계약(#169).
 
@@ -170,6 +189,12 @@ class TimelineClueOutput(CamelModel):
     근거로 정하고 Timeline 은 후보의 순서만 고른다.
     """
 
+    # `events` 보다 먼저여야 한다(#183). 추론이 꺼진 모델은 출력 말고 생각할 자리가 없어, 대화를 맨 뒤
+    # warning 에서 다루게 두자 event 를 다 쓴 뒤 13개를 한 문장으로 쓸어 담았다. 내용을 쓰고, 이유를 쓰고,
+    # 그다음 정하는 순서도 같은 이유다. User Memory v3 의 `reason` 을 먼저 쓰게 한 것과 같은 방법이다.
+    # 기록할 대화의 글(`title`·`description`)도 여기 쓴다. event 는 코드가 만든다 — `RECORD` 로 정하고도
+    # `events` 에는 쓰지 않는 일이 잦았고, 코드가 만들면 근거가 대화뿐인 것이 처음부터 맞다.
+    conversations: list[TimelineConversationReview] = Field(default_factory=list)
     events: list[TimelineClueEvent] = Field(default_factory=list)
     warnings: list[TimelineWarning] = Field(default_factory=list)
 
@@ -182,3 +207,6 @@ class TimelineDraft(CamelModel):
     timezone: str = Field(min_length=1)
     events: list[TimelineEventDraft] = Field(default_factory=list)
     warnings: list[TimelineWarning] = Field(default_factory=list)
+    # Timeline v4 가 대화마다 정한 것(#183). 확정 pass 와 Repair 만 읽는다. dump 에 넣지 않는다 — v3 의
+    # Repair 프롬프트가 draft 를 그대로 싣고, 결과 저장 계약에도 없는 값이다.
+    conversation_reviews: list[TimelineConversationReview] = Field(default_factory=list, exclude=True)

@@ -13,7 +13,8 @@
   구간에도 붙인다. 구간 경계나 빈 시간에 찍은 사진도 위치가 맞는 구간에 붙는다.
 - 대화: **구간에 붙이지 않고 언제나 자기 묶음이다**(#173, 사용자 결정 2026-10-31). "대화는 기존
   이벤트와 연관이 크게 없다." 구간에 붙여 두자 Timeline 이 대화로 체류를 채워 `덕충동에서 대화` 가
-  됐다. 대화는 단독 event 로 하루 3개까지 남는다.
+  됐다. 시간이 겹친다고 붙지 않고, Timeline·Repair 가 내용을 읽고 고를 때만 event 나 근거가 된다(#183).
+  대화 event 는 하루 3개까지이고 근거는 대화 알림뿐이다.
 - 그 밖의 알림(결제·예약·소식·행동 결과): 처음 받은 시각을 품는 구간 **하나**에 붙인다(#173, 사용자
   결정 2026-10-31). 시각이 없던 때 이 알림은 근거로 거의 쓰이지 않았다(토스·문자 72건 중 2건). 어느
   event 의 것인지는 Timeline·Repair 가 내용으로 판단한다. 묶음 id 를 펼쳐도 알림은 담기지 않고 `N5` 처럼
@@ -110,6 +111,17 @@ class TimelineClues:
         """단독 위치 기록의 rawId. event 를 만들지 않고 보태기만 하는 근거다."""
 
         return frozenset(record.raw_id for record in self.skeleton.isolated)
+
+    @property
+    def conversation_ids(self) -> set[str]:
+        """Notification 단서가 대화로 남긴 알림의 rawId."""
+
+        return {
+            raw_id
+            for clue in self.notifications
+            if clue.kind is NotificationClueKind.CONVERSATION
+            for raw_id in clue.raw_ids
+        }
 
     def address(self, address: str | None) -> str | None:
         if not address:
@@ -692,6 +704,8 @@ def _notification_dict(clue: NotificationClue) -> dict[str, object]:
     for key, value in (("counterpart", clue.counterpart), ("summary", clue.summary)):
         if value:
             payload[key] = value
+    if clue.kind is NotificationClueKind.CONVERSATION:
+        payload["messageCount"] = len(clue.raw_ids)
     if clue.schedule_today is not None:
         payload["scheduleToday"] = clue.schedule_today
     if clue.first_at is not None:

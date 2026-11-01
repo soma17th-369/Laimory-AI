@@ -201,8 +201,37 @@ def test_v3_takes_only_the_items_to_change_and_keeps_the_rest(
     memory = module.UserMemoryAgent(llm=llm).generate(existing, _digest_without_memo())
 
     assert module._PATCH_OUTPUT is True
+    assert module._PATCH_MODEL is module.UserMemoryPatch, "v3 의 provider schema 는 그대로다."
     assert memory.basic_profile == "30대 개발자입니다."
     assert memory.relationships == "김민수: 같은 팀 동료."
+
+
+def test_v4_joins_the_day_places_to_the_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v4 는 그날의 이름만 내고 코드가 리스트에 잇는다(#181). 빈도도 시기도 없다."""
+
+    module = _reload_agents(monkeypatch, "v4")["user_memory"]
+    existing = module.UserMemory(notable_places=["OO타워"])
+    llm = FakeLLM(['{"changes": [], "places": ["OO타워", "OO서점"]}'])
+
+    memory = module.UserMemoryAgent(llm=llm).generate(existing, _digest_without_memo())
+
+    assert module._PATCH_MODEL is module.UserMemoryPlacesPatch
+    assert memory.notable_places == ["OO타워", "OO서점"]
+
+
+def test_only_the_v4_update_sees_the_saved_places(monkeypatch: pytest.MonkeyPatch) -> None:
+    """같은 곳인지 판단하는 이 호출에만 싣는다. 프로필 문자열에는 없다(#181)."""
+
+    existing_names = ["OO타워", "OO서점"]
+
+    v4 = _reload_agents(monkeypatch, "v4")["user_memory"]
+    prompt = v4.build_update_prompt(v4.UserMemory(notable_places=existing_names), _digest_without_memo())
+    assert '[saved places]\n["OO타워", "OO서점"]' in prompt
+
+    v3 = _reload_agents(monkeypatch, "v3")["user_memory"]
+    prompt = v3.build_update_prompt(v3.UserMemory(notable_places=existing_names), _digest_without_memo())
+    assert "[saved places]" not in prompt
+    assert "OO타워" not in prompt
 
 
 def test_v3_does_not_tell_the_model_to_leave_traits_untouched(

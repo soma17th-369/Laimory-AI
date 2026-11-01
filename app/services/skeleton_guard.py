@@ -7,10 +7,11 @@ Timeline v4 는 코드가 만든 기본 event(뼈대 구간마다 하나) 위에
 1. 이동 기록도 교통 결제·예약도 없는 `MOVEMENT` 는 지운다 — 기록되지 않은 이동(빈 시간)은
    event 가 아니다.
 2. 이동은 체류와 합치지 않는다(#134). 이동 구간 기록을 다른 event 에서 빼고 걸친 끝을 자른다.
-3. event 는 자기 근거의 시간과 겹친다. 근거와 시간이 겹치지 않는 event 는 지운다 — 실제 Timeline
+3. 이동 구간 하나는 이동 event 하나다(#180). 조각은 합치고, 일부만 쓴 event 는 구간 전체로 넓힌다.
+4. event 는 자기 근거의 시간과 겹친다. 근거와 시간이 겹치지 않는 event 는 지운다 — 실제 Timeline
    은 낮의 체류를 근거로 22:00~06:00 밤 event 를 만들었다. 위치 근거가 없는 event 는 근거의
    시간 밖으로 늘이지 않는다.
-4. 기본 event 의 시간은 어느 event 가 덮는다. 덮이지 않은 구간 시간(20분 초과)은 틀 문장 event 로
+5. 기본 event 의 시간은 어느 event 가 덮는다. 덮이지 않은 구간 시간(20분 초과)은 틀 문장 event 로
    되살린다 — 실제 Timeline 은 집 체류 묶음을 통째로 빼먹거나, 사무실 체류의 오후를 비웠다.
 
 예전에는 "구간의 기록이 어느 event 근거에 들어 있는가" 로 구간이 쓰였는지 봤다. 그러면 근거로만
@@ -37,7 +38,11 @@ from app.schemas.clues import NotificationClue, NotificationClueKind
 from app.services.base_events import BaseEvent, base_event_draft, stay_title
 from app.services.calendar_guard import RESTORED_CALENDAR_DESCRIPTION
 from app.services.clue_bundles import TimelineClues, place_only_raw_ids
-from app.services.conversation_guard import MAX_CONVERSATION_EVENTS, notification_only
+from app.services.conversation_guard import (
+    MAX_CONVERSATION_EVENTS,
+    is_conversation_event,
+    notification_only,
+)
 from app.services.location_metrics import SHORT_STAY_MAX
 from app.services.location_skeleton import SegmentKind
 from app.services.meal_guard import MEAL_STAY_MAX_DURATION
@@ -144,15 +149,20 @@ def keep_calendar_base_events(
         if not covering:
             continue
         calendar_id = base.calendar.raw_id
-        owner = next(
-            (e for e in covering if any(ref.raw_id == calendar_id for ref in e.source_refs)),
-            None,
-        ) or next((e for e in covering if _owns_calendar(e, base)), None)
+
+        def holds(event: TimelineEventDraft) -> bool:
+            return any(ref.raw_id == calendar_id for ref in event.source_refs)
+
+        # 활동을 쓴 event 가 일정을 갖지 않았어도 체류(`보낸 시간`)보다 먼저다(#184) — 체류가 일정을
+        # 가졌다고 주인이 되면 Timeline 이 고른 `MEETING` 이 체류에 합쳐져 사라진다.
+        owner = next((e for e in covering if holds(e) and _owns_calendar(e, base)), None) or next(
+            (e for e in covering if _owns_calendar(e, base)), None
+        )
         # 일정을 가진 event 라도 일정 event 로 남을 수 없으면 되돌린다. Repair 가 회의 event 를 식사로
         # 바꾸며 묶음 id 로 일정을 다시 담자, 식사 시간이 그 event 를 20분으로 줄여 회의 일정이
         # 17:24~17:44 가 됐고 일정이 참조되고 있어 캘린더 복원도 돌지 않았다.
-        if owner is None or not _owns_calendar(owner, base):
-            owner = owner or covering[0]
+        if owner is None:
+            owner = next((e for e in covering if holds(e)), covering[0])
             owner.event_type = base.event_type
             owner.merge_reason = NEEDS_WRITING
         if not any(ref.raw_id == calendar_id for ref in owner.source_refs):
@@ -180,14 +190,48 @@ def keep_calendar_base_events(
         logger.debug("일정 기본 event 지키기: %d건 합침", len(merged))
 
 
+def keep_conversation_evidence(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """대화 event 의 근거는 대화 알림뿐이다(in-place, #183, 사용자 결정 2026-11-02).
+
+    "대화 이벤트는 오로지 대화알림을 근거로만 만들어져야 한다". 프롬프트만 말할 때는 `from` 을 적으면 체류
+    기록이, 사진을 함께 적으면 사진이 다른 event 로 옮겨진 뒤 체류 기록이, 묶음 id 를 적으면 단독 위치
+    기록이, 다른 알림을 적으면 그 알림이 대화 event 에 남았다. 위치가 붙은 대화는 대화 개수 제한에도
+    세이지 않았고, `from` 을 적은 대화는 이동 분리·시간 정리에서 통째로 지워지기도 했다.
+
+    대화 알림만 남기고 `from` 을 비우고 시간을 그 대화가 온 시간으로 맞춘다. 근거를 뺐으면 글은 Repair 가
+    쓴다. 뺀 체류의 시간은 위치 구간 복원이 되살린다.
+    """
+
+    conversation_ids = clues.conversation_ids
+    for event in draft.events:
+        if not is_conversation_event(event, conversation_ids, clues.short_record_ids):
+            continue
+        kept = [ref for ref in event.source_refs if ref.raw_id in conversation_ids]
+        if len(kept) < len(event.source_refs):
+            event.source_refs = kept
+            event.merge_reason = NEEDS_WRITING
+        event.base_event_ids = []
+        held = {ref.raw_id for ref in kept}
+        talks = [
+            clue
+            for clue in clues.notifications
+            if clue.first_at is not None and held & set(clue.raw_ids)
+        ]
+        if talks:
+            event.start_time = min(clue.first_at for clue in talks)
+            event.end_time = max(clue.last_at or clue.first_at for clue in talks)
+
+
 def remove_notification_events(
     draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
 ) -> None:
     """틀이 있는 날 대화가 아닌 알림으로 만든 event 를 없앤다(in-place, #173).
 
     "알림은 기존 만들어진 틀의 부가적인 근거가 되는 것" (사용자 결정 2026-10-31). 운영 v3 는 15개 중 10개가
-    알림뿐인 날이 있었다. 대화는 기존 event 와 연관이 크지 않아 단독으로 남고 개수는
-    `enforce_conversation_limit` 이 맞춘다.
+    알림뿐인 날이 있었다. 대화는 내용이 맞으면 틀의 근거이고 그 자체로 기록할 만하면 대화 event 로 남는다
+    (#183). 대화 event 개수는 `enforce_conversation_limit` 이 맞춘다.
 
     틀은 알림뿐이 아닌 event 다(위치 구간·사진·일정). 틀이 하나도 없는 날은 건드리지 않는다 — 그날은 알림이
     그날의 기록이다(`ensure_notification_events`).
@@ -204,7 +248,7 @@ def remove_notification_events(
     if all(notification_only(event, aside) for event in draft.events):
         return
 
-    conversation_ids = _conversation_ids(clues)
+    conversation_ids = clues.conversation_ids
     location_ids = {raw_id_of(item) for item in [*request.stays, *request.movements]} | aside
     notification_ids = {raw_id_of(item) for item in request.notifications}
     removed = [
@@ -426,30 +470,6 @@ def keep_stay_word_out(
                 event.merge_reason = NEEDS_WRITING
 
 
-def conversations_on_other_events(
-    draft: TimelineDraft, clues: TimelineClues
-) -> list[tuple[TimelineEventDraft, list[str]]]:
-    """대화가 근거로 붙은, 알림뿐이 아닌 event 와 그 대화 id. 찾기만 한다(사용자 결정 2026-11-02).
-
-    "대화는 오로지 알림들로만 이루어진 이벤트가 되어야 해". 근거에서 빼는 것은 곧 글을 다시 쓰는 일이라 Repair 가
-    한다 — 코드는 사진이나 일정이 있는 event 의 글을 대신 쓸 수 없다.
-    """
-
-    found = []
-    for event in draft.events:
-        if all(ref.source_type is EventSourceType.NOTIFICATION for ref in event.source_refs):
-            continue
-        refs = {ref.raw_id for ref in event.source_refs}
-        ids = [
-            clue.clue_id
-            for clue in clues.notifications
-            if clue.kind is NotificationClueKind.CONVERSATION and refs & set(clue.raw_ids)
-        ]
-        if ids:
-            found.append((event, ids))
-    return found
-
-
 def _keep_notifications_on_one_event(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
     """여러 event 가 가진 알림은 가장 짧은 event 에만 남긴다. 그것이 유일한 근거인 event 는 둔다."""
 
@@ -496,15 +516,6 @@ def retire_unknown_events(
                 None,
             )
             event.event_type = _ALERT_EVENT_TYPES.get(kind, EventType.ERRAND)
-
-
-def _conversation_ids(clues: TimelineClues) -> set[str]:
-    return {
-        raw_id
-        for clue in clues.notifications
-        if clue.kind is NotificationClueKind.CONVERSATION
-        for raw_id in clue.raw_ids
-    }
 
 
 def _take_evidence(cover: TimelineEventDraft, event: TimelineEventDraft) -> None:
@@ -676,6 +687,7 @@ def separate_movement_segments(
         if segment.kind is not SegmentKind.STAY
         for raw_id in segment.raw_ids
     }
+    walks = _walk_record_ids(clues)
     base_segments = {
         bundle.base_event.base_id: bundle.base_event.segment
         for bundle in clues.bundles
@@ -693,7 +705,7 @@ def separate_movement_segments(
     spans = _source_spans(request, tz)
     kept: list[TimelineEventDraft] = []
     for event in draft.events:
-        if event.event_type in (EventType.MOVEMENT, EventType.EXERCISE):
+        if _is_on_the_move(event, walks):
             kept.append(event)
             continue
         # 일정 event 의 시간은 바꾸지 않는다(사용자 결정) — 이동 기록만 빼고 자르지 않는다.
@@ -734,6 +746,157 @@ def separate_movement_segments(
     _keep_one_place(draft, clues, base_segments)
 
 
+def _walk_record_ids(clues: TimelineClues) -> set[str]:
+    return {
+        raw_id
+        for segment in clues.skeleton.segments
+        if segment.kind is SegmentKind.WALK
+        for raw_id in segment.raw_ids
+    }
+
+
+def _is_on_the_move(event: TimelineEventDraft, walks: set[str]) -> bool:
+    """이동·산책 구간이 그 event 의 시간인가.
+
+    운동 일정은 아니다(#184). `EXERCISE` 를 통째로 빼 두면 운동 일정이 앞뒤 이동 구간을 그대로 품는다.
+    산책 구간을 가진 운동 일정은 산책이 곧 그 운동이라 그대로다.
+    """
+
+    if event.event_type is EventType.MOVEMENT:
+        return True
+    if event.event_type is not EventType.EXERCISE:
+        return False
+    return not _has_calendar(event) or any(ref.raw_id in walks for ref in event.source_refs)
+
+
+def keep_one_event_per_journey(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """이동 구간 하나는 이동 event 하나다(in-place, #180).
+
+    뼈대가 정한 여정을 기록 경계·환승·이동수단으로 다시 나누지 않는다. 합치라고 LLM 에 맡기지 않고
+    규칙으로 정해지는 일이라 코드가 맞춘다. 한 구간의 이동 event 가 여럿이면 가장 오래 겹치는 event 로
+    합치고 시간은 구간 전체다. 일부만 쓴 event 도 넓힌다. 그러지 않으면 복원 단계가 빈 시간을 틀 문장
+    이동으로 되살려 이동이 겹쳐 남는다.
+
+    여러 구간에 걸친 event 는 가장 오래 겹치는 구간으로 줄이고 다른 구간의 위치 근거를 뺀다. 뺀 구간은
+    `ensure_skeleton_segments` 가 되살린다 — 20분 이상 체류를 사이에 둔 두 이동은 하나가 아니다.
+
+    일정 근거가 있는 이동의 구간은 건드리지 않는다. 일정 event 의 시간은 바꾸지 않는다(사용자 결정).
+    글은 코드가 쓰지 않는다. 근거가 바뀌었으면 경로가 달라질 수 있어 Repair 에 넘긴다.
+    """
+
+    bases = {
+        bundle.base_event.segment.segment_id: bundle.base_event
+        for bundle in clues.bundles
+        if bundle.base_event and bundle.base_event.segment.kind is not SegmentKind.STAY
+    }
+    if not bases:
+        return
+    base_segments = {
+        bundle.base_event.base_id: bundle.base_event.segment
+        for bundle in clues.bundles
+        if bundle.base_event
+    }
+    owners = {raw_id: segment for segment in clues.skeleton.segments for raw_id in segment.raw_ids}
+
+    journey_events = [
+        (event, touched)
+        for event in draft.events
+        if event.event_type in (EventType.MOVEMENT, EventType.EXERCISE)
+        and (touched := _journeys_of(event, owners, base_segments, bases))
+    ]
+    scheduled = {
+        segment.segment_id
+        for event, touched in journey_events
+        if _has_calendar(event)
+        for segment in touched
+    }
+    by_journey: dict[str, list[TimelineEventDraft]] = {}
+    rewritten: set[int] = set()
+    for event, touched in journey_events:
+        if any(segment.segment_id in scheduled for segment in touched):
+            continue
+        keep = max(touched, key=lambda segment: _time_shared(event, segment))
+        by_journey.setdefault(keep.segment_id, []).append(event)
+        _leave_other_segments(event, keep, owners, base_segments)
+        if len(touched) > 1:
+            rewritten.add(id(event))
+
+    merged: set[int] = set()
+    for segment_id, events in by_journey.items():
+        base = bases[segment_id]
+        segment = base.segment
+        owner = max(
+            sorted(events, key=lambda event: event.start_time),
+            key=lambda event: _time_shared(event, segment),
+        )
+        for other in events:
+            if other is not owner:
+                _take_evidence(owner, other)
+                merged.add(id(other))
+        held = {ref.raw_id for ref in owner.source_refs}
+        missing = [ref for ref in base_event_draft(base).source_refs if ref.raw_id not in held]
+        owner.source_refs.extend(missing)
+        owner.start_time, owner.end_time = segment.start, segment.end
+        if base.base_id not in owner.base_event_ids:
+            owner.base_event_ids.append(base.base_id)
+        if len(events) > 1 or missing or id(owner) in rewritten:
+            owner.merge_reason = NEEDS_WRITING
+    if merged:
+        draft.events = [event for event in draft.events if id(event) not in merged]
+        logger.debug("이동 구간 하나로 맞추기: %d건 합침", len(merged))
+
+
+def _journeys_of(event: TimelineEventDraft, owners, base_segments, bases) -> list:
+    """그 이동 event 가 가리키는 이동 구간. 시간순이다.
+
+    `EXERCISE` 는 산책 구간만 본다. 헬스장 운동에 오가는 이동 기록이 섞여도 운동은 이동이 아니다.
+    위치 근거가 없는 이동(교통 결제로 만든 이동)은 시간으로 찾는다. 위치 근거가 있으면 시간은 보지 않는다 —
+    Timeline 의 시각은 분 단위라 옆 구간과 몇십 초 겹치는 것은 흔하다.
+    """
+
+    def counts(segment) -> bool:
+        if event.event_type is EventType.EXERCISE:
+            return segment.kind is SegmentKind.WALK
+        return segment.kind is not SegmentKind.STAY
+
+    touched = {
+        segment.segment_id: segment
+        for segment in (
+            *(owners.get(ref.raw_id) for ref in event.source_refs),
+            *(base_segments.get(base) for base in event.base_event_ids),
+        )
+        if segment is not None and counts(segment)
+    }
+    if not touched and event.event_type is EventType.MOVEMENT:
+        touched = {
+            segment_id: base.segment
+            for segment_id, base in bases.items()
+            if base.segment.start < event.end_time and event.start_time < base.segment.end
+        }
+    return sorted(touched.values(), key=lambda segment: segment.start)
+
+
+def _time_shared(event: TimelineEventDraft, segment) -> timedelta:
+    return max(min(event.end_time, segment.end) - max(event.start_time, segment.start), timedelta(0))
+
+
+def _leave_other_segments(event: TimelineEventDraft, keep, owners, base_segments) -> None:
+    """이동 event 에서 자기 구간이 아닌 구간의 기록과 기본 event 를 뺀다."""
+
+    event.source_refs = [
+        ref
+        for ref in event.source_refs
+        if (segment := owners.get(ref.raw_id)) is None or segment.segment_id == keep.segment_id
+    ]
+    event.base_event_ids = [
+        base
+        for base in event.base_event_ids
+        if (segment := base_segments.get(base)) is None or segment.segment_id == keep.segment_id
+    ]
+
+
 def _keep_one_place(draft: TimelineDraft, clues: TimelineClues, base_segments) -> None:
     """주소가 다른 체류 구간을 함께 가진 event 를 한 장소로 줄인다(in-place).
 
@@ -757,8 +920,9 @@ def _keep_one_place(draft: TimelineDraft, clues: TimelineClues, base_segments) -
     def place_of(segment) -> str:
         return clues.address(segment.address) or segment.segment_id
 
+    walks = _walk_record_ids(clues)
     for event in draft.events:
-        if event.event_type in (EventType.MOVEMENT, EventType.EXERCISE):
+        if _is_on_the_move(event, walks):
             continue
         touched = {
             segment.segment_id: segment
@@ -972,9 +1136,11 @@ def remove_events_outside_evidence(
 
     tz = resolve_timezone(request.timezone)
     spans = _source_spans(request, tz)
+    # 체류·이동의 시간은 뼈대 구간 안의 시간이다. 체류 뒤의 이동은 원본보다 일찍 시작한다.
+    spans.update(clues.skeleton.record_spans())
     location_ids = {raw_id_of(item) for item in [*request.stays, *request.movements]}
     notification_ids = {raw_id_of(item) for item in request.notifications}
-    conversation_ids = _conversation_ids(clues)
+    conversation_ids = clues.conversation_ids
     photo_ids = {raw_id_of(item) for item in request.photos}
     activity_ids = photo_ids | {raw_id_of(item) for item in request.calendars} | {
         raw_id
