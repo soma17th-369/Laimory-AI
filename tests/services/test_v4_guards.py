@@ -1750,3 +1750,29 @@ def test_a_meal_inside_a_calendar_still_needs_a_photo_or_a_payment():
     meal = next(event for event in draft.events if event.event_type is EventType.MEAL)
     assert (meal.start_time, meal.end_time) == (_at(12), _at(13))
     assert "UNSUPPORTED_MEAL" in kinds
+
+
+def test_an_activity_owns_the_calendar_over_a_stay_that_holds_it():
+    """일정을 가진 `보낸 시간` 이 주인이 되면 Timeline 이 고른 `MEETING` 이 합쳐져 사라진다."""
+
+    stay = stay_item("office", start="2026-06-20T14:00:00", end="2026-06-20T16:00:00", address="서울 마포구 도화동 1")
+    calendar = calendar_item("meeting", "팀 회의", start="2026-06-20T14:00:00", end="2026-06-20T16:00:00")
+    request = make_request(stays=[stay], calendars=[calendar])
+    draft = _draft(
+        _event(
+            [(EventSourceType.CALENDAR, calendar.raw_id), (EventSourceType.STAY, stay.raw_id)],
+            start=_at(14), end=_at(16), event_type=EventType.STAY, title="보낸 시간",
+            description="{place}에서 시간을 보냈다.", base=["E1"],
+        ),
+        _event(
+            [(EventSourceType.STAY, stay.raw_id)],
+            start=_at(14), end=_at(16), event_type=EventType.MEETING, title="팀 회의",
+            description="{place}에서 팀 회의를 했다.", base=["E1"],
+        ),
+    )
+
+    _confirm_twice(draft, request, _calendar_clues(request))
+
+    [owner] = draft.events
+    assert (owner.event_type, owner.title) == (EventType.MEETING, "팀 회의")
+    assert _holds(owner, calendar) and _holds(owner, stay)

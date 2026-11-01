@@ -143,15 +143,20 @@ def keep_calendar_base_events(
         if not covering:
             continue
         calendar_id = base.calendar.raw_id
-        owner = next(
-            (e for e in covering if any(ref.raw_id == calendar_id for ref in e.source_refs)),
-            None,
-        ) or next((e for e in covering if _owns_calendar(e, base)), None)
+
+        def holds(event: TimelineEventDraft) -> bool:
+            return any(ref.raw_id == calendar_id for ref in event.source_refs)
+
+        # 활동을 쓴 event 가 일정을 갖지 않았어도 체류(`보낸 시간`)보다 먼저다(#184) — 체류가 일정을
+        # 가졌다고 주인이 되면 Timeline 이 고른 `MEETING` 이 체류에 합쳐져 사라진다.
+        owner = next((e for e in covering if holds(e) and _owns_calendar(e, base)), None) or next(
+            (e for e in covering if _owns_calendar(e, base)), None
+        )
         # 일정을 가진 event 라도 일정 event 로 남을 수 없으면 되돌린다. Repair 가 회의 event 를 식사로
         # 바꾸며 묶음 id 로 일정을 다시 담자, 식사 시간이 그 event 를 20분으로 줄여 회의 일정이
         # 17:24~17:44 가 됐고 일정이 참조되고 있어 캘린더 복원도 돌지 않았다.
-        if owner is None or not _owns_calendar(owner, base):
-            owner = owner or covering[0]
+        if owner is None:
+            owner = next((e for e in covering if holds(e)), covering[0])
             owner.event_type = base.event_type
             owner.merge_reason = NEEDS_WRITING
         if not any(ref.raw_id == calendar_id for ref in owner.source_refs):
