@@ -69,6 +69,7 @@ from app.schemas import (
     TimelineWarning,
     TimelineWarningSeverity,
 )
+from app.services.clue_bundles import TimelineClues
 from app.services.place_slots import (
     DayPlaceWords,
     day_place_words,
@@ -231,6 +232,7 @@ class QuestionAgent(Agent):
         self,
         request: TimelineDraftRequest,
         draft: TimelineDraft,
+        clues: TimelineClues | None = None,
     ) -> TimelineDraft:
         """draft 의 **모든 event** 에 ``question`` 을 채워 같은 draft 를 돌려준다.
 
@@ -246,7 +248,7 @@ class QuestionAgent(Agent):
             logger.debug("event 가 없어 질문 생성을 건너뜁니다.")
             return draft
 
-        place_words = day_place_words(request, draft.events) if uses_clue_contract() else None
+        place_words = day_place_words(request, draft.events, clues) if uses_clue_contract() else None
 
         self._ask(request, draft, draft.events, place_words=place_words)
 

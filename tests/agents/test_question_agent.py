@@ -6,6 +6,7 @@
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +22,7 @@ from app.schemas import (
     TimelineEventDraft,
     UserMemory,
 )
+from app.schemas.clues import NotificationClue, NotificationClueKind
 from tests.fixtures.fake_llm import FakeLLM
 from tests.fixtures.requests import fixture_raw_id, make_request, stay_item
 
@@ -317,6 +319,16 @@ def _place_event(client_event_id: str = "event-001", **overrides) -> TimelineEve
     return event.model_copy(update=fields)
 
 
+def _payment_clues(name: str, *others: NotificationClue) -> SimpleNamespace:
+    payment = NotificationClue(
+        clue_id="N1",
+        kind=NotificationClueKind.PAYMENT,
+        raw_ids=[fixture_raw_id("n-1")],
+        counterpart=name,
+    )
+    return SimpleNamespace(notifications=[payment, *others])
+
+
 def test_v4_prompt_carries_no_place(v4):
     llm = FakeLLM([_text(_questions(("event-001", "출근길에 무슨 생각을 하셨나요?")))])
     request = make_request(stays=[stay_item("s", address="서울 서대문구 대현동 11")])
@@ -457,6 +469,45 @@ def test_v4_keeps_questions_that_only_look_like_places(v4, overrides: dict, ques
     result = QuestionAgent(llm=llm).generate(make_request(), _draft(_place_event(**overrides)))
 
     assert len(llm.calls) == 1
+    assert result.events[0].question == question
+
+
+def test_v4_treats_a_payment_merchant_as_a_place(v4):
+    llm = FakeLLM(
+        [
+            _text(_questions(("event-001", "만쥬킹 음식은 어떤 맛이었어요?"))),
+            _text(_questions(("event-001", "오늘 식사에서 제일 맛있었던 건 뭐예요?"))),
+        ]
+    )
+    event = _place_event(title="만쥬킹 식사", description="만쥬킹 음식을 먹었다.")
+
+    result = QuestionAgent(llm=llm).generate(
+        make_request(), _draft(event), _payment_clues("만쥬킹")
+    )
+
+    assert "만쥬킹" not in llm.calls[0].prompt
+    assert result.events[0].question == "오늘 식사에서 제일 맛있었던 건 뭐예요?"
+
+
+def test_v4_a_friend_who_was_paid_is_not_a_merchant(v4):
+    """송금 받은 친구와 같은 날 대화했으면 그 이름은 사람이다."""
+
+    chat = NotificationClue(
+        clue_id="N2",
+        kind=NotificationClueKind.CONVERSATION,
+        raw_ids=[fixture_raw_id("n-2")],
+        counterpart="김기현",
+    )
+    question = "김기현이랑 나눈 얘기 중에 다시 떠오르는 게 있어요?"
+    llm = FakeLLM([_text(_questions(("event-001", question)))])
+
+    result = QuestionAgent(llm=llm).generate(
+        make_request(),
+        _draft(_place_event(title="김기현과 대화")),
+        _payment_clues("김기현", chat),
+    )
+
+    assert '"title": "김기현과 대화"' in llm.calls[0].prompt
     assert result.events[0].question == question
 
 
