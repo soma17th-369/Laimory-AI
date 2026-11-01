@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.schemas import (
+    CalendarItem,
     EventSourceType,
     EventType,
     GeoPlace,
@@ -22,9 +23,11 @@ from app.schemas import (
     TimeWindow,
 )
 from app.schemas.clues import NotificationClue, NotificationClueKind, PhotoClue
+from app.services.calendar_clues import build_calendar_clues
 from app.services.clue_bundles import build_timeline_clues
+from app.services.confirm_report import ConfirmReport as _ConfirmReport
 from app.services.conversation_guard import conversation_events, enforce_conversation_limit
-from app.services.draft_repair import repair_draft
+from app.services.draft_repair import repair_draft, resolve_overlaps
 from app.services.location_skeleton import build_location_skeleton
 from app.services.photo_guard import merge_photo_scenes
 from app.services.place_slots import fix_title_places
@@ -1650,3 +1653,100 @@ def test_a_restored_alert_is_not_unknown():
     [event] = _without_location(clue)().events
 
     assert event.event_type is EventType.SHOPPING
+
+
+# --- 일정의 활동 타입 (#184) -----------------------------------------------------------------
+
+
+#: 일정이 가질 수 있는 타입. `CALENDAR_EVENT` 는 어떤 활동인지 모르는 일정의 자리다.
+_CALENDAR_TYPES = (
+    EventType.MEETING,
+    EventType.CLASS,
+    EventType.WORK,
+    EventType.EXERCISE,
+    EventType.MEAL,
+    EventType.SOCIAL,
+    EventType.CULTURE,
+    EventType.SHOPPING,
+    EventType.ERRAND,
+    EventType.SLEEP,
+    EventType.CALENDAR_EVENT,
+)
+
+
+def _calendar_clues(request, *, photos=(), notifications=()):
+    return build_timeline_clues(
+        build_location_skeleton(request), build_calendar_clues(request), list(photos), list(notifications)
+    )
+
+
+def _confirm_twice(draft, request, clues):
+    """확정 pass 는 Repair 가 돌 때마다 다시 돈다. 두 번 돌아도 같아야 한다."""
+
+    report = _ConfirmReport()
+    repair_draft(draft, request, extended=True, clues=clues, report=report)
+    repair_draft(draft, request, extended=True, clues=clues, report=report)
+    return {finding["kind"] for finding in report.findings}
+
+
+def _holds(event, item):
+    return item.raw_id in {ref.raw_id for ref in event.source_refs}
+
+
+def test_a_meal_calendar_keeps_its_time_without_a_photo():
+    """12:00~13:30 점심 약속을 60분으로 자르고 근거 없는 식사로 짚었다. 일정은 계획이라 확신은 낮게 둔다."""
+
+    calendar = calendar_item("lunch", "팀 점심 식사", start="2026-06-20T12:00:00", end="2026-06-20T13:30:00")
+    request = make_request(calendars=[calendar])
+    draft = _draft(
+        _event(
+            [(EventSourceType.CALENDAR, calendar.raw_id)],
+            start=_at(12), end=_at(13, 30), event_type=EventType.MEAL, title="팀 점심 식사",
+            description="팀 점심 식사 일정이 있었다.",
+        )
+    )
+
+    kinds = _confirm_twice(draft, request, _calendar_clues(request))
+
+    [meal] = draft.events
+    assert (meal.start_time, meal.end_time) == (_at(12), _at(13, 30))
+    assert meal.confidence <= 0.6
+    assert "UNSUPPORTED_MEAL" not in kinds
+
+
+def test_a_meal_calendar_shorter_than_twenty_minutes_is_not_stretched():
+    calendar = calendar_item("snack", "커피 타임", start="2026-06-20T15:00:00", end="2026-06-20T15:15:00")
+    request = make_request(calendars=[calendar])
+    draft = _draft(
+        _event(
+            [(EventSourceType.CALENDAR, calendar.raw_id)],
+            start=_at(15), end=_at(15, 15), event_type=EventType.MEAL, title="커피 타임", description="커피 타임 일정이 있었다.",
+        )
+    )
+
+    _confirm_twice(draft, request, _calendar_clues(request))
+
+    assert (draft.events[0].start_time, draft.events[0].end_time) == (_at(15), _at(15, 15))
+
+
+def test_a_meal_inside_a_calendar_still_needs_a_photo_or_a_payment():
+    """일정 시간과 다른 식사는 일정이 시간을 정한 것이 아니다. 회의 일정을 근거로 댄 두 시간 식사는 그대로 짧아진다."""
+
+    calendar = calendar_item("day", "팀 회의", start="2026-06-20T09:00:00", end="2026-06-20T18:00:00")
+    request = make_request(calendars=[calendar])
+    draft = _draft(
+        _event(
+            [(EventSourceType.CALENDAR, calendar.raw_id)],
+            start=_at(9), end=_at(18), event_type=EventType.MEETING, title="팀 회의", description="팀 회의 일정이 있었다.",
+        ),
+        _event(
+            [(EventSourceType.CALENDAR, calendar.raw_id)],
+            start=_at(12), end=_at(14), event_type=EventType.MEAL, title="점심", description="점심을 먹었다.",
+        ),
+    )
+
+    kinds = _confirm_twice(draft, request, _calendar_clues(request))
+
+    meal = next(event for event in draft.events if event.event_type is EventType.MEAL)
+    assert (meal.start_time, meal.end_time) == (_at(12), _at(13))
+    assert "UNSUPPORTED_MEAL" in kinds

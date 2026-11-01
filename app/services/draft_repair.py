@@ -104,7 +104,11 @@ from app.services.event_count_guard import (
 from app.services.location_link import link_location_evidence
 from app.services.location_only_overlap import find_location_only_overlaps
 from app.services.location_skeleton import LocationSkeleton
-from app.services.meal_guard import enforce_meal_duration, find_unsupported_meals
+from app.services.meal_guard import (
+    enforce_meal_duration,
+    find_unsupported_meals,
+    is_calendar_meal,
+)
 from app.services.movement_stay_guard import verify_movement_stay_boundary
 from app.services.narrative_guard import verify_narrative_length
 from app.services.narrative_place_guard import (
@@ -746,6 +750,8 @@ def _clue_correction_steps(
         # 체류·이동의 시간은 뼈대 구간 안의 시간이다 — 원래 시각으로 맞추면 정리한 이동이 되늘어난다.
         "지속시간 복원": partial(repair_durations, skeleton=clues.skeleton),
         "근거 구간 정렬": partial(align_location_events, skeleton=clues.skeleton),
+        # 식사 일정의 시간은 일정이 정한다(#184).
+        "식사 시간": partial(enforce_meal_duration, allow_stay_meal=True, keep_calendar_meal=True),
         # 사진 candidate 가 없어, 되살리는 사진은 이어 찍은 것끼리 묶고 같은 장면은 한 event 로 모은다.
         "사진 단일 귀속": enforce_photo_scenes,
         # 수면 일정은 계획이다 — 이동과 다른 장소의 체류는 겹쳐도 남긴다.
@@ -892,6 +898,9 @@ def _inspect(
     for overlap in [] if clue_contract else find_location_only_overlaps(draft, request):
         report.add_finding("LOCATION_ONLY_OVERLAP", overlap.detail, event=overlap.event)
     for meal in find_unsupported_meals(draft):
+        # v4 는 식사 약속 일정도 식사의 근거다(#184). 먹었다고 쓰는 것은 문장 규칙의 몫이다.
+        if clue_contract and is_calendar_meal(meal, request):
+            continue
         report.add_finding(
             "UNSUPPORTED_MEAL",
             {"sourceTypes": sorted({ref.source_type.value for ref in meal.source_refs})},
