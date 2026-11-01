@@ -17,6 +17,10 @@ v4 문장은 장소 자리를 `{place}` 칸으로 남긴다. 칸에 들어갈 �
   일정 장소명처럼 근거가 가리키는 이름이 1번이고, 그다음이 Timeline 이 풀에서 활동에 맞게 고른 순서,
   그다음이 풀의 나머지와 같은 장소(250m)의 이름이다. 풀 밖의 이름과 시설은 버린다. `place` 는
   1번 후보다 — App Server 도 그렇게 저장한다.
+- **기억**: 사진·일정·알림 근거가 없는 event 는 무엇을 했는지 몰라 어디였는지 가릴 근거도 없다. 그런
+  event 에서는 User Memory `notablePlaces` 에 있는 이름을 앞으로 올린다(#181). 순서만 바꾸고 풀 밖의
+  이름은 들어오지 않는다. 기억에 있는 이름끼리는 Timeline 순서를 따른다 — 집과 앞 가게가 함께
+  기억에 있으면 어느 쪽인지는 기억이 말해 주지 않는다.
 - **주소 대체**: 근거에 장소 이름이 하나도 없을 때만 `{place}` 를 대표 지점의 주소 원문으로 바꾼다. 동네 이름으로
   바꾸지 않는다. 주소도 없으면 칸과 그 조사를 지운다 — 칸이 남은 채 장소가 없으면 App Server
   가 하루치 결과 전체를 400 으로 거절한다.
@@ -109,6 +113,7 @@ def confirm_place_slots(
     index = _Index.build(request)
     same_place = same_place_addresses(request, tz)
     names_by_place = _names_by_place(request, same_place, tz)
+    remembered = _remembered_names(request)
     confirmed = candidates = addressed = 0
     for event in draft.events:
         evidence = index.evidence(event, tz)
@@ -130,7 +135,10 @@ def confirm_place_slots(
             for item in event.place_candidates
             if normalize_place_text(item) in keys
         ]
-        kept = unique_place_names([pointed, *ranked, *pool])[:MAX_PLACE_CANDIDATES]
+        ordered = unique_place_names([pointed, *ranked, *pool])
+        if not (evidence.photos or evidence.calendars or evidence.notification_ids):
+            ordered = _remembered_first(ordered, remembered)
+        kept = ordered[:MAX_PLACE_CANDIDATES]
         event.place_candidates = kept
         event.place = kept[0] if kept else None
         confirmed += pointed is not None
@@ -692,6 +700,19 @@ def _with_same_place(
     return [
         name for name in unique_place_names([*pool, *extra]) if not _FACILITY_NAME.search(name.strip())
     ]
+
+
+def _remembered_names(request: TimelineDraftRequest) -> set[str]:
+    """User Memory 의 장소 이름(정규화한 값). 지점이 다르면 다른 이름이라 글자 그대로 견준다."""
+
+    memory = request.user_memory
+    return {normalize_place_text(name) for name in memory.notable_places} if memory else set()
+
+
+def _remembered_first(names: list[str], remembered: set[str]) -> list[str]:
+    """기억에 있는 이름을 앞으로 옮긴다. 안정 정렬이라 각 무리 안의 순서는 그대로다."""
+
+    return sorted(names, key=lambda name: normalize_place_text(name) not in remembered)
 
 
 def _confirmed_name(

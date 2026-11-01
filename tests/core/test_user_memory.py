@@ -149,6 +149,46 @@ def test_prompt_payload_follows_declaration_order_regardless_of_input_order():
     assert list(reversed_input) == list(NARRATIVE_FIELDS)
 
 
+def test_empty_place_field_leaves_the_prompt_as_it_was():
+    """채워지지 않은 `notablePlaces` 는 프롬프트에 없다. 운영 v3 의 입력이 그대로인 이유다(#181)."""
+
+    memory = _memory(basicProfile="망원동 거주 직장인.")
+
+    assert "notablePlaces" not in memory.prompt_payload()
+
+
+def test_place_list_never_reaches_a_prompt():
+    """코드만 읽는다. 모델에게 보이자 식사 사진 event 에 다른 이름을 올렸다(#181)."""
+
+    memory = UserMemory.model_validate(
+        {"schemaVersion": "1.0", "routines": "평일 출근.", "notablePlaces": ["망원시장", "OO타워"]}
+    )
+
+    assert memory.notable_places == ["망원시장", "OO타워"]
+    assert memory.prompt_payload() == {"routines": "평일 출근."}
+    assert "망원시장" not in user_memory_to_text(memory)
+
+
+def test_a_document_with_only_places_reads_as_empty_to_the_agents():
+    assert user_memory_to_text(UserMemory(notable_places=["망원시장"])) == "정보 없음"
+
+
+def test_place_list_is_not_a_narrative_field():
+    """글자 칸이면 500자에서 멈추고 변경 목록의 항목이 된다(#181)."""
+
+    assert "notablePlaces" not in NARRATIVE_FIELDS
+
+
+def test_a_change_cannot_point_at_the_place_list():
+    patch = UserMemoryPatch(changes=[change("notablePlaces", "수정", "망원시장")])
+
+    assert patch.changes[0].problem is not None
+
+
+def test_document_saved_before_the_place_field_is_still_valid():
+    assert UserMemory.model_validate({"schemaVersion": "1.0", "routines": "평일 출근."})
+
+
 def test_custom_attributes_are_kept_when_present():
     memory = _memory(customAttributes={"반려동물": "고양이 두 마리"})
 

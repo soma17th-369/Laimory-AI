@@ -14,7 +14,7 @@ import pytest
 from app.agents.events.notification.clue_agent import build_notification_clue_payload
 from app.schemas import EventType, GeoPlace, MovementItem, NotificationItem
 from app.schemas.clues import NotificationClue, NotificationClueKind, PhotoClue
-from app.schemas.user_memory import NARRATIVE_FIELDS
+from app.schemas.user_memory import NARRATIVE_FIELDS, UserMemoryPatch, UserMemoryPlacesPatch
 from app.services.calendar_clues import build_calendar_clues
 from app.services.clue_bundles import build_timeline_clues, timeline_input_sections
 from app.services.duration_guard import DURATION_LIMITS
@@ -96,7 +96,7 @@ def test_timeline_v4_no_longer_attaches_life_place_names():
 
 
 def test_timeline_v4_defines_every_user_memory_field_as_the_writer_does():
-    writer = _read("agents/user_memory/prompts/v3/prompt.md")
+    writer = _read("agents/user_memory/prompts/v4/prompt.md")
     definitions = {
         name: definition
         for name, definition in re.findall(
@@ -108,6 +108,33 @@ def test_timeline_v4_defines_every_user_memory_field_as_the_writer_does():
         assert set(definitions) == set(NARRATIVE_FIELDS)
         for name, definition in definitions.items():
             assert f"- `{name}`: {definition}" in text, f"`{name}` 의 뜻이 쓰는 쪽과 다릅니다."
+
+
+def test_only_the_v4_writer_knows_about_places():
+    """장소 리스트는 코드만 읽는다(#181). 읽는 프롬프트가 생기면 모델이 순서를 흔든다."""
+
+    writer = _read("agents/user_memory/prompts/v4/prompt.md")
+
+    assert "`places`" in writer
+    assert '"places": ["OO타워", "OO클라이밍"]' in writer
+    for text in (
+        writer,
+        _timeline(),
+        _repair(),
+        _read("agents/user_memory/prompts/v3/prompt.md"),
+        _read("agents/timeline/prompts/v3/timeline.md"),
+        _read("agents/repair/prompts/v3/prompt.md"),
+    ):
+        assert "notablePlaces" not in text
+        assert "자주 감" not in text
+    assert "`places` 를 냅니다" not in _read("agents/user_memory/prompts/v3/prompt.md")
+
+
+def test_v3_output_schema_does_not_gain_the_places_field():
+    """v3 는 운영 세트다. provider 로 나가는 출력 schema 가 그대로여야 한다."""
+
+    assert "places" not in UserMemoryPatch.model_json_schema()["properties"]
+    assert "places" in UserMemoryPlacesPatch.model_json_schema()["properties"]
 
 
 def test_timeline_v4_states_the_event_limit_the_code_enforces():

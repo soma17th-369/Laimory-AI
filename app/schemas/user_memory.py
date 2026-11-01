@@ -26,6 +26,11 @@ Agent 프롬프트가 갖는다).
 
 상한은 프롬프트 토큰을 지키려는 것이지 의미 규칙이 아니다. 넘치면 자르지 않고
 거절한다 — 잘린 문장은 뜻이 달라지고, 그걸 근거로 쓴 해석은 되돌릴 방법이 없다.
+
+``notablePlaces`` 는 글이 아니라 이름 리스트다(#181). 방문한 곳을 모두 누적하므로 길이를
+제한하지 않는다. 프로필 문자열에 싣지 않아 문서 크기 상한과도 상관이 없다. Timeline 에 보였을
+때 모델이 식사 사진 event 에 리스트의 다른 이름을 올렸고, 누적되는 값이라 프롬프트도 끝없이
+커진다.
 """
 
 import json
@@ -49,6 +54,17 @@ NarrativeText = Annotated[str, StringConstraints(max_length=NARRATIVE_MAX_LENGTH
 CustomAttributeText = Annotated[
     str, StringConstraints(max_length=CUSTOM_ATTRIBUTE_MAX_LENGTH)
 ]
+
+#: ``notablePlaces`` 의 이름 하나의 최대 길이. 이름이지 문장이 아니라는 뜻으로 두었고 리스트의
+#: 길이는 제한하지 않는다.
+PLACE_NAME_MAX_LENGTH = 100
+
+PlaceName = Annotated[str, StringConstraints(max_length=PLACE_NAME_MAX_LENGTH)]
+
+#: 기록에 나온 장소의 이름을 누적하는 리스트 필드(alias). 자연어 필드가 아니라
+#: :data:`NARRATIVE_FIELDS` 에 들지 않고 프로필 문자열에도 실리지 않는다. 장소 칸 확정 코드가
+#: 읽고, 같은 곳인지 판단하는 User Memory v4 갱신에만 ``[saved places]`` 로 따로 싣는다.
+PLACE_LIST_FIELD = "notablePlaces"
 
 #: 프롬프트에 실리는 자연어 필드(alias). **이 튜플 순서가 곧 프롬프트 키 순서다** —
 #: 같은 메모리는 언제나 같은 문자열이 되어야 캐시·재현·diff 가 의미를 갖는다.
@@ -98,6 +114,9 @@ class UserMemory(CamelModel):
     current_focus: NarrativeText = Field(default="", alias="currentFocus")
     emotional_patterns: NarrativeText = Field(default="", alias="emotionalPatterns")
     memory_style: NarrativeText = Field(default="", alias="memoryStyle")
+    #: 기록에 나온 장소의 이름(#181). 언제·몇 번 갔는지는 담지 않고 모두 누적한다. v4 갱신만
+    #: 채우고 장소 칸 확정 코드가 후보 순서에 쓴다. :meth:`prompt_payload` 에 들지 않는다.
+    notable_places: list[PlaceName] = Field(default_factory=list, alias="notablePlaces")
 
     #: 고정 필드로 담기지 않는 값. **키는 AI 가 만든다** — 결정론 코드가 특정 키의
     #: 존재를 전제하지 않는다.
@@ -343,6 +362,17 @@ class UserMemoryPatch(CamelModel):
         return base.model_copy(update=update)
 
 
+# v4 세트의 LLM 출력 계약이다(#181). v3 는 운영 세트라 provider 로 나가는 schema 가 달라지면
+# 안 되므로 ``UserMemoryPatch`` 에 필드를 더하지 않고 따로 둔다. 장소 이름을 변경 목록의 항목으로
+# 받지 않는 이유는 모델이 리스트 전체를 다시 쓰게 되기 때문이다 — 문자열로 받았을 때 이미 프로필에
+# 있는 곳의 이름을 빠뜨렸고, 길이 제한을 넘겨 변경이 통째로 빠졌다. 모델은 이번 기록의 이름만 내고
+# 잇는 것은 코드가 한다.
+class UserMemoryPlacesPatch(UserMemoryPatch):
+    """기존 프로필에 적용할 변경 목록과, 이번 기록에 나온 장소의 이름."""
+
+    places: list[str] = Field(default_factory=list)
+
+
 def _assert_field_catalog_matches_model() -> None:
     """필드를 더하고 :data:`NARRATIVE_FIELDS` 갱신을 잊으면 import 시점에 터뜨린다.
 
@@ -354,7 +384,11 @@ def _assert_field_catalog_matches_model() -> None:
     declared = {
         field.alias or name for name, field in UserMemory.model_fields.items()
     }
-    catalog = set(NARRATIVE_FIELDS) | set(METADATA_FIELDS) | {"customAttributes"}
+    catalog = (
+        set(NARRATIVE_FIELDS)
+        | set(METADATA_FIELDS)
+        | {"customAttributes", PLACE_LIST_FIELD}
+    )
     if declared != catalog:
         raise RuntimeError(
             "UserMemory 필드와 projection 카탈로그가 다릅니다: "
