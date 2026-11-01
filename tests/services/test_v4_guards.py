@@ -382,6 +382,28 @@ def test_movement_title_never_carries_a_place_name():
     assert move.title == "도화동으로 이동"
 
 
+def test_a_slot_with_no_place_name_is_not_repairs_business():
+    """이름 없는 칸은 저장할 때 코드가 지명으로 채운다. 제안하면 Repair 가 따르지 않은 채 반복 상한까지 돌았다."""
+
+    from app.services.text_suggestions import suggest_text_fixes
+    from app.services.timeline_result import build_result_request
+
+    stay = stay_item(
+        "bare", start="2026-06-20T09:00:00", end="2026-06-20T12:00:00", places=[], address="서울특별시 마포구 도화동 17-13",
+    )
+    request = make_request(stays=[stay])
+    event = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(9), end=_at(12), event_type=EventType.STAY,
+        title="마포구 도화동에서 시간을 보냄", description="{place}에서 시간을 보냈다.",
+    )
+    event.address = stay.address
+    draft = _draft(event)
+
+    assert suggest_text_fixes(draft, request, _clues(request)) == []
+    [saved] = build_result_request(draft, request).model_dump(by_alias=True, mode="json")["events"]
+    assert saved["subtitle"] == "마포구 도화동에서 시간을 보냈다."
+
+
 # --- 뼈대 구간 시간과 다른 장소 -------------------------------------------------------------------
 
 

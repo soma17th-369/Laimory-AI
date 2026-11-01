@@ -8,8 +8,8 @@ v4 문장은 장소 자리를 `{place}` 칸으로 남긴다. 칸에 들어갈 �
    풀을 만들고, 다른 근거가 풀의 이름을 가리키면 확정하고, 아니면 Timeline 이 고른 후보를
    풀 안의 것만 남긴다.
 2. **문장 장소 칸**(`fill_place_slots`) — v3 의 `문장 주소 정리` 자리. event 를 지우거나
-   합치는 단계가 끝난 뒤 문장을 맞춘다. 이동 제목·문장의 장소명과 주소 원문을 고치고, 칸을 쓸 수
-   없는 event 의 칸을 주소로 바꾼다.
+   합치는 단계가 끝난 뒤 문장을 맞춘다. 이동 제목·문장의 장소명과 주소 원문을 고친다. 장소 이름이 없는
+   event 의 칸은 저장할 때 지명으로 채우므로(`timeline_result`) 여기서 건드리지 않는다.
 
 규칙(사용자 결정 2026-10-29).
 
@@ -204,8 +204,6 @@ def fill_place_slots(
                 if len(literal) >= 2 and literal in description:
                     description = description.replace(literal, PLACE_SLOT, 1)
                     break
-        if not slots_only and PLACE_SLOT in description and not (event.place or event.place_candidates):
-            description = without_place_slot(description, areas.name(_same(same_place, event.address)))
         event.description = description
 
 

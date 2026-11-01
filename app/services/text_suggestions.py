@@ -28,7 +28,7 @@ def suggest_text_fixes(
     probe = draft.model_copy(deep=True)
     passes: tuple[tuple[str, Callable[[], object]], ...] = (
         ("근거가 위치뿐인 event 는 어디에 있었는지만 말한다", partial(restore_place_only_text, probe, request, clues)),
-        ("이동은 기록의 경로, 장소가 없는 칸은 주소", partial(fill_place_slots, probe, request, clues=clues)),
+        ("이동은 기록의 경로", partial(fill_place_slots, probe, request, clues=clues)),
         ("대화 상대 뒤 조사는 받침에 맞춘다", partial(fix_counterpart_particles, probe, request, clues=clues)),
         ("제목의 장소 자리는 그 event 의 지명", partial(fix_title_places, probe, request, clues)),
         ("식사 사진을 품은 긴 체류는 `점심을 먹고 시간을 보냈다` 꼴", partial(word_long_stay_meals, probe)),
