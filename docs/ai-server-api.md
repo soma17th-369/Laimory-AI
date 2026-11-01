@@ -611,6 +611,7 @@ Task-Token: {taskToken}
 | `schemaVersion` | `string` | `"1.0"`만 지원합니다. |
 | `updatedAt` | `string \| null` | 마지막 갱신 시각입니다. 프롬프트에는 싣지 않습니다. |
 | `basicProfile`, `lifeContext`, `relationships`, `personality`, `values`, `preferences`, `routines`, `currentFocus`, `emotionalPatterns`, `memoryStyle` | `string` | 자연어 필드이며 각 **최대 500자**입니다. 비어 있으면 프롬프트에서 생략합니다. |
+| `notablePlaces` | `string[]` | 기록에 나온 장소의 이름 리스트입니다(이슈 #181). `v4` 세트만 채우고 방문한 곳을 모두 누적합니다. **개수 제한이 없고** 이름 하나는 최대 100자입니다. 타임라인 프롬프트에 싣지 않고 코드가 장소 후보 순서에 쓰므로 문서 크기 상한에 세지 않습니다. 이 필드가 없는 예전 문서도 그대로 읽힙니다. |
 | `customAttributes` | `object` | 고정 필드로 담기지 않는 값입니다. 값당 **최대 500자**이며 **개수 제한은 없습니다**. |
 
 최상위 필드는 고정입니다. 위 목록에 없는 최상위 필드, 지원하지 않는
@@ -640,11 +641,12 @@ App Server가 가입 시점에 User Memory를 미리 만들어 둘 때는 아래
   "currentFocus": "",
   "emotionalPatterns": "",
   "memoryStyle": "",
+  "notablePlaces": [],
   "customAttributes": {}
 }
 ```
 
-- 자연어 필드 10개는 **빈 문자열**입니다(`null`이 아닙니다). `customAttributes`는 빈 객체입니다.
+- 자연어 필드 10개는 **빈 문자열**입니다(`null`이 아닙니다). `notablePlaces`는 빈 리스트, `customAttributes`는 빈 객체입니다.
 - `updatedAt`은 `null`입니다. 갱신이 성공하면 AI 서버가 시각을 채워 돌려줍니다.
 - 위 목록에 없는 최상위 필드를 더하지 않습니다. 계약 위반(`1106`)이 됩니다.
 - AI 서버는 빈 문서를 **User Memory가 없는 것과 같게** 다룹니다. 타임라인 생성은 프로필
@@ -904,6 +906,7 @@ Task-Token: {taskToken}
     "currentFocus": "",
     "emotionalPatterns": "",
     "memoryStyle": "",
+    "notablePlaces": [],
     "customAttributes": {}
   }
 }
@@ -930,7 +933,8 @@ Task-Token: {taskToken}
 - 응답은 상태 코드만 봅니다. `2xx`가 성공이고, 재시도·중단 규칙은 타임라인 경로와 같습니다.
 - `taskToken`은 갱신되지 않습니다. 접수 요청 body의 값을 끝까지 사용합니다.
 - `userMemory`는 프롬프트에 실리는 형태(빈 필드와 메타데이터를 뺀 JSON)로 **전체 5,000자
-  이하**입니다(이슈 #121, 이전 1,200자). 고정 필드 열 개의 상한을 더한 값(10 × 500자)입니다.
+  이하**입니다(이슈 #121, 이전 1,200자). 고정 필드 열 개의 상한을 더한 값입니다(10 × 500자).
+  `notablePlaces`는 이 크기에 세지 않으므로 **문서 전체는 5,000자를 넘을 수 있습니다**(이슈 #181).
   `customAttributes`는 개수 제한이 없어 필드별 상한만으로는 전체가 묶이지 않으므로 전체
   검사가 따로 있고, 속성도 이 5,000자 안에서 자리를 씁니다. `v3` 세트는 문서를 5,000자 넘게
   만드는 변경만 빼고 나머지를 적용하므로 이 이유로 실패하지 않습니다. `v1`·`v2` 세트는 넘으면 자르지도 다시 요청하지도 않고 `1304`로
