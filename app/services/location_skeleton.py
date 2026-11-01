@@ -12,11 +12,14 @@ v3 Location Agent(LLM)가 프롬프트 규칙으로 하던 일을 코드가 한�
 규칙의 출처는 v3 Location 프롬프트(`location/prompts/v3/prompt.md`)이고, 줄마다 대응은 계획
 (`2026-10-23-issue-167-…`)의 「Location 규칙 이식표」에 있다.
 
-- **이어짐**: 앞 기록의 끝과 뒤 기록의 시작 사이가 45분 미만이다(`is_continuous`).
-- **짧은 체류(20분 이하)**: 이어진 이동이 앞이나 뒤에 있으면 그 이동에 묶는다. 이동과 긴 체류
+- **이어짐**: 앞 기록의 끝과 뒤 기록의 시작 사이가 45분 미만이다(`is_continuous`). 이동끼리는 이
+  기준을 쓰지 않는다(아래 **이동**).
+- **짧은 체류(20분 미만)**: 이어진 이동이 앞이나 뒤에 있으면 그 이동에 묶는다. 이동과 긴 체류
   사이에 낀 짧은 체류도 이동 쪽이다. 이동이 없으면 체류끼리의 규칙을 따른다.
-- **이동**: 이어진 이동과 그 사이의 짧은 체류는 하나의 여정이다. 20분을 넘는 체류는 예외 없이
-  여정을 끊는다(장소명이 없어도, 환승·같은 캠퍼스여도).
+- **이동**: 이동과 그 사이의 짧은 체류는 하나의 여정이다. 20분 이상 체류는 예외 없이 여정을
+  끊는다(장소명이 없어도, 환승·같은 캠퍼스여도). 앞뒤가 이동이면 공백 길이와 상관없이 잇고
+  (#180, 사용자 결정 2026-11-01 — 체류가 잡히지 않았다는 것은 수집이 끊겼을 수 있다는 뜻이다),
+  앞 도착지와 뒤 출발지가 같은 곳이고 20분 이상 비었을 때만 머문 것으로 보고 끊는다.
 - **체류끼리**(사이에 이동 기록이 없을 때만, 바로 앞 체류와 잰다):
   - 250m 이내면 같은 장소다. 공백이 아무리 길어도 하나로 묶는다(수집은 끊길 수 있다).
   - 1km 넘게 떨어지면 언제나 다른 장소다. 그 사이는 **기록되지 않은 이동**이다.
@@ -25,7 +28,7 @@ v3 Location Agent(LLM)가 프롬프트 규칙으로 하던 일을 코드가 한�
 - **산책**: 한 여정의 출발지와 최종 도착지가 같고(같은 이름이거나 250m 이내), 전체 30분
   이상이며, 모든 이동이 도보이고 이동 방식 충돌이 없다. 30분 미만 도보 왕복은 왕복 표시를 단
   이동이다. 방식을 모르는 이동이 하나라도 있으면 산책이 아니다.
-- **단독 기록**: 혼자 남은 20분 이하 체류, 앞뒤 어느 기록과도 이어지지 않은 20분 이하 이동.
+- **단독 기록**: 혼자 남은 20분 미만 체류, 앞뒤 어느 기록과도 이어지지 않은 20분 미만 이동.
   event 를 만들지 않고 근거를 보태기만 한다.
 
 ## 시간
@@ -121,7 +124,7 @@ class LocationRecord:
 
     @property
     def is_short(self) -> bool:
-        return self.duration <= SHORT_STAY_MAX
+        return self.duration < SHORT_STAY_MAX
 
 
 @dataclass(frozen=True)
@@ -384,7 +387,7 @@ def _flows(records: list[LocationRecord]) -> tuple[list[list[LocationRecord]], s
             current, current_is_journey = [record], journey_part
             continue
         reached = max(r.end for r in current)
-        if journey_part and current_is_journey and is_continuous(record.start - reached):
+        if journey_part and current_is_journey and not _stopped_between(current[-1], record, reached):
             current.append(record)
             continue
         if not journey_part and not current_is_journey:
@@ -401,6 +404,19 @@ def _flows(records: list[LocationRecord]) -> tuple[list[list[LocationRecord]], s
         current, current_is_journey = [record], journey_part
     close()
     return flows, far_splits
+
+
+def _stopped_between(previous: LocationRecord, record: LocationRecord, reached: datetime) -> bool:
+    """여정의 두 기록 사이에서 머문 것인가.
+
+    앞이 도착한 곳에서 뒤가 출발했고 20분 이상 비었으면 체류 기록이 없어도 머문 것이다. 이어 버리면
+    귀가 뒤 밤새 수집이 끊긴 날의 밤 전체가 이동이 된다. 그 밖의 공백은 길이와 상관없이 수집이 끊긴
+    것으로 보고 잇는다. 공백 안의 속도는 끝점으로 추정할 수 있을 뿐이라 쓰지 않는다.
+    """
+
+    arrived = previous.spot if previous.is_stay else previous.destination
+    left = record.spot if record.is_stay else record.origin
+    return record.start - reached >= SHORT_STAY_MAX and bool(_same_place(arrived, left))
 
 
 def _short_stays_on_journeys(records: list[LocationRecord]) -> set[int]:
