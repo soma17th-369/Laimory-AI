@@ -128,6 +128,7 @@ from app.services.skeleton_guard import (
     remove_calendar_events_without_calendar,
     remove_stays_without_location,
     NEEDS_WRITING,
+    conversations_on_other_events,
     ensure_notification_events,
     ensure_skeleton_segments,
     hand_restored_events_to_repair,
@@ -909,6 +910,8 @@ def _inspect(
         for event in draft.events:
             if names := place_names_in_title(event, request, clues):
                 report.add_finding("PLACE_NAME_IN_TITLE", {"found": names}, event=event)
+        for event, conversations in conversations_on_other_events(draft, clues):
+            report.add_finding("CONVERSATION_ON_OTHER_EVENT", {"found": conversations}, event=event)
         ordered = sorted(draft.events, key=lambda event: event.start_time)
         for event, following in zip(ordered, ordered[1:]):
             # 같은 일이면 괜찮다(사용자 결정 2026-10-31). 무엇이 다른지는 Repair 가 판단한다.

@@ -426,6 +426,30 @@ def keep_stay_word_out(
                 event.merge_reason = NEEDS_WRITING
 
 
+def conversations_on_other_events(
+    draft: TimelineDraft, clues: TimelineClues
+) -> list[tuple[TimelineEventDraft, list[str]]]:
+    """대화가 근거로 붙은, 알림뿐이 아닌 event 와 그 대화 id. 찾기만 한다(사용자 결정 2026-11-02).
+
+    "대화는 오로지 알림들로만 이루어진 이벤트가 되어야 해". 근거에서 빼는 것은 곧 글을 다시 쓰는 일이라 Repair 가
+    한다 — 코드는 사진이나 일정이 있는 event 의 글을 대신 쓸 수 없다.
+    """
+
+    found = []
+    for event in draft.events:
+        if all(ref.source_type is EventSourceType.NOTIFICATION for ref in event.source_refs):
+            continue
+        refs = {ref.raw_id for ref in event.source_refs}
+        ids = [
+            clue.clue_id
+            for clue in clues.notifications
+            if clue.kind is NotificationClueKind.CONVERSATION and refs & set(clue.raw_ids)
+        ]
+        if ids:
+            found.append((event, ids))
+    return found
+
+
 def _keep_notifications_on_one_event(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
     """여러 event 가 가진 알림은 가장 짧은 event 에만 남긴다. 그것이 유일한 근거인 event 는 둔다."""
 

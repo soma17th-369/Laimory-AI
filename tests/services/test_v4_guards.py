@@ -610,6 +610,54 @@ def test_a_suggestion_also_turns_the_merchant_into_the_area():
     assert event.title == "마포구 도화동에서 간식을 먹음"
 
 
+def _chat_on_a_stay():
+    """1시간 반 체류 중에 메시지 한 건이 왔다."""
+
+    stay = stay_item(
+        "day", start="2026-06-20T09:00:00", end="2026-06-20T10:30:00", places=["공덕 SK 리더스뷰"],
+        address="서울특별시 마포구 도화동 17-13",
+    )
+    chat = notification_item("chat", "Threads", "OO", posted="2026-06-20T09:12:00")
+    request = make_request(stays=[stay], notifications=[chat])
+    clue = _notification_clue("chat", NotificationClueKind.CONVERSATION, at=_at(9, 12))
+    clue.raw_ids, clue.counterpart = [chat.raw_id], "OO"
+    return stay, chat, request, _clues(request, [clue])
+
+
+def test_a_chat_on_a_stay_goes_to_repair_and_code_keeps_its_hands_off():
+    """메시지 한 건이 붙은 체류가 `bear_dba와 대화함` 이 됐다. 코드는 찾아서 넘기고 글과 근거는 Repair 가 고친다."""
+
+    from app.services.confirm_report import ConfirmReport
+
+    stay, chat, request, clues = _chat_on_a_stay()
+    event = _event(
+        [(EventSourceType.STAY, stay.raw_id), (EventSourceType.NOTIFICATION, chat.raw_id)], start=_at(9), end=_at(10, 30),
+        event_type=EventType.SOCIAL, title="OO와 대화함", description="{place}에서 OO와 이야기를 나눴다.", base=["E1"],
+    )
+    report = ConfirmReport()
+
+    draft = repair_draft(_draft(event), request, report=report, clues=clues)
+
+    [found] = [f for f in report.findings if f["kind"] == "CONVERSATION_ON_OTHER_EVENT"]
+    assert found["found"] == [clues.notifications[0].clue_id]
+    [kept] = [item for item in draft.events if item.title == "OO와 대화함"]
+    assert chat.raw_id in {ref.raw_id for ref in kept.source_refs}, "코드는 근거도 글도 건드리지 않는다."
+
+
+def test_an_event_made_of_a_chat_is_not_reported():
+    """대화만으로 만든 event 가 대화의 자리다."""
+
+    from app.services.skeleton_guard import conversations_on_other_events
+
+    _, chat, _, clues = _chat_on_a_stay()
+    event = _event(
+        [(EventSourceType.NOTIFICATION, chat.raw_id)], start=_at(9, 12), end=_at(9, 12), event_type=EventType.SOCIAL,
+        title="OO와 대화함", description="OO와 주말 계획을 이야기했다.",
+    )
+
+    assert conversations_on_other_events(_draft(event), clues) == []
+
+
 def test_a_slot_with_no_place_name_is_not_repairs_business():
     """이름 없는 칸은 저장할 때 코드가 지명으로 채운다. 제안하면 Repair 가 따르지 않은 채 반복 상한까지 돌았다."""
 
