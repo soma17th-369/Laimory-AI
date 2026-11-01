@@ -125,9 +125,11 @@ def test_stay_without_any_name_falls_back_to_the_area():
 
     confirm_place_slots(_draft(event), request, _clues(request))
     fill_place_slots(_draft(event), request)
+    [saved] = build_result_request(_draft(event), request).model_dump(by_alias=True, mode="json")["events"]
 
     assert event.place_candidates == []
-    assert event.description == "여수시 덕충동에서 시간을 보냈다.", "이름이 없으면 칸을 둘 수 없다(App Server 400)."
+    assert event.description == "{place}에서 시간을 보냈다.", "칸은 저장할 때 코드가 채운다. Repair 가 신경 쓸 일이 아니다."
+    assert saved["subtitle"] == "여수시 덕충동에서 시간을 보냈다.", "이름이 없으면 칸을 둘 수 없다(App Server 400)."
 
 
 def test_same_place_shares_its_names_even_when_the_event_cites_a_record_without_names():
@@ -383,8 +385,9 @@ def test_slot_without_any_place_is_removed_with_its_particle():
 
     confirm_place_slots(draft, request, None)
     fill_place_slots(draft, request)
+    [saved] = build_result_request(draft, request).model_dump(by_alias=True, mode="json")["events"]
 
-    assert event.description == "김민수와 이야기했다."
+    assert saved["subtitle"] == "김민수와 이야기했다."
 
 
 def test_place_name_written_into_the_sentence_becomes_the_slot():
@@ -618,7 +621,8 @@ def test_split_events_take_names_only_from_the_records_in_their_own_time():
 
     assert afternoon.place_candidates == []
     assert afternoon.address == "서울 마포구 도화동 17-14"
-    assert afternoon.description == "마포구 도화동에서 시간을 보냈다."
+    [saved] = build_result_request(draft, request).model_dump(by_alias=True, mode="json")["events"]
+    assert saved["subtitle"] == "마포구 도화동에서 시간을 보냈다."
 
 
 # --- Question 의 장소 말 (#182) ----------------------------------------------

@@ -97,7 +97,7 @@ def test_base_event_prompt_has_no_title_and_the_restore_template_uses_the_area()
     bases = [bundle.base_event for bundle in clues.bundles if bundle.base_event]
 
     assert [base.title for base in bases] == [
-        "관악구 대학동에서 보낸 시간", "관악구 대학동에서 마포구 도화동으로 이동", "마포구 도화동에서 보낸 시간",
+        "관악구 대학동에서 시간을 보냄", "관악구 대학동에서 마포구 도화동으로 이동함", "마포구 도화동에서 시간을 보냄",
     ]
     # 이동 틀은 제목과 문장이 같은 출발·도착 지명이다(사용자 결정 2026-10-30). 틀 문장은 Timeline 입력에 실린다.
     assert bases[1].description == "관악구 대학동에서 마포구 도화동으로 이동했다."
@@ -138,6 +138,7 @@ def test_a_calendar_covering_a_stay_becomes_that_stays_base_event():
     office, station = [b.base_event for b in clues.bundles if b.base_event]
 
     assert office.event_type is EventType.CALENDAR_EVENT
+    assert office.title == "팀 정기 회의 일정이 있었음", "제목에 지명을 붙이지 않고 음슴체로 끝난다(#179)."
     assert office.description == "{place}에서 팀 정기 회의 일정이 있었다."
     assert (office.start.hour, office.end.hour) == (12, 23), "시간은 일정 시간이다."
     prompt = office.as_prompt_dict()

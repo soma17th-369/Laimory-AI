@@ -198,6 +198,12 @@ class NarrativeFinding:
         return {"found": list(self.found)}
 
 
+def has_stay_word(title: str) -> bool:
+    """제목에 체류 표현이 있는가."""
+
+    return bool(_STAY_WORD.search(title))
+
+
 def find_narrative_labels(draft: TimelineDraft) -> list[NarrativeFinding]:
     """고치지 않고 찾는다: 제목의 `체류`, 제목의 시각, 문장의 주소 모양."""
 

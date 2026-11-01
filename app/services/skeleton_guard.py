@@ -35,9 +35,9 @@ from app.schemas import (
     TimelineWarningSeverity,
 )
 from app.schemas.clues import NotificationClue, NotificationClueKind
-from app.services.base_events import BaseEvent, base_event_draft
+from app.services.base_events import BaseEvent, base_event_draft, stay_title
 from app.services.calendar_guard import RESTORED_CALENDAR_DESCRIPTION
-from app.services.clue_bundles import TimelineClues
+from app.services.clue_bundles import TimelineClues, place_only_raw_ids
 from app.services.conversation_guard import (
     MAX_CONVERSATION_EVENTS,
     is_conversation_event,
@@ -46,6 +46,7 @@ from app.services.conversation_guard import (
 from app.services.location_metrics import SHORT_STAY_MAX
 from app.services.location_skeleton import SegmentKind
 from app.services.meal_guard import MEAL_STAY_MAX_DURATION
+from app.services.narrative_place_guard import has_stay_word
 from app.services.photo_guard import CREATED_PHOTO_TITLE
 from app.services.source_lookup import raw_id_of
 from app.services.validator import parse_datetime, resolve_timezone
@@ -363,6 +364,8 @@ def hand_restored_events_to_repair(
         if event.description == RESTORED_CALENDAR_DESCRIPTION:
             event.description = ""
             event.merge_reason = NEEDS_WRITING
+            # 제목은 전부 음슴체로 끝난다(사용자 결정 2026-11-01). 일정 이름은 그대로 담긴다.
+            event.title = f"{event.title} 일정이 있었음"
         elif event.title == CREATED_PHOTO_TITLE:
             event.merge_reason = NEEDS_WRITING
             clue = next((photos[r.raw_id] for r in event.source_refs if r.raw_id in photos), None)
@@ -434,17 +437,9 @@ def restore_place_only_text(
 
     Repair 가 7시간 체류를 안쪽 점심과 같은 문장으로 고쳐 썼고, 일정 없는 저녁 체류가 `잠` 이 됐고, 사진을
     식사에 넘겨준 event 가 체류만 남긴 채 `OO와 함께했다` 로 남았다. 위치는 어디에 있었는지만 말한다.
-
-    오늘 일이 아닌 알림(`scheduleToday` 가 거짓)도 그 체류에서 한 일을 말하지 않는다. 다음 주 예매 알림이 온
-    영화관 체류를 Timeline 이 관람으로 썼고, 그 알림이 근거로 붙어 위치뿐이 아닌 것으로 보여 빠져나갔다(#172).
     """
 
-    says_only_where = {raw_id_of(item) for item in [*request.stays, *request.movements]} | {
-        raw_id
-        for clue in clues.notifications
-        if clue.schedule_today is False
-        for raw_id in clue.raw_ids
-    }
+    says_only_where = place_only_raw_ids(request, clues)
     for event in draft.events:
         if event.event_type not in _PLACE_ONLY_TYPES or any(
             ref.raw_id not in says_only_where for ref in event.source_refs
@@ -452,10 +447,27 @@ def restore_place_only_text(
             continue
         if (
             event.event_type is not EventType.STAY
-            or "보낸" not in event.title
+            or "보냄" not in event.title
             or not _PLACE_ONLY_SENTENCE.fullmatch(event.description)
         ):
             _back_to_frame(event, clues)
+
+
+def keep_stay_word_out(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """제목에 `체류` 를 남기지 않는다(in-place, v4, 사용자 결정 2026-11-01).
+
+    "오후 체류는 절대 안돼", "timeline 이 체류라고 쓰면 안되는데". 재실행의 `체류` 제목은 Repair 가 마지막 반복에
+    쓴 것이라 찾아도 고칠 기회가 없었다. 장소 자리처럼 코드가 지키는 자리다. 체류 틀로 되돌리기만 하고, 활동을
+    말하던 event 는 Repair 가 다시 쓰게 넘긴다.
+    """
+
+    for event in draft.events:
+        if has_stay_word(event.title):
+            event.title = stay_title(clues.area(event.address))
+            if event.event_type is not EventType.STAY:
+                event.merge_reason = NEEDS_WRITING
 
 
 def _keep_notifications_on_one_event(draft: TimelineDraft, request: TimelineDraftRequest) -> None:
@@ -1074,7 +1086,7 @@ _STAY_TYPES = frozenset({EventType.STAY, EventType.UNKNOWN, EventType.REST, Even
 
 #: 체류를 말하는 문장 뼈대(「문장 형식」 표). 위치 근거 없이 이렇게 쓰면 있지도 않은 체류다.
 _STAY_SENTENCE = re.compile(r"(시간을 보냈다|밤을 보냈다|잠을 잤다)")
-_STAY_TITLE = re.compile(r"(보낸 시간|보낸 밤|머문 시간|에서 잠)$")
+_STAY_TITLE = re.compile(r"(시간을 보냄|밤을 보냄|잠을 잠|보낸 시간|보낸 밤|머문 시간|에서 잠)$")
 
 
 def remove_stays_without_location(

@@ -14,7 +14,8 @@
 숫자는 둔다(`여수시 통제영3길`). 구가 없는 시는 시를 구 자리로 본다. 시·도는 넓어서 붙이지 않고,
 그날 시·도가 둘 이상일 때만 짧게 앞에 붙인다(`서울 마포구 도화동`).
 
-기본 event 의 제목은 Timeline 이 빠뜨린 구간을 되살릴 때만 쓰는 틀이다(`{지명}에서 보낸 시간`).
+기본 event 의 제목은 Timeline 이 빠뜨린 구간을 되살릴 때만 쓰는 틀이다(`{지명}에서 시간을 보냄`). v4 제목은
+전부 음슴체로 끝난다(사용자 결정 2026-11-01, #179).
 
 **일정은 Timeline 보다 먼저 기본 event 에 넣는다**(사용자 결정 2026-10-30 — "캘린더의 경우 Timeline이
 처리하기 전에 Location 의 결과물에다가 박아넣어버려"). 일정이 체류 구간을 덮으면 그 구간의 기본 event 는
@@ -22,7 +23,7 @@
 `CALENDAR_EVENT` 는 아직 타입을 고르지 않았다는 표시이고 일정 내용으로 Timeline·Repair 가 고른다(#184).
 틀에서 타입을 빼면 Timeline 이 음식 사진을 일정에 흡수해 식사가 사라진다. 일정은 중요한 일정이라 일정이 주인이고 위치가 근거다. 프롬프트로만 맡기면 Timeline 이 회의와
 같은 체류의 `보낸 시간` 을 따로 썼다(4번 중 1번).
-이동은 제목과 문장 모두 출발·도착 지명으로 쓴다(`도화동에서 역삼동으로 이동` / `…이동했다.`). 이동도
+이동은 제목과 문장 모두 출발·도착 지명으로 쓴다(`도화동에서 역삼동으로 이동함` / `…이동했다.`). 이동도
 제목과 문장은 Timeline 이 쓰고, 이 틀은 Timeline 입력에 실리고 빠진 이동을 되살릴 때 쓰인다(사용자
 결정 2026-10-30 — 제목은 Timeline, 문장은 코드가 따로 쓰자 둘의 출발지가 갈렸다).
 """
@@ -202,31 +203,37 @@ def build_base_event(
     """
 
     if segment.kind is SegmentKind.STAY:
-        title = f"{area}에서 보낸 시간" if area else "머문 시간"
-        return BaseEvent(f"E{number}", segment, EventType.STAY, title, "{place}에서 시간을 보냈다.")
+        return BaseEvent(f"E{number}", segment, EventType.STAY, stay_title(area), "{place}에서 시간을 보냈다.")
     if segment.kind is SegmentKind.WALK:
         return BaseEvent(
-            f"E{number}", segment, EventType.EXERCISE, f"{area} 산책" if area else "산책",
+            f"E{number}", segment, EventType.EXERCISE, f"{area}에서 산책함" if area else "산책함",
             "{place}에서 산책했다.",
         )
     phrase = movement_route(*route)
     return BaseEvent(
         f"E{number}", segment, EventType.MOVEMENT,
-        f"{phrase} 이동" if phrase else "이동", f"{phrase} 이동했다." if phrase else "이동했다.",
+        f"{phrase} 이동함" if phrase else "이동함", f"{phrase} 이동했다." if phrase else "이동했다.",
     )
 
 
-def with_calendar(base: BaseEvent, calendar: CalendarClue, area: str | None = None) -> BaseEvent:
+def stay_title(area: str | None) -> str:
+    """활동을 모르는 체류의 제목. 지명이 없으면 지명 없이 쓴다."""
+
+    return f"{area}에서 시간을 보냄" if area else "시간을 보냄"
+
+
+def with_calendar(base: BaseEvent, calendar: CalendarClue) -> BaseEvent:
     """일정이 덮은 체류의 기본 event. 일정이 주인이고 체류는 그 위치 근거다(사용자 결정 2026-10-30).
 
-    문장은 「문장 형식」의 일정 뼈대다. 참석했는지는 모르므로 `일정이 있었다` 로 둔다.
+    제목과 문장은 「문장 형식」의 일정 뼈대다. 일정이 활동을 말하므로 제목에 지명을 붙이지 않고(#179),
+    참석했는지는 모르므로 `일정이 있었음`·`일정이 있었다` 로 둔다.
     """
 
     return BaseEvent(
         base.base_id,
         base.segment,
         EventType.CALENDAR_EVENT,
-        f"{area}에서 {calendar.title}" if area else calendar.title,
+        f"{calendar.title} 일정이 있었음",
         f"{{place}}에서 {calendar.title} 일정이 있었다.",
         calendar,
         base,

@@ -54,7 +54,7 @@ from app.services.location_skeleton import (
     SkeletonSegment,
 )
 from app.services.place_resolver import unique_place_names
-from app.services.source_lookup import build_owner_index
+from app.services.source_lookup import build_owner_index, raw_id_of
 
 
 @dataclass
@@ -144,6 +144,21 @@ class TimelineClues:
         )
 
 
+def place_only_raw_ids(request: TimelineDraftRequest, clues: TimelineClues) -> set[str]:
+    """어디에 있었는지만 말하는 근거의 rawId. 체류·이동 기록과 오늘 일이 아닌 알림이다.
+
+    오늘 일이 아닌 알림(`scheduleToday` 가 거짓)은 그 체류에서 한 일을 말하지 않는다. 다음 주 예매 알림이 온
+    영화관 체류를 Timeline 이 관람으로 썼다(#172).
+    """
+
+    return {raw_id_of(item) for item in [*request.stays, *request.movements]} | {
+        raw_id
+        for clue in clues.notifications
+        if clue.schedule_today is False
+        for raw_id in clue.raw_ids
+    }
+
+
 def build_timeline_clues(
     skeleton: LocationSkeleton,
     calendars: list[CalendarClue],
@@ -183,7 +198,7 @@ def build_timeline_clues(
         for number, segment in enumerate(skeleton.segments, start=1)
     ]
     extra: list[ClueBundle] = []
-    _embed_calendars(segment_bundles, calendars, area_of)
+    _embed_calendars(segment_bundles, calendars)
 
     for calendar in calendars:
         if calendar.background or calendar.start is None:
@@ -281,9 +296,7 @@ def _day_addresses(
     ]
 
 
-def _embed_calendars(
-    bundles: list[ClueBundle], calendars: list[CalendarClue], area_of
-) -> None:
+def _embed_calendars(bundles: list[ClueBundle], calendars: list[CalendarClue]) -> None:
     """일정이 덮은 체류의 기본 event 를 일정 기본 event 로 바꾼다(사용자 결정 2026-10-30).
 
     배경 일정이 아니고 시각이 있는 일정이 체류 구간을 덮으면 — 구간 중 일정 밖 시간이 20분
@@ -311,9 +324,7 @@ def _embed_calendars(
             covered,
             key=lambda b: min(b.segment.end, calendar.end) - max(b.segment.start, calendar.start),
         )
-        bundle.base_event = with_calendar(
-            bundle.base_event, calendar, area_of(bundle.segment.address)
-        )
+        bundle.base_event = with_calendar(bundle.base_event, calendar)
 
 
 def _outside(start: datetime, end: datetime, calendar: CalendarClue) -> timedelta:

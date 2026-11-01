@@ -8,8 +8,8 @@ v4 문장은 장소 자리를 `{place}` 칸으로 남긴다. 칸에 들어갈 �
    풀을 만들고, 다른 근거가 풀의 이름을 가리키면 확정하고, 아니면 Timeline 이 고른 후보를
    풀 안의 것만 남긴다.
 2. **문장 장소 칸**(`fill_place_slots`) — v3 의 `문장 주소 정리` 자리. event 를 지우거나
-   합치는 단계가 끝난 뒤 문장을 맞춘다. 이동 제목·문장의 장소명과 주소 원문을 고치고, 칸을 쓸 수
-   없는 event 의 칸을 주소로 바꾼다.
+   합치는 단계가 끝난 뒤 문장을 맞춘다. 이동 제목·문장의 장소명과 주소 원문을 고친다. 장소 이름이 없는
+   event 의 칸은 저장할 때 지명으로 채우므로(`timeline_result`) 여기서 건드리지 않는다.
 
 규칙(사용자 결정 2026-10-29).
 
@@ -52,7 +52,7 @@ from app.schemas.common import PlacePoint
 from app.schemas.timeline_result import MAX_PLACE_CANDIDATES, PLACE_SLOT
 from app.services.base_events import AreaNamer, area_namer, movement_route, toward_particle
 from app.services.calendar_clues import split_location_text
-from app.services.clue_bundles import TimelineClues
+from app.services.clue_bundles import TimelineClues, place_only_raw_ids
 from app.services.place_resolver import (
     is_exact_address,
     same_place_addresses,
@@ -178,7 +178,7 @@ def fill_place_slots(
         if event.event_type is EventType.MOVEMENT:
             departures = clues.skeleton.departures if clues else None
             route = _movement_route(evidence.movements, tz, same_place, areas, departures)
-            event.title = _movement_text(event.title, route, movement_names, "이동")
+            event.title = _movement_text(event.title, route, movement_names, "이동함")
             event.description = _movement_text(event.description, route, movement_names, "이동했다.")
             continue
 
@@ -213,8 +213,6 @@ def fill_place_slots(
                 if len(literal) >= 2 and literal in description:
                     description = description.replace(literal, PLACE_SLOT, 1)
                     break
-        if not slots_only and PLACE_SLOT in description and not (event.place or event.place_candidates):
-            description = without_place_slot(description, areas.name(_same(same_place, event.address)))
         event.description = description
 
 
@@ -226,12 +224,16 @@ def keep_place_names_out(
     "제목에는 절대 {place} 를 남기면 안되고 무조건 주소만 언급해야된다", "이동에서도 제목과 내용에 주소만
     나와야한다". Repair 가 놓치면 그대로 나갔다(제목 517개 중 1개). 장소 이름과 칸만 지명으로 바꾸거나 빼고
     나머지 글은 건드리지 않는다 — 코드가 글을 통째로 덮으면 일정·사진의 내용이 사라졌다.
+
+    제목에서 장소를 말한 자리는 언제나 그 event 의 지명이다(사용자 결정 2026-11-02 — "제목은 무조건 주소명 지명을
+    말했어야됐는데"). 장소를 말하지 않은 활동 제목에 지명을 더하지는 않는다(#179).
     """
 
     tz = resolve_timezone(request.timezone)
     index = _Index.build(request)
-    names = _place_names_outside_areas(
-        request, _day_raw_addresses(request), clues.same_place, clues.areas
+    names = _with_merchants(
+        _place_names_outside_areas(request, _day_raw_addresses(request), clues.same_place, clues.areas),
+        clues,
     )
     for event in draft.events:
         if event.event_type is EventType.MOVEMENT:
@@ -239,26 +241,47 @@ def keep_place_names_out(
             route = _movement_route(
                 movements, tz, clues.same_place, clues.areas, clues.skeleton.departures
             )
-            for field, default in (("title", "이동"), ("description", "이동했다.")):
+            for field, default in (("title", "이동함"), ("description", "이동했다.")):
                 text = getattr(event, field) or ""
                 if PLACE_SLOT in text or _without_place_names(text, names) != text:
                     cleaned = text.replace(PLACE_SLOT, "")
                     setattr(event, field, _movement_text(cleaned, route, names, default))
             continue
-        event.title = _title_without_place(event.title, names, clues.area(event.address))
+        area = clues.area(event.address)
+        event.title = _title_without_place(event.title, names, area) or area or event.title
+
+
+def _tells_only_where(event: TimelineEventDraft, only_where: set[str]) -> bool:
+    """제목이 어디였는지를 말해야 하는 event. 체류이거나 근거가 위치뿐이다."""
+
+    return event.event_type is EventType.STAY or all(
+        ref.raw_id in only_where for ref in event.source_refs
+    )
+
+
+def _with_merchants(names: list[str], clues: TimelineClues) -> list[str]:
+    """장소명에 그날의 결제·예약 가맹점을 더한다(사용자 결정 2026-11-02 — "제목에는 주소만 있어야되는데").
+
+    가맹점은 장소 후보에서 찾는 이름이고(`_confirmed_name`) 제목에 쓰는 이름이 아니다. 후보에 없을 수 있어 여기서
+    더한다 — 실제 `만쥬킹` 은 그날 입력 중 삼성 월렛 결제 알림에만 있었다.
+    """
+
+    return sorted({*names, *_day_merchants(clues)}, key=len, reverse=True)
 
 
 def _title_without_place(title: str, names: list[str], area: str | None) -> str:
-    """제목의 칸과 장소 이름을 지명으로 바꾸거나 뺀다. 그 밖의 말은 그대로다."""
+    """제목의 칸과 장소 이름을 `area` 로 바꾼다. `area` 가 없으면 뺀다. 그 밖의 말은 그대로다. 남는 말이 없으면 빈 글이다."""
 
-    text = title.replace(f"{PLACE_SLOT}에서 ", f"{area}에서 " if area else "")
-    text = text.replace(PLACE_SLOT, area or "")
+    text = without_place_slot(title, area)
     if "에서 " in text:
         head, rest = text.split("에서 ", 1)
         if head.strip() in names and rest.strip():
             text = f"{area}에서 {rest.strip()}" if area else rest.strip()
-    text = " ".join(_without_place_names(text, names).split())
-    return text or area or title
+    left = _without_place_names(text, names)
+    kept = " ".join(left.split())
+    if left != text and kept and area and "에서 " not in kept:
+        return f"{area}에서 {kept}"
+    return kept
 
 
 def fix_counterpart_particles(
@@ -304,34 +327,39 @@ def fix_title_places(
 ) -> None:
     """제목 앞 `{X}에서` 의 X 가 그 event 의 지명이 아니면 바로잡는다(in-place).
 
-    제목에는 장소가 절대 들어가지 않는다(사용자 결정). 제목의 장소 자리는 코드가 고른 지명
-    (`area`)뿐이다. 실제 Timeline 은 사진 해석의 `한식당에서` 를 옮겨 `한식당에서 저녁 식사` 를
-    썼다(6회 중 4회). X 가 그 event 의 대표 주소 지명도, 그 시간에 머문 체류의 지명도 아니면
-    대표 주소 지명으로 바꾸고, 대표 주소가 없으면 `{X}에서` 를 뺀다. 나머지 제목은 그대로다.
+    제목에는 장소가 들어가지 않는다(사용자 결정). 어디였는지가 제목인 event 의 장소 자리는 코드가 고른 지명(`area`)
+    뿐이다. 실제 Timeline 은 사진 해석의 `한식당에서` 를 옮겨 `한식당에서 저녁 식사` 를 썼다(6회 중 4회). X 가 그 event
+    의 대표 주소 지명도, 그 시간에 머문 체류의 지명도 아니면 대표 주소 지명으로 바꾸고, 대표 주소가 없으면 `{X}에서` 를 뺀다.
+
+    활동을 아는 event 의 `{X}에서` 는 `프로젝트 회의에서 발표` 처럼 활동일 수 있어(#179), X 가 장소일 때만 바꾼다.
     """
 
     tz = resolve_timezone(request.timezone)
+    raw_addresses = _day_raw_addresses(request)
+    names = _with_merchants(
+        _place_names_outside_areas(request, raw_addresses, clues.same_place, clues.areas), clues
+    )
+    area_words = _area_words(raw_addresses, clues.same_place, clues.areas)
+    only_where = place_only_raw_ids(request, clues)
     for event in draft.events:
         if event.event_type is EventType.MOVEMENT or "에서 " not in event.title:
             continue
-        head, rest = event.title.split("에서 ", 1)
+        head, rest = (part.strip() for part in event.title.split("에서 ", 1))
         allowed = {clues.area(event.address)} | {
             clues.area(stay.address)
             for stay in request.stays
             if touches_event(stay, event, tz)
         }
         allowed.discard(None)
-        if head.strip() in allowed or not rest.strip():
+        if head in allowed or not rest:
             continue
-        right = clues.area(event.address)
-        event.title = f"{right}에서 {rest.strip()}" if right else rest.strip()
+        if _tells_only_where(event, only_where) or _is_place(head, names, area_words):
+            right = clues.area(event.address)
+            event.title = f"{right}에서 {rest}" if right else rest
 
     # 제목 어디에든 들어간 그날의 장소명을 뺀다. Timeline 은 위치·사진의 장소 후보나 사진 설명의
     # 상호를 제목 가운데에도 넣는다(`해녀밥상 점심`). 지명(`area`)은 장소명이 아니라 남긴다.
     # 이동 제목도 같다 — `동백호수공원 두산위브더제니스에서 도화동으로 이동` 이 나온 적이 있다.
-    names = _place_names_outside_areas(
-        request, _day_raw_addresses(request), clues.same_place, clues.areas
-    )
     for event in draft.events:
         title = _without_place_names(event.title, names)
         # 가게 종류도 장소다(`한식당 식사`). 음식 종류가 붙은 말은 음식만 남기고(`한식당` → `한식`),
@@ -350,6 +378,16 @@ _VENUE_WORD = re.compile(
     r"(?:(?<=\s)|^)(?:식당|음식점|레스토랑|카페|커피숍|가게|편의점|마트|술집|주점|빵집|베이커리)"
     r"(?:에서|의|에)?(?=\s|$)\s*"
 )
+
+
+def _is_place(words: str, names: list[str], area_words: set[str]) -> bool:
+    """그날의 장소명·지명이거나 가게 종류인가. `프로젝트 회의` 같은 활동 이름이면 거짓이다."""
+
+    return (
+        words in names
+        or all(word in area_words for word in words.split())
+        or bool(_CUISINE_VENUE.fullmatch(words) or _VENUE_WORD.fullmatch(words))
+    )
 
 
 def _without_place_names(text: str, names: list[str]) -> str:
@@ -377,12 +415,7 @@ def _place_names_outside_areas(
 ) -> list[str]:
     """그날의 장소명 중 지명의 어절과 겹치지 않는 것. 겹치는 이름을 빼면 지명이 반쯤 지워진다."""
 
-    area_words = {
-        word
-        for address in raw_addresses
-        if (area := areas.name(_same(same_place, address)))
-        for word in area.split()
-    }
+    area_words = _area_words(raw_addresses, same_place, areas)
     return [
         name
         for name in sorted(_day_place_names(request), key=len, reverse=True)
@@ -390,10 +423,23 @@ def _place_names_outside_areas(
     ]
 
 
+def _area_words(
+    raw_addresses: list[str | None], same_place: dict[str, str], areas: AreaNamer
+) -> set[str]:
+    """그날 지명의 어절."""
+
+    return {
+        word
+        for address in raw_addresses
+        if (area := areas.name(_same(same_place, address)))
+        for word in area.split()
+    }
+
+
 def _movement_text(text: str | None, route: str, names: list[str], default: str) -> str:
     """이동 제목·문장. 출발·도착 지명은 기록이 정하므로 코드가 맞추고, 목적은 LLM 이 쓴 것을 둔다.
 
-    제목과 문장은 `{경로} {목적}` / `{경로} {목적}했다.` 꼴이다(「문장 형식」). 장소명을 뺀 글에
+    제목과 문장은 `{경로} {목적}함` / `{경로} {목적}했다.` 꼴이다(「문장 형식」). 장소명을 뺀 글에
     기록의 경로가 그대로 있으면 둔다. 없으면(출발지가 다른 것, 조사가 틀린 것, 주소 원문을 옮긴 것)
     마지막 어절을 목적으로 보고 경로를 다시 붙인다.
     """
@@ -426,7 +472,7 @@ def _day_place_names(request: TimelineDraftRequest) -> set[str]:
 class DayPlaceWords:
     """Question 이 입력에서 빼고 결과에서 찾는 그날의 장소 말(#182, v4).
 
-    입력에서 확인되는 말만 갖는다. 결제·예약 가맹점도 든다 — 장소 후보에 없어도 제목에 남는다.
+    입력에서 확인되는 말만 갖는다. 결제·예약 가맹점도 든다 — 장소 후보에 없는 이름이라 따로 더한다.
     User Memory·일정 제목 속 장소는 문장이라 코드가 가려낼 수 없어 프롬프트가 막는다.
     장소명은 통째로만 본다 — 어절로 쪼개면 `필라테스 스튜디오` 때문에
     `필라테스` 끝나고를 묻는 질문이 걸린다. 지명은 `대현동` 처럼 어절로도 쓰여 세 글자 이상
@@ -491,13 +537,31 @@ def day_place_words(
     return DayPlaceWords(tuple(sorted(words, key=lambda word: (-len(word), word))))
 
 
-def place_names_in_title(event: TimelineEventDraft, request: TimelineDraftRequest) -> list[str]:
-    """제목에 쓰인 장소 이름. 제목에는 장소명을 쓰지 않는다(사용자 결정). 찾기만 한다."""
+def place_names_in_title(
+    event: TimelineEventDraft, request: TimelineDraftRequest, clues: TimelineClues | None = None
+) -> list[str]:
+    """제목에 쓰인 장소 이름. 제목에는 장소명을 쓰지 않는다(사용자 결정). 찾기만 한다.
+
+    `clues` 가 있으면 그날의 결제·예약 가맹점도 찾는다.
+    """
 
     tz = resolve_timezone(request.timezone)
     evidence = _Index.build(request).evidence(event, tz)
     names = unique_place_names([event.place, *event.place_candidates, *_pool(evidence, tz)])
-    return [name for name in names if len(name) >= 2 and name in event.title]
+    if clues is not None:
+        names = _with_merchants(names, clues)
+    return [name for name in names if len(name) >= 2 and _written_in(name, event.title)]
+
+
+def _written_in(name: str, title: str) -> bool:
+    """제목에 그 이름이 있는가. 띄어 쓰거나(`세무법인 나은`) 앞 어절로 줄여 써도 그 이름이다.
+
+    사진 간판의 `그린컴퓨터아카데미` 가 후보 `그린컴퓨터아카데미 강남캠퍼스` 와 글자가 달라 검사를 지나갔다.
+    """
+
+    key, written = normalize_place_text(name), normalize_place_text(title)
+    head = normalize_place_text(name.split()[0])
+    return name in title or (len(key) >= 4 and key in written) or (len(head) >= 5 and head in written)
 
 
 # --- 근거 --------------------------------------------------------------------------

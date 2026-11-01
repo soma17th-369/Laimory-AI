@@ -38,7 +38,7 @@ def test_segment_no_event_uses_is_restored_as_a_plain_stay():
 
     restored = next(e for e in draft.events if home.raw_id in {r.raw_id for r in e.source_refs})
     assert restored.event_type is EventType.STAY
-    assert restored.title == "마포구 도화동에서 보낸 시간", "되살린 틀 제목은 그 장소의 지명(구 + 동)을 쓴다."
+    assert restored.title == "마포구 도화동에서 시간을 보냄", "되살린 틀 제목은 그 장소의 지명(구 + 동)을 쓴다."
     assert restored.description == "{place}에서 시간을 보냈다."
     assert restored.place_candidates == ["한빛아파트"]
     assert any("기본 event" in w.message for w in draft.warnings)

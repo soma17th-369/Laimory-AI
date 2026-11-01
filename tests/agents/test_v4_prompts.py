@@ -179,13 +179,86 @@ def test_v4_prompts_write_the_place_as_the_slot_only():
 
 
 def test_v4_titles_never_carry_a_place_name():
-    # 장소명 대신 같은 장소 묶음마다 코드가 고른 지명(`area`)을 Timeline 이 그대로 쓴다(사용자 결정 2026-10-29).
+    # 장소명 대신 같은 장소 묶음마다 코드가 고른 지명(`area`)을 그대로 쓴다(사용자 결정 2026-10-29).
     for text in (_timeline(), _repair()):
-        assert "`title`에는 장소 이름을 쓰지 않고, 근거의 `area`로 어디였는지 보탭니다" in text
+        assert "`title`은 무엇을 했는지를 쓰고 장소 이름을 쓰지 않습니다" in text
+        assert "`area`를 고치거나 줄이거나 시·도를 덧붙이지 않습니다" in text
         assert "{동네}" not in text
     for row in _format_table(_timeline())[2:]:
         title = row.split(" | ")[1]
         assert "{place}" not in title, row
+
+
+def test_v4_title_needs_the_area_only_where_nothing_else_says_what_happened():
+    """활동을 아는 제목에 지명을 의무로 붙이지 않는다(#179). 지명을 쓰는 뼈대는 어디였는지가 사건인 상황과 결제다.
+
+    결제는 가맹점 자리에 지명을 쓴다(사용자 결정 2026-11-02 — "제목은 무조건 주소명 지명을 말했어야됐는데").
+    """
+
+    for text in (_timeline(), _repair()):
+        named = {
+            row.split(" | ")[0].removeprefix("| ")
+            for row in _format_table(text)[2:]
+            if "지명}" in row.split(" | ")[1]
+        }
+        assert named == {
+            "이동", "체류, 활동 근거 없음", "체류, 활동 근거 없음, 밤을 보낸 곳", "산책",
+            "음식 사진·결제", "결제·예약이 말하는 용무",
+        }
+        assert "활동이 곧 제목이고(`프로젝트 회의를 함`, `국물 요리와 만두를 먹음`)" in text
+        assert "여행지처럼 그곳이라는 사실이 사건의 일부이면 활동 제목에도" in text, "지명을 금지하는 것은 아니다."
+
+    assert "체류 중에 알림이 왔다는 것도 그 체류의 활동이 아닙니다" in _timeline()
+    assert "체류 중에 알림이 왔다는 것은 활동을 말하는 근거가 아닙니다" in _repair()
+    assert '"title": "국물 요리와 만두를 먹음"' in _timeline()
+
+
+def test_v4_titles_all_end_in_the_eum_form():
+    """제목은 전부 음슴체로 끝난다(사용자 결정 2026-11-01 — "제목은 전부 음슴체로 끝나도록 해줘")."""
+
+    def ends_in_eum(words: str) -> bool:
+        last = words[-1]
+        return "가" <= last <= "힣" and (ord(last) - ord("가")) % 28 == 16
+
+    for text in (_timeline(), _repair()):
+        assert "**언제나 음슴체로 끝냅니다**" in text
+        for row in _format_table(text)[2:]:
+            title, _, example = row.split(" | ")[1:4]
+            assert ends_in_eum(title.split("`")[1]), row
+            assert ends_in_eum(example.split("`")[1]), row
+
+
+def test_v4_the_stay_word_stays_out_of_titles_and_sentences():
+    """사용자 결정 2026-11-01 — "timeline 이 체류라고 쓰면 안되는데"."""
+
+    assert "`title`과 `description`에 `체류`" in _timeline()
+    assert "`체류`는 `description`에도 쓰지 않습니다" in _repair()
+
+
+def test_v4_title_has_no_merchant_either():
+    """제목에는 주소만 있어야 한다(사용자 결정 2026-11-02). 결제 가맹점도 장소 이름이다."""
+
+    for text in (_timeline(), _repair()):
+        assert "결제·예약 가맹점(`counterpart`)도" in text
+        assert "{결제처}" not in text
+        assert "`{지명}에서 {음식이나 끼니}를 먹음`" in text
+        assert "`{지명}에서 {용무}함`" in text
+        assert "상호·건물" in text
+
+
+def test_v4_a_photo_of_a_building_is_not_an_activity():
+    """건물 사진을 찍은 것은 큰 의미가 없다(사용자 결정 2026-11-02). 어디였는지를 말하는 단서다."""
+
+    assert "장소만 보여 주는 사진은 활동도 회상할 장면도 아닙니다" in _timeline()
+    assert "`STAY`와 체류 뼈대로 씁니다" in _repair()
+
+
+def test_v4_a_photo_of_a_place_is_not_an_activity():
+    """간판과 `고사실` 표지 사진으로 `컴퓨터 교육` 을 쓴 실제 출력. 사진 해석은 "둘러봤다" 까지였다."""
+
+    assert "장소 이름이나 그 장소가 찍힌 사진만으로 그곳에서 한 일을 짐작하지 않습니다" in _timeline()
+    assert "사진은 `activity`가 말하는 일까지만 씁니다" in _timeline()
+    assert "학원 간판 사진을 교육으로 쓴 것" in _repair()
 
 
 def test_v4_movement_title_and_sentence_use_the_same_route():
@@ -418,7 +491,7 @@ def test_timeline_v4_makes_events_from_notifications_on_a_day_without_location()
 
     text = _timeline()
 
-    assert "다르면 내용이 있는 대화만 그날의 event이고" in text
+    assert "내용이 있는 대화만 그날의 event이고" in text
     assert "대화가 아닌 알림은 event가 되지 않습니다" in text
     assert "구간에 붙지 않은 사진·일정, 대화" in text
 
@@ -509,7 +582,7 @@ def test_timeline_v4_keeps_what_the_photo_shows_in_the_meal_sentence():
     text = _timeline()
 
     assert "말하는 음식은 그 말대로 쓰고, 말하지 않은 음식은 지어내지 않습니다" in text
-    assert "음식을 모르면 `{지명}에서 {끼니}`" in text
+    assert "음식을 모르면 `{끼니}를 먹음`" in text
 
 
 def test_timeline_v4_takes_a_meal_out_of_a_meeting():
