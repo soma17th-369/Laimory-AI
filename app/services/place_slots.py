@@ -168,7 +168,8 @@ def fill_place_slots(
             continue
         evidence = index.evidence(event, tz)
         if event.event_type is EventType.MOVEMENT:
-            route = _movement_route(evidence.movements, tz, same_place, areas)
+            departures = clues.skeleton.departures if clues else None
+            route = _movement_route(evidence.movements, tz, same_place, areas, departures)
             event.title = _movement_text(event.title, route, movement_names, "이동")
             event.description = _movement_text(event.description, route, movement_names, "이동했다.")
             continue
@@ -227,7 +228,9 @@ def keep_place_names_out(
     for event in draft.events:
         if event.event_type is EventType.MOVEMENT:
             movements = index.evidence(event, tz).movements
-            route = _movement_route(movements, tz, clues.same_place, clues.areas)
+            route = _movement_route(
+                movements, tz, clues.same_place, clues.areas, clues.skeleton.departures
+            )
             for field, default in (("title", "이동"), ("description", "이동했다.")):
                 text = getattr(event, field) or ""
                 if PLACE_SLOT in text or _without_place_names(text, names) != text:
@@ -383,9 +386,8 @@ def _movement_text(text: str | None, route: str, names: list[str], default: str)
     """이동 제목·문장. 출발·도착 지명은 기록이 정하므로 코드가 맞추고, 목적은 LLM 이 쓴 것을 둔다.
 
     제목과 문장은 `{경로} {목적}` / `{경로} {목적}했다.` 꼴이다(「문장 형식」). 장소명을 뺀 글에
-    기록의 경로가 그대로 있으면 둔다. 없으면(앞 체류를 출발지로 쓴 것, 조사가 틀린 것, 주소 원문을
-    옮긴 것) 마지막 어절을 목적으로 보고 경로를 다시 붙인다. 실제 Timeline 은 기록되지 않은 열차
-    구간 앞의 체류를 출발지로 썼다(8번 중 1번).
+    기록의 경로가 그대로 있으면 둔다. 없으면(출발지가 다른 것, 조사가 틀린 것, 주소 원문을 옮긴 것)
+    마지막 어절을 목적으로 보고 경로를 다시 붙인다.
     """
 
     words = " ".join(_without_place_names(text or "", names).split())
@@ -703,17 +705,24 @@ def _movement_route(
     tz: tzinfo,
     same_place: dict[str, str] | None = None,
     areas: AreaNamer | None = None,
+    departures: dict | None = None,
 ) -> str:
     """이동 경로: 출발·도착의 지명(구 + 동)이다(사용자 결정). 장소명도 주소 원문도 넣지 않는다.
 
     주소 원문(`경기도 용인시 기흥구 동백죽전대로 455-11`)을 그대로 쓰면 시·도부터 번지까지 늘어져
     사용자가 읽는 문장이 아니다(사용자: 확실한 오류). 제목과 같은 지명을 쓰고, 주소는 같은 장소의
     주소로 맞춘 뒤 줄인다 — 도착지가 그다음 체류 event 와 같은 지명으로 보인다.
+
+    `departures` 는 체류 뒤에 끊겼다가 시작한 이동의 출발지다(`LocationSkeleton.departures`). 입력의
+    출발지(기록이 다시 잡힌 곳)가 아니라 떠난 체류가 그 이동의 출발지다.
     """
 
     namer = areas or AreaNamer()
     ordered = _ordered(movements, tz)
     origin = ordered[0].start.address if ordered and ordered[0].start else None
+    left = (departures or {}).get(raw_id_of(ordered[0])) if ordered else None
+    if left is not None:
+        origin = left.address
     destination = ordered[-1].end.address if ordered and ordered[-1].end else None
     return movement_route(
         namer.name(_same(same_place or {}, origin)),

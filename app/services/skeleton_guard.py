@@ -1065,6 +1065,8 @@ def remove_events_outside_evidence(
 
     tz = resolve_timezone(request.timezone)
     spans = _source_spans(request, tz)
+    # 체류·이동의 시간은 뼈대 구간 안의 시간이다. 체류 뒤의 이동은 원본보다 일찍 시작한다.
+    spans.update(clues.skeleton.record_spans())
     location_ids = {raw_id_of(item) for item in [*request.stays, *request.movements]}
     notification_ids = {raw_id_of(item) for item in request.notifications}
     conversation_ids = _conversation_ids(clues)

@@ -21,6 +21,7 @@ from app.schemas import (
 from app.services.clue_bundles import build_timeline_clues
 from app.services.draft_repair import repair_draft
 from app.services.location_skeleton import SegmentKind, build_location_skeleton
+from app.services.place_slots import fill_place_slots, keep_place_names_out
 from app.services.skeleton_guard import NEEDS_WRITING, keep_one_event_per_journey
 from tests.fixtures.requests import (
     calendar_item,
@@ -312,6 +313,78 @@ def test_a_scheduled_movement_keeps_its_time():
     assert _times(scheduled) == (_at(9), _at(10))
     assert _times(rest) == (_at(10), _at(12))
     assert office.raw_id in _raw_ids(rest), "일정이 있는 구간의 event 는 근거도 건드리지 않는다."
+
+
+def _train_day():
+    """동대구역 체류 → 기차 안에서 끊김 → 세종에서 다시 잡힌 이동 → 서울 사무실. `d5b039b1` 의 아침이다."""
+
+    station = stay_item(
+        "station",
+        lat=35.8797,
+        lon=128.6286,
+        start="2026-06-20T08:44:00",
+        end="2026-06-20T09:14:00",
+        places=["동대구역"],
+        address="대구광역시 동구 동대구로 550",
+    )
+    train = MovementItem(
+        raw_id=fixture_raw_id("movement-train"),
+        start_at="2026-06-20T10:12:00",
+        end_at="2026-06-20T12:03:00",
+        start=GeoPlace(latitude=36.53, longitude=127.37, address="세종특별자치시 부강면 노호리 383-11"),
+        end=GeoPlace(latitude=37.5446, longitude=126.9520, address="서울특별시 마포구 마포대로 89"),
+        transports=["IN_VEHICLE"],
+    )
+    office = stay_item(
+        "office",
+        lat=37.5446,
+        lon=126.9520,
+        start="2026-06-20T12:03:00",
+        end="2026-06-20T18:00:00",
+        places=["포스트타워"],
+        address="서울특별시 마포구 마포대로 89",
+    )
+    return make_request(stays=[station, office], movements=[train]), station, train
+
+
+def test_a_train_after_the_station_stays_a_movement_from_the_station():
+    request, station, train = _train_day()
+    draft = _draft(_event([train], _at(10, 12), _at(12, 3), title="이동", base=("E2",)))
+
+    repair_draft(draft, request, extended=True, clues=_clues(request))
+
+    [movement] = _movements(draft)
+    assert _times(movement) == (_at(9, 14), _at(12, 3)), "뒤 단계가 원본 시각으로 줄이지 않는다."
+    assert _raw_ids(movement) == [train.raw_id]
+    stay = next(e for e in draft.events if station.raw_id in _raw_ids(e))
+    assert stay.event_type is not EventType.MOVEMENT and stay.end_time == _at(9, 14)
+
+
+def test_a_train_restored_by_the_code_says_it_left_the_station():
+    request, _, _ = _train_day()
+    draft = _draft()
+
+    repair_draft(draft, request, extended=True, clues=_clues(request))
+
+    [movement] = _movements(draft)
+    assert _times(movement) == (_at(9, 14), _at(12, 3))
+    assert "동대구로" in movement.title and "부강면" not in movement.title
+
+
+@pytest.mark.parametrize("fix", [fill_place_slots, keep_place_names_out])
+def test_the_code_route_of_a_train_starts_at_the_station(fix):
+    """경로를 기록의 입력에서 읽는 자리다. 그대로 두면 Repair 에 세종 출발로 고치라고 넘긴다."""
+
+    request, _, train = _train_day()
+    clues = _clues(request)
+    event = _event([train], _at(9, 14), _at(12, 3), title="{place}에서 이동", base=("E2",))
+    event.description = "{place}에서 이동했다."
+    draft = _draft(event)
+
+    fix(draft, request, clues)
+
+    assert "동대구로" in event.title and "부강면" not in event.title
+    assert "동대구로" in event.description and "부강면" not in event.description
 
 
 def test_a_workout_holding_a_movement_record_is_not_a_journey():

@@ -230,6 +230,53 @@ def test_L5_a_short_stay_past_a_gap_stays_off_the_journey():
     assert [record.raw_id for record in skeleton.isolated] == [far_short.raw_id]
 
 
+def test_a_movement_after_a_stay_and_a_gap_left_from_the_stay():
+    """동대구역 체류 → 끊김 → 세종에서 시작한 이동. 사이에 체류 정보가 없으니 역에서 출발한 이동이다."""
+
+    station = _stay("station", "08:44", "09:14")
+    train = _move("train", "10:12", "12:03", from_lat=_BASE_LAT + 1.2, to_lat=_BASE_LAT + 2.0)
+
+    skeleton = _skeleton(stays=[station], movements=[train])
+
+    stay, journey = skeleton.segments
+    assert (stay.kind, journey.kind) == (SegmentKind.STAY, SegmentKind.MOVEMENT)
+    assert (journey.start.hour, journey.start.minute) == (9, 14), "체류가 끝난 때 출발했다."
+    assert stay.end == journey.start
+    assert journey.origin.address == "주소 station"
+    assert skeleton.departures[train.raw_id].address == "주소 station"
+    assert skeleton.record_spans()[train.raw_id][0] == journey.start
+    assert [e for e in skeleton.empty_times if e.before and e.after] == []
+    assert sorted(skeleton.raw_ids()) == sorted([station.raw_id, train.raw_id])
+
+
+@pytest.mark.parametrize("apart", [0.002, 0.005], ids=["같은 장소", "250m~1km"])
+def test_a_movement_within_1km_of_the_stay_keeps_its_own_start(apart):
+    """그 안이면 체류를 떠났는지 모른다. 빈 시간으로 남는다."""
+
+    stay = _stay("office", "09:00", "12:00")
+    walk = _move("m", "13:30", "14:00", from_lat=_BASE_LAT + apart, to_lat=_BASE_LAT + 0.05)
+
+    skeleton = _skeleton(stays=[stay], movements=[walk])
+
+    assert (skeleton.segments[-1].start.hour, skeleton.segments[-1].start.minute) == (13, 30)
+    assert skeleton.segments[-1].origin.address == "출발 m"
+    assert skeleton.departures == {}
+    [gap] = [e for e in skeleton.empty_times if e.before and e.after]
+    assert gap.kind is EmptyTimeKind.COLLECTION_GAP
+
+
+def test_a_movement_right_after_a_stay_keeps_its_own_origin():
+    """기록이 끊기지 않았으면 입력의 출발지가 맞다."""
+
+    stay = _stay("office", "09:00", "12:00")
+    movement = _move("m", "12:00", "13:00", from_lat=_BASE_LAT + 0.5, to_lat=_BASE_LAT + 0.8)
+
+    skeleton = _skeleton(stays=[stay], movements=[movement])
+
+    assert skeleton.departures == {}
+    assert skeleton.segments[-1].origin.address == "출발 m"
+
+
 def test_movements_with_many_short_transfers_are_one_journey():
     """환승마다 기록이 갈려도 여정은 하나고, 입력 rawId 는 빠지거나 겹치지 않는다."""
 
