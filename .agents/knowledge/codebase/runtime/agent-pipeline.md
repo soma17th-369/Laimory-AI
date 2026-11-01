@@ -102,11 +102,13 @@ v3 Repair 프롬프트는 코드가 이미 본 것을 다시 검증하지 않는
 
 ### Question Agent
 
-회고 질문은 Repair가 event를 삭제·병합하고 ID를 확정한 뒤 생성한다. 모든 event가 대상이며 종류에 따른 예외는 없다. LLM에는 event의 ID, 종류, title, 시간대, 선택적 description/place만 주며 confidence, inference level, uncertainty, sourceRef는 주지 않는다.
+회고 질문은 Repair가 event를 삭제·병합하고 ID를 확정한 뒤 생성한다. 모든 event가 대상이며 종류에 따른 예외는 없다. LLM에는 event의 ID, 종류, title, 시간대, 선택적 description/place만 주며 confidence, inference level, uncertainty, sourceRef는 주지 않는다. v4는 장소도 주지 않는다(#182). `place`를 싣지 않고 `{place}` 칸을 지우며 제목·문장에서 그날의 장소 말(`day_place_words`: 장소명, 주소, 지명, 결제·예약 가맹점)을 지운다. 프롬프트 입력만 그렇고 사용자가 읽는 글은 그대로다.
 
-질문은 물음표로 끝나야 하고 255자 이하여야 하며 event당 첫 질문 하나만 적용한다. 모르는 event ID와 중복은 제외하고, 1차에서 빠진 event는 한 번 더 묻는다. Question Agent 실패는 warning을 남기고 질문 없는 draft로 저장을 계속한다.
+질문은 물음표로 끝나야 하고 255자 이하여야 하며 event당 첫 질문 하나만 적용한다. 모르는 event ID와 중복은 제외하고, 1차에서 빠진 event는 한 번 더 묻는다. v4는 장소 말이 든 질문도 제외해 같은 재요청으로 넘기고, 재요청에는 이미 만든 질문을 `clientEventId` 없이 함께 싣는다. 재요청 뒤에도 장소가 남으면 그 event의 질문은 null이고 warning이 남는다. Question Agent 실패는 warning을 남기고 질문 없는 draft로 저장을 계속한다.
 
 v3 Question 프롬프트는 수면을 뺀 eventType마다 예시를 두고, 한 질문에 두 가지를 이어 묻는 것을 허용하며, 무엇을 했는지가 빠진 event는 그것을 먼저 묻는다(#118). 내부 모호성 질문(`TimelineDraft.questions`)은 #118에서 제거됐다.
+
+v4 Question 프롬프트는 `UNKNOWN`을 뺀 16종 eventType마다 물어볼 것, 입력이 말해 줄 때와 부족할 때의 예시, 피할 것을 표로 둔다(#182). 표의 질문은 사용자가 직접 정한 문장이고 표기까지 테스트가 고정한다. 장소 이름 대신 `이곳`·`그곳`·`여기`만 쓴다. User Memory·일정 제목 속 장소는 코드가 가려낼 수 없어 프롬프트가 막는다.
 
 ## Invariants
 
