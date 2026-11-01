@@ -645,6 +645,7 @@ def separate_movement_segments(
         if segment.kind is not SegmentKind.STAY
         for raw_id in segment.raw_ids
     }
+    walks = _walk_record_ids(clues)
     base_segments = {
         bundle.base_event.base_id: bundle.base_event.segment
         for bundle in clues.bundles
@@ -662,7 +663,7 @@ def separate_movement_segments(
     spans = _source_spans(request, tz)
     kept: list[TimelineEventDraft] = []
     for event in draft.events:
-        if event.event_type in (EventType.MOVEMENT, EventType.EXERCISE):
+        if _is_on_the_move(event, walks):
             kept.append(event)
             continue
         # 일정 event 의 시간은 바꾸지 않는다(사용자 결정) — 이동 기록만 빼고 자르지 않는다.
@@ -703,6 +704,29 @@ def separate_movement_segments(
     _keep_one_place(draft, clues, base_segments)
 
 
+def _walk_record_ids(clues: TimelineClues) -> set[str]:
+    return {
+        raw_id
+        for segment in clues.skeleton.segments
+        if segment.kind is SegmentKind.WALK
+        for raw_id in segment.raw_ids
+    }
+
+
+def _is_on_the_move(event: TimelineEventDraft, walks: set[str]) -> bool:
+    """이동·산책 구간이 그 event 의 시간인가.
+
+    운동 일정은 아니다(#184). `EXERCISE` 를 통째로 빼 두면 운동 일정이 앞뒤 이동 구간을 그대로 품는다.
+    산책 구간을 가진 운동 일정은 산책이 곧 그 운동이라 그대로다.
+    """
+
+    if event.event_type is EventType.MOVEMENT:
+        return True
+    if event.event_type is not EventType.EXERCISE:
+        return False
+    return not _has_calendar(event) or any(ref.raw_id in walks for ref in event.source_refs)
+
+
 def _keep_one_place(draft: TimelineDraft, clues: TimelineClues, base_segments) -> None:
     """주소가 다른 체류 구간을 함께 가진 event 를 한 장소로 줄인다(in-place).
 
@@ -726,8 +750,9 @@ def _keep_one_place(draft: TimelineDraft, clues: TimelineClues, base_segments) -
     def place_of(segment) -> str:
         return clues.address(segment.address) or segment.segment_id
 
+    walks = _walk_record_ids(clues)
     for event in draft.events:
-        if event.event_type in (EventType.MOVEMENT, EventType.EXERCISE):
+        if _is_on_the_move(event, walks):
             continue
         touched = {
             segment.segment_id: segment

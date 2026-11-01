@@ -1776,3 +1776,70 @@ def test_an_activity_owns_the_calendar_over_a_stay_that_holds_it():
     [owner] = draft.events
     assert (owner.event_type, owner.title) == (EventType.MEETING, "팀 회의")
     assert _holds(owner, calendar) and _holds(owner, stay)
+
+
+def _exercise_day():
+    home = stay_item("home", lat=37.27, start="2026-06-20T06:00:00", end="2026-06-20T18:00:00", address="서울 마포구 망원동 1")
+    gym = stay_item("gym", lat=37.54, start="2026-06-20T19:00:00", end="2026-06-20T20:30:00", address="서울 마포구 도화동 1")
+    move = MovementItem(
+        raw_id=fixture_raw_id("movement-go"), start_at="2026-06-20T18:00:00", end_at="2026-06-20T19:00:00",
+        start=GeoPlace(latitude=37.27, longitude=127.0), end=GeoPlace(latitude=37.54, longitude=127.0),
+        transports=["IN_VEHICLE"], distance_meters=30000,
+    )
+    return home, gym, move
+
+
+def test_an_exercise_calendar_gives_up_the_movement_it_borrowed():
+    """`EXERCISE` 는 산책 때문에 이동 분리에서 빠져 있었다. 운동 일정이 앞 이동을 근거로 품은 채 남았다."""
+
+    home, gym, move = _exercise_day()
+    calendar = calendar_item("pt", "PT 수업", start="2026-06-20T18:30:00", end="2026-06-20T20:30:00")
+    request = make_request(stays=[home, gym], movements=[move], calendars=[calendar])
+    draft = _draft(
+        _event(
+            [(EventSourceType.STAY, home.raw_id)],
+            start=_at(6), end=_at(18), event_type=EventType.STAY, title="집", description="{place}에서 시간을 보냈다.", base=["E1"],
+        ),
+        _event(
+            [(EventSourceType.CALENDAR, calendar.raw_id), (EventSourceType.MOVEMENT, move.raw_id), (EventSourceType.STAY, gym.raw_id)],
+            start=_at(18, 30), end=_at(20, 30), event_type=EventType.EXERCISE, title="PT 수업",
+            description="{place}에서 PT 수업을 했다.", base=["E3"],
+        ),
+    )
+
+    _confirm_twice(draft, request, _calendar_clues(request))
+
+    exercise = next(event for event in draft.events if event.event_type is EventType.EXERCISE)
+    assert (exercise.start_time, exercise.end_time) == (_at(18, 30), _at(20, 30)), "일정 시간은 자르지 않는다."
+    assert not _holds(exercise, move)
+    assert any(event.event_type is EventType.MOVEMENT and _holds(event, move) for event in draft.events)
+
+
+def test_an_exercise_calendar_keeps_the_walk_it_is_about():
+    """산책 구간을 가진 운동 일정은 산책이 곧 그 운동이라 그대로다."""
+
+    out = MovementItem(
+        raw_id=fixture_raw_id("walk-out"), start_at="2026-06-20T19:00:00", end_at="2026-06-20T19:20:00",
+        start=GeoPlace(latitude=37.5, longitude=127.0), end=GeoPlace(latitude=37.508, longitude=127.0),
+        transports=["WALKING"], distance_meters=800,
+    )
+    back = MovementItem(
+        raw_id=fixture_raw_id("walk-back"), start_at="2026-06-20T19:20:00", end_at="2026-06-20T19:40:00",
+        start=GeoPlace(latitude=37.508, longitude=127.0), end=GeoPlace(latitude=37.5, longitude=127.0),
+        transports=["WALKING"], distance_meters=800,
+    )
+    calendar = calendar_item("walk", "저녁 산책", start="2026-06-20T19:00:00", end="2026-06-20T19:40:00")
+    request = make_request(movements=[out, back], calendars=[calendar])
+    draft = _draft(
+        _event(
+            [(EventSourceType.CALENDAR, calendar.raw_id), (EventSourceType.MOVEMENT, out.raw_id), (EventSourceType.MOVEMENT, back.raw_id)],
+            start=_at(19), end=_at(19, 40), event_type=EventType.EXERCISE, title="저녁 산책",
+            description="저녁 산책을 했다.", base=["E1"],
+        )
+    )
+
+    _confirm_twice(draft, request, _calendar_clues(request))
+
+    [walk] = draft.events
+    assert walk.event_type is EventType.EXERCISE
+    assert _holds(walk, out) and _holds(walk, back)
