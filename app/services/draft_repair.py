@@ -882,7 +882,7 @@ def _inspect(
     if not extended:
         return
 
-    for found in verify_movement_stay_boundary(draft, request):
+    for found in verify_movement_stay_boundary(draft, request, limit_is_long=clue_contract):
         # 나눌 자리는 event 의 시간 안으로 맞춘 값이라 최종 시간이 정해진 뒤에 만든다.
         report.add_finding("LONG_STAY_BETWEEN_MOVEMENTS", found.detail, event=found.event)
 
