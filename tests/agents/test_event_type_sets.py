@@ -167,8 +167,10 @@ def test_pre_clue_repair_keeps_rejecting_a_value_that_is_not_a_string():
 @pytest.mark.parametrize("value", _V4_ONLY)
 def test_v4_repair_can_use_the_new_types(value):
     ctx, _ = _context()
+    call = _update(value)
+    call.args["fields"]["evidence"] = ["B1", "P1"]  # 위치 근거뿐이면 이 종류를 쓸 수 없다(#172, #179).
 
-    [result] = execute_tool_calls(ctx, [_update(value)])
+    [result] = execute_tool_calls(ctx, [call])
 
     assert result.ok, result.message
     assert ctx.draft.events[0].event_type.value == value

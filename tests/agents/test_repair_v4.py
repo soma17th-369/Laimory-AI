@@ -89,6 +89,31 @@ def test_v4_tools_have_no_event_agent_rerun_or_stay_merge():
     assert "evidence" in tools["update_event"].description
 
 
+def test_repair_is_not_refused_for_what_it_writes():
+    """코드는 거절할 권리가 없다(사용자 결정 2026-11-02). 9시간 체류를 근거 없이 식사로 써도 받고, 규칙 위반은 찾아서 넘긴다."""
+
+    ctx, _ = _context()
+    fields = {"eventType": "MEAL", "title": "OO타워에서 점심을 먹음", "description": "{place}에서 점심을 먹었다."}
+
+    [result] = execute_tool_calls(
+        ctx, [RepairToolCall(tool="update_event", args={"clientEventId": "event-001", "fields": fields})]
+    )
+
+    event = ctx.draft.events[0]
+    assert result.ok, result.message
+    assert (event.event_type, event.title) == (EventType.MEAL, "OO타워에서 점심을 먹음")
+
+
+def test_v4_repair_can_delete_the_only_location_event():
+    """지운 구간은 확정의 위치 구간 복원이 되살린다. 코드가 삭제를 막지 않는다."""
+
+    ctx, _ = _context()
+
+    [result] = execute_tool_calls(ctx, [RepairToolCall(tool="delete_event", args={"clientEventId": "event-001"})])
+
+    assert result.ok, result.message
+
+
 def test_update_event_expands_clue_ids_into_source_refs():
     ctx, photo = _context()
 
@@ -177,9 +202,8 @@ def test_a_bundle_id_does_not_pull_in_a_photo_another_event_holds():
     assert photo.raw_id not in [ref.raw_id for ref in meal.source_refs], "사진은 한 event 에만 있다."
 
 
-def test_update_event_rejects_a_photo_taken_at_another_time():
-    """Repair 가 12:49 점심 사진을 아침 체류의 근거로 적고 식사로 바꾼 실제 출력. 근거는 시간과 장소가 모두
-    맞아야 해서 거절하고 다시 고르게 한다(사용자 결정 2026-10-30·31)."""
+def test_update_event_takes_a_photo_repair_named():
+    """Repair 가 직접 적은 근거는 시간이 어긋나도 받는다(사용자 결정 2026-11-02). 코드는 거절할 권리가 없다."""
 
     ctx, photo = _context()
     evening = TimelineEventDraft(
@@ -206,49 +230,9 @@ def test_update_event_rejects_a_photo_taken_at_another_time():
         ],
     )
 
-    assert not result.ok and "P1" in result.message
-    assert evening.event_type is EventType.UNKNOWN, "거절하면 아무것도 바꾸지 않는다."
-
-
-def test_update_event_will_not_make_a_meal_without_evidence():
-    """근거 없이 식사로 바꾸지 않는다(사용자 결정 2026-10-31). Repair 가 없는 사진을 근거로 아침 체류를
-    `점심 식사` 로, 검사 결과를 따라 7시간 체류를 식사로 바꾼 실제 출력이다. 식사는 시간이 맞는 사진이나
-    결제 알림이 있어야 하고 3시간을 넘지 않는다."""
-
-    ctx, photo = _context()
-    stay = ctx.draft.events[0]  # 09:00~18:00 체류, 근거는 체류뿐
-
-    def call(event_id, fields):
-        [result] = execute_tool_calls(
-            ctx, [RepairToolCall(tool="update_event", args={"clientEventId": event_id, "fields": fields}, reason="식사로")]
-        )
-        return result
-
-    assert not call("event-001", {"eventType": "MEAL"}).ok, "사진·결제 없이 식사가 되지 않는다."
-    assert not call("event-001", {"eventType": "MEAL", "evidence": ["B1", "P1"]}).ok, "9시간 event 는 식사가 아니다."
-    assert stay.event_type is EventType.WORK
-
-    lunch = call(
-        "event-001",
-        {"eventType": "MEAL", "startTime": "2026-06-20T12:20:00+09:00", "endTime": "2026-06-20T12:50:00+09:00", "evidence": ["B1", "P1"]},
-    )
-    assert lunch.ok, lunch.message
-
-
-def test_update_event_will_not_write_a_meal_on_an_event_without_evidence():
-    """타입을 두고 문장만 식사로 고치는 호출도 같은 근거를 본다. 대화 알림만 가진 아침 체류의 문장이 식사로 덮였다."""
-
-    ctx, _ = _context()
-
-    def call(fields):
-        [result] = execute_tool_calls(
-            ctx, [RepairToolCall(tool="update_event", args={"clientEventId": "event-001", "fields": fields}, reason="문장")]
-        )
-        return result
-
-    assert not call({"title": "대현동에서 식사"}).ok
-    assert not call({"description": "{place}에서 음식을 먹었다."}).ok
-    assert call({"description": "{place}에서 시간을 보냈다."}).ok
+    assert result.ok, result.message
+    updated = next(event for event in ctx.draft.events if event.client_event_id == "event-002")
+    assert photo.raw_id in {ref.raw_id for ref in updated.source_refs}
 
 
 def test_a_long_stay_with_its_meal_photo_can_say_so():
@@ -271,40 +255,6 @@ def test_a_long_stay_with_its_meal_photo_can_say_so():
     )
 
     assert result.ok, result.message
-
-
-def test_split_event_will_not_make_a_meal_piece_without_evidence():
-    """split_event 로도 근거 없는 식사 조각을 만들지 않는다(사용자 결정 2026-10-31). 대화 알림만 가진 아침
-    체류가 `09:06 식사` 조각이 된 실제 출력. 사진이 있는 시간의 조각은 식사가 될 수 있다."""
-
-    ctx, photo = _context()
-    ctx.draft.events[0].source_refs.append(SourceRef(source_type=EventSourceType.PHOTO, raw_id=photo.raw_id))
-
-    def split(meal_start, meal_end):
-        [result] = execute_tool_calls(
-            ctx,
-            [
-                RepairToolCall(
-                    tool="split_event",
-                    args={
-                        "clientEventId": "event-001",
-                        "parts": [
-                            {"startTime": "2026-06-20T09:00:00+09:00", "endTime": meal_start, "eventType": "WORK", "title": "업무", "description": "{place}에서 일했다."},
-                            {"startTime": meal_start, "endTime": meal_end, "eventType": "MEAL", "title": "점심", "description": "{place}에서 점심을 먹었다."},
-                            {"startTime": meal_end, "endTime": "2026-06-20T18:00:00+09:00", "eventType": "WORK", "title": "업무", "description": "{place}에서 일했다."},
-                        ],
-                    },
-                    reason="점심을 꺼낸다",
-                )
-            ],
-        )
-        return result
-
-    assert not split("2026-06-20T09:30:00+09:00", "2026-06-20T09:50:00+09:00").ok, "사진이 없는 시간은 식사가 아니다."
-    assert len(ctx.draft.events) == 1, "거절하면 나누지 않는다."
-    result = split("2026-06-20T12:20:00+09:00", "2026-06-20T12:50:00+09:00")
-    assert result.ok, result.message
-
 
 
 def test_update_event_clears_the_writing_mark_only_when_it_writes():
