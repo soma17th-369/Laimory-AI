@@ -22,6 +22,7 @@ from app.services.clue_bundles import build_timeline_clues
 from app.services.location_skeleton import build_location_skeleton
 from app.services.place_slots import (
     confirm_place_slots,
+    day_place_words,
     fill_place_slots,
     filled_description,
     place_names_in_title,
@@ -618,3 +619,42 @@ def test_split_events_take_names_only_from_the_records_in_their_own_time():
     assert afternoon.place_candidates == []
     assert afternoon.address == "서울 마포구 도화동 17-14"
     assert afternoon.description == "마포구 도화동에서 시간을 보냈다."
+
+
+# --- Question 의 장소 말 (#182) ----------------------------------------------
+
+
+def test_day_place_words_gather_names_addresses_and_areas():
+    stay = stay_item("s", place="공덕 리더스뷰", address="서울 마포구 공덕동 123")
+    event = _event([_ref(stay, EventSourceType.STAY)], place_candidates=["정든식당"])
+
+    words = day_place_words(make_request(stays=[stay]), [event])
+
+    for found in ("공덕 리더스뷰", "정든식당", "서울 마포구 공덕동 123", "마포구 공덕동", "마포구", "공덕동"):
+        assert found in words.words
+
+
+def test_day_place_words_are_ordered_long_first_so_no_piece_is_left():
+    stay = stay_item("s", address="서울 마포구 공덕동 123")
+
+    words = day_place_words(make_request(stays=[stay]), [])
+
+    assert words.removed_from("마포구 공덕동에서 공덕동으로 출근") == "출근"
+
+
+def test_day_place_words_skip_two_letter_area_words():
+    stay = stay_item("s", address="경기 수원시 이동 11")
+
+    words = day_place_words(make_request(stays=[stay]), [])
+
+    assert "이동" not in words.words
+    assert not words.found_in("이동하는 동안 무슨 생각이 들었어요?")
+
+
+def test_day_place_words_name_whole_places_only():
+    stay = stay_item("s", place="필라테스 스튜디오", address=None)
+
+    words = day_place_words(make_request(stays=[stay]), [])
+
+    assert words.found_in("필라테스 스튜디오는 어땠어요?")
+    assert not words.found_in("필라테스 끝나고 몸은 어떤 느낌이었어요?")

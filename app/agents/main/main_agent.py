@@ -448,6 +448,7 @@ def _build_graph():
                     state["question_agent"].generate,
                     state["request"],
                     draft,
+                    clues=state.get("clues"),
                 )
             except Exception as exc:  # noqa: BLE001 - 질문 실패는 흡수한다
                 failure_code = code_of_or(exc, ErrorCode.QUESTION_GENERATION_FAILED)

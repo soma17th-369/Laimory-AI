@@ -60,7 +60,7 @@ from app.services.place_resolver import (
     touches_event,
     unique_place_names,
 )
-from app.services.place_text import normalize_place_text, place_text_contains
+from app.services.place_text import normalize_place_text, place_text_contains, place_tokens
 from app.services.source_lookup import raw_id_of
 from app.services.validator import parse_datetime, resolve_timezone
 
@@ -176,7 +176,8 @@ def fill_place_slots(
             continue
         evidence = index.evidence(event, tz)
         if event.event_type is EventType.MOVEMENT:
-            route = _movement_route(evidence.movements, tz, same_place, areas)
+            departures = clues.skeleton.departures if clues else None
+            route = _movement_route(evidence.movements, tz, same_place, areas, departures)
             event.title = _movement_text(event.title, route, movement_names, "이동")
             event.description = _movement_text(event.description, route, movement_names, "이동했다.")
             continue
@@ -235,7 +236,9 @@ def keep_place_names_out(
     for event in draft.events:
         if event.event_type is EventType.MOVEMENT:
             movements = index.evidence(event, tz).movements
-            route = _movement_route(movements, tz, clues.same_place, clues.areas)
+            route = _movement_route(
+                movements, tz, clues.same_place, clues.areas, clues.skeleton.departures
+            )
             for field, default in (("title", "이동"), ("description", "이동했다.")):
                 text = getattr(event, field) or ""
                 if PLACE_SLOT in text or _without_place_names(text, names) != text:
@@ -391,9 +394,8 @@ def _movement_text(text: str | None, route: str, names: list[str], default: str)
     """이동 제목·문장. 출발·도착 지명은 기록이 정하므로 코드가 맞추고, 목적은 LLM 이 쓴 것을 둔다.
 
     제목과 문장은 `{경로} {목적}` / `{경로} {목적}했다.` 꼴이다(「문장 형식」). 장소명을 뺀 글에
-    기록의 경로가 그대로 있으면 둔다. 없으면(앞 체류를 출발지로 쓴 것, 조사가 틀린 것, 주소 원문을
-    옮긴 것) 마지막 어절을 목적으로 보고 경로를 다시 붙인다. 실제 Timeline 은 기록되지 않은 열차
-    구간 앞의 체류를 출발지로 썼다(8번 중 1번).
+    기록의 경로가 그대로 있으면 둔다. 없으면(출발지가 다른 것, 조사가 틀린 것, 주소 원문을 옮긴 것)
+    마지막 어절을 목적으로 보고 경로를 다시 붙인다.
     """
 
     words = " ".join(_without_place_names(text or "", names).split())
@@ -418,6 +420,75 @@ def _day_place_names(request: TimelineDraftRequest) -> set[str]:
         *(split_location_text(c.location_text)[0] for c in request.calendars),
     ]
     return {name.strip() for name in names if name and len(name.strip()) >= 2}
+
+
+@dataclass(frozen=True)
+class DayPlaceWords:
+    """Question 이 입력에서 빼고 결과에서 찾는 그날의 장소 말(#182, v4).
+
+    입력에서 확인되는 말만 갖는다. 결제·예약 가맹점도 든다 — 장소 후보에 없어도 제목에 남는다.
+    User Memory·일정 제목 속 장소는 문장이라 코드가 가려낼 수 없어 프롬프트가 막는다.
+    장소명은 통째로만 본다 — 어절로 쪼개면 `필라테스 스튜디오` 때문에
+    `필라테스` 끝나고를 묻는 질문이 걸린다. 지명은 `대현동` 처럼 어절로도 쓰여 세 글자 이상
+    어절을 함께 보고, 두 글자 어절(`이동`)은 `이동하는 동안` 에 걸리므로 보지 않는다.
+    접미사(`~동`·`~로`·`~역`)로 찾지 않는다 — `퇴근길`·`여자친구`·`산책로` 가 장소가 된다.
+    """
+
+    words: tuple[str, ...]
+
+    def removed_from(self, text: str) -> str:
+        """글에서 장소 말을 뒤의 조사와 함께 뺀다. 사용자가 읽는 글이 아니라 프롬프트 입력에 쓴다."""
+
+        return " ".join(_without_place_names(text, list(self.words)).split())
+
+    def found_in(self, text: str) -> bool:
+        compact = normalize_place_text(text)
+        return any(normalize_place_text(word) in compact for word in self.words)
+
+
+def _day_merchants(clues: TimelineClues | None) -> set[str]:
+    """결제·예약 알림의 가맹점. 같은 날 대화 상대인 이름은 뺀다 — 송금 받은 친구는 가맹점이 아니다."""
+
+    if clues is None:
+        return set()
+    kinds = (NotificationClueKind.PAYMENT, NotificationClueKind.RESERVATION)
+    merchants = {c.counterpart.strip() for c in clues.notifications if c.kind in kinds and c.counterpart}
+    people = {
+        c.counterpart.strip()
+        for c in clues.notifications
+        if c.kind is NotificationClueKind.CONVERSATION and c.counterpart
+    }
+    return {name for name in merchants - people if len(name) >= 2}
+
+
+def day_place_words(
+    request: TimelineDraftRequest,
+    events: list[TimelineEventDraft],
+    clues: TimelineClues | None = None,
+) -> DayPlaceWords:
+    """그날 입력과 event 에 있는 장소명·주소·지명·가맹점. 지운 조각이 남지 않게 긴 말부터 둔다."""
+
+    addresses = {
+        address.strip()
+        for address in (*_day_raw_addresses(request), *(event.address for event in events))
+        if address and address.strip()
+    }
+    # 지명은 두 꼴로 쓰인다. 제목은 그날 시·도가 둘이면 시·도를 붙이고 칸을 채운 문장은 붙이지 않는다.
+    areas = {
+        area
+        for namer in (AreaNamer(), area_namer(addresses))
+        for address in addresses
+        if (area := namer.name(address))
+    }
+    names = {
+        name.strip()
+        for event in events
+        for name in (event.place, *event.place_candidates)
+        if name and len(name.strip()) >= 2
+    }
+    area_words = {word for area in areas for word in place_tokens(area)}
+    words = names | _day_place_names(request) | _day_merchants(clues) | addresses | areas | area_words
+    return DayPlaceWords(tuple(sorted(words, key=lambda word: (-len(word), word))))
 
 
 def place_names_in_title(event: TimelineEventDraft, request: TimelineDraftRequest) -> list[str]:
@@ -724,17 +795,24 @@ def _movement_route(
     tz: tzinfo,
     same_place: dict[str, str] | None = None,
     areas: AreaNamer | None = None,
+    departures: dict | None = None,
 ) -> str:
     """이동 경로: 출발·도착의 지명(구 + 동)이다(사용자 결정). 장소명도 주소 원문도 넣지 않는다.
 
     주소 원문(`경기도 용인시 기흥구 동백죽전대로 455-11`)을 그대로 쓰면 시·도부터 번지까지 늘어져
     사용자가 읽는 문장이 아니다(사용자: 확실한 오류). 제목과 같은 지명을 쓰고, 주소는 같은 장소의
     주소로 맞춘 뒤 줄인다 — 도착지가 그다음 체류 event 와 같은 지명으로 보인다.
+
+    `departures` 는 체류 뒤에 끊겼다가 시작한 이동의 출발지다(`LocationSkeleton.departures`). 입력의
+    출발지(기록이 다시 잡힌 곳)가 아니라 떠난 체류가 그 이동의 출발지다.
     """
 
     namer = areas or AreaNamer()
     ordered = _ordered(movements, tz)
     origin = ordered[0].start.address if ordered and ordered[0].start else None
+    left = (departures or {}).get(raw_id_of(ordered[0])) if ordered else None
+    if left is not None:
+        origin = left.address
     destination = ordered[-1].end.address if ordered and ordered[-1].end else None
     return movement_route(
         namer.name(_same(same_place or {}, origin)),

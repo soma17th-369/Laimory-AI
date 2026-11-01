@@ -12,11 +12,17 @@ v3 Location Agent(LLM)가 프롬프트 규칙으로 하던 일을 코드가 한�
 규칙의 출처는 v3 Location 프롬프트(`location/prompts/v3/prompt.md`)이고, 줄마다 대응은 계획
 (`2026-10-23-issue-167-…`)의 「Location 규칙 이식표」에 있다.
 
-- **이어짐**: 앞 기록의 끝과 뒤 기록의 시작 사이가 45분 미만이다(`is_continuous`).
-- **짧은 체류(20분 이하)**: 이어진 이동이 앞이나 뒤에 있으면 그 이동에 묶는다. 이동과 긴 체류
+- **이어짐**: 앞 기록의 끝과 뒤 기록의 시작 사이가 45분 미만이다(`is_continuous`). 이동끼리는 이
+  기준을 쓰지 않는다(아래 **이동**).
+- **짧은 체류(20분 미만)**: 이어진 이동이 앞이나 뒤에 있으면 그 이동에 묶는다. 이동과 긴 체류
   사이에 낀 짧은 체류도 이동 쪽이다. 이동이 없으면 체류끼리의 규칙을 따른다.
-- **이동**: 이어진 이동과 그 사이의 짧은 체류는 하나의 여정이다. 20분을 넘는 체류는 예외 없이
-  여정을 끊는다(장소명이 없어도, 환승·같은 캠퍼스여도).
+- **이동**: 이동과 그 사이의 짧은 체류는 하나의 여정이다. 20분 이상 체류는 예외 없이 여정을
+  끊는다(장소명이 없어도, 환승·같은 캠퍼스여도). 앞뒤가 이동이면 공백 길이와 상관없이 잇고
+  (#180, 사용자 결정 2026-11-01 — 체류가 잡히지 않았다는 것은 수집이 끊겼을 수 있다는 뜻이다),
+  앞 도착지와 뒤 출발지가 같은 곳이고 20분 이상 비었을 때만 머문 것으로 보고 끊는다.
+- **체류 뒤의 이동**: 체류 뒤에 기록이 끊겼다가 1km 넘게 떨어진 곳에서 이동이 시작되면, 그 이동은
+  체류가 끝난 때 체류한 곳에서 출발한 것이다(#180, 사용자 결정 2026-11-01). 사이에 체류 정보가 없으니
+  끊긴 시간도 이동이다. 역에서 기다린 뒤 기차 안에서 수집이 끊긴 날이 이 경우다.
 - **체류끼리**(사이에 이동 기록이 없을 때만, 바로 앞 체류와 잰다):
   - 250m 이내면 같은 장소다. 공백이 아무리 길어도 하나로 묶는다(수집은 끊길 수 있다).
   - 1km 넘게 떨어지면 언제나 다른 장소다. 그 사이는 **기록되지 않은 이동**이다.
@@ -25,20 +31,21 @@ v3 Location Agent(LLM)가 프롬프트 규칙으로 하던 일을 코드가 한�
 - **산책**: 한 여정의 출발지와 최종 도착지가 같고(같은 이름이거나 250m 이내), 전체 30분
   이상이며, 모든 이동이 도보이고 이동 방식 충돌이 없다. 30분 미만 도보 왕복은 왕복 표시를 단
   이동이다. 방식을 모르는 이동이 하나라도 있으면 산책이 아니다.
-- **단독 기록**: 혼자 남은 20분 이하 체류, 앞뒤 어느 기록과도 이어지지 않은 20분 이하 이동.
+- **단독 기록**: 혼자 남은 20분 미만 체류, 앞뒤 어느 기록과도 이어지지 않은 20분 미만 이동.
   event 를 만들지 않고 근거를 보태기만 한다.
 
 ## 시간
 
 구간의 시간은 묶은 기록의 첫 시작부터 마지막 끝까지이고 요청 window 로 자른다. 기록의 원래
-시각은 구간 안 기록에 그대로 남는다. 원본 기록이 겹쳐 구간이 겹치면 뒤 구간의 시작을 앞 구간의
-끝으로 맞춘다. 길이(20분 판정)는 자르기 전 원래 기록으로 잰다.
+시각은 구간 안 기록에 그대로 남는다(체류 뒤의 이동만 시작을 체류의 끝으로 옮긴다). 원본 기록이
+겹쳐 구간이 겹치면 뒤 구간의 시작을 앞 구간의 끝으로 맞춘다. 길이(20분 판정)는 자르기 전 원래
+기록으로 잰다.
 
 모든 STAY·MOVEMENT rawId 는 구간·단독 기록·배치하지 못한 기록 중 정확히 한 곳에 있다.
 시각을 읽지 못했거나 window 밖에 통째로 있는 기록은 버리지 않고 배치하지 못한 기록으로 둔다.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, tzinfo
 from enum import StrEnum
 
@@ -98,7 +105,10 @@ class Spot:
 
 @dataclass(frozen=True)
 class LocationRecord:
-    """STAY·MOVEMENT 기록 하나. 시각은 원래 값이다(window 로 자르지 않는다)."""
+    """STAY·MOVEMENT 기록 하나. 시각은 원래 값이다(window 로 자르지 않는다).
+
+    체류 뒤의 이동만 예외다. 시작과 출발지가 떠난 체류의 끝과 지점이다(`_left_from_stays`).
+    """
 
     raw_id: str
     kind: str
@@ -121,7 +131,7 @@ class LocationRecord:
 
     @property
     def is_short(self) -> bool:
-        return self.duration <= SHORT_STAY_MAX
+        return self.duration < SHORT_STAY_MAX
 
 
 @dataclass(frozen=True)
@@ -201,6 +211,8 @@ class LocationSkeleton:
     last_observed_at: datetime | None = None
     #: 마지막으로 확인된 지점.
     last_spot: Spot | None = None
+    #: 체류 뒤의 이동 rawId → 떠난 체류의 지점. 입력의 출발지 대신 이 지점이 그 이동의 출발지다.
+    departures: dict[str, Spot] = field(default_factory=dict)
 
     @property
     def has_location(self) -> bool:
@@ -246,6 +258,8 @@ def build_location_skeleton(request: TimelineDraftRequest) -> LocationSkeleton:
     skeleton = LocationSkeleton(unplaced_raw_ids=unplaced)
     if not records:
         return skeleton
+
+    records, skeleton.departures = _left_from_stays(records)
 
     flows, far_splits = _flows(records)
     segments: list[SkeletonSegment] = []
@@ -356,6 +370,29 @@ def _exact(address: str | None) -> str | None:
     return address.strip() if is_exact_address(address) else None
 
 
+def _left_from_stays(
+    records: list[LocationRecord],
+) -> tuple[list[LocationRecord], dict[str, Spot]]:
+    """체류 뒤에 끊겼다가 다른 곳에서 시작한 이동을 그 체류에서 출발한 이동으로 바꾼다.
+
+    "그 사이 아무 체류 정보가 없잖아 그러면 동대구역에서 서울 마포구로 이동했다고 봐야"(사용자 결정
+    2026-11-01). 기록은 세종에서 다시 시작해 하루가 `동대구역 체류 → 빈칸 → 세종 출발 이동` 으로 나왔다.
+    체류와 1km 넘게 떨어져 있어야 한다. 그 안이면 체류를 떠났는지 모르고 빈 시간으로 남는다.
+    """
+
+    records = list(records)
+    departures: dict[str, Spot] = {}
+    for index, stay in enumerate(records[:-1]):
+        movement = records[index + 1]
+        if not stay.is_stay or movement.is_stay or movement.start <= stay.end or stay.spot is None:
+            continue
+        distance = _spot_distance(stay.spot, movement.origin)
+        if distance is not None and distance > DIFFERENT_PLACE_MIN_METERS:
+            records[index + 1] = replace(movement, start=stay.end, origin=stay.spot)
+            departures[movement.raw_id] = stay.spot
+    return records, departures
+
+
 # --- 흐름으로 묶기 ---------------------------------------------------------------
 
 
@@ -384,7 +421,7 @@ def _flows(records: list[LocationRecord]) -> tuple[list[list[LocationRecord]], s
             current, current_is_journey = [record], journey_part
             continue
         reached = max(r.end for r in current)
-        if journey_part and current_is_journey and is_continuous(record.start - reached):
+        if journey_part and current_is_journey and not _stopped_between(current[-1], record, reached):
             current.append(record)
             continue
         if not journey_part and not current_is_journey:
@@ -401,6 +438,19 @@ def _flows(records: list[LocationRecord]) -> tuple[list[list[LocationRecord]], s
         current, current_is_journey = [record], journey_part
     close()
     return flows, far_splits
+
+
+def _stopped_between(previous: LocationRecord, record: LocationRecord, reached: datetime) -> bool:
+    """여정의 두 기록 사이에서 머문 것인가.
+
+    앞이 도착한 곳에서 뒤가 출발했고 20분 이상 비었으면 체류 기록이 없어도 머문 것이다. 이어 버리면
+    귀가 뒤 밤새 수집이 끊긴 날의 밤 전체가 이동이 된다. 그 밖의 공백은 길이와 상관없이 수집이 끊긴
+    것으로 보고 잇는다. 공백 안의 속도는 끝점으로 추정할 수 있을 뿐이라 쓰지 않는다.
+    """
+
+    arrived = previous.spot if previous.is_stay else previous.destination
+    left = record.spot if record.is_stay else record.origin
+    return record.start - reached >= SHORT_STAY_MAX and bool(_same_place(arrived, left))
 
 
 def _short_stays_on_journeys(records: list[LocationRecord]) -> set[int]:
