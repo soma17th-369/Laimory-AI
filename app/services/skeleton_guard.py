@@ -37,7 +37,11 @@ from app.schemas.clues import NotificationClue, NotificationClueKind
 from app.services.base_events import BaseEvent, base_event_draft
 from app.services.calendar_guard import RESTORED_CALENDAR_DESCRIPTION
 from app.services.clue_bundles import TimelineClues
-from app.services.conversation_guard import MAX_CONVERSATION_EVENTS, notification_only
+from app.services.conversation_guard import (
+    MAX_CONVERSATION_EVENTS,
+    is_conversation_event,
+    notification_only,
+)
 from app.services.location_metrics import SHORT_STAY_MAX
 from app.services.location_skeleton import SegmentKind
 from app.services.meal_guard import MEAL_STAY_MAX_DURATION
@@ -179,14 +183,48 @@ def keep_calendar_base_events(
         logger.debug("일정 기본 event 지키기: %d건 합침", len(merged))
 
 
+def keep_conversation_evidence(
+    draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
+) -> None:
+    """대화 event 의 근거는 대화 알림뿐이다(in-place, #183, 사용자 결정 2026-11-02).
+
+    "대화 이벤트는 오로지 대화알림을 근거로만 만들어져야 한다". 프롬프트만 말할 때는 `from` 을 적으면 체류
+    기록이, 사진을 함께 적으면 사진이 다른 event 로 옮겨진 뒤 체류 기록이, 묶음 id 를 적으면 단독 위치
+    기록이, 다른 알림을 적으면 그 알림이 대화 event 에 남았다. 위치가 붙은 대화는 대화 개수 제한에도
+    세이지 않았고, `from` 을 적은 대화는 이동 분리·시간 정리에서 통째로 지워지기도 했다.
+
+    대화 알림만 남기고 `from` 을 비우고 시간을 그 대화가 온 시간으로 맞춘다. 근거를 뺐으면 글은 Repair 가
+    쓴다. 뺀 체류의 시간은 위치 구간 복원이 되살린다.
+    """
+
+    conversation_ids = clues.conversation_ids
+    for event in draft.events:
+        if not is_conversation_event(event, conversation_ids, clues.short_record_ids):
+            continue
+        kept = [ref for ref in event.source_refs if ref.raw_id in conversation_ids]
+        if len(kept) < len(event.source_refs):
+            event.source_refs = kept
+            event.merge_reason = NEEDS_WRITING
+        event.base_event_ids = []
+        held = {ref.raw_id for ref in kept}
+        talks = [
+            clue
+            for clue in clues.notifications
+            if clue.first_at is not None and held & set(clue.raw_ids)
+        ]
+        if talks:
+            event.start_time = min(clue.first_at for clue in talks)
+            event.end_time = max(clue.last_at or clue.first_at for clue in talks)
+
+
 def remove_notification_events(
     draft: TimelineDraft, request: TimelineDraftRequest, clues: TimelineClues
 ) -> None:
     """틀이 있는 날 대화가 아닌 알림으로 만든 event 를 없앤다(in-place, #173).
 
     "알림은 기존 만들어진 틀의 부가적인 근거가 되는 것" (사용자 결정 2026-10-31). 운영 v3 는 15개 중 10개가
-    알림뿐인 날이 있었다. 대화는 기존 event 와 연관이 크지 않아 단독으로 남고 개수는
-    `enforce_conversation_limit` 이 맞춘다.
+    알림뿐인 날이 있었다. 대화는 내용이 맞으면 틀의 근거이고 그 자체로 기록할 만하면 대화 event 로 남는다
+    (#183). 대화 event 개수는 `enforce_conversation_limit` 이 맞춘다.
 
     틀은 알림뿐이 아닌 event 다(위치 구간·사진·일정). 틀이 하나도 없는 날은 건드리지 않는다 — 그날은 알림이
     그날의 기록이다(`ensure_notification_events`).
@@ -203,7 +241,7 @@ def remove_notification_events(
     if all(notification_only(event, aside) for event in draft.events):
         return
 
-    conversation_ids = _conversation_ids(clues)
+    conversation_ids = clues.conversation_ids
     location_ids = {raw_id_of(item) for item in [*request.stays, *request.movements]} | aside
     notification_ids = {raw_id_of(item) for item in request.notifications}
     removed = [
@@ -460,15 +498,6 @@ def retire_unknown_events(
                 None,
             )
             event.event_type = _ALERT_EVENT_TYPES.get(kind, EventType.ERRAND)
-
-
-def _conversation_ids(clues: TimelineClues) -> set[str]:
-    return {
-        raw_id
-        for clue in clues.notifications
-        if clue.kind is NotificationClueKind.CONVERSATION
-        for raw_id in clue.raw_ids
-    }
 
 
 def _take_evidence(cover: TimelineEventDraft, event: TimelineEventDraft) -> None:
@@ -938,7 +967,7 @@ def remove_events_outside_evidence(
     spans = _source_spans(request, tz)
     location_ids = {raw_id_of(item) for item in [*request.stays, *request.movements]}
     notification_ids = {raw_id_of(item) for item in request.notifications}
-    conversation_ids = _conversation_ids(clues)
+    conversation_ids = clues.conversation_ids
     photo_ids = {raw_id_of(item) for item in request.photos}
     activity_ids = photo_ids | {raw_id_of(item) for item in request.calendars} | {
         raw_id
