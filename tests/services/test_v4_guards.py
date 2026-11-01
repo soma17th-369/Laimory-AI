@@ -1192,7 +1192,7 @@ def test_a_restored_calendar_carries_no_code_sentence():
 
     hand_restored_events_to_repair(_draft(event), request, _clues(request))
 
-    assert (event.title, event.description, event.merge_reason) == ("팀 회의", "", NEEDS_WRITING)
+    assert (event.title, event.description, event.merge_reason) == ("팀 회의 일정이 있었음", "", NEEDS_WRITING)
 
 
 def test_a_slot_with_no_place_never_reaches_app_server():

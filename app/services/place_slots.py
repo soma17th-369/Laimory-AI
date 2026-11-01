@@ -169,7 +169,7 @@ def fill_place_slots(
         evidence = index.evidence(event, tz)
         if event.event_type is EventType.MOVEMENT:
             route = _movement_route(evidence.movements, tz, same_place, areas)
-            event.title = _movement_text(event.title, route, movement_names, "이동")
+            event.title = _movement_text(event.title, route, movement_names, "이동함")
             event.description = _movement_text(event.description, route, movement_names, "이동했다.")
             continue
 
@@ -228,7 +228,7 @@ def keep_place_names_out(
         if event.event_type is EventType.MOVEMENT:
             movements = index.evidence(event, tz).movements
             route = _movement_route(movements, tz, clues.same_place, clues.areas)
-            for field, default in (("title", "이동"), ("description", "이동했다.")):
+            for field, default in (("title", "이동함"), ("description", "이동했다.")):
                 text = getattr(event, field) or ""
                 if PLACE_SLOT in text or _without_place_names(text, names) != text:
                     cleaned = text.replace(PLACE_SLOT, "")
@@ -382,7 +382,7 @@ def _place_names_outside_areas(
 def _movement_text(text: str | None, route: str, names: list[str], default: str) -> str:
     """이동 제목·문장. 출발·도착 지명은 기록이 정하므로 코드가 맞추고, 목적은 LLM 이 쓴 것을 둔다.
 
-    제목과 문장은 `{경로} {목적}` / `{경로} {목적}했다.` 꼴이다(「문장 형식」). 장소명을 뺀 글에
+    제목과 문장은 `{경로} {목적}함` / `{경로} {목적}했다.` 꼴이다(「문장 형식」). 장소명을 뺀 글에
     기록의 경로가 그대로 있으면 둔다. 없으면(앞 체류를 출발지로 쓴 것, 조사가 틀린 것, 주소 원문을
     옮긴 것) 마지막 어절을 목적으로 보고 경로를 다시 붙인다. 실제 Timeline 은 기록되지 않은 열차
     구간 앞의 체류를 출발지로 썼다(8번 중 1번).

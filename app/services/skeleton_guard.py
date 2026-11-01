@@ -319,6 +319,8 @@ def hand_restored_events_to_repair(
         if event.description == RESTORED_CALENDAR_DESCRIPTION:
             event.description = ""
             event.merge_reason = NEEDS_WRITING
+            # 제목은 전부 음슴체로 끝난다(사용자 결정 2026-11-01). 일정 이름은 그대로 담긴다.
+            event.title = f"{event.title} 일정이 있었음"
         elif event.title == CREATED_PHOTO_TITLE:
             event.merge_reason = NEEDS_WRITING
             clue = next((photos[r.raw_id] for r in event.source_refs if r.raw_id in photos), None)
@@ -400,7 +402,7 @@ def restore_place_only_text(
             continue
         if (
             event.event_type is not EventType.STAY
-            or "보낸" not in event.title
+            or "보냄" not in event.title
             or not _PLACE_ONLY_SENTENCE.fullmatch(event.description)
         ):
             _back_to_frame(event, clues)
@@ -878,7 +880,7 @@ _STAY_TYPES = frozenset({EventType.STAY, EventType.UNKNOWN, EventType.REST, Even
 
 #: 체류를 말하는 문장 뼈대(「문장 형식」 표). 위치 근거 없이 이렇게 쓰면 있지도 않은 체류다.
 _STAY_SENTENCE = re.compile(r"(시간을 보냈다|밤을 보냈다|잠을 잤다)")
-_STAY_TITLE = re.compile(r"(보낸 시간|보낸 밤|머문 시간|에서 잠)$")
+_STAY_TITLE = re.compile(r"(시간을 보냄|밤을 보냄|잠을 잠|보낸 시간|보낸 밤|머문 시간|에서 잠)$")
 
 
 def remove_stays_without_location(
