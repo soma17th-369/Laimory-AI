@@ -93,7 +93,13 @@ from app.services.calendar_guard import ensure_calendar_events
 from app.services.calendar_location import reinforce_calendar_location
 from app.services.clue_bundles import TimelineClues
 from app.services.confirm_report import ConfirmReport
-from app.services.conversation_guard import enforce_conversation_limit
+from app.services.conversation_guard import (
+    MAX_CONVERSATION_EVENTS,
+    conversation_events,
+    enforce_conversation_limit,
+    find_unused_conversations,
+    notification_only,
+)
 from app.services.duration_guard import verify_event_duration
 from app.services.event_count_guard import (
     LEGACY_MAX_EVENT_COUNT,
@@ -136,6 +142,7 @@ from app.services.skeleton_guard import (
     ensure_skeleton_segments,
     hand_restored_events_to_repair,
     keep_calendar_base_events,
+    keep_conversation_evidence,
     keep_one_event_per_journey,
     remove_events_outside_evidence,
     remove_notification_events,
@@ -333,6 +340,8 @@ def repair_durations(
             continue  # 정상 구간
         if event.event_type in _INSTANT_EVENT_TYPES:
             continue  # 사진 순간은 0 이 정상
+        if skeleton is not None and notification_only(event):
+            continue  # v4 의 알림뿐인 event 는 받은 시각 한 점이다. 메시지 한 건인 대화가 그렇다(#183)
 
         span = _referenced_span(event, spans)
         if span is None:
@@ -767,6 +776,7 @@ def _clue_correction_steps(
     overrides: dict[str, Callable[[TimelineDraft, TimelineDraftRequest], object]],
     clues: TimelineClues,
 ) -> tuple[tuple[str, Callable[[TimelineDraft, TimelineDraftRequest], object]], ...]:
+    conversation_ids = clues.conversation_ids
     overrides = {
         **overrides,
         "장소 확정": partial(_confirm_place_slots, clues=clues),
@@ -785,16 +795,12 @@ def _clue_correction_steps(
         # 단독 위치 기록은 보태기만 하는 근거라 알림뿐인 event 를 가를 때 세지 않는다(#173).
         "대화 개수 제한": partial(
             enforce_conversation_limit,
-            conversation_ids={
-                raw_id
-                for clue in clues.notifications
-                if clue.kind is NotificationClueKind.CONVERSATION
-                for raw_id in clue.raw_ids
-            },
+            conversation_ids=conversation_ids,
             aside=clues.short_record_ids,
         ),
+        # 대화 event 는 10개와 상관없이 들어간다(#183, 사용자 결정 2026-11-02).
         "event 개수 정리": lambda draft, request: enforce_event_count(
-            draft, aside=clues.short_record_ids
+            draft, aside=clues.short_record_ids, conversation_ids=conversation_ids
         ),
     }
     steps = tuple(
@@ -808,6 +814,8 @@ def _clue_correction_steps(
     position = [name for name, _ in steps].index("캘린더 일정 복원") + 1
     steps = (
         *steps[: position - 1],
+        # 구조를 지키는 단계보다 먼저다 — `from` 을 적은 대화는 위치 근거 때문에 체류처럼 다뤄져 지워진다.
+        ("대화 근거 지키기", partial(_skeleton_step, keep_conversation_evidence, clues=clues)),
         ("일정 기본 event 지키기", partial(_skeleton_step, keep_calendar_base_events, clues=clues)),
         *steps[position - 1 : position],
         # 뼈대가 정한 구조를 Timeline 이 어긴 것을 바로잡은 뒤에 빠진 구간을 복원한다.
@@ -853,6 +861,11 @@ def _clue_correction_steps(
             extended.append(("문장 장소 칸", partial(fill_place_slots, clues=clues, slots_only=True)))
             extended.append(("제목·이동 장소 이름", partial(_skeleton_step, keep_place_names_out, clues=clues)))
         else:
+            if name == "대화 개수 제한":
+                # 사진 단일 귀속이 사진을 옮기면 체류와 대화만 남은 `SOCIAL` 이 새로 생긴다.
+                extended.append(
+                    ("대화 근거 다시 지키기", partial(_skeleton_step, keep_conversation_evidence, clues=clues))
+                )
             extended.append((name, overrides.get(name, step)))
             if name == "대화 개수 제한":
                 # 알림은 틀의 근거다. 단독 event 로 남는 알림은 대화 3개뿐이다(#173).
@@ -909,7 +922,10 @@ def _inspect(
     for finding in verify_event_duration(draft, request, by_type=extended):
         report.add_finding("DURATION_OVER_LIMIT", finding.detail(), event=finding.event)
     verify_event_count(
-        draft, limit=MAX_EVENT_COUNT if extended else LEGACY_MAX_EVENT_COUNT
+        draft,
+        limit=MAX_EVENT_COUNT if extended else LEGACY_MAX_EVENT_COUNT,
+        aside=clues.short_record_ids if clues is not None else frozenset(),
+        conversation_ids=clues.conversation_ids if clues is not None else None,
     )
 
     if not extended:
@@ -962,6 +978,16 @@ def _inspect(
         for event, suggestion in suggest_text_fixes(draft, request, clues):
             if event.merge_reason != NEEDS_WRITING:
                 report.add_finding("TEXT_CORRECTION", suggestion, event=event)
+        conversations = [
+            clue for clue in clues.notifications if clue.kind is NotificationClueKind.CONVERSATION
+        ]
+        room = len(
+            conversation_events(
+                draft, request, clues.conversation_ids, aside=clues.short_record_ids
+            )
+        ) < MAX_CONVERSATION_EVENTS
+        for unused in find_unused_conversations(draft, conversations, room=room):
+            report.add_finding("CONVERSATIONS_UNUSED", unused.detail(), event=unused.event)
 
 
 def repair_draft(

@@ -32,22 +32,27 @@ from app.core.structured import StructuredOutputError
 from app.core.llm_stages import LLMStage
 from app.schemas import (
     AgentEventResult,
+    ConversationDecision,
     PRE_CLUE_EVENT_TYPES,
     TimelineAgentOutput,
     TimelineClueEvent,
     TimelineClueOutput,
+    TimelineConversationReview,
     TimelineDraft,
     TimelineDraftRequest,
     TimelineEventDraft,
     TimelineWarning,
     TimelineWarningSeverity,
 )
+from app.schemas.clues import NotificationClueKind
 from app.services.clue_bundles import (
     TimelineClues,
     expand_evidence,
     misplaced_clues,
     timeline_input_sections,
 )
+from app.services.draft_edit import add_conversation_event
+from app.services.skeleton_guard import NEEDS_WRITING
 
 logger = get_logger(__name__)
 
@@ -55,6 +60,9 @@ _SYSTEM_PROMPT = load_prompt(__file__, "timeline.md")
 
 _DEFAULT_USER_ID = "user-1234"
 _DEFAULT_TIMEZONE = "Asia/Seoul"
+
+#: 글이 빈 대화 event 의 제목 길이. 단서의 말을 옮겨 둘 뿐이고 Repair 가 다시 쓴다.
+_TITLE_MAX = 30
 
 
 def build_timeline_prompt(
@@ -244,32 +252,91 @@ def parse_timeline_clue_draft(
         item.setdefault("severity", TimelineWarningSeverity.MEDIUM.value)
         # v4 는 근거를 묶음·단서 id 로 가리킨다. warning 에 그 id 를 적으면 rawId 로 펼친다 —
         # 그대로 두면 rawId 검증에 걸려 warning 이 통째로 버려진다(재실행에서 본 것).
-        identifiers = [
-            ref if isinstance(ref, str) else str(ref.get("rawId", ""))
-            for ref in item.get("sourceRefs") or []
-            if isinstance(ref, (str, dict))
-        ]
-        if identifiers:
-            # 단서 id 와 rawId 가 섞여 와도 된다. rawId 는 근거 묶음에 없는 id 라 그대로 둔다.
-            [refs] = expand_evidence(clues, [identifiers], request)
-            kept = {ref.raw_id for ref in refs}
-            item["sourceRefs"] = [ref.model_dump(by_alias=True, mode="json") for ref in refs] + [
-                ref
-                for ref in item.get("sourceRefs") or []
-                if isinstance(ref, dict) and ref.get("rawId") not in kept and _is_uuid(ref.get("rawId"))
-            ]
+        if item.get("sourceRefs"):
+            item["sourceRefs"] = _warning_refs(item["sourceRefs"], clues, request)
         try:
             warnings.append(TimelineWarning.model_validate(item))
         except ValidationError as exc:
             _report_skipped_item("warning", index, exc)
 
-    return TimelineDraft(
+    draft = TimelineDraft(
         user_id=_DEFAULT_USER_ID,
         date=request.date,
         timezone=request.timezone or _DEFAULT_TIMEZONE,
         events=events,
         warnings=[*warnings, *skipped],
+        conversation_reviews=_conversation_reviews(payload),
     )
+    _add_recorded_conversations(draft, clues)
+    return draft
+
+
+def _add_recorded_conversations(draft: TimelineDraft, clues: TimelineClues) -> None:
+    """`RECORD` 로 정한 대화를 event 로 만든다(#183). 판단과 글은 Timeline 의 것이고 구조만 코드가 잡는다.
+
+    시간과 근거는 그 대화에서 정한다. 이미 어느 event 의 근거인 대화는 만들지 않는다. 글이 비었어도 판단은
+    살린다 — 단서의 말을 옮겨 두고 Repair 가 쓴다(`EVENT_TO_WRITE`). 개수는 확정 pass 가 맞춘다.
+    """
+
+    by_id = {
+        clue.clue_id: clue
+        for clue in clues.notifications
+        if clue.kind is NotificationClueKind.CONVERSATION and clue.first_at is not None
+    }
+    for review in draft.conversation_reviews:
+        clue = by_id.get(review.clue_id)
+        if review.decision is not ConversationDecision.RECORD or clue is None:
+            continue
+        held = {ref.raw_id for event in draft.events for ref in event.source_refs}
+        if held & set(clue.raw_ids):
+            continue
+        title = review.title.strip()
+        description = review.description.strip()
+        event = add_conversation_event(
+            draft,
+            clue,
+            (title or clue.title or clue.counterpart or clue.clue_id)[:_TITLE_MAX],
+            description or clue.summary or review.content.strip() or "",
+        )
+        event.client_event_id = f"event-{len(draft.events):03d}"
+        event.merge_reason = (review.reason.strip() or None) if title and description else NEEDS_WRITING
+
+
+def _conversation_reviews(payload: dict) -> list[TimelineConversationReview]:
+    """대화 판단. 깨진 항목은 그것만 건너뛴다 — 없어도 event 는 그대로 쓸 수 있다."""
+
+    reviews: list[TimelineConversationReview] = []
+    for index, raw in enumerate(payload.get("conversations") or [], start=1):
+        try:
+            reviews.append(TimelineConversationReview.model_validate(raw))
+        except ValidationError as exc:
+            _report_skipped_item("conversation", index, exc)
+    return reviews
+
+
+def _warning_refs(
+    source_refs: list, clues: TimelineClues, request: TimelineDraftRequest
+) -> list[dict]:
+    """warning 의 근거 id 를 rawId 로 펼친다. 모델이 적은 이유는 남긴다.
+
+    일부러 쓰지 않은 근거의 이유는 Repair 가 다시 판단할 때 읽는 값이다(#183). 예전에는 단서의 종류
+    이름(`대화 알림`)으로 덮였다. 단서 id 와 rawId 가 섞여 와도 된다. rawId 는 근거 묶음에 없는 id 라
+    그대로 둔다.
+    """
+
+    expanded: dict[str, dict] = {}
+    for ref in source_refs:
+        if not isinstance(ref, (str, dict)):
+            continue
+        identifier = ref if isinstance(ref, str) else str(ref.get("rawId", ""))
+        reason = ref.get("reason") if isinstance(ref, dict) else None
+        [refs] = expand_evidence(clues, [[identifier]], request)
+        for found in refs:
+            dumped = found.model_dump(by_alias=True, mode="json")
+            expanded.setdefault(found.raw_id, {**dumped, "reason": reason} if reason else dumped)
+        if not refs and isinstance(ref, dict) and _is_uuid(identifier):
+            expanded.setdefault(identifier, ref)
+    return list(expanded.values())
 
 
 def _is_uuid(value: object) -> bool:
