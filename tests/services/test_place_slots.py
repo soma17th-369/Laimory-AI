@@ -15,6 +15,7 @@ from app.schemas import (
     TimelineDraft,
     TimelineEventDraft,
     TimelineResultEvent,
+    UserMemory,
 )
 from app.schemas.clues import NotificationClue, NotificationClueKind
 from app.services.clue_bundles import build_timeline_clues
@@ -31,6 +32,7 @@ from tests.fixtures.requests import (
     fixture_raw_id,
     make_request,
     notification_item,
+    photo_item,
     stay_item,
 )
 
@@ -162,6 +164,154 @@ def test_candidates_are_capped_at_five():
     confirm_place_slots(_draft(event), request, _clues(request))
 
     assert len(event.place_candidates) == 5
+
+
+def _remembering(*names: str, **overrides):
+    return make_request(user_memory=UserMemory(notable_places=list(names)), **overrides)
+
+
+def test_a_remembered_name_goes_first_when_the_event_has_only_location():
+    """무엇을 했는지 모르는 체류는 전에 고른 이름이 1번이다(#181). 모델은 12회 중 5회만 올렸다."""
+
+    request = _remembering("망원시장", "OO정형외과", stays=[_LUNCH])
+    event = _event(
+        [_ref(_LUNCH, EventSourceType.STAY)], place_candidates=["OO식당", "OO정형외과"]
+    )
+
+    confirm_place_slots(_draft(event), request, _clues(request))
+
+    assert event.place_candidates == ["OO정형외과", "OO식당"]
+    assert event.place == "OO정형외과"
+
+
+def test_remembered_names_keep_the_timeline_order_among_themselves():
+    """집과 앞 가게가 함께 기억에 있으면 기억은 어느 쪽인지 말해 주지 않는다."""
+
+    request = _remembering("OO정형외과", "OO식당", stays=[_LUNCH])
+    event = _event(
+        [_ref(_LUNCH, EventSourceType.STAY)], place_candidates=["OO식당", "OO정형외과"]
+    )
+
+    confirm_place_slots(_draft(event), request, _clues(request))
+
+    assert event.place_candidates == ["OO식당", "OO정형외과"]
+
+
+def test_a_remembered_name_past_the_fifth_candidate_is_still_offered():
+    names = ["가", "나다", "라마", "바사", "아자", "차카"]
+    stay = stay_item("many", places=names, start="2026-06-20T12:00:00", end="2026-06-20T13:00:00")
+    request = _remembering("차카", stays=[stay])
+    event = _event([_ref(stay, EventSourceType.STAY)], place_candidates=names)
+
+    confirm_place_slots(_draft(event), request, _clues(request))
+
+    assert event.place_candidates[0] == "차카"
+    assert len(event.place_candidates) == 5
+
+
+def test_confirming_twice_keeps_the_remembered_name_first():
+    """확정은 Repair 마다 다시 돈다. Repair 가 순서를 돌려도 마지막 확정이 다시 올린다."""
+
+    request = _remembering("OO정형외과", stays=[_LUNCH])
+    event = _event(
+        [_ref(_LUNCH, EventSourceType.STAY)], place_candidates=["OO식당", "OO정형외과"]
+    )
+
+    confirm_place_slots(_draft(event), request, _clues(request))
+    event.place_candidates = ["OO식당", "OO정형외과"]
+    confirm_place_slots(_draft(event), request, _clues(request))
+
+    assert event.place == "OO정형외과"
+
+
+def test_another_branch_of_the_same_shop_is_not_the_remembered_name():
+    stay = stay_item(
+        "branch", places=["OO커피 합정점", "OO서점"], start="2026-06-20T12:00:00", end="2026-06-20T13:00:00"
+    )
+    request = _remembering("OO커피 망원점", stays=[stay])
+    event = _event([_ref(stay, EventSourceType.STAY)], place_candidates=["OO서점", "OO커피 합정점"])
+
+    confirm_place_slots(_draft(event), request, _clues(request))
+
+    assert event.place == "OO서점"
+
+
+def test_spacing_does_not_make_a_different_remembered_place():
+    stay = stay_item(
+        "alias", places=["OO서점", "OO커피합정점"], start="2026-06-20T12:00:00", end="2026-06-20T13:00:00"
+    )
+    request = _remembering("OO커피 합정점", stays=[stay])
+    event = _event([_ref(stay, EventSourceType.STAY)], place_candidates=["OO서점", "OO커피합정점"])
+
+    confirm_place_slots(_draft(event), request, _clues(request))
+
+    assert event.place == "OO커피합정점", "후보의 이름을 그대로 쓴다. 저장된 표기로 바꾸지 않는다."
+
+
+def test_a_remembered_name_outside_the_pool_never_becomes_a_candidate():
+    """기억 속 이름이 그날 후보에 없으면 나가지 않는다(#181). 기억은 순서만 바꾼다."""
+
+    request = _remembering("망원시장", stays=[_LUNCH])
+    event = _event(
+        [_ref(_LUNCH, EventSourceType.STAY)],
+        place_candidates=["망원시장", "OO정형외과"],
+    )
+
+    confirm_place_slots(_draft(event), request, _clues(request))
+
+    assert "망원시장" not in event.place_candidates
+    assert event.place == "OO정형외과"
+
+
+def test_a_remembered_name_cannot_outrank_the_calendar_place():
+    """직접 근거가 가리키는 이름은 Timeline 이 무엇을 앞에 적었든, 기억이 무엇이든 1번이다(#181)."""
+
+    meeting = calendar_item("m", "회의", location_text="OO식당(서울특별시 마포구 마포대로 89)")
+    request = _remembering("OO정형외과", stays=[_LUNCH], calendars=[meeting])
+    event = _event(
+        [_ref(_LUNCH, EventSourceType.STAY), _ref(meeting, EventSourceType.CALENDAR)],
+        place_candidates=["OO정형외과", "OO식당"],
+    )
+
+    confirm_place_slots(_draft(event), request, _clues(request))
+
+    assert event.place_candidates[0] == "OO식당"
+
+
+def test_a_remembered_name_cannot_outrank_the_payment_merchant():
+    payment = notification_item("pay", "토스", "결제", posted="2026-06-20T12:30:00")
+    clue = NotificationClue(
+        clue_id="N1",
+        kind=NotificationClueKind.PAYMENT,
+        raw_ids=[payment.raw_id],
+        counterpart="OO식당",
+        summary="점심 결제",
+    )
+    request = _remembering("OO정형외과", stays=[_LUNCH], notifications=[payment])
+    event = _event(
+        [_ref(_LUNCH, EventSourceType.STAY), _ref(payment, EventSourceType.NOTIFICATION)],
+        place_candidates=["OO정형외과"],
+    )
+
+    confirm_place_slots(_draft(event), request, _clues(request, [clue]))
+
+    assert event.place_candidates[:2] == ["OO식당", "OO정형외과"]
+
+
+def test_a_photo_event_keeps_the_order_timeline_chose():
+    """사진이 있으면 그 자리에서 한 일이 있다. 맞는 이름인지는 Timeline 이 활동으로 판단한다."""
+
+    photo = photo_item("p1", "2026-06-20T12:30:00+09:00")
+    request = _remembering("OO정형외과", stays=[_LUNCH], photos=[photo])
+    event = _event(
+        [_ref(_LUNCH, EventSourceType.STAY), _ref(photo, EventSourceType.PHOTO)],
+        event_type=EventType.MEAL,
+        place_candidates=["OO식당", "OO정형외과"],
+    )
+
+    confirm_place_slots(_draft(event), request, _clues(request))
+
+    assert event.place == "OO식당"
 
 
 def test_payment_merchant_is_the_first_candidate_not_a_confirmed_place():
