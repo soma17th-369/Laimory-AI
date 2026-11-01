@@ -36,7 +36,7 @@ from app.schemas import (
 from app.schemas.clues import NotificationClue, NotificationClueKind
 from app.services.base_events import BaseEvent, base_event_draft
 from app.services.calendar_guard import RESTORED_CALENDAR_DESCRIPTION
-from app.services.clue_bundles import TimelineClues
+from app.services.clue_bundles import TimelineClues, place_only_raw_ids
 from app.services.conversation_guard import MAX_CONVERSATION_EVENTS, notification_only
 from app.services.location_metrics import SHORT_STAY_MAX
 from app.services.location_skeleton import SegmentKind
@@ -390,17 +390,9 @@ def restore_place_only_text(
 
     Repair 가 7시간 체류를 안쪽 점심과 같은 문장으로 고쳐 썼고, 일정 없는 저녁 체류가 `잠` 이 됐고, 사진을
     식사에 넘겨준 event 가 체류만 남긴 채 `OO와 함께했다` 로 남았다. 위치는 어디에 있었는지만 말한다.
-
-    오늘 일이 아닌 알림(`scheduleToday` 가 거짓)도 그 체류에서 한 일을 말하지 않는다. 다음 주 예매 알림이 온
-    영화관 체류를 Timeline 이 관람으로 썼고, 그 알림이 근거로 붙어 위치뿐이 아닌 것으로 보여 빠져나갔다(#172).
     """
 
-    says_only_where = {raw_id_of(item) for item in [*request.stays, *request.movements]} | {
-        raw_id
-        for clue in clues.notifications
-        if clue.schedule_today is False
-        for raw_id in clue.raw_ids
-    }
+    says_only_where = place_only_raw_ids(request, clues)
     for event in draft.events:
         if event.event_type not in _PLACE_ONLY_TYPES or any(
             ref.raw_id not in says_only_where for ref in event.source_refs

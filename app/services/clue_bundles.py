@@ -53,7 +53,7 @@ from app.services.location_skeleton import (
     SkeletonSegment,
 )
 from app.services.place_resolver import unique_place_names
-from app.services.source_lookup import build_owner_index
+from app.services.source_lookup import build_owner_index, raw_id_of
 
 
 @dataclass
@@ -130,6 +130,21 @@ class TimelineClues:
         return next(
             (b for b in self.bundles if b.base_event and b.base_event.base_id == base_id), None
         )
+
+
+def place_only_raw_ids(request: TimelineDraftRequest, clues: TimelineClues) -> set[str]:
+    """어디에 있었는지만 말하는 근거의 rawId. 체류·이동 기록과 오늘 일이 아닌 알림이다.
+
+    오늘 일이 아닌 알림(`scheduleToday` 가 거짓)은 그 체류에서 한 일을 말하지 않는다. 다음 주 예매 알림이 온
+    영화관 체류를 Timeline 이 관람으로 썼다(#172).
+    """
+
+    return {raw_id_of(item) for item in [*request.stays, *request.movements]} | {
+        raw_id
+        for clue in clues.notifications
+        if clue.schedule_today is False
+        for raw_id in clue.raw_ids
+    }
 
 
 def build_timeline_clues(
