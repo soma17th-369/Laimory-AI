@@ -680,6 +680,29 @@ def test_a_slot_with_no_place_name_is_not_repairs_business():
     assert saved["subtitle"] == "마포구 도화동에서 시간을 보냈다."
 
 
+def test_stays_with_the_same_title_are_not_sent_back_to_repair():
+    """활동을 모르는 체류끼리는 쓸 말이 없다. 짚자 Repair 가 `오후 체류` 를 지어냈다."""
+
+    from app.services.confirm_report import ConfirmReport
+
+    morning = stay_item("morning", start="2026-06-20T09:00:00", end="2026-06-20T12:00:00", address="서울특별시 마포구 도화동 17-13")
+    noon = stay_item("noon", start="2026-06-20T14:00:00", end="2026-06-20T17:00:00", address="서울특별시 마포구 도화동 17-13")
+    request = make_request(stays=[morning, noon])
+    report = ConfirmReport()
+
+    repair_draft(
+        _draft(
+            _event([(EventSourceType.STAY, morning.raw_id)], start=_at(9), end=_at(12), event_type=EventType.STAY, title="마포구 도화동에서 시간을 보냄"),
+            _event([(EventSourceType.STAY, noon.raw_id)], start=_at(14), end=_at(17), event_type=EventType.STAY, title="마포구 도화동에서 시간을 보냄"),
+        ),
+        request,
+        report=report,
+        clues=_clues(request),
+    )
+
+    assert not [f for f in report.findings if f["kind"] == "SAME_TITLE_IN_A_ROW"]
+
+
 def _stay_word_day():
     stay = stay_item(
         "day", start="2026-06-20T09:00:00", end="2026-06-20T12:00:00", places=["공덕 SK 리더스뷰"],

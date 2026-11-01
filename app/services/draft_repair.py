@@ -915,7 +915,9 @@ def _inspect(
         ordered = sorted(draft.events, key=lambda event: event.start_time)
         for event, following in zip(ordered, ordered[1:]):
             # 같은 일이면 괜찮다(사용자 결정 2026-10-31). 무엇이 다른지는 Repair 가 판단한다.
-            if event.title == following.title and event.event_type is not EventType.MOVEMENT:
+            # 활동을 모르는 체류끼리는 쓸 말이 없다. 짚자 Repair 가 `오후 체류` 를 지어냈다(#179).
+            both_stays = event.event_type is EventType.STAY and following.event_type is EventType.STAY
+            if event.title == following.title and event.event_type is not EventType.MOVEMENT and not both_stays:
                 report.add_finding(
                     "SAME_TITLE_IN_A_ROW",
                     partial(lambda after: {"nextEvent": after.client_event_id}, following),
