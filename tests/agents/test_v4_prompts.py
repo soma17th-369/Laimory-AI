@@ -107,7 +107,7 @@ def test_timeline_v4_defines_every_user_memory_field_as_the_writer_does():
     for text in (_timeline(), _repair()):
         assert set(definitions) == set(NARRATIVE_FIELDS)
         for name, definition in definitions.items():
-            assert f"- `{name}`: {definition}" in text, f"`{name}` 의 뜻이 쓰는 쪽과 다릅니다."
+            assert f"| `{name}` | {definition} |" in text, f"`{name}` 의 뜻이 쓰는 쪽과 다릅니다."
 
 
 def test_only_the_v4_writer_knows_about_places():
