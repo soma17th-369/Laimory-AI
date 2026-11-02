@@ -770,10 +770,14 @@ def _with_same_place(
 
 
 def _remembered_first(names: list[str], evidence: _Evidence, memory: PlaceMemory) -> list[str]:
-    """전에 고른 이름을 앞으로 옮긴다. 안정 정렬이라 각 무리 안의 순서는 그대로다.
+    """전에 고른 이름을 앞으로 옮긴다.
 
     지점이 다르면 다른 이름이라 글자 그대로 견준다. 좌표가 저장된 이름은 이 event 의 체류·이동 도착·
     사진 지점 250m 안일 때만이다(#192) — 다른 동네의 같은 이름은 올리지 않는다.
+
+    전에 고른 곳이 여럿이면 event 위치에 가까운 곳이 먼저다(사용자 결정 2026-11-03). event 위치는 가장
+    오래 겹친 체류 지점이다 — 12~23시 회의는 저녁 체류도 근거로 가져, 그 근처 식당이 낮의 회의 장소와
+    함께 올라왔다. 좌표 없는 예전 이름은 거리를 몰라 좌표 있는 이름 뒤이고, 같은 무리 안은 원래 순서다.
     """
 
     spots = [
@@ -787,7 +791,16 @@ def _remembered_first(names: list[str], evidence: _Evidence, memory: PlaceMemory
         if spot.latitude is not None and spot.longitude is not None
     ]
     visited = {normalize_place_text(name) for name in memory.visited(names, points)}
-    return sorted(names, key=lambda name: normalize_place_text(name) not in visited)
+    # 체류는 많이 겹친 순서로 온다(`_Index.evidence`). 체류가 없으면 이동 도착지, 그다음 사진 지점이다.
+    anchor = points[0] if points else None
+
+    def rank(name: str) -> tuple[int, float]:
+        if normalize_place_text(name) not in visited:
+            return (2, 0.0)
+        distance = memory.distance(name, anchor)
+        return (1, 0.0) if distance is None else (0, distance)
+
+    return sorted(names, key=rank)
 
 
 def _confirmed_name(
