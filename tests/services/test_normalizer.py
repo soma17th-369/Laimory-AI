@@ -11,6 +11,7 @@ from pathlib import Path
 from uuid import UUID
 
 from app.schemas import HealthMetric, ItemType, TimelineDraftRequest
+from app.schemas.user_memory import NotablePlacePoint, UserMemory
 from app.services.normalizer import normalize, split_source_items
 from tests.fixtures.requests import (
     default_source_items,
@@ -210,3 +211,29 @@ def test_clean_input_reports_nothing(caplog):
         normalize(make_snapshot(source_items=default_source_items()))
 
     assert _degraded(caplog) == []
+
+
+def _remembering_snapshot():
+    memory = UserMemory(
+        notable_places=["OO타워"],
+        notable_place_points=[NotablePlacePoint(name="OO타워", latitude=37.5005, longitude=127.0)],
+    )
+    return make_snapshot(source_items=default_source_items(), user_memory=memory)
+
+
+def test_v4_adds_remembered_places_to_the_stay_candidates(monkeypatch):
+    """결과 변환까지 같은 request 를 쓰므로 정규화 한 곳에서 더한다(#192)."""
+
+    monkeypatch.setattr("app.services.normalizer.uses_clue_contract", lambda: True)
+
+    [stay] = normalize(_remembering_snapshot()).stays
+
+    assert stay.places == ["장소", "OO타워"]
+
+
+def test_v3_input_stays_as_it_came(monkeypatch):
+    monkeypatch.setattr("app.services.normalizer.uses_clue_contract", lambda: False)
+
+    [stay] = normalize(_remembering_snapshot()).stays
+
+    assert stay.places == ["장소"]
