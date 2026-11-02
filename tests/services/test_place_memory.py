@@ -258,3 +258,32 @@ def test_a_remembered_place_comes_first_in_a_calendar_meeting():
     confirm_place_slots(_draft(event), request, None)
 
     assert event.place_candidates[:2] == ["OO센터", "OO사무소"]
+
+
+def test_the_remembered_place_nearer_the_event_comes_first():
+    """회의가 저녁 체류까지 근거로 가져 그 근처 식당도 전에 간 곳으로 올라온다. event 위치(가장 오래 겹친
+    체류)에 가까운 곳이 1번이다(사용자 결정 2026-11-03)."""
+
+    office = _stay("office", at=_BASE, places=["OO타워"], start="2026-06-20T12:00:00", end="2026-06-20T18:00:00")
+    evening_at = (_BASE[0] + 0.004, _BASE[1])
+    evening = _stay("evening", at=evening_at, places=["OO치킨"], start="2026-06-20T20:00:00", end="2026-06-20T21:00:00")
+    request = make_request(
+        stays=[office, evening],
+        user_memory=_memory(_point("OO치킨", evening_at), _point("OO센터", _BASE)),
+    )
+    add_remembered_places(request)
+    event = _event(
+        office,
+        event_type=EventType.MEETING,
+        start_time=datetime(2026, 6, 20, 12, 0, tzinfo=_KST),
+        end_time=datetime(2026, 6, 20, 21, 0, tzinfo=_KST),
+        source_refs=[
+            SourceRef(source_type=EventSourceType.STAY, raw_id=office.raw_id),
+            SourceRef(source_type=EventSourceType.STAY, raw_id=evening.raw_id),
+        ],
+        place_candidates=["OO치킨", "OO타워"],
+    )
+
+    confirm_place_slots(_draft(event), request, None)
+
+    assert event.place_candidates[:2] == ["OO센터", "OO치킨"]

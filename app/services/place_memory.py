@@ -58,6 +58,18 @@ class PlaceMemory:
         ]
         return [known for _, known in sorted(hits, key=lambda hit: hit[0])]
 
+    def distance(self, name: str, point: Point | None) -> float | None:
+        """그 이름으로 기억한 지점 가운데 `point` 에 가장 가까운 것의 거리(m). 좌표가 없으면 `None`."""
+
+        key = normalize_place_text(name)
+        distances = [
+            distance
+            for known in self.points
+            if normalize_place_text(known.name) == key
+            and (distance := distance_between((known.latitude, known.longitude), point)) is not None
+        ]
+        return min(distances) if distances else None
+
     def visited(self, names: Iterable[str], points: Iterable[Point]) -> list[str]:
         """`names` 가운데 사용자가 전에 고른 이름. 순서는 `names` 그대로다."""
 
