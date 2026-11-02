@@ -262,3 +262,27 @@ def test_user_memory_agent_loads_the_prompt_of_its_version(
     ).read_text(encoding="utf-8")
 
     assert module._SYSTEM_PROMPT == expected
+
+
+def test_v4_saves_the_coordinates_of_the_event_the_place_came_from(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """좌표는 모델이 쓰지 않는다. 그 이름이 있는 event 의 좌표다(#192)."""
+
+    module = _reload_agents(monkeypatch, "v4")["user_memory"]
+    payload = daily_timeline(
+        events=[
+            daily_timeline_event(
+                subtitle="OO서점에서 책을 골랐다.", latitude=37.5445, longitude=127.0559
+            )
+        ]
+    )
+    digest = build_daily_timeline_digest([DailyTimeline.model_validate(payload)])
+    llm = FakeLLM(['{"changes": [], "places": ["OO서점"]}'])
+
+    memory = module.UserMemoryAgent(llm=llm).generate(None, digest)
+
+    assert memory.notable_places == ["OO서점"]
+    assert [(p.name, p.latitude, p.longitude) for p in memory.notable_place_points] == [
+        ("OO서점", 37.5445, 127.0559)
+    ]

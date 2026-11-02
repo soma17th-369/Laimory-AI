@@ -12,7 +12,8 @@ App Server 로 나가는 것은 언제나 문서 전체이고, 그것이 기존 
   세트다.
 - **v4** 는 변경 목록과 함께 그날 기록에 나온 장소의 이름을 낸다
   (:class:`~app.schemas.user_memory.UserMemoryPlacesPatch`). 코드가 중복을 빼고
-  ``notablePlaces`` 리스트에 잇는다(#181).
+  ``notablePlaces`` 리스트에 잇는다(#181). 그 이름이 좌표가 있는 event 의 ``subtitle`` 에
+  있으면 코드가 그 좌표를 붙여 ``notablePlacePoints`` 에도 잇는다(#192).
 
 전체를 다시 쓰게 하면 바뀐 것이 한 줄이어도 나머지 필드를 전부 다시 쓴다. 건드릴 이유가
 없던 내용이 조금씩 달라지거나 빠지고(실측에서 "사는 곳" 이 줄이는 과정에서 사라졌다),
@@ -71,6 +72,7 @@ from app.services.user_memory_limits import (
     USER_MEMORY_MAX_CHARS,
     USER_MEMORY_TARGET_CHARS,
     DailyTimelineDigest,
+    add_place_points,
     add_places,
     apply_changes,
     items_near_limit,
@@ -276,6 +278,7 @@ class UserMemoryAgent:
                 memory, dropped_places = add_places(memory, patch.places)
                 if dropped_places:
                     dropped = {**dropped, "placeName": dropped_places}
+                memory, _ = add_place_points(memory, patch.places, digest.located_subtitles)
             if dropped:
                 # 어느 항목이었는지는 본문에 가까워 남기지 않는다. 이유와 개수만 남긴다.
                 logger.info(
