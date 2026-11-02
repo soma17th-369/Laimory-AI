@@ -271,6 +271,8 @@ AI → App Server   POST /user-memory/updates/{taskId}/result       (성공·실
 | `dailyTimelines[].events[].memo` | `string \| null` | | **사용자가 직접 쓴 메모**입니다. 500자로 자릅니다. |
 | `dailyTimelines[].events[].startAt` | `datetime` | O | 시작 시각입니다. |
 | `dailyTimelines[].events[].endAt` | `datetime \| null` | | 종료 시각입니다. 단일 시점 event는 `null`입니다. |
+| `dailyTimelines[].events[].latitude` | `number \| null` | | event 좌표의 위도입니다(이슈 #192). 사용자가 고른 장소 후보의 좌표이고, `subtitle`의 장소 칸은 그 장소 이름으로 채워져 옵니다. 장소가 없는 event(이동)는 `null`입니다. |
+| `dailyTimelines[].events[].longitude` | `number \| null` | | 경도입니다. 한쪽만 오거나 범위를 벗어난 좌표는 거절하지 않고 좌표가 없는 것으로 봅니다. |
 
 ### Request Example
 
@@ -292,7 +294,9 @@ AI → App Server   POST /user-memory/updates/{taskId}/result       (성공·실
           "question": "그 자리에서 어떤 이야기가 기억에 남았나요?",
           "memo": "오랜만에 팀 사람들이랑 이야기를 많이 했다.",
           "startAt": "2026-08-04T12:10:00+09:00",
-          "endAt": "2026-08-04T13:00:00+09:00"
+          "endAt": "2026-08-04T13:00:00+09:00",
+          "latitude": 37.5445,
+          "longitude": 127.0559
         }
       ]
     }
@@ -314,6 +318,7 @@ AI 서버는 접수한 하루 타임라인을 아래처럼 줄여 갱신에 씁�
 | `events[].eventType`, `title`, `subtitle`, `memo` | 그대로 씁니다. 비어 있으면 싣지 않습니다. |
 | `events[].startAt`, `endAt` | **시 단위**로만 씁니다. 분은 버립니다. |
 | `events[].question` | 쓰지 않습니다. |
+| `events[].latitude`, `longitude` | 프롬프트에 싣지 않습니다. `v4` 세트에서 모델이 낸 장소 이름이 그 event의 `subtitle`에 있으면 이 좌표와 이어 `notablePlacePoints`에 저장합니다(이슈 #192). |
 
 하루에 event가 10개를 넘으면 `memo`가 있는 event를 먼저 남기고 나머지는 최근 것부터
 10개까지 남깁니다. 10개는 타임라인 생성이 하루를 구성하는 event의 최대 개수와 같습니다.
@@ -612,6 +617,7 @@ Task-Token: {taskToken}
 | `updatedAt` | `string \| null` | 마지막 갱신 시각입니다. 프롬프트에는 싣지 않습니다. |
 | `basicProfile`, `lifeContext`, `relationships`, `personality`, `values`, `preferences`, `routines`, `currentFocus`, `emotionalPatterns`, `memoryStyle` | `string` | 자연어 필드이며 각 **최대 500자**입니다. 비어 있으면 프롬프트에서 생략합니다. |
 | `notablePlaces` | `string[]` | 기록에 나온 장소의 이름 리스트입니다(이슈 #181). `v4` 세트만 채우고 방문한 곳을 모두 누적합니다. **개수 제한이 없고** 이름 하나는 최대 100자입니다. 타임라인 프롬프트에 싣지 않고 코드가 장소 후보 순서에 쓰므로 문서 크기 상한에 세지 않습니다. 이 필드가 없는 예전 문서도 그대로 읽힙니다. |
+| `notablePlacePoints` | `object[]` | 그 가운데 좌표를 아는 장소입니다(이슈 #192). `[{"name": "…", "latitude": 37.5, "longitude": 127.0}]`이고, 이름은 모두 `notablePlaces`에도 있습니다. 좌표는 모델이 아니라 갱신 요청 event의 좌표입니다. 같은 이름이 250m 안에 이미 있으면 더하지 않고, 250m 밖이면 다른 곳으로 따로 둡니다. `notablePlaces`처럼 개수 제한이 없고 문서 크기 상한에 세지 않습니다. 다음 타임라인에서 체류·이동 도착 지점 250m 안의 장소를 장소 후보에 더합니다. 이 필드가 없는 예전 문서도 그대로 읽힙니다. |
 | `customAttributes` | `object` | 고정 필드로 담기지 않는 값입니다. 값당 **최대 500자**이며 **개수 제한은 없습니다**. |
 
 최상위 필드는 고정입니다. 위 목록에 없는 최상위 필드, 지원하지 않는
@@ -642,11 +648,12 @@ App Server가 가입 시점에 User Memory를 미리 만들어 둘 때는 아래
   "emotionalPatterns": "",
   "memoryStyle": "",
   "notablePlaces": [],
+  "notablePlacePoints": [],
   "customAttributes": {}
 }
 ```
 
-- 자연어 필드 10개는 **빈 문자열**입니다(`null`이 아닙니다). `notablePlaces`는 빈 리스트, `customAttributes`는 빈 객체입니다.
+- 자연어 필드 10개는 **빈 문자열**입니다(`null`이 아닙니다). `notablePlaces`·`notablePlacePoints`는 빈 리스트, `customAttributes`는 빈 객체입니다.
 - `updatedAt`은 `null`입니다. 갱신이 성공하면 AI 서버가 시각을 채워 돌려줍니다.
 - 위 목록에 없는 최상위 필드를 더하지 않습니다. 계약 위반(`1106`)이 됩니다.
 - AI 서버는 빈 문서를 **User Memory가 없는 것과 같게** 다룹니다. 타임라인 생성은 프로필
@@ -794,10 +801,11 @@ v4 의 문장과 장소(이슈 #171, 사용자 결정 2026-10-29):
   씁니다 — 사용자가 후보로 장소를 바꿔도 문장이 틀어지지 않게 하려는 것입니다.
 - **장소 이름은 언제나 `placeCandidates`로 보냅니다**(사용자 결정). 장소가 확실해도 확정해서 후보를 빼지
   않습니다. 결제·예약 알림의 가맹점이나 일정 장소명처럼 근거가 가리키는 이름이 1번이고, 그다음이
-  Timeline 이 고른 순서(사용자 프로필이 말하는 생활 장소와 비슷한 이름 → 활동에 맞는 이름), 그다음이 근거의 나머지 이름, 그다음이 같은 장소(250m)의 다른 기록·사진의
+  사용자가 전에 고른 장소(User Memory, 이슈 #181·#192), 그다음이 Timeline 이 고른 순서(사용자 프로필이 말하는 생활 장소와 비슷한 이름 → 활동에 맞는 이름), 그다음이 근거의 나머지 이름, 그다음이 같은 장소(250m)의 다른 기록·사진의
   이름입니다(최대 5개). `place`는 1번 후보입니다. App Server 는 1번 후보에 좌표가 있으면 이벤트 좌표도 그 값으로
   덮어씁니다(명세 2026-10-30). 후보는 저장 직전에 그 이벤트의 입력과 대조해, 입력에 없는 이름은 보내지 않습니다.
-  위치 근거만 있어 무엇을 했는지 모르는 체류도 그 위치의 이름들을 후보로 보냅니다. 입력에 없는 이름과
+  위치 근거만 있어 무엇을 했는지 모르는 체류도 그 위치의 이름들을 후보로 보냅니다. User Memory `notablePlacePoints`에서
+  체류·이동 도착 지점 250m 안의 장소는 입력의 후보로 더해져 그 좌표와 함께 나갑니다(이슈 #192). 그 밖의 입력에 없는 이름과
   주차장·대여소·정류장처럼 머문 곳이 될 수 없는 시설은 코드가 버립니다.
 - 근거에 장소 이름이 하나도 없을 때만 `{place}`를 대표 지점의 **지명**(구 + 동, 건물번호 없음)으로 바꿔 보냅니다. 장소도
   주소도 없는 이벤트(대화만 있는 이벤트)는 `{place}`를 쓰지 않습니다. `{place}`가 남은 채 `place`와
@@ -910,6 +918,7 @@ Task-Token: {taskToken}
     "emotionalPatterns": "",
     "memoryStyle": "",
     "notablePlaces": [],
+    "notablePlacePoints": [],
     "customAttributes": {}
   }
 }
@@ -937,7 +946,7 @@ Task-Token: {taskToken}
 - `taskToken`은 갱신되지 않습니다. 접수 요청 body의 값을 끝까지 사용합니다.
 - `userMemory`는 프롬프트에 실리는 형태(빈 필드와 메타데이터를 뺀 JSON)로 **전체 5,000자
   이하**입니다(이슈 #121, 이전 1,200자). 고정 필드 열 개의 상한을 더한 값입니다(10 × 500자).
-  `notablePlaces`는 이 크기에 세지 않으므로 **문서 전체는 5,000자를 넘을 수 있습니다**(이슈 #181).
+  `notablePlaces`·`notablePlacePoints`는 이 크기에 세지 않으므로 **문서 전체는 5,000자를 넘을 수 있습니다**(이슈 #181, #192).
   `customAttributes`는 개수 제한이 없어 필드별 상한만으로는 전체가 묶이지 않으므로 전체
   검사가 따로 있고, 속성도 이 5,000자 안에서 자리를 씁니다. `v3` 세트는 문서를 5,000자 넘게
   만드는 변경만 빼고 나머지를 적용하므로 이 이유로 실패하지 않습니다. `v1`·`v2` 세트는 넘으면 자르지도 다시 요청하지도 않고 `1304`로

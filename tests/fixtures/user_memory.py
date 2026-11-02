@@ -44,6 +44,8 @@ def daily_timeline_event(
     memo: str | None = None,
     start_at: str = "2026-08-04T12:10:00+09:00",
     end_at: str | None = "2026-08-04T13:00:00+09:00",
+    latitude: float | None = None,
+    longitude: float | None = None,
 ) -> dict[str, Any]:
     return {
         "eventType": event_type,
@@ -53,6 +55,8 @@ def daily_timeline_event(
         "memo": memo,
         "startAt": start_at,
         "endAt": end_at,
+        "latitude": latitude,
+        "longitude": longitude,
     }
 
 

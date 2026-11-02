@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from app.agents.prompt_loader import uses_clue_contract
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import report_error
 from app.core.logging import get_logger
@@ -22,6 +23,7 @@ from app.schemas import (
     TimelineDraftRequest,
     TimeWindow,
 )
+from app.services.place_memory import add_remembered_places
 
 logger = get_logger(__name__)
 
@@ -181,4 +183,7 @@ def normalize(snapshot: CollectedSnapshot) -> TimelineDraftRequest:
         len(request.notifications),
         len(request.photos),
     )
+    if uses_clue_contract():
+        # 결과 변환까지 같은 request 를 쓰므로 여기 한 곳에서 더한다(#192). v3 는 그대로다.
+        add_remembered_places(request)
     return request
