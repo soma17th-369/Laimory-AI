@@ -59,6 +59,9 @@ class PlacePoint(CamelModel):
     name: str
     latitude: Latitude
     longitude: Longitude
+    #: 입력이 아니라 User Memory 에서 온 장소다(#192, `place_memory`). AI 서버가 붙이고 App Server 는
+    #: 보내지 않는다. 위치 뼈대는 이 이름을 보지 않는다.
+    remembered: bool = False
 
 
 def split_place_objects(data: object) -> object:
