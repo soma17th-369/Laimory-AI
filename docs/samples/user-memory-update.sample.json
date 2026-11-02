@@ -14,6 +14,10 @@
     "currentFocus": "새 프로젝트의 초기 설계를 맡고 있습니다.",
     "emotionalPatterns": "",
     "memoryStyle": "",
+    "notablePlaces": ["OO카페"],
+    "notablePlacePoints": [
+      { "name": "OO카페", "latitude": 37.5447, "longitude": 127.0561 }
+    ],
     "customAttributes": {
       "자주 가는 카페": "회사 근처 1층 카페"
     }
@@ -31,16 +35,20 @@
           "question": "눈을 떴을 때 몸 상태는 어땠나요?",
           "memo": null,
           "startAt": "2026-08-04T07:20:00+09:00",
-          "endAt": null
+          "endAt": null,
+          "latitude": null,
+          "longitude": null
         },
         {
           "eventType": "MEAL",
           "title": "회사 근처에서 점심을 먹었어요",
-          "subtitle": "동료들과 함께한 자리였어요",
+          "subtitle": "OO식당에서 동료들과 함께한 자리였어요",
           "question": "그 자리에서 어떤 이야기가 기억에 남았나요?",
           "memo": "오랜만에 팀 사람들이랑 이야기를 많이 했다. 생각보다 편했다.",
           "startAt": "2026-08-04T12:10:00+09:00",
-          "endAt": "2026-08-04T13:00:00+09:00"
+          "endAt": "2026-08-04T13:00:00+09:00",
+          "latitude": 37.5445,
+          "longitude": 127.0559
         },
         {
           "eventType": "새로운타입",
@@ -49,7 +57,9 @@
           "question": "걷는 동안 어떤 생각이 스쳤나요?",
           "memo": null,
           "startAt": "2026-08-04T19:30:00+09:00",
-          "endAt": "2026-08-04T20:10:00+09:00"
+          "endAt": "2026-08-04T20:10:00+09:00",
+          "latitude": null,
+          "longitude": null
         }
       ]
     }
