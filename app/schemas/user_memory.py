@@ -31,6 +31,10 @@ Agent 프롬프트가 갖는다).
 제한하지 않는다. 프로필 문자열에 싣지 않아 문서 크기 상한과도 상관이 없다. Timeline 에 보였을
 때 모델이 식사 사진 event 에 리스트의 다른 이름을 올렸고, 누적되는 값이라 프롬프트도 끝없이
 커진다.
+
+``notablePlacePoints`` 는 그 가운데 좌표를 아는 이름과 좌표다(#192). 스키마는 추가만 하므로
+``notablePlaces`` 를 객체 리스트로 바꾸지 않고, 입력 조회 v2 가 ``places`` 와 ``placePoints`` 를
+나눈 것처럼 좌표를 따로 담는다. 좌표 없는 예전 이름은 ``notablePlaces`` 에만 있다.
 """
 
 import json
@@ -39,7 +43,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import ConfigDict, Field, StringConstraints
 
-from app.schemas.common import CamelModel
+from app.schemas.common import CamelModel, Latitude, Longitude
 
 #: 이 서버가 해석할 수 있는 유일한 User Memory 계약 버전.
 SCHEMA_VERSION = "1.0"
@@ -66,6 +70,10 @@ PlaceName = Annotated[str, StringConstraints(max_length=PLACE_NAME_MAX_LENGTH)]
 #: 읽고, 같은 곳인지 판단하는 User Memory v4 갱신에만 ``[saved places]`` 로 따로 싣는다.
 PLACE_LIST_FIELD = "notablePlaces"
 
+#: 이름과 좌표를 함께 담는 리스트 필드(alias, #192). :data:`PLACE_LIST_FIELD` 처럼 프롬프트에
+#: 실리지 않고 코드만 읽는다.
+PLACE_POINTS_FIELD = "notablePlacePoints"
+
 #: 프롬프트에 실리는 자연어 필드(alias). **이 튜플 순서가 곧 프롬프트 키 순서다** —
 #: 같은 메모리는 언제나 같은 문자열이 되어야 캐시·재현·diff 가 의미를 갖는다.
 NARRATIVE_FIELDS: tuple[str, ...] = (
@@ -83,6 +91,19 @@ NARRATIVE_FIELDS: tuple[str, ...] = (
 
 #: 프롬프트에 싣지 않는 메타데이터 필드(alias). 의미 생성에 쓰이지 않는다.
 METADATA_FIELDS: tuple[str, ...] = ("schemaVersion", "updatedAt")
+
+
+class NotablePlacePoint(CamelModel):
+    """사용자가 고른 장소 하나와 그 좌표(#192).
+
+    좌표는 모델이 쓰지 않는다. 갱신 요청 event 의 좌표(사용자가 고른 후보의 좌표)를 코드가 옮긴다.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    name: PlaceName
+    latitude: Latitude
+    longitude: Longitude
 
 
 class UserMemory(CamelModel):
@@ -117,6 +138,12 @@ class UserMemory(CamelModel):
     #: 기록에 나온 장소의 이름(#181). 언제·몇 번 갔는지는 담지 않고 모두 누적한다. v4 갱신만
     #: 채우고 장소 칸 확정 코드가 후보 순서에 쓴다. :meth:`prompt_payload` 에 들지 않는다.
     notable_places: list[PlaceName] = Field(default_factory=list, alias="notablePlaces")
+    #: 그 가운데 좌표를 아는 이름(#192). 같은 이름도 250m 넘게 떨어지면 다른 곳이라 따로 있다.
+    #: 다음 타임라인에서 위치 기록 250m 안의 이름을 장소 후보에 더한다. 이 이름은 모두
+    #: ``notablePlaces`` 에도 있다.
+    notable_place_points: list[NotablePlacePoint] = Field(
+        default_factory=list, alias="notablePlacePoints"
+    )
 
     #: 고정 필드로 담기지 않는 값. **키는 AI 가 만든다** — 결정론 코드가 특정 키의
     #: 존재를 전제하지 않는다.
@@ -387,7 +414,7 @@ def _assert_field_catalog_matches_model() -> None:
     catalog = (
         set(NARRATIVE_FIELDS)
         | set(METADATA_FIELDS)
-        | {"customAttributes", PLACE_LIST_FIELD}
+        | {"customAttributes", PLACE_LIST_FIELD, PLACE_POINTS_FIELD}
     )
     if declared != catalog:
         raise RuntimeError(

@@ -32,6 +32,7 @@ from app.services.user_memory_limits import (
     USER_MEMORY_MAX_CHARS,
     ITEM_LIMIT_MARGIN,
     USER_MEMORY_TARGET_CHARS,
+    add_place_points,
     add_places,
     apply_changes,
     build_daily_timeline_digest,
@@ -1156,3 +1157,114 @@ def test_the_list_does_not_count_toward_the_document_size():
 
 def test_a_sensitive_name_in_a_received_list_is_a_violation():
     assert find_violations(_listed("010-1234-5678"))
+
+
+# --- 이름과 좌표 (#192) --------------------------------------------------------------
+
+_CAFE = (37.5445, 127.0559)
+
+
+def _located(*events: dict) -> list[tuple[str, tuple[float, float]]]:
+    return build_daily_timeline_digest(_entries([daily_timeline(events=list(events))])).located_subtitles
+
+
+def _with_points(memory: UserMemory, names: list[str], located) -> UserMemory:
+    memory, _ = add_places(memory, names)
+    memory, _ = add_place_points(memory, names, located)
+    return memory
+
+
+def test_a_chosen_place_is_saved_with_the_coordinates_of_its_event():
+    """좌표는 모델이 쓰지 않는다. 모델이 낸 이름이 있는 event 의 좌표다."""
+
+    located = _located(
+        daily_timeline_event(subtitle="OO커피 성수점에서 라떼를 마셨다.", latitude=_CAFE[0], longitude=_CAFE[1]),
+        daily_timeline_event(event_type="MOVEMENT", subtitle="성수동에서 망원동으로 이동했다."),
+    )
+
+    memory = _with_points(_listed(), ["OO커피 성수점", "망원동"], located)
+
+    assert [point.model_dump(by_alias=True) for point in memory.notable_place_points] == [
+        {"name": "OO커피 성수점", "latitude": _CAFE[0], "longitude": _CAFE[1]}
+    ]
+    assert memory.notable_places == ["OO커피 성수점", "망원동"], "좌표가 없어도 이름은 #181 처럼 남는다."
+
+
+def test_no_coordinates_are_made_up_for_a_name_without_a_located_event():
+    located = _located(
+        daily_timeline_event(subtitle="{place}에서 점심을 먹었다.", latitude=_CAFE[0], longitude=_CAFE[1]),
+        daily_timeline_event(subtitle="OO식당에서 점심을 먹었다.", latitude=_CAFE[0], longitude=None),
+        daily_timeline_event(subtitle="OO서점에서 책을 샀다.", latitude=91.0, longitude=_CAFE[1]),
+    )
+
+    memory = _with_points(_listed(), ["OO식당", "OO서점", "OO공원"], located)
+
+    assert memory.notable_place_points == []
+
+
+def test_the_same_place_within_250m_is_saved_once():
+    nearby = (_CAFE[0] + 0.001, _CAFE[1])
+    located = _located(
+        daily_timeline_event(subtitle="OO커피에서 쉬었다.", latitude=_CAFE[0], longitude=_CAFE[1]),
+        daily_timeline_event(subtitle="OO 커피에서 또 쉬었다.", latitude=nearby[0], longitude=nearby[1]),
+    )
+
+    memory = _with_points(_listed(), ["OO커피"], located)
+    memory = _with_points(memory, ["OO커피"], located)
+
+    assert [(p.latitude, p.longitude) for p in memory.notable_place_points] == [_CAFE], "처음 좌표를 둔다."
+
+
+def test_the_same_name_far_away_is_another_place():
+    """다른 동네의 같은 상호다. 이름이 같아도 250m 밖이면 따로 둔다."""
+
+    far = (35.1, 129.0)
+    located = _located(
+        daily_timeline_event(subtitle="OO커피에서 쉬었다.", latitude=_CAFE[0], longitude=_CAFE[1]),
+        daily_timeline_event(subtitle="OO커피에서 쉬었다.", latitude=far[0], longitude=far[1]),
+    )
+
+    memory = _with_points(_listed(), ["OO커피"], located)
+
+    assert [(p.latitude, p.longitude) for p in memory.notable_place_points] == [_CAFE, far]
+
+
+def test_two_places_in_one_building_are_both_saved():
+    located = _located(
+        daily_timeline_event(subtitle="OO타워에서 일했다.", latitude=_CAFE[0], longitude=_CAFE[1]),
+        daily_timeline_event(subtitle="OO약국에서 약을 샀다.", latitude=_CAFE[0], longitude=_CAFE[1]),
+    )
+
+    memory = _with_points(_listed(), ["OO타워", "OO약국"], located)
+
+    assert [p.name for p in memory.notable_place_points] == ["OO타워", "OO약국"]
+
+
+def test_the_stored_spelling_is_used_with_the_coordinates():
+    located = _located(
+        daily_timeline_event(subtitle="OO서점합정점에서 책을 봤다.", latitude=_CAFE[0], longitude=_CAFE[1])
+    )
+
+    memory = _with_points(_listed("OO서점 합정점"), ["OO서점합정점"], located)
+
+    assert [p.name for p in memory.notable_place_points] == ["OO서점 합정점"]
+
+
+def test_coordinates_stay_out_of_the_prompt_and_the_size():
+    located = _located(
+        daily_timeline_event(subtitle="OO커피에서 쉬었다.", latitude=_CAFE[0], longitude=_CAFE[1])
+    )
+    without = UserMemory(routines="평일 아침 출근.")
+    memory = _with_points(without, ["OO커피"], located)
+    digest = build_daily_timeline_digest(
+        _entries([daily_timeline(events=[daily_timeline_event(latitude=_CAFE[0], longitude=_CAFE[1])])])
+    )
+
+    assert memory.notable_place_points
+    assert "latitude" not in str(digest.daily_timelines)
+    assert memory.prompt_payload() == without.prompt_payload()
+    assert serialized_chars(memory) == serialized_chars(without)
+
+
+def test_a_document_saved_before_coordinates_still_reads():
+    assert UserMemory.model_validate({"notablePlaces": ["OO서점"]}).notable_place_points == []

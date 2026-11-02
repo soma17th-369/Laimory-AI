@@ -48,9 +48,10 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
+from app.schemas.timeline_result import PLACE_SLOT
 from app.schemas.user_memory import (
     CUSTOM_ATTRIBUTE_ITEM_PREFIX,
     CUSTOM_ATTRIBUTE_MAX_LENGTH,
@@ -58,6 +59,8 @@ from app.schemas.user_memory import (
     NARRATIVE_MAX_LENGTH,
     PLACE_LIST_FIELD,
     PLACE_NAME_MAX_LENGTH,
+    PLACE_POINTS_FIELD,
+    NotablePlacePoint,
     UserMemory,
     UserMemoryChange,
     UserMemoryChangeAction,
@@ -68,6 +71,7 @@ from app.schemas.user_memory_update import (
     DailyTimeline,
     DailyTimelineEvent,
 )
+from app.services.location_metrics import SAME_PLACE_MAX_METERS, distance_between
 from app.services.notification_guard import SENSITIVE_PATTERNS
 from app.services.place_text import normalize_place_text
 
@@ -128,6 +132,9 @@ class DailyTimelineDigest:
 
     daily_timelines: list[dict[str, Any]]
     stats: dict[str, int]
+    #: 남긴 event 가운데 좌표가 있는 것의 (``subtitle``, 좌표)(#192). 프롬프트에 싣지 않는다 —
+    #: 모델이 낸 장소 이름을 코드가 좌표와 이을 때만 쓴다(:func:`add_place_points`).
+    located_subtitles: list[tuple[str, tuple[float, float]]] = field(default_factory=list)
 
     @property
     def has_memo(self) -> bool:
@@ -267,6 +274,11 @@ def build_daily_timeline_digest(daily_timelines: list[DailyTimeline]) -> DailyTi
 
     return DailyTimelineDigest(
         daily_timelines=payload,
+        located_subtitles=[
+            (subtitle, point)
+            for _, _, event in kept
+            if (point := event.point) and (subtitle := _clip(event.subtitle, TEXT_MAX_CHARS))
+        ],
         stats={
             "dailyTimelineCount": len(payload),
             "eventCount": len(kept),
@@ -474,6 +486,41 @@ def add_places(memory: UserMemory, names: list[str]) -> tuple[UserMemory, int]:
     return memory.model_copy(update={"notable_places": kept}), dropped
 
 
+def add_place_points(
+    memory: UserMemory, names: list[str], located: list[tuple[str, tuple[float, float]]]
+) -> tuple[UserMemory, int]:
+    """이번 기록의 장소 이름을 그 event 좌표와 잇는다(#192). (새 문서, 더한 수)를 돌려준다.
+
+    좌표는 모델이 쓰지 않는다. 모델이 낸 이름이 좌표가 있는 event 의 ``subtitle`` 에 있으면 그 event
+    의 좌표를 붙인다 — 갱신 요청의 ``subtitle`` 은 장소 칸이 사용자가 고른 이름으로 채워져 오고, event
+    좌표는 그 후보의 좌표다. :func:`add_places` 뒤에 부르고, ``notablePlaces`` 에 들어간 이름만 쓴다
+    (표기도 그쪽을 따른다). 같은 이름이 250m 안에 이미 있으면 더하지 않는다. 250m 밖이면 다른 곳이고,
+    이름이 다르면 좌표가 같아도 다른 곳이다(같은 건물의 여러 장소).
+    """
+
+    stored = {normalize_place_text(name): name for name in memory.notable_places}
+    points = list(memory.notable_place_points)
+    added = 0
+    for raw in names:
+        key = normalize_place_text(raw.strip())
+        name = stored.get(key)
+        if name is None or len(key) < 2:
+            continue
+        for subtitle, point in located:
+            if PLACE_SLOT in subtitle or key not in normalize_place_text(subtitle):
+                continue
+            if any(
+                normalize_place_text(known.name) == key
+                and (distance_between((known.latitude, known.longitude), point) or 0.0)
+                <= SAME_PLACE_MAX_METERS
+                for known in points
+            ):
+                continue
+            points.append(NotablePlacePoint(name=name, latitude=point[0], longitude=point[1]))
+            added += 1
+    return memory.model_copy(update={"notable_place_points": points}), added
+
+
 #: 항목 값이 길이 제한에 이만큼 가까우면 갱신 요청에서 알린다.
 ITEM_LIMIT_MARGIN = 100
 
@@ -655,6 +702,7 @@ def _sensitive_hits(memory: UserMemory) -> list[tuple[str, str]]:
         if value
     )
     texts.extend((PLACE_LIST_FIELD, name) for name in memory.notable_places)
+    texts.extend((PLACE_POINTS_FIELD, point.name) for point in memory.notable_place_points)
 
     return [
         (field, label)

@@ -17,10 +17,12 @@ v4 문장은 장소 자리를 `{place}` 칸으로 남긴다. 칸에 들어갈 �
   일정 장소명처럼 근거가 가리키는 이름이 1번이고, 그다음이 Timeline 이 풀에서 활동에 맞게 고른 순서,
   그다음이 풀의 나머지와 같은 장소(250m)의 이름이다. 풀 밖의 이름과 시설은 버린다. `place` 는
   1번 후보다 — App Server 도 그렇게 저장한다.
-- **기억**: 사진·일정·알림 근거가 없는 event 는 무엇을 했는지 몰라 어디였는지 가릴 근거도 없다. 그런
-  event 에서는 User Memory `notablePlaces` 에 있는 이름을 앞으로 올린다(#181). 순서만 바꾸고 풀 밖의
-  이름은 들어오지 않는다. 기억에 있는 이름끼리는 Timeline 순서를 따른다 — 집과 앞 가게가 함께
-  기억에 있으면 어느 쪽인지는 기억이 말해 주지 않는다.
+- **기억**: 사용자가 전에 고른 이름은 근거가 가리키는 이름 바로 다음이다(#181, #192). 처음에는 사진·
+  일정·알림 근거가 없는 event 에서만 올렸는데, 일정 회의에서 Timeline 이 그 장소를 후보 목록에 두고도
+  5개 안에 넣지 않았다(사용자 결정 2026-11-03 "이전에 방문한 적이 있는 절대적인 우선순위"). 좌표가
+  저장된 이름은 그 event 지점 250m 안일 때만이다. 순서만 바꾸고 풀 밖의 이름은 들어오지 않는다 — 250m
+  안의 기억 장소는 정규화가 이미 입력의 후보로 더했다(`place_memory`). 기억에 있는 이름끼리는 Timeline
+  순서를 따른다 — 집과 앞 가게가 함께 기억에 있으면 어느 쪽인지는 기억이 말해 주지 않는다.
 - **주소 대체**: 근거에 장소 이름이 하나도 없을 때만 `{place}` 를 대표 지점의 주소 원문으로 바꾼다. 동네 이름으로
   바꾸지 않는다. 주소도 없으면 칸과 그 조사를 지운다 — 칸이 남은 채 장소가 없으면 App Server
   가 하루치 결과 전체를 400 으로 거절한다.
@@ -53,6 +55,7 @@ from app.schemas.timeline_result import MAX_PLACE_CANDIDATES, PLACE_SLOT
 from app.services.base_events import AreaNamer, area_namer, movement_route, toward_particle
 from app.services.calendar_clues import split_location_text
 from app.services.clue_bundles import TimelineClues, place_only_raw_ids
+from app.services.place_memory import PlaceMemory
 from app.services.place_resolver import (
     is_exact_address,
     same_place_addresses,
@@ -113,7 +116,7 @@ def confirm_place_slots(
     index = _Index.build(request)
     same_place = same_place_addresses(request, tz)
     names_by_place = _names_by_place(request, same_place, tz)
-    remembered = _remembered_names(request)
+    memory = PlaceMemory.of(request.user_memory)
     confirmed = candidates = addressed = 0
     for event in draft.events:
         evidence = index.evidence(event, tz)
@@ -135,9 +138,9 @@ def confirm_place_slots(
             for item in event.place_candidates
             if normalize_place_text(item) in keys
         ]
-        ordered = unique_place_names([pointed, *ranked, *pool])
-        if not (evidence.photos or evidence.calendars or evidence.notification_ids):
-            ordered = _remembered_first(ordered, remembered)
+        # 전에 고른 곳은 사진·일정·알림이 있는 event 에서도 근거가 가리키는 이름 바로 다음이다(#192).
+        rest = [name for name in unique_place_names([*ranked, *pool]) if name != pointed]
+        ordered = unique_place_names([pointed, *_remembered_first(rest, evidence, memory)])
         kept = ordered[:MAX_PLACE_CANDIDATES]
         event.place_candidates = kept
         event.place = kept[0] if kept else None
@@ -766,17 +769,38 @@ def _with_same_place(
     ]
 
 
-def _remembered_names(request: TimelineDraftRequest) -> set[str]:
-    """User Memory 의 장소 이름(정규화한 값). 지점이 다르면 다른 이름이라 글자 그대로 견준다."""
+def _remembered_first(names: list[str], evidence: _Evidence, memory: PlaceMemory) -> list[str]:
+    """전에 고른 이름을 앞으로 옮긴다.
 
-    memory = request.user_memory
-    return {normalize_place_text(name) for name in memory.notable_places} if memory else set()
+    지점이 다르면 다른 이름이라 글자 그대로 견준다. 좌표가 저장된 이름은 이 event 의 체류·이동 도착·
+    사진 지점 250m 안일 때만이다(#192) — 다른 동네의 같은 이름은 올리지 않는다.
 
+    전에 고른 곳이 여럿이면 event 위치에 가까운 곳이 먼저다(사용자 결정 2026-11-03). event 위치는 가장
+    오래 겹친 체류 지점이다 — 12~23시 회의는 저녁 체류도 근거로 가져, 그 근처 식당이 낮의 회의 장소와
+    함께 올라왔다. 좌표 없는 예전 이름은 거리를 몰라 좌표 있는 이름 뒤이고, 같은 무리 안은 원래 순서다.
+    """
 
-def _remembered_first(names: list[str], remembered: set[str]) -> list[str]:
-    """기억에 있는 이름을 앞으로 옮긴다. 안정 정렬이라 각 무리 안의 순서는 그대로다."""
+    spots = [
+        *evidence.stays,
+        *(m.end for m in evidence.movements if m.end is not None),
+        *evidence.photos,
+    ]
+    points = [
+        (spot.latitude, spot.longitude)
+        for spot in spots
+        if spot.latitude is not None and spot.longitude is not None
+    ]
+    visited = {normalize_place_text(name) for name in memory.visited(names, points)}
+    # 체류는 많이 겹친 순서로 온다(`_Index.evidence`). 체류가 없으면 이동 도착지, 그다음 사진 지점이다.
+    anchor = points[0] if points else None
 
-    return sorted(names, key=lambda name: normalize_place_text(name) not in remembered)
+    def rank(name: str) -> tuple[int, float]:
+        if normalize_place_text(name) not in visited:
+            return (2, 0.0)
+        distance = memory.distance(name, anchor)
+        return (1, 0.0) if distance is None else (0, distance)
+
+    return sorted(names, key=rank)
 
 
 def _confirmed_name(

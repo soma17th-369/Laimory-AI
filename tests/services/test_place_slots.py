@@ -301,8 +301,12 @@ def test_a_remembered_name_cannot_outrank_the_payment_merchant():
     assert event.place_candidates[:2] == ["OO식당", "OO정형외과"]
 
 
-def test_a_photo_event_keeps_the_order_timeline_chose():
-    """사진이 있으면 그 자리에서 한 일이 있다. 맞는 이름인지는 Timeline 이 활동으로 판단한다."""
+def test_a_remembered_name_goes_first_even_in_a_photo_event():
+    """전에 고른 곳은 사진이 있어도 앞이다(#192 사용자 결정 "절대적인 우선순위").
+
+    #181 에서는 사진이 있으면 Timeline 판단에 맡겼다. 일정 회의에서 Timeline 이 그 장소를 후보 목록에 두고도
+    5개 안에 넣지 않아 바꿨다.
+    """
 
     photo = photo_item("p1", "2026-06-20T12:30:00+09:00")
     request = _remembering("OO정형외과", stays=[_LUNCH], photos=[photo])
@@ -314,7 +318,23 @@ def test_a_photo_event_keeps_the_order_timeline_chose():
 
     confirm_place_slots(_draft(event), request, _clues(request))
 
-    assert event.place == "OO식당"
+    assert event.place_candidates[:2] == ["OO정형외과", "OO식당"]
+
+
+def test_a_remembered_name_goes_first_in_a_calendar_event_without_a_place():
+    """일정에 장소 칸이 없으면 근거가 가리키는 이름이 없다. 전에 고른 곳이 1번이다(#192)."""
+
+    meeting = calendar_item("m", "팀 정기 회의", location_text="")
+    request = _remembering("OO정형외과", stays=[_LUNCH], calendars=[meeting])
+    event = _event(
+        [_ref(_LUNCH, EventSourceType.STAY), _ref(meeting, EventSourceType.CALENDAR)],
+        event_type=EventType.MEETING,
+        place_candidates=["OO식당"],
+    )
+
+    confirm_place_slots(_draft(event), request, _clues(request))
+
+    assert event.place == "OO정형외과"
 
 
 def test_payment_merchant_is_the_first_candidate_not_a_confirmed_place():

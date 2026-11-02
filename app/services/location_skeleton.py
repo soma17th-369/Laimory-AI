@@ -61,6 +61,7 @@ from app.services.location_metrics import (
     distance_between,
     is_continuous,
 )
+from app.services.place_memory import added_from_memory
 from app.services.place_resolver import is_exact_address, unique_place_names
 from app.services.place_text import normalize_place_text
 from app.services.validator import parse_datetime, resolve_timezone
@@ -91,6 +92,8 @@ class Spot:
     address: str | None
     latitude: float | None
     longitude: float | None
+    #: User Memory 에서 더한 이름(#192). 같은 장소 판정과 `label` 은 보지 않고 구간의 후보에만 붙는다.
+    remembered: tuple[str, ...] = ()
 
     @property
     def point(self) -> tuple[float, float] | None:
@@ -347,22 +350,26 @@ def _outside(
 
 
 def _stay_spot(stay: StayItem) -> Spot:
-    return Spot(
-        places=tuple(unique_place_names([stay.place, *stay.places])),
-        address=_exact(stay.address),
-        latitude=stay.latitude,
-        longitude=stay.longitude,
-    )
+    return _spot(stay)
 
 
 def _geo_spot(place: GeoPlace | None) -> Spot | None:
     if place is None:
         return None
+    return _spot(place)
+
+
+def _spot(item: StayItem | GeoPlace) -> Spot:
+    """기억에서 더한 이름(#192)은 `remembered` 로 떼어 둔다. 뼈대는 입력의 이름만으로 나눈다."""
+
+    added = added_from_memory(item.place_points)
+    names = unique_place_names([item.place, *item.places])
     return Spot(
-        places=tuple(unique_place_names([place.place, *place.places])),
-        address=_exact(place.address),
-        latitude=place.latitude,
-        longitude=place.longitude,
+        places=tuple(name for name in names if normalize_place_text(name) not in added),
+        address=_exact(item.address),
+        latitude=item.latitude,
+        longitude=item.longitude,
+        remembered=tuple(name for name in names if normalize_place_text(name) in added),
     )
 
 
@@ -546,8 +553,12 @@ def _stay_segment(
 ) -> SkeletonSegment:
     by_duration = sorted(flow, key=lambda record: record.duration, reverse=True)
     main = by_duration[0].spot
+    spots = [record.spot for record in by_duration if record.spot]
     names = unique_place_names(
-        name for record in by_duration if record.spot for name in record.spot.places
+        [
+            *(name for spot in spots for name in spot.places),
+            *(name for spot in spots for name in spot.remembered),
+        ]
     )
     return SkeletonSegment(
         segment_id=segment_id,
@@ -593,7 +604,7 @@ def _journey_segment(
         end=end,
         records=list(flow),
         spot=destination,
-        places=list(destination.places) if destination else [],
+        places=[*destination.places, *destination.remembered] if destination else [],
         origin=origin,
         destination=destination,
         distance_meters=sum(distances) if distances else None,

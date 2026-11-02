@@ -57,6 +57,23 @@ class DailyTimelineEvent(CamelModel):
     start_at: AwareDatetime = Field(alias="startAt")
     #: 단일 시점 event 가 있어 nullable 이다.
     end_at: AwareDatetime | None = Field(default=None, alias="endAt")
+    #: event 의 좌표(#192). 사용자가 고른 장소 후보의 좌표이고 ``subtitle`` 의 장소 칸은 그 이름으로
+    #: 채워져 온다. 이동처럼 장소가 없는 event 는 ``null`` 이다.
+    #:
+    #: 범위로 좁히지 않는다. 좌표 하나가 어긋났다고 그날의 갱신 요청 전체를 422 로 죽이지 않고,
+    #: 쓸 수 없는 좌표는 :attr:`point` 가 없는 것으로 본다.
+    latitude: float | None = None
+    longitude: float | None = None
+
+    @property
+    def point(self) -> tuple[float, float] | None:
+        """둘 다 있고 WGS84 범위 안인 좌표. 아니면 ``None``."""
+
+        if self.latitude is None or self.longitude is None:
+            return None
+        if not (-90 <= self.latitude <= 90 and -180 <= self.longitude <= 180):
+            return None
+        return self.latitude, self.longitude
 
 
 class DailyTimeline(CamelModel):
