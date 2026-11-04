@@ -448,6 +448,26 @@ def test_repair_goes_on_while_writing_is_left():
     assert not _writing_left(ctx)
 
 
+def test_v4_prompt_shows_only_the_latest_confirm():
+    """앞 회차의 보정 기록은 다시 싣지 않는다(#196). v3 는 지금처럼 쌓는다."""
+
+    from app.agents.repair.tools import confirm_report_text
+    from app.services.confirm_report import ConfirmReport
+
+    ctx, _ = _context()
+    for sequence, event_id in ((1, "event-001"), (2, "event-002")):
+        report = ConfirmReport(sequence=sequence)
+        report.corrected = [{"clientEventId": event_id, "step": "근거 정리", "changes": {}}]
+        ctx.reports.append(report)
+
+    shown = json.loads(confirm_report_text(ctx))
+    assert [item["clientEventId"] for item in shown["corrected"]] == ["event-002"]
+
+    ctx.clues = None
+    stacked = json.loads(confirm_report_text(ctx))
+    assert [item["clientEventId"] for item in stacked["corrected"]] == ["event-001", "event-002"]
+
+
 def _calendar_context(*, title="팀 점심 식사", end_hour=13, end_minute=30):
     calendar = calendar_item("lunch", title, start="2026-06-20T12:00:00", end=f"2026-06-20T{end_hour}:{end_minute:02d}:00")
     request = make_request(calendars=[calendar])

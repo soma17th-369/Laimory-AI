@@ -16,7 +16,7 @@
   - `removed`: 코드가 지우거나 다른 event에 합친 event의 전체 내용입니다.
   - `added`: 코드가 새로 만든 event입니다.
   - `findings`: 코드가 찾았지만 고치지 않은 것입니다. 현재 draft로 다시 계산한 값입니다.
-  - `confirm`: 몇 번째 확정에서 나온 기록인지입니다. `corrected`·`removed`·`added`는 앞 차례의 것도 함께 옵니다.
+  - `confirm`: 몇 번째 확정에서 나온 기록인지입니다. `corrected`·`removed`·`added`는 직전 확정의 것만 옵니다. 앞 차례의 기록은 이미 본 것이라 다시 오지 않습니다.
 - `[event 근거]`: Timeline이 본 것과 같은 근거 묶음입니다.
   - `day`·`bundles`·`emptyTimes`·`notifications`: 하루의 관측 정보, 근거 묶음(위치 구간과 거기 붙은 일정·사진·알림, 자기 묶음인 대화), 위치 기록이 없는 시간, 어느 구간에도 붙지 않은 알림입니다. 묶음은 `B`, 사진은 `P`, 일정은 `C`, 알림은 `N`으로 시작하는 id를 가집니다. 사진의 `activity`는 그 사진을 찍을 때 한 일입니다. 알림의 받은 시각은 그 일이 일어난 때가 아닐 수 있습니다.
   - `events`: event마다 근거로 쓴 묶음·단서 id(`evidence`), 어느 기본 event에서 왔는지(`from`), `mergeReason`입니다. 기본 event는 코드가 위치 구간마다 틀 문장과 함께 만든 구조(묶음의 `baseEvent`)이고 일정이 덮은 체류는 그 일정의 기본 event(`calendar`, 일정 시간)입니다. Timeline이 근거로 채우거나 나누거나 합쳤습니다. 기본 event의 시간 중 어느 event도 덮지 않은 곳은 코드가 틀 문장 event로 되살립니다.

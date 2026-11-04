@@ -932,10 +932,10 @@ def confirm_report_text(ctx: RepairContext) -> str:
     """코드가 고친 것과 찾은 것을 프롬프트용 텍스트로 만든다.
 
     찾은 것은 마지막 확정의 것만, 고친 것은 몇 번째 확정에서 나온 것인지 붙여 쌓아서
-    싣는다(`reports_to_prompt`).
+    싣는다(`reports_to_prompt`). v4 는 고친 것도 마지막 확정의 것만 싣는다(#196).
     """
 
-    payload = reports_to_prompt(ctx.reports)
+    payload = reports_to_prompt(ctx.reports, accumulate=ctx.clues is None)
     if not payload:
         return "코드가 고치거나 찾은 것이 없습니다."
     return json.dumps(payload, ensure_ascii=False, indent=2)
