@@ -58,7 +58,7 @@ v3 Timeline 프롬프트는 판단 순서대로 읽힌다. 작업을 하루 구�
 
 ### Repair Agent와 확정 pass
 
-Repair는 시작할 때 LLM 호출 여부와 무관하게 `repair_draft`를 한 번 실행한다. 이후 반복은 `analyze → execute tools → confirm`이고, tool call이 없거나 `done`, 반복 상한에 도달하면 끝난다. 예외는 v4다 — 마지막 확정에 `EVENT_TO_WRITE`·`TEXT_CORRECTION`이 남았으면 tool call이 없거나 `done`이어도 반복 상한까지 다시 분석한다(`_writing_left`, #196). LLM·parse 실패 시 마지막으로 확정된 deep copy로 되돌아가 warning을 추가한다. 개별 tool 실패는 tool result로 남아 다음 분석 입력이 된다. 순서는 언제나 코드 → LLM → 코드이고 마지막 단계는 코드 확정이다.
+Repair는 시작할 때 LLM 호출 여부와 무관하게 `repair_draft`를 한 번 실행한다. 이후 반복은 `analyze → execute tools → confirm`이고, tool call이 없거나 `done`, 반복 상한에 도달하면 끝난다. v4는 도구를 실행한 뒤 마지막 확정에 `EVENT_TO_WRITE`·`TEXT_CORRECTION`이 남았으면 `done`이어도 반복 상한까지 다시 분석한다(`_writing_left`). tool call 없이 끝낸 계획은 draft가 그대로라 다시 묻지 않는다(#196). LLM·parse 실패 시 마지막으로 확정된 deep copy로 되돌아가 warning을 추가한다. 개별 tool 실패는 tool result로 남아 다음 분석 입력이 된다. 순서는 언제나 코드 → LLM → 코드이고 마지막 단계는 코드 확정이다.
 
 확정 pass는 **고치는 것과 찾는 것을 나눈다**(#119). 무엇을 고칠지가 규칙으로 정해져 있으면 코드가 고치고, 어디서 끊고 무엇을 남길지가 의미 판단이면 찾아서 Repair에 넘긴다. 이동 사이의 장시간 체류와 상한을 넘긴 event를 나누는 것은 뒤쪽이다. 그래서 Repair가 고치지 못하면(LLM 실패, 제한 시간, 반복 소진) 그 위반은 warning과 함께 그대로 저장된다. 코드가 강제하는 것은 사진 단일 귀속, 대화 event 하루 3개, 그리고 10개를 넘을 때 근거가 알림뿐인 event부터 지우는 것(#163)이다. 뒤의 둘은 기준이 알림 수 하나라 코드가 고를 수 있다. v4는 대화 event의 근거가 대화 알림뿐이게도 강제하고(#183), 대화 event를 10개 제한에서 뺀다. v4는 `대화 개수 제한` 뒤와 `근거 정리` 뒤의 `알림 event 정리`(`remove_notification_events`, #173)가 틀이 있는 날 대화가 아닌 알림으로 만든 event를 지우고, `알림 event 복원`은 틀이 하나도 없는 날에만 돈다.
 
@@ -88,7 +88,7 @@ main agent는 draft를 돌려주기 직전에 사진 단일 귀속을 한 번 �
 
 ### Repair 입력과 도구
 
-Repair 프롬프트는 반복마다 그 시점의 draft로 새로 만든다. v3 세트에서는 `[자동 검사 결과]`(코드가 고친 것·지운 것·찾은 것), `[event 근거]`(event가 참조한 rawId의 candidate·fragment), `[user memory]`를 함께 싣는다(#119). 찾은 것은 확정할 때마다 그 draft로 다시 계산한 값만 싣고, 고친 것은 몇 번째 확정에서 나온 것인지 붙여 쌓는다. candidate 본문은 한 번만 싣고 event는 id로 가리키며, 어느 event에도 쓰이지 않은 candidate는 한 줄 요약만 싣는다. candidate 본문에는 장소 후보 `places`와 `address`도 싣는다(#140) — Repair가 event의 `place`를 다른 후보로 바꿀 재료이고, `[근거 원본]`(v1·v2 공용)은 단수 `place`만 보인다.
+Repair 프롬프트는 반복마다 그 시점의 draft로 새로 만든다. v3 세트에서는 `[자동 검사 결과]`(코드가 고친 것·지운 것·찾은 것), `[event 근거]`(event가 참조한 rawId의 candidate·fragment), `[user memory]`를 함께 싣는다(#119). 찾은 것은 확정할 때마다 그 draft로 다시 계산한 값만 싣고, 고친 것은 몇 번째 확정에서 나온 것인지 붙여 쌓는다. v4는 고친 것도 마지막 확정의 것만 싣는다(#196). 다시 써야 할 event는 확정마다 `EVENT_TO_WRITE`·`TEXT_CORRECTION`으로 다시 짚인다. candidate 본문은 한 번만 싣고 event는 id로 가리키며, 어느 event에도 쓰이지 않은 candidate는 한 줄 요약만 싣는다. candidate 본문에는 장소 후보 `places`와 `address`도 싣는다(#140) — Repair가 event의 `place`를 다른 후보로 바꿀 재료이고, `[근거 원본]`(v1·v2 공용)은 단수 `place`만 보인다.
 
 #119의 Repair 계약은 v3 세트에서만 돈다. 확정 pass의 새 검사, Repair의 새 입력, `split_event` 도구가 한 묶음이고 갈리는 기준은 `prompt_loader.uses_legacy_contract` 하나다. v1·v2 세트에서 Repair가 보는 warning·입력·도구는 예전 그대로다. v2 프롬프트는 이것들을 설명하지 않고 v2는 운영 세트라 고치지 않는다. 실제 LLM으로 확인한 것이다 — `split_event`를 v2에 내놓자 캘린더 일정대로인 event와 사진 event를 잘게 쪼개 event가 7개에서 13개로 늘었고, 새 검사의 warning을 보이자 나눌 도구가 없는 v2가 Timeline 재실행을 두 번 불렀으며 위반은 그대로 남았다. draft를 **고치는** 단계는 세트와 무관하게 같다 — 사진 단일 귀속은 어느 세트에서든 강제한다.
 
