@@ -566,6 +566,17 @@ def test_repair_v4_reviews_unused_conversations_without_forcing_them():
     assert "`conversationReviews`가 `RECORD`인 대화 event는 지우지 않습니다" in text
 
 
+def test_repair_v4_does_not_end_with_writing_left():
+    """맡긴 글은 써야 끝난다(#196). "남아 있어도 되는 것" 괄호 안에 함께 적었을 때 모델은 남겨도 되는 것으로 읽고
+    `EVENT_TO_WRITE` 가 남은 채 `done` 으로 끝냈다."""
+
+    text = _repair()
+    allowed = text.split("## 완료 상태", 1)[1].split("남아 있어도 됩니다", 1)[0]
+
+    assert "EVENT_TO_WRITE" not in allowed and "TEXT_CORRECTION" not in allowed
+    assert "`EVENT_TO_WRITE`는 지금 글이 괜찮아 보여도 `update_event`로 `description`까지 써야" in text
+
+
 def test_notification_v4_keeps_only_what_is_needed():
     """필요한 알림만 남기고 나머지는 `dropped` 에 id 만 적는다(#173)."""
 
