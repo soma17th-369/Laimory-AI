@@ -1017,6 +1017,48 @@ def test_v4_does_not_send_location_only_overlap_to_repair():
     assert [item for item in report.findings if item["kind"] == "LOCATION_ONLY_OVERLAP"] == []
 
 
+def _cafe_day():
+    stay = stay_item(
+        "cafe", start="2026-06-20T10:00:00", end="2026-06-20T12:00:00", places=["카페 OO"],
+        address="서울특별시 마포구 도화동 17-13",
+    )
+    # 근거보다 일찍 끝난 체류. 위치 구간 복원이 남은 시간을 되살려 다른 단계의 기록도 생긴다.
+    stayed = _event(
+        [(EventSourceType.STAY, stay.raw_id)], start=_at(10), end=_at(11), event_type=EventType.STAY,
+        title="보낸 시간", description="{place}에서 시간을 보냈다.", base=["E1"],
+    )
+    return make_request(stays=[stay]), stayed
+
+
+def test_v4_confirm_does_not_report_filling_place_slots():
+    """장소 칸을 채운 것은 보정 기록에 없다(#196). 문장은 `{place}` 칸이라 장소가 정해져도 틀려지지 않는다.
+
+    기록에 오르자 Repair 가 1번 후보를 확정된 장소로 읽고 활동을 고쳐 썼다(장보기 → 머리 손질).
+    """
+
+    request, stayed = _cafe_day()
+    report = _ConfirmReport()
+
+    draft = repair_draft(_draft(stayed), request, report=report, clues=_clues(request))
+
+    assert draft.events[0].place == "카페 OO"
+    assert draft.events[0].address
+    steps = {item["step"] for item in report.corrected} | {item["step"] for item in report.added}
+    assert not steps & {"장소 확정", "장소 다시 확정"}
+    assert steps, "다른 단계의 기록은 그대로 남는다."
+
+
+def test_v3_confirm_still_reports_place_resolution():
+    """v3 는 Timeline 이 `place` 를 쓰고 문장도 장소를 직접 쓴다. 장소 확정 기록은 그대로다."""
+
+    request, stayed = _cafe_day()
+    report = _ConfirmReport()
+
+    repair_draft(_draft(stayed), request, report=report, extended=True)
+
+    assert "장소 확정" in {item["step"] for item in report.corrected}
+
+
 def test_v4_location_evidence_matches_the_event_time():
     """기본 event 에서 온 식사의 근거에 그 구간의 기록이 모두 실린 실제 출력 — 17:24 식사에 12:08 체류.
 
