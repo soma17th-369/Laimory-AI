@@ -573,13 +573,8 @@ class RepairAgent(Agent):
             return {}
 
         def after_analyze(state: _State) -> str:
-            if state["plan"].tool_calls:
-                return "execute"
-            # 도구 없이 끝내도 마지막 확정이 맡긴 글이 남았으면 반복이 남는 동안 다시 묻는다(#196).
-            # 이 자리를 지나치면 `after_execute` 의 같은 검사에 닿지 않아 빈 문장이 그대로 저장됐다.
-            if _writing_left(ctx) and state["iteration"] < max_iterations:
-                return "analyze"
-            return END
+            # 계획에 도구가 없으면(문제 없음 또는 done) 더 할 일이 없다.
+            return "execute" if state["plan"].tool_calls else END
 
         def after_execute(state: _State) -> str:
             if state["iteration"] >= max_iterations:
@@ -593,9 +588,7 @@ class RepairAgent(Agent):
         graph.add_node("analyze", analyze_node)
         graph.add_node("execute", execute_node)
         graph.add_edge(START, "analyze")
-        graph.add_conditional_edges(
-            "analyze", after_analyze, {"execute": "execute", "analyze": "analyze", END: END}
-        )
+        graph.add_conditional_edges("analyze", after_analyze, {"execute": "execute", END: END})
         graph.add_conditional_edges("execute", after_execute, {"analyze": "analyze", END: END})
 
         # 반복마다 analyze + execute 두 node 를 지나므로 여유를 두고 상한을 잡는다.
