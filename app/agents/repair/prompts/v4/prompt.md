@@ -338,6 +338,6 @@ JSON 객체 하나만 출력합니다.
 }
 ```
 
-- `issues`에는 **이번에 도구로 고칠 것만** 적습니다.
+- `issues`에는 **이번에 도구로 고칠 것만** 적습니다. 검토만 하고 그대로 두는 것은 `summary`에 적습니다.
 - draft 전체 문제는 `clientEventId: null`입니다.
 - 각 issue와 tool call에는 확인한 근거를 포함합니다.
