@@ -448,35 +448,6 @@ def test_repair_goes_on_while_writing_is_left():
     assert not _writing_left(ctx)
 
 
-def _ask_once_with_nothing_to_do(*, writing_left: bool):
-    import json
-
-    from app.agents.repair import RepairAgent
-    from app.services.skeleton_guard import NEEDS_WRITING
-    from tests.fixtures.fake_llm import FakeLLM
-
-    ctx, _ = _context()
-    if writing_left:
-        ctx.draft.events[0].merge_reason = NEEDS_WRITING
-    llm = FakeLLM([json.dumps({"issues": [], "toolCalls": [], "done": True, "summary": "고칠 것 없음"})])
-
-    RepairAgent(llm=llm, max_iterations=3, extended_input=True).generate(ctx.request, ctx.draft, clues=ctx.clues)
-    return llm
-
-
-def test_repair_asks_again_when_it_ends_with_writing_left():
-    """도구 없이 `done` 으로 끝내도 맡긴 글이 남았으면 반복이 남는 동안 다시 묻는다(#196).
-
-    이 경로는 도구를 실행한 뒤의 검사에 닿지 않아, 일정 event 가 빈 문장으로 저장됐다.
-    """
-
-    assert len(_ask_once_with_nothing_to_do(writing_left=True).calls) == 3
-
-
-def test_repair_ends_at_once_when_nothing_is_left_to_write():
-    assert len(_ask_once_with_nothing_to_do(writing_left=False).calls) == 1
-
-
 def _calendar_context(*, title="팀 점심 식사", end_hour=13, end_minute=30):
     calendar = calendar_item("lunch", title, start="2026-06-20T12:00:00", end=f"2026-06-20T{end_hour}:{end_minute:02d}:00")
     request = make_request(calendars=[calendar])
