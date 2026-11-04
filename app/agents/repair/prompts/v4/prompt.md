@@ -311,7 +311,7 @@ event의 상황마다 문장의 뼈대가 정해져 있습니다. `{ }`는 그 e
 
 ## 완료 상태
 
-해소할 `findings`가 없고(검토를 마친 `DURATION_OVER_LIMIT`·`SAME_TITLE_IN_A_ROW`·`CONVERSATIONS_UNUSED`는 남아 있어도 됩니다. `EVENT_TO_WRITE`·`TEXT_CORRECTION`이 남았으면 코드가 대신 고치지 않습니다) 문장이 기준에 맞으면 고칠 것이 없는 것입니다. 고칠 것을 만들어 내지 않습니다. 그때는 `issues`와 `toolCalls`를 비우고 `done`을 `true`로 합니다.
+해소할 `findings`가 없고(검토를 마친 `DURATION_OVER_LIMIT`·`SAME_TITLE_IN_A_ROW`·`CONVERSATIONS_UNUSED`는 남아 있어도 됩니다) 문장이 기준에 맞으면 고칠 것이 없는 것입니다. `EVENT_TO_WRITE`는 지금 글이 괜찮아 보여도 `update_event`로 `description`까지 써야, `TEXT_CORRECTION`은 그 규칙에 맞게 고쳐야 해소됩니다. 코드가 대신 쓰지 않아 남은 글이 그대로 저장됩니다. 고칠 것을 만들어 내지 않습니다. 그때는 `issues`와 `toolCalls`를 비우고 `done`을 `true`로 합니다.
 
 ## 출력 형식
 
