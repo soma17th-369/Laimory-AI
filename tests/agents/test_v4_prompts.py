@@ -579,6 +579,15 @@ def test_repair_v4_does_not_end_with_writing_left():
     assert "괜찮아 보여도" not in text
 
 
+def test_repair_v4_keeps_review_notes_out_of_issues():
+    """검토만 한 것은 `summary` 에 적는다(#196). 문제 목록에 검토 메모를 적고 도구를 부르지 않은 날이
+    v3 5일에서 v4 10일로 늘었다 — v4 는 검토만 하고 남겨도 되는 검사가 더 많다."""
+
+    text = _repair()
+
+    assert "`issues`에는 **이번에 도구로 고칠 것만** 적습니다. 검토만 하고 그대로 두는 것은 `summary`에 적습니다." in text
+
+
 def test_notification_v4_keeps_only_what_is_needed():
     """필요한 알림만 남기고 나머지는 `dropped` 에 id 만 적는다(#173)."""
 
