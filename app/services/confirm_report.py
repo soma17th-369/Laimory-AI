@@ -202,13 +202,16 @@ class ConfirmReport:
             self._corrections.append(_Correction(step, event, changes))
 
 
-def reports_to_prompt(reports: list[ConfirmReport]) -> dict[str, Any]:
+def reports_to_prompt(reports: list[ConfirmReport], *, accumulate: bool = True) -> dict[str, Any]:
     """Repair 프롬프트에 실을 형태.
 
     - `findings` 는 **마지막 확정의 것만** 싣는다. 확정할 때마다 그 draft 로 다시 계산한
       값이라, 앞 회차의 것을 함께 실으면 이미 해소한 위반을 또 고치려 든다.
     - `corrected`·`removed`·`added` 는 몇 번째 확정에서 나온 것인지 붙여 **쌓는다.** 쌓지
       않으면 첫 확정에서 고친 event 의 문장을 다듬을 기회가 한 번뿐이다.
+    - `accumulate` 가 거짓이면(v4) 그 셋도 마지막 확정의 것만 싣는다(#196). v4 는 글을 다시 써야
+      하는 event 를 확정마다 `EVENT_TO_WRITE`·`TEXT_CORRECTION` 으로 다시 짚어 쌓을 이유가 없다.
+      쌓아 보내자 Repair 는 앞 회차에 이미 본 기록을 새 보정으로 읽고 자기가 고친 문장을 되돌렸다.
     """
 
     if not reports:
@@ -217,15 +220,16 @@ def reports_to_prompt(reports: list[ConfirmReport]) -> dict[str, Any]:
     def tagged(items: list[dict[str, Any]], sequence: int) -> list[dict[str, Any]]:
         return [{"confirm": sequence, **item} for item in items]
 
+    shown = reports if accumulate else reports[-1:]
     payload: dict[str, Any] = {
         "corrected": [
-            item for report in reports for item in tagged(report.corrected, report.sequence)
+            item for report in shown for item in tagged(report.corrected, report.sequence)
         ],
         "removed": [
-            item for report in reports for item in tagged(report.removed, report.sequence)
+            item for report in shown for item in tagged(report.removed, report.sequence)
         ],
         "added": [
-            item for report in reports for item in tagged(report.added, report.sequence)
+            item for report in shown for item in tagged(report.added, report.sequence)
         ],
         "findings": list(reports[-1].findings),
     }

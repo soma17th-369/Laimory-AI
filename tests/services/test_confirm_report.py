@@ -332,6 +332,21 @@ def test_prompt_keeps_corrections_from_every_confirm():
     ]
 
 
+def test_v4_prompt_carries_only_the_latest_corrections():
+    """v4 는 고친 것도 마지막 확정의 것만 싣는다(#196). 쌓아 보내자 Repair 가 앞 회차에 이미 본 기록을
+    새 보정으로 읽고 자기가 고친 문장을 되돌렸다."""
+
+    payload = reports_to_prompt(
+        [
+            _report(1, corrected=[{"clientEventId": "event-001", "step": "식사 시간"}]),
+            _report(2, corrected=[{"clientEventId": "event-004", "step": "근거 정리"}]),
+        ],
+        accumulate=False,
+    )
+
+    assert [(item["confirm"], item["clientEventId"]) for item in payload["corrected"]] == [(2, "event-004")]
+
+
 def test_prompt_carries_only_the_latest_findings():
     """앞 회차의 것을 함께 실으면 이미 해소한 위반을 또 고치려 든다."""
 
