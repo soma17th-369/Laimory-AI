@@ -772,6 +772,12 @@ def _correction_steps(
 #: - `문장 주소 정리` 는 `문장 장소 칸` 이다. 이동 문장을 주소로 쓰고 칸을 맞춘다.
 _CLUE_SKIPPED_STEPS = frozenset({"체류 병합"})
 
+#: v4 에서 보정 기록에 싣지 않는 단계(#196). 장소 칸 확정은 `place`·`address` 만 바꾸는데, v4 문장은
+#: `{place}` 칸이라 그 값이 바뀌어도 문장이 틀려지지 않고 `place` 는 사용자가 고르기 전의 1번 후보다.
+#: Timeline 이 `place` 를 쓰지 않아 첫 확정에서 거의 모든 event 가 이 기록에 올랐고, Repair 는 그것을
+#: 문장과 어긋난 보정으로 읽어 1번 후보를 확정된 장소로 보고 활동을 고쳐 썼다(장보기 → 머리 손질).
+_CLUE_UNRECORDED_STEPS = frozenset({"장소 확정", "장소 다시 확정"})
+
 
 def _clue_correction_steps(
     overrides: dict[str, Callable[[TimelineDraft, TimelineDraftRequest], object]],
@@ -1028,6 +1034,9 @@ def repair_draft(
     report = report if report is not None else ConfirmReport()
 
     for name, step in _correction_steps(extended, candidates, clues):
+        if clues is not None and name in _CLUE_UNRECORDED_STEPS:
+            step(draft, request)
+            continue
         report.run(name, draft, lambda step=step: step(draft, request))
 
     # source 하나를 여러 event가 근거로 사용할 수 있다. 현재는 timeline_items에
