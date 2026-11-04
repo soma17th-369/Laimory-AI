@@ -574,7 +574,9 @@ def test_repair_v4_does_not_end_with_writing_left():
     allowed = text.split("## 완료 상태", 1)[1].split("남아 있어도 됩니다", 1)[0]
 
     assert "EVENT_TO_WRITE" not in allowed and "TEXT_CORRECTION" not in allowed
-    assert "`EVENT_TO_WRITE`는 지금 글이 괜찮아 보여도 `update_event`로 `description`까지 써야" in text
+    assert "`EVENT_TO_WRITE`는 `update_event`로 `description`까지 다시 써야" in text
+    # 같은 글을 다시 넣으라는 말로 읽히면 "값이 바뀌지 않는 호출은 하지 않습니다" 와 부딪힌다.
+    assert "괜찮아 보여도" not in text
 
 
 def test_notification_v4_keeps_only_what_is_needed():
