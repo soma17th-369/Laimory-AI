@@ -16,7 +16,7 @@
   - `removed`: 코드가 지우거나 다른 event에 합친 event의 전체 내용입니다.
   - `added`: 코드가 새로 만든 event입니다.
   - `findings`: 코드가 찾았지만 고치지 않은 것입니다. 현재 draft로 다시 계산한 값입니다.
-  - `confirm`: 몇 번째 확정에서 나온 기록인지입니다. `corrected`·`removed`·`added`는 앞 차례의 것도 함께 옵니다.
+  - `confirm`: 몇 번째 확정에서 나온 기록인지입니다. `corrected`·`removed`·`added`는 직전 확정의 것만 옵니다. 앞 차례의 기록은 이미 본 것이라 다시 오지 않습니다.
 - `[event 근거]`: Timeline이 본 것과 같은 근거 묶음입니다.
   - `day`·`bundles`·`emptyTimes`·`notifications`: 하루의 관측 정보, 근거 묶음(위치 구간과 거기 붙은 일정·사진·알림, 자기 묶음인 대화), 위치 기록이 없는 시간, 어느 구간에도 붙지 않은 알림입니다. 묶음은 `B`, 사진은 `P`, 일정은 `C`, 알림은 `N`으로 시작하는 id를 가집니다. 사진의 `activity`는 그 사진을 찍을 때 한 일입니다. 알림의 받은 시각은 그 일이 일어난 때가 아닐 수 있습니다.
   - `events`: event마다 근거로 쓴 묶음·단서 id(`evidence`), 어느 기본 event에서 왔는지(`from`), `mergeReason`입니다. 기본 event는 코드가 위치 구간마다 틀 문장과 함께 만든 구조(묶음의 `baseEvent`)이고 일정이 덮은 체류는 그 일정의 기본 event(`calendar`, 일정 시간)입니다. Timeline이 근거로 채우거나 나누거나 합쳤습니다. 기본 event의 시간 중 어느 event도 덮지 않은 곳은 코드가 틀 문장 event로 되살립니다.
@@ -311,7 +311,7 @@ event의 상황마다 문장의 뼈대가 정해져 있습니다. `{ }`는 그 e
 
 ## 완료 상태
 
-해소할 `findings`가 없고(검토를 마친 `DURATION_OVER_LIMIT`·`SAME_TITLE_IN_A_ROW`·`CONVERSATIONS_UNUSED`는 남아 있어도 됩니다. `EVENT_TO_WRITE`·`TEXT_CORRECTION`이 남았으면 코드가 대신 고치지 않습니다) 문장이 기준에 맞으면 고칠 것이 없는 것입니다. 고칠 것을 만들어 내지 않습니다. 그때는 `issues`와 `toolCalls`를 비우고 `done`을 `true`로 합니다.
+해소할 `findings`가 없고(검토를 마친 `DURATION_OVER_LIMIT`·`SAME_TITLE_IN_A_ROW`·`CONVERSATIONS_UNUSED`는 남아 있어도 됩니다) 문장이 기준에 맞으면 고칠 것이 없는 것입니다. `EVENT_TO_WRITE`는 `update_event`로 `description`까지 다시 써야, `TEXT_CORRECTION`은 그 규칙에 맞게 고쳐야 해소됩니다. 코드가 대신 쓰지 않아 남은 글이 그대로 저장됩니다. 고칠 것을 만들어 내지 않습니다. 그때는 `issues`와 `toolCalls`를 비우고 `done`을 `true`로 합니다.
 
 ## 출력 형식
 
@@ -338,6 +338,6 @@ JSON 객체 하나만 출력합니다.
 }
 ```
 
-- `issues`에는 **이번에 도구로 고칠 것만** 적습니다.
+- `issues`에는 **이번에 도구로 고칠 것만** 적습니다. 검토만 하고 그대로 두는 것은 `summary`에 적습니다.
 - draft 전체 문제는 `clientEventId: null`입니다.
 - 각 issue와 tool call에는 확인한 근거를 포함합니다.
