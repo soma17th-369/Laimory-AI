@@ -67,7 +67,7 @@ User Memory는 App Server가 소유하고 AI 서버는 읽기(input 조회)와 �
 - AI 서버에 DB 직접 접근 경로를 되살리지 않는다.
 - rawId는 UUID이며 한 task 입력에서 유일하고 모든 결과 source가 그 입력 집합에 속한다.
 - 내부 draft와 outbound persistence schema를 같은 모델로 합치지 않는다.
-- result가 0건이어도 저장 request를 생략하지 않는다.
+- result가 0건이면 저장 request를 보내지 않고 `1211`로 실패를 통보한다(#199). App Server가 빈 결과를 거절한다.
 - URL·token·내부 파일 식별자를 LLM 입력이나 저장 결과에 섞지 않는다.
 - source 하나가 여러 event의 근거가 되는 것은 허용한다.
 - User Memory의 `schemaVersion`·`updatedAt`은 서버가 확정한다. LLM 출력값을 그대로 저장하지 않는다.
