@@ -188,6 +188,24 @@ def test_timeout_without_a_confirmed_draft_reports_1201(monkeypatch, app_server)
     assert response.json()["errorCode"] == 1201
 
 
+def test_empty_result_reports_1211_instead_of_an_empty_list(monkeypatch, app_server):
+    """운영은 event 0건을 저장하지 않고 1211 로 알린다. 이 경로도 같은 코드다(#199)."""
+
+    async def _run(request, **_kwargs):
+        return TimelineDraft(user_id="u-1", date="2026-06-20", timezone="Asia/Seoul")
+
+    monkeypatch.setattr(timeline_testing, "run_main_agent", _run)
+    http = TestClient(app)
+
+    response = http.post(_PATH, json=_body())
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "errorCode": 1211,
+        "error": "이날의 기록에서 타임라인에 추가할 수 있는 활동을 찾지 못했어요.",
+    }
+
+
 def test_empty_source_items_is_a_source_contract_violation(app_server, fake_main_agent):
     """묶음 계약 검증도 비동기 경로와 같은 코드를 쓴다."""
 
