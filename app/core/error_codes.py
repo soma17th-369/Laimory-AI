@@ -108,6 +108,11 @@ class ErrorCode(IntEnum):
     #: 여기로 모은다 — App Server 입장에서는 둘 다 "AI 가 만들지 못했다" 이고,
     #: timeout 인지 여부는 운영 로그의 ``errorType`` 이 답한다.
     USER_MEMORY_GENERATION_FAILED = 1210
+    #: 타임라인 생성이 끝났는데 event 가 0건이다(#199). 결과를 저장하지 않는다 —
+    #: App Server 가 빈 결과를 거절한다. 구조화 출력 실패로 빈 경우는
+    #: :data:`STRUCTURED_OUTPUT_INVALID` 다. 시스템 장애가 아니라 그날 기록에서 활동을
+    #: 찾지 못했다는 결과라, 메시지는 사용자에게 그대로 보일 안내 문장이다.
+    TIMELINE_EMPTY_RESULT = 1211
 
     # --- 1300~1399 결과 저장 ----------------------------------------------
     #: 저장 전 자체검증에서 계약 위반이 나왔다(TimelineValidationError).
@@ -190,6 +195,9 @@ _MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.DRAFT_EDIT_FAILED: "타임라인 수정에 실패했습니다.",
     ErrorCode.QUESTION_GENERATION_FAILED: "기록 질문 생성에 실패했습니다.",
     ErrorCode.USER_MEMORY_GENERATION_FAILED: "사용자 메모리 생성에 실패했습니다.",
+    ErrorCode.TIMELINE_EMPTY_RESULT: (
+        "이날의 기록에서 타임라인에 추가할 수 있는 활동을 찾지 못했어요."
+    ),
     ErrorCode.TIMELINE_STORAGE_VALIDATION_FAILED: "타임라인 저장 검증에 실패했습니다.",
     ErrorCode.DATABASE_ERROR: "데이터 저장 중 오류가 발생했습니다.",
     ErrorCode.TIMELINE_RESULT_SUBMIT_FAILED: "타임라인 결과 저장에 실패했습니다.",

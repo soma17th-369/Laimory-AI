@@ -1714,7 +1714,7 @@ def test_confirmation_keeps_place_names_in_the_slot_only():
 
 
 def test_a_day_with_only_talk_and_news_is_not_left_empty():
-    """사진도 일정도 결제도 없는 날은 남은 알림이라도 기록이다. event 0건은 정상 결과로 저장돼 아무것도 안 보인다."""
+    """사진도 일정도 결제도 없는 날은 남은 알림이라도 기록이다. event 0건이면 저장하지 못하고 1211 로 끝나 아무것도 안 보인다."""
 
     clues = [
         _notification_clue("N1", NotificationClueKind.CONVERSATION, title="OO와 대화"),

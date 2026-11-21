@@ -28,6 +28,7 @@ AI 서버는 task 상태도, 서비스 데이터도 직접 보관하지 않는�
     입력 조회 실패     → 1105  SOURCE_FETCH_FAILED         (5xx/timeout 소진)
     파이프라인 timeout → 1201  PIPELINE_TIMEOUT
     구조화 출력 실패   → 1202  STRUCTURED_OUTPUT_INVALID   (StructuredOutputError)
+    결과 event 0건     → 1211  TIMELINE_EMPTY_RESULT       (저장 요청 없이 실패)
     저장 검증 실패     → 1301  TIMELINE_STORAGE_VALIDATION_FAILED
     결과 저장 실패     → 1303  TIMELINE_RESULT_SUBMIT_FAILED
     토큰 거절(401)     → 1404  APP_SERVER_UNAUTHORIZED     (콜백 없이 중단)
@@ -60,7 +61,7 @@ from time import perf_counter
 from app.agents.main import run_main_agent
 from app.core.config import settings
 from app.core.error_codes import ErrorCode
-from app.core.exceptions import code_of, report_error
+from app.core.exceptions import AppError, code_of, report_error
 from app.core.inflight import track_inflight
 from app.core.langfuse_tracing import (
     flush_langfuse,
@@ -488,7 +489,9 @@ async def _process_observed(
         # 아래 저장 블록으로 그대로 진행한다. 저장 경로를 한 벌로 두어야
         # 자체검증 실패(1301)·저장 실패(1303)와 #40 순서 계약이 두 벌로 갈라지지 않는다.
 
-        reject_empty_structured_failure(request, draft)
+        # 저장 요청보다 먼저다. 빈 결과는 App Server 가 400 으로 거절해 1303 이 되고,
+        # 그러면 "기록할 활동이 없었다" 는 사실이 저장 실패에 묻힌다(#199).
+        reject_empty_result(draft)
 
         # 확정 결과를 App Server 결과 저장 API 로 보낸다. 저장/검증 실패는 아래
         # except 로 잡혀 FAILED 로 처리된다.
@@ -616,19 +619,20 @@ async def _process_observed(
     )
 
 
-def reject_empty_structured_failure(
-    request: TimelineDraftRequest,
-    draft: TimelineDraft,
-) -> None:
-    """구조화 출력 실패로 비어 버린 결과를 저장하지 않는다 (#98).
+def reject_empty_result(draft: TimelineDraft) -> None:
+    """event 가 0건인 결과를 저장하지 않고 원인별 코드로 실패시킨다 (#98, #199).
 
-    입력이 있었는데 event 가 하나도 없고, 그 이유가 Agent 의 구조화 출력 실패라면
-    이것은 "그날 기록할 일이 없었다" 가 아니라 **AI 가 만들지 못한 것**이다. 그대로
-    보내면 App Server 응답에 따라 `1303`(결과 저장 실패)으로 끝나고, 최초 원인인
-    `1202` 가 사라진다 — 이슈 #98 이 관측한 그 경로다.
+    빈 결과를 그대로 보내면 App Server 가 400 으로 거절해 `1303`(결과 저장 실패)으로
+    끝난다. 그러면 왜 비었는지가 저장 실패에 묻히므로 저장 요청 전에 가른다.
 
-    세 조건이 **모두** 참일 때만 막는다. 입력이 0건이라 비는 것은 정상이고, event 가
-    있으면 일부 Agent 가 실패했어도 저장할 가치가 있다.
+    - 구조화 출력 실패가 기록돼 있으면 `1202` 다(#98). "그날 기록할 일이 없었다" 가
+      아니라 **AI 가 만들지 못한 것**이다.
+    - 그 밖에는 `1211` 이다(#199). Agent 들이 event 로 볼 근거를 찾지 못한 판단의
+      결과이고, 사용자에게 그대로 보일 안내 문구가 함께 나간다.
+
+    입력 0건은 따로 가르지 않는다. 입력 계약(`ensure_source_contract`)이 이미 `1102` 로
+    거절해 여기까지 오지 않는다. event 가 하나라도 있으면 일부 Agent 가 실패했어도
+    저장한다.
 
     이름이 공개인 것은 동기 테스트 경로(:mod:`app.services.timeline_testing`)가 같은
     가드를 쓰기 때문이다(#102). 가드가 두 벌이 되면 한쪽만 고치는 사고가 난다.
@@ -636,18 +640,15 @@ def reject_empty_structured_failure(
 
     if draft.events:
         return
-    if not sum(request.source_item_counts().values()):
-        # 수집 원본이 없어서 빈 것이다. 평소대로 저장한다.
-        return
     failed_agents = structured_failures()
-    if not failed_agents:
-        # 입력은 있었지만 Agent 들이 event 로 볼 근거를 찾지 못한 것이다. 판단의
-        # 결과이지 실패가 아니므로 저장한다.
-        return
-
-    raise StructuredOutputError(
-        "구조화 출력 실패로 event 를 만들지 못해 빈 결과를 저장하지 않습니다: "
-        f"agents={','.join(sorted(set(failed_agents)))}"
+    if failed_agents:
+        raise StructuredOutputError(
+            "구조화 출력 실패로 event 를 만들지 못해 빈 결과를 저장하지 않습니다: "
+            f"agents={','.join(sorted(set(failed_agents)))}"
+        )
+    raise AppError(
+        "event 가 0건이라 결과를 저장하지 않습니다.",
+        code=ErrorCode.TIMELINE_EMPTY_RESULT,
     )
 
 

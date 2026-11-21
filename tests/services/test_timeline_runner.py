@@ -32,6 +32,7 @@ from app.services.timeline_validator import (
     TimelineViolationCode,
 )
 from tests.fixtures.app_server import FakeAppServerClient
+from tests.fixtures.drafts import one_event_draft
 from tests.fixtures.requests import default_source_items, fixture_raw_id, make_snapshot
 
 _TASK_ID = "task-1"
@@ -42,6 +43,8 @@ _WINDOW_END = "2026-06-21T00:00:00+09:00"
 
 
 def _draft() -> TimelineDraft:
+    """event 가 없는 draft. 저장 요청 전에 1211 로 끝난다(#199)."""
+
     return TimelineDraft(user_id="u-1", date="2026-06-20", timezone="Asia/Seoul")
 
 
@@ -67,8 +70,10 @@ def _run(client: FakeAppServerClient, task_token: str = _TASK_TOKEN) -> TaskStat
 
 
 def _patch_agent(monkeypatch, draft: TimelineDraft | None = None) -> None:
+    """기본값은 저장까지 가는 event 한 건짜리 draft 다."""
+
     async def fake_main_agent(request, **_kwargs):
-        return draft if draft is not None else _draft()
+        return draft if draft is not None else one_event_draft()
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", fake_main_agent)
 
@@ -481,7 +486,7 @@ def test_timeout_with_confirmed_draft_stores_it_and_succeeds(monkeypatch):
     저장까지 갔으므로 SUCCESS 이고, 순서 계약도 정상 경로와 같아야 한다.
     """
 
-    confirmed = _draft()
+    confirmed = one_event_draft()
     monkeypatch.setattr(
         timeline_runner, "run_main_agent", _confirming_agent(confirmed)
     )
@@ -494,6 +499,22 @@ def test_timeout_with_confirmed_draft_stores_it_and_succeeds(monkeypatch):
     assert client.order == ["input", "result", "callback"]
     assert client.last_callback.status is TaskStatus.SUCCESS
     assert client.last_callback.error_code is None
+
+
+def test_timeout_with_an_empty_confirmed_draft_fails_with_1211(monkeypatch):
+    """마지막 확정본이 0건이면 정상 완료의 빈 결과와 같다. 저장하지 않고 1211 이다(#199)."""
+
+    monkeypatch.setattr(
+        timeline_runner, "run_main_agent", _confirming_agent(_draft())
+    )
+    monkeypatch.setattr(timeline_runner.settings, "pipeline_timeout_sec", 0.05)
+    client = _client()
+
+    status = _run(client)
+
+    assert status is TaskStatus.FAILED
+    assert client.order == ["input", "callback"]
+    assert client.last_callback.error_code == int(ErrorCode.TIMELINE_EMPTY_RESULT)
 
 
 def test_timeout_without_confirmed_draft_still_fails_with_1201(monkeypatch):
@@ -518,7 +539,7 @@ def test_partial_save_marks_the_event_without_an_error_code(monkeypatch, caplog)
     """부분 저장은 성공이다. errorCode 가 붙으면 지연 감시가 실패로 센다."""
 
     monkeypatch.setattr(
-        timeline_runner, "run_main_agent", _confirming_agent(_draft())
+        timeline_runner, "run_main_agent", _confirming_agent(one_event_draft())
     )
     monkeypatch.setattr(timeline_runner.settings, "pipeline_timeout_sec", 0.05)
 
@@ -607,29 +628,7 @@ def _raise(exc: Exception):
     return _fail
 
 
-# --- #98 구조화 실패로 비어 버린 결과는 저장하지 않는다 ------------------------
-
-
-def _event_draft() -> TimelineDraft:
-    draft = _draft()
-    draft.events = [
-        TimelineEventDraft(
-            client_event_id="event-001",
-            event_type=EventType.REST,
-            title="집에서 쉬었어요",
-            start_time="2026-06-20T10:00:00+09:00",
-            end_time="2026-06-20T10:30:00+09:00",
-            confidence=0.5,
-            inference_level=InferenceLevel.EVIDENCE_BASED,
-            source_refs=[
-                SourceRef(
-                    source_type=EventSourceType.STAY,
-                    raw_id=fixture_raw_id("source-101"),
-                )
-            ],
-        )
-    ]
-    return draft
+# --- #98, #199 비어 버린 결과는 저장하지 않는다 --------------------------------
 
 
 def _failing_agent(draft: TimelineDraft):
@@ -659,23 +658,53 @@ def test_empty_result_from_structured_failure_is_not_stored(monkeypatch):
     assert client.last_callback.error_code == int(ErrorCode.STRUCTURED_OUTPUT_INVALID)
 
 
-def test_empty_result_without_structured_failure_is_still_stored(monkeypatch):
-    """Agent 가 event 로 볼 근거를 못 찾은 것은 판단이지 실패가 아니다."""
+def test_empty_result_is_not_stored_and_reports_1211(monkeypatch):
+    """구조화 실패 없이 event 가 0건이면 저장 요청 없이 1211 로 알린다(#199).
+
+    보내면 App Server 가 400 으로 거절해 1303 이 되고, "기록할 활동이 없었다" 는
+    사실이 저장 실패에 묻힌다.
+    """
 
     _patch_agent(monkeypatch, _draft())
     client = _client()
 
     status = _run(client)
 
-    assert status is TaskStatus.SUCCESS
-    assert client.order == ["input", "result", "callback"]
+    assert status is TaskStatus.FAILED
+    assert client.order == ["input", "callback"]
+    assert client.last_callback.status is TaskStatus.FAILED
+    assert client.last_callback.error_code == int(ErrorCode.TIMELINE_EMPTY_RESULT)
+    assert client.last_callback.error == (
+        "이날의 기록에서 타임라인에 추가할 수 있는 활동을 찾지 못했어요."
+    )
+
+
+def test_empty_result_is_closed_by_one_event_with_the_task_id_and_code(
+    monkeypatch, caplog
+):
+    """운영 이벤트에서 taskId 와 코드로 빈 결과를 찾을 수 있다(#199)."""
+
+    _patch_agent(monkeypatch, _draft())
+
+    with caplog.at_level(logging.DEBUG):
+        _run(_client())
+
+    events = _task_events(caplog)
+    assert len(events) == 1
+    event = events[0]
+    assert event["taskId"] == _TASK_ID
+    assert event["status"] == TaskStatus.FAILED.value
+    assert event["errorCode"] == int(ErrorCode.TIMELINE_EMPTY_RESULT)
+    # 저장 단계에 들어가기 전에 걸린다.
+    assert event["failureStage"] == ExecutionStage.MAIN_AGENT.value
+    assert event["callbackSent"] is True
 
 
 def test_structured_failure_with_surviving_events_is_stored(monkeypatch):
     """일부 Agent 가 실패했어도 남은 event 가 있으면 하루 기록을 버리지 않는다."""
 
     monkeypatch.setattr(
-        timeline_runner, "run_main_agent", _failing_agent(_event_draft())
+        timeline_runner, "run_main_agent", _failing_agent(one_event_draft())
     )
     client = _client()
 
@@ -701,7 +730,7 @@ def test_absorbed_failure_shows_up_next_to_a_successful_task(monkeypatch, caplog
             exc=RuntimeError("boom"),
             stage=ExecutionStage.QUESTION_AGENT,
         )
-        return _draft()
+        return one_event_draft()
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", failing_question_stage)
 

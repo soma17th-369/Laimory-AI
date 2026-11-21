@@ -33,11 +33,12 @@ Timeline 생성 요청이 202로 접수된 뒤 입력 조회, Agent 실행, 결�
 2. 최초 token으로 task별 `TaskToken` holder를 만든다.
 3. App Server에서 source snapshot을 조회하고 묶음 계약을 검증한다.
 4. 접수 요청의 window로 snapshot window를 덮어쓴 뒤 도메인별로 정규화한다. App Server 응답 window가 아니라 접수 window가 정본이다.
-5. main Agent 전체를 `PIPELINE_TIMEOUT_SEC`로 제한해 실행한다. Repair가 draft를 확정할 때마다 복사본을 runner로 발행하므로, 제한 시간이 끝나 실행이 취소돼도 마지막 확정본이 남는다. 그 확정본이 있으면 아래 6~8을 그대로 지나 SUCCESS로 끝나고, 없을 때만 `1201`로 실패한다.
-6. 최종 draft가 현재 task의 rawId만 참조하는지 저장 전 검증한다.
-7. 좁은 App Server 결과 계약으로 변환해 결과를 제출한다.
-8. 결과 제출 성공 뒤에만 SUCCESS callback을 보낸다. 앞 단계 실패는 가능한 경우 FAILED callback을 보낸다.
-9. Langfuse flush와 task당 하나의 `timeline.task.completed` 운영 이벤트를 남기고 inflight 수를 감소시킨다.
+5. main Agent 전체를 `PIPELINE_TIMEOUT_SEC`로 제한해 실행한다. Repair가 draft를 확정할 때마다 복사본을 runner로 발행하므로, 제한 시간이 끝나 실행이 취소돼도 마지막 확정본이 남는다. 그 확정본이 있으면 아래 6~9를 그대로 지나 SUCCESS로 끝나고, 없을 때만 `1201`로 실패한다.
+6. 최종 draft의 event가 0건이면 결과를 제출하지 않고 실패한다(`reject_empty_result`). 구조화 출력 실패가 기록돼 있으면 `1202`(#98), 아니면 `1211`(#199)이다. App Server가 빈 결과를 400으로 거절하므로 제출하면 원인이 `1303`에 묻힌다.
+7. 최종 draft가 현재 task의 rawId만 참조하는지 저장 전 검증한다.
+8. 좁은 App Server 결과 계약으로 변환해 결과를 제출한다.
+9. 결과 제출 성공 뒤에만 SUCCESS callback을 보낸다. 앞 단계 실패는 가능한 경우 FAILED callback을 보낸다.
+10. Langfuse flush와 task당 하나의 `timeline.task.completed` 운영 이벤트를 남기고 inflight 수를 감소시킨다.
 
 ### 상태와 실패
 
@@ -51,9 +52,9 @@ callback 전송 실패는 저장된 결과나 최종 SUCCESS 상태를 되돌리
 
 ### 동기 테스트 경로는 task가 아니다 (#102)
 
-`POST /v1/timeline/test`는 같은 pipeline(`ensure_source_contract` → window 덮어쓰기 → `normalize` → `run_main_agent` → `reject_empty_structured_failure` → 저장 전 자체검증 → 결과 계약 변환)을 부르지만 **task가 아니다**. 접수도 background도 없고, App Server를 한 번도 호출하지 않으며(입력 조회·결과 저장·callback·token 갱신 전부), 따라서 순서 계약도 terminal 상태도 없다. 실행부는 `app/services/timeline_testing.py`이고 저장·callback·token·관측 구조는 `timeline_runner`에만 남는다.
+`POST /v1/timeline/test`는 같은 pipeline(`ensure_source_contract` → window 덮어쓰기 → `normalize` → `run_main_agent` → `reject_empty_result` → 저장 전 자체검증 → 결과 계약 변환)을 부르지만 **task가 아니다**. 접수도 background도 없고, App Server를 한 번도 호출하지 않으며(입력 조회·결과 저장·callback·token 갱신 전부), 따라서 순서 계약도 terminal 상태도 없다. 실행부는 `app/services/timeline_testing.py`이고 저장·callback·token·관측 구조는 `timeline_runner`에만 남는다.
 
-공유하는 것은 세 가지다. `PIPELINE_TIMEOUT_SEC`과 그 초과 처리(#76의 마지막 확정본 규칙, 확정본 없으면 `1201`), `execution_context`(#98 구조화 실패 guard가 이 context를 읽으므로 열지 않으면 guard가 항상 통과한다), `track_inflight`.
+공유하는 것은 세 가지다. `PIPELINE_TIMEOUT_SEC`과 그 초과 처리(#76의 마지막 확정본 규칙, 확정본 없으면 `1201`), `execution_context`(빈 결과 guard가 이 context의 구조화 실패 기록을 읽으므로 열지 않으면 구조화 실패로 빈 결과도 `1202`가 아니라 `1211`로 보인다), `track_inflight`. 빈 결과에는 빈 목록 대신 운영과 같은 `1211`(500)로 답한다 — 운영은 그 결과를 저장하지 않는다.
 
 `userMemory` 계약 위반 흡수(1106)는 `source_contract.resolve_user_memory` 한 곳에 있고 입력 조회와 이 경로가 같이 쓴다.
 
