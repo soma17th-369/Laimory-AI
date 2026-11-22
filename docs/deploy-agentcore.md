@@ -100,6 +100,11 @@ AgentCore Runtime은 컨테이너에 아래 계약을 요구한다. 하나라도
 AI 서버는 요청을 `202`로 접수하고 실제 처리는 백그라운드에서 이어간다. 처리 중에는
 `/ping`이 `HealthyBusy`를 반환해 AgentCore가 컨테이너를 유휴 상태로 회수하지 못하게 한다.
 
+`HealthyBusy`는 처리 결과를 내보낸 뒤 Langfuse 전송과 완료 로그(`timeline.task.completed`,
+`usermemory.task.completed`)까지 이어진다. 작업이 성공이든 실패든 이 마무리가 끝나야 `Healthy`가
+되고, 세션 쉬는 시간은 그때부터 센다. 배포가 넣는 쉬는 시간 60초(§6-6)는 이 보장을 전제로 한다.
+마무리를 `track_inflight` 밖으로 옮기면 60초 안에 세션이 꺼져 그 마무리가 잘릴 수 있다.
+
 이 때문에 **uvicorn worker를 늘리면 안 된다.** 진행 중 처리 카운터는 프로세스 로컬이라
 worker가 여러 개면 한 worker가 처리 중이어도 다른 worker가 `Healthy`를 반환할 수 있다.
 
@@ -785,9 +790,13 @@ AgentCore 콘솔 화면 명칭은 서비스 업데이트에 따라 **Host agent*
 5. 별도의 JWT authorizer를 요구하지 않는다면 기본 AWS IAM 인증을 유지한다. App Server는
    `bedrock-agentcore:InvokeAgentRuntime` 권한으로 호출한다.
 
-6. Lifecycle 설정은 최초 배포에서는 기본값을 유지한다. 애플리케이션의 처리 상한은
-   `PIPELINE_TIMEOUT_SEC`와 `USER_MEMORY_TIMEOUT_SEC`가 관리하며, 처리 중에는 `/ping`이
-   `HealthyBusy`를 반환한다.
+6. Lifecycle 설정은 콘솔에서 바꾸지 않는다. 콘솔로 만든 최초 버전은 기본값(쉬는 시간
+   900초, 최대 수명 28800초)이고, `deploy-production.yml` 로 만드는 버전부터 쉬는 시간이
+   60초가 된다(#204). 워크플로가 현재 값을 읽어 쉬는 시간만 바꾸므로 최대 수명은 기본값
+   그대로다. App Server 는 작업마다 새 세션을 써서 끝난 세션을 다시 부르지 않으므로, 쉬는
+   시간은 메모리 요금만 나가는 시간이다. 60초로 줄여도 되는 근거는 §2 의 `HealthyBusy`
+   보장이다. 애플리케이션의 처리 상한은 `PIPELINE_TIMEOUT_SEC`와 `USER_MEMORY_TIMEOUT_SEC`가
+   관리한다.
 
 7. [런타임 설정값 구분](runtime-configuration.md)의 1장에 있는 production 값을 Runtime
    환경 변수에 직접 입력한다. AgentCore가 값을 프로세스 환경으로 주입하므로 로컬 `.env`와
