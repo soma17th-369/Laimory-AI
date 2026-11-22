@@ -47,7 +47,7 @@ deploy script는 architecture와 env file, Docker daemon을 확인하고 image�
 
 ### production 배포 (main → AgentCore)
 
-`deploy-production.yml`은 `main` push와 수동 실행으로 동작하고 path filter가 없다. job 하나가 `environment: production`을 선언해 승인 gate와 전용 자격증명이 같은 자리에 있다. arm64 image를 **이동 tag 없이** immutable tag 하나로 `laimory-ai-prod`에 push하고, 현재 Runtime 설정을 읽어 role, network, protocol, environment를 보존한 채 image URI만 바꿔 새 version을 만든다. Runtime과 endpoint READY를 기다린 뒤 endpoint를 새 version으로 전환한다.
+`deploy-production.yml`은 `main` push와 수동 실행으로 동작하고 path filter가 없다. job 하나가 `environment: production`을 선언해 승인 gate와 전용 자격증명이 같은 자리에 있다. arm64 image를 **이동 tag 없이** immutable tag 하나로 `laimory-ai-prod`에 push하고, 현재 Runtime 설정을 읽어 role, network, protocol, environment, lifecycle을 보존한 채 image URI와 세션 쉬는 시간만 바꿔 새 version을 만든다. 쉬는 시간(`idleRuntimeSessionTimeout`)은 매 배포가 60초로 넣고 `maxLifetime`은 읽은 값 그대로다(#204). App Server가 작업마다 새 세션을 써서 끝난 세션의 쉬는 시간은 메모리 요금만 나가는 시간이다. 값은 workflow step `env`에 적힌 상수라 GitHub·AWS 설정이 아니다. lifecycle은 version에 고정되므로 #204 이전 version으로 rollback하면 900초가 돌아온다. Runtime과 endpoint READY를 기다린 뒤 endpoint를 새 version으로 전환한다.
 
 ECR push 자체는 배포가 아니다. AgentCore는 ECR을 감시하지 않고, `UpdateAgentRuntime`으로 만든 version을 `UpdateAgentRuntimeEndpoint`가 가리켜야 반영된다. "무엇이 떠 있는가"의 정본은 endpoint → version → containerUri 사슬이다.
 
@@ -77,6 +77,7 @@ IAM 배포 role은 dev와 **공용**이다(`AWS_DEPLOY_ROLE_ARN`, 저장소 수�
 - 앱 container name과 8080 `/ping` 계약을 배포 script·Filebeat와 함께 바꾼다.
 - busy container를 강제 교체하지 않고 idle을 기다린다.
 - AgentCore update 시 기존 environment variables를 log에 출력하지 않고 보존한다.
+- 세션 쉬는 시간 60초는 `/ping`이 결과 저장·Langfuse 전송·완료 로그까지 `HealthyBusy`라는 전제 위에 있다. 그 마무리를 `track_inflight` 밖으로 옮기면 세션이 마무리를 자른다.
 - ECR 정리는 배포 성공 뒤 현재·직전 rollback 후보를 확인한 다음 수행한다.
 
 ## Known Gaps
