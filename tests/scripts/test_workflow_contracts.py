@@ -290,3 +290,28 @@ def test_production_omits_immutable_service_s3_endpoint_on_runtime_update() -> N
 
     assert "del(.requireServiceS3Endpoint)" in body
     assert '--network-configuration "$network"' in body
+
+
+def _runtime_update_step(deploy_production) -> dict:
+    steps = deploy_production["jobs"]["deploy"]["steps"]
+    return next(step for step in steps if step.get("id") == "update")
+
+
+def test_production_keeps_session_idle_timeout_on_runtime_update(deploy_production) -> None:
+    """매 배포가 새 Runtime 버전에 세션 쉬는 시간 60초를 넣는다 (이슈 #204).
+
+    UpdateAgentRuntime 은 전체 교체라 lifecycle 을 빼고 부르면 콘솔에서 바꾼 값이
+    다음 배포에서 남는다는 보장이 없다. 현재 lifecycle 을 읽어 쉬는 시간만 덮어쓰고,
+    maxLifetime 은 읽은 값을 그대로 보낸다(워크플로가 값을 직접 쓰지 않는다).
+    """
+
+    step = _runtime_update_step(deploy_production)
+    script = step["run"]
+
+    assert step["env"]["IDLE_RUNTIME_SESSION_TIMEOUT_SEC"] == "60"
+    assert "(.lifecycleConfiguration // {})" in script
+    assert ".idleRuntimeSessionTimeout = $idle" in script
+    assert '--argjson idle "$IDLE_RUNTIME_SESSION_TIMEOUT_SEC"' in script
+    assert '--lifecycle-configuration "$lifecycle"' in script
+    assert "maxLifetime =" not in script
+    assert "--max-lifetime" not in script
