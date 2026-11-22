@@ -95,6 +95,9 @@ uv run uvicorn app.server:app --reload
 - 두 경로는 ECR 저장소를 공유하지 않습니다. `scripts/prune_ecr_images.py` 가 저장소 전체에서
   EC2 배포 태그가 없는 이미지를 지우므로, 한 저장소를 쓰면 dev 배포가 운영 이미지를 지웁니다.
 - uvicorn worker 를 늘리지 않습니다. `app/core/inflight.py` 의 진행 중 처리 카운터가 프로세스 로컬이라 worker 가 여럿이면 `/ping` 이 잘못된 상태를 답합니다.
+- production 세션 쉬는 시간(`idleRuntimeSessionTimeout`)은 `deploy-production.yml` 이 매 배포 60초로 넣습니다(#204).
+  `/ping` 이 결과 저장·Langfuse 전송·완료 로그까지 `HealthyBusy` 라서 성립하는 값이므로, 이 마무리를
+  `track_inflight` 밖으로 옮기지 않습니다. 콘솔에서 바꾼 값은 다음 배포가 덮어씁니다.
 
 ## 스킬 공유
 

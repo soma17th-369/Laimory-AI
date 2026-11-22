@@ -29,7 +29,7 @@
 
 - Uvicorn worker를 늘리지 않는다. inflight counter가 프로세스 로컬이며 `/ping`의 `HealthyBusy` 판단과 EC2 idle 대기가 이 값에 의존한다.
 - 202 응답은 처리 완료가 아니다. HTTP latency와 background task duration을 같은 지표로 합치지 않는다.
-- 새 background task는 전체를 `track_inflight`로 감싸고 시간 예산을 둔다. `app/core/llm.py`에 자체 timeout이 없어 provider SDK 기본값(OpenAI 600초)을 따르므로, 상한이 없으면 한 작업이 매달리는 동안 `/ping`이 `HealthyBusy`를 답해 컨테이너 회수와 배포가 막힌다.
+- 새 background task는 결과 전달·Langfuse 전송·완료 로그까지 전체를 `track_inflight`로 감싸고 시간 예산을 둔다. production 세션은 `Healthy`가 된 뒤 60초면 꺼지므로(#204) 마무리가 그 밖에 있으면 잘린다. `app/core/llm.py`에 자체 timeout이 없어 provider SDK 기본값(OpenAI 600초)을 따르므로, 상한이 없으면 한 작업이 매달리는 동안 `/ping`이 `HealthyBusy`를 답해 컨테이너 회수와 배포가 막힌다.
 - 컨테이너는 non-root, 8080, deny-all Docker build context를 유지한다. 환경별 secret과 URL을 이미지에 굽지 않는다.
 
 ### App Server 순서와 인증

@@ -427,7 +427,7 @@ docker buildx build --builder laimory-arm64 --platform linux/arm64   --provenanc
 2. `dev → main` PR 을 연다. `dev 브랜치에서 온 PR 인지 확인` check 가 통과해야 merge 된다.
 3. merge 하면 **Deploy Production** 이 승인 대기 상태로 뜬다.
 4. 승인자가 Actions 화면에서 승인하면 빌드·배포가 진행된다.
-5. 요약에서 커밋 SHA, 이미지 태그, digest, 새 Runtime 버전, **직전 서비스 버전**을 확인한다.
+5. 요약에서 커밋 SHA, 이미지 태그, digest, 새 Runtime 버전, 세션 쉬는 시간, **직전 서비스 버전**을 확인한다.
 
 운영 긴급 수정은 현재 `main`과 같은 지점의 공용 `hotfix` 브랜치에서 작업하고
 `hotfix → main` PR을 연다. 이 경로에서도 기존 required check 이름은 ruleset 호환을
@@ -465,6 +465,36 @@ aws bedrock-agentcore-control list-agent-runtime-versions \
   --query 'agentRuntimes[].[agentRuntimeVersion,agentRuntimeArtifact]'
 ```
 
+### 세션 쉬는 시간
+
+AgentCore 세션은 `/ping` 이 `Healthy` 가 된 뒤에도 쉬는 시간(`idleRuntimeSessionTimeout`, 기본
+900초)이 지나야 꺼지고, 그동안 메모리 요금이 나간다. App Server 는 작업마다 새 세션을 쓰므로
+끝난 세션을 다시 부르는 일이 없다. 그래서 배포가 매번 쉬는 시간을 **60초**로 넣는다(#204).
+
+`UpdateAgentRuntime` 은 전체 교체라 lifecycle 을 빼고 부르면 이전 값이 남는다는 보장이 없다.
+워크플로가 현재 `lifecycleConfiguration` 을 읽어 쉬는 시간만 바꿔 되돌려 보내고, 최대
+수명(`maxLifetime`)은 읽은 값 그대로다. 값은 워크플로 파일의 「Runtime 새 버전 생성」 단계
+`IDLE_RUNTIME_SESSION_TIMEOUT_SEC` 에 적혀 있다. GitHub 변수나 AWS 콘솔에서 넣는 값이 아니고,
+바꾸려면 그 줄을 고쳐 PR 로 올린다. 콘솔에서 바꾼 값은 다음 배포가 덮어쓴다.
+
+60초가 안전한 이유는 `/ping` 이 마무리까지 `HealthyBusy` 이기 때문이다. 타임라인과 User Memory
+모두 결과 저장(타임라인은 콜백까지) → Langfuse 전송 → 완료 로그를 `track_inflight` 안에서
+끝낸다. 작업이 성공이든 실패든 이 마무리가 끝난 뒤에야 `Healthy` 가 되고, 쉬는 시간은 그때부터
+센다. 그러니 세션이 작업 결과를 자르는 일은 없다. 제한 시간(120초)에 걸린 작업도 마지막
+확정본을 저장해 SUCCESS 로 끝내고, 쉬는 시간은 그 뒤부터 센다.
+
+알려진 한계가 하나 있다. 제한 시간이 끝날 때 스레드에서 돌던 LLM 호출은 취소되지 않고
+작업이 끝난 뒤에도 계속 돈다. 저장되는 것은 그 전에 떠 둔 복사본이라 이 호출의 출력은 저장에
+쓰이지 않지만, 이 호출이 작업 종료 뒤 60초를 넘기면 그 호출의 Langfuse 기록이 빠질 수 있다.
+
+배포 뒤 들어간 값은 배포 요약 표에서 보거나 직접 확인한다.
+
+```bash
+aws bedrock-agentcore-control get-agent-runtime \
+  --agent-runtime-id "$AGENTCORE_RUNTIME_ID" --region ap-northeast-2 \
+  --query lifecycleConfiguration
+```
+
 ### 배포 후 health check
 
 치명 게이트는 **Runtime READY** 와 **엔드포인트 READY** 두 개다. AgentCore 가 컨테이너의
@@ -495,6 +525,9 @@ Actions → **Rollback Production** → `Run workflow`. **`main` 브랜치에서
 
 이미지를 다시 빌드하지 않는다. 없는 버전이나 이미 서비스 중인 버전을 넣으면 전환하지 않고
 실패한다. 배포와 같은 concurrency 그룹이라 동시에 돌지 않는다.
+
+롤백은 엔드포인트가 가리키는 버전만 바꾼다. 버전마다 lifecycle 이 함께 고정돼 있어, 쉬는 시간
+60초가 들어가기 전(#204)의 버전으로 되돌리면 그 버전의 900초가 돌아온다.
 
 장애 때 처음 해보면 늦다. 첫 배포가 성공한 뒤 한 번 리허설한다(되돌렸다가 다시 최신으로).
 
