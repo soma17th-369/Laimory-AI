@@ -155,12 +155,21 @@ jobs:
       # 사라진다. 그래서 현재 설정을 읽어 그대로 되돌려 보내고 컨테이너 이미지만 바꾼다.
       # 덕분에 App Server URL 같은 운영 설정은 AWS 에만 있고 GitHub 에 둘 필요가 없다.
       #
+      # lifecycleConfiguration 도 같은 전체 교체 대상이다(#204). 빼고 부르면 이전 값이
+      # 남는다는 보장이 문서에 없어, 현재 값을 읽어 세션 쉬는 시간만 바꿔 되돌려 보낸다.
+      # maxLifetime 은 읽은 값 그대로다. App Server 는 작업마다 새 세션을 쓰므로 끝난
+      # 세션이 쉬는 시간(기본 900초)은 메모리 요금만 나가는 시간이다. 60초로 줄여도
+      # 되는 것은 /ping 이 Langfuse 전송·완료 로그까지 HealthyBusy 이기 때문이다
+      # (app/services/*_runner.py 의 track_inflight). 그 마무리를 track_inflight 밖으로
+      # 옮기면 이 값이 마무리를 자른다.
+      #
       # ECR push 자체는 배포가 아니다. AgentCore 는 ECR 을 감시하지 않는다. 이 호출이
       # 새 Runtime 버전을 만들고, 다음 스텝의 엔드포인트 전환이 실제 배포다.
       - name: Runtime 새 버전 생성
         id: update
         env:
           IMAGE_URI: ${{ steps.meta.outputs.image-uri }}
+          IDLE_RUNTIME_SESSION_TIMEOUT_SEC: "60"
         run: |
           set -euo pipefail
           # 주의: 이 응답에는 environmentVariables 가 들어 있다. 로그로 찍지 않는다.
@@ -196,6 +205,15 @@ jobs:
           if [ -n "$envvars" ]; then
             args+=(--environment-variables "$envvars")
           fi
+          # 응답에 lifecycle 이 없으면 쉬는 시간만 보낸다. maxLifetime 은 AWS 기본값이다.
+          lifecycle=$(jq -c --argjson idle "$IDLE_RUNTIME_SESSION_TIMEOUT_SEC" '
+            (.lifecycleConfiguration // {}) | .idleRuntimeSessionTimeout = $idle
+          ' <<<"$current")
+          args+=(--lifecycle-configuration "$lifecycle")
+          # lifecycle 은 비밀이 아니라 그대로 찍는다.
+          echo "세션 lifecycle: ${lifecycle}"
+          echo "idle-timeout=$(jq -r '.idleRuntimeSessionTimeout' <<<"$lifecycle")" >> "$GITHUB_OUTPUT"
+          echo "max-lifetime=$(jq -r '.maxLifetime // "AWS 기본값"' <<<"$lifecycle")" >> "$GITHUB_OUTPUT"
 
           result=$(aws bedrock-agentcore-control update-agent-runtime \
             "${args[@]}" --region "$AWS_REGION")
@@ -340,6 +358,7 @@ jobs:
             echo "| digest | \`${{ steps.build.outputs.digest }}\` |"
             echo "| Runtime ID | \`${AGENTCORE_RUNTIME_ID}\` |"
             echo "| 새 Runtime 버전 | \`${{ steps.update.outputs.version || '생성 안 됨' }}\` |"
+            echo "| 세션 쉬는 시간 / 최대 수명 (초) | \`${{ steps.update.outputs.idle-timeout || '보내지 않음' }}\` / \`${{ steps.update.outputs.max-lifetime || '보내지 않음' }}\` |"
             echo "| 엔드포인트 | \`${AGENTCORE_ENDPOINT_NAME}\` |"
             echo "| 직전 서비스 버전 | \`${{ steps.before.outputs.live-version || '확인 불가' }}\` |"
             echo "| 호출 스모크 | \`${{ steps.smoke.outputs.result || '실행 안 됨' }}\` |"

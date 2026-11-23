@@ -307,7 +307,7 @@ def ensure_notification_events(
         draft, [clue for clue in clues.notifications if clue.kind in _NOTIFICATION_EVENT_KINDS]
     )
     # 사진도 일정도 결제도 없는 날은 남은 대화·소식이라도 그날의 기록이다(사용자 결정 2026-10-31).
-    # event 0건은 정상 결과로 저장돼 사용자에게 아무것도 보이지 않는다.
+    # event 0건이면 결과를 저장하지 못하고 1211 로 끝나 사용자에게 아무것도 보이지 않는다(#199).
     if not draft.events:
         talks = sorted(
             (clue for clue in clues.notifications if clue.kind is NotificationClueKind.CONVERSATION),

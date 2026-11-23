@@ -1090,7 +1090,7 @@ class BedrockProvider(LLMProvider):
         **``stopReason`` 을 먼저 본다**(#98). Bedrock 은 모델이 만든 tool call 을
         파싱하지 못하면 ``stopReason=malformed_tool_use`` 와 **빈 content, 0 usage** 를
         담은 **HTTP 200** 을 돌려준다. 예외가 아니므로 이 검사가 없으면 빈 문자열이
-        정상 값처럼 위로 흘러가고, 그 결과가 후보 0건 → 빈 timeline → 저장 실패(1303)
+        정상 값처럼 위로 흘러가고, 그 결과가 후보 0건 → 빈 timeline → 빈 결과(1211)
         까지 이어져 **최초 원인이 사라진다**.
 
         ``max_tokens``(잘림)·``content_filtered``·``end_turn``(강제했는데 도구를 부르지

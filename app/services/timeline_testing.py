@@ -8,7 +8,7 @@
 수집 원본이 요청 body 로 들어오므로 :mod:`app.services.timeline_runner` 의 1단계
 (입력 조회)가 통째로 빠지고, 결과를 돌려주는 것이 곧 종료라 4~5단계(저장·콜백)도
 없다. 그 사이의 처리는 **같은 함수들을 그대로 부른다** — `ensure_source_contract`,
-`normalize`, `run_main_agent`, `reject_empty_structured_failure`,
+`normalize`, `run_main_agent`, `reject_empty_result`,
 `ensure_timeline_valid_for_storage`, `build_result_request`. 테스트용 파이프라인을
 따로 만들지 않는다.
 
@@ -24,11 +24,15 @@ runner 를 쪼개서 공유하지 않은 이유는, runner 에 남는 것이 대
 하나도 없을 때만 실패다(`1201`). 이 경로의 목적이 "실제 저장될 결과"를 보여 주는
 것이므로, production 이 저장할 값과 다른 것을 보여 주면 안 된다.
 
+같은 이유로 event 가 0건이면 빈 목록을 돌려주지 않고 production 과 같은 코드로
+실패한다(`1211`, 구조화 출력 실패로 빈 경우 `1202`, #199). production 은 빈 결과를
+저장하지 않는다.
+
 ## 관측
 
 `execution_context` 로 감싼다. 로그 상관키(`taskId`) 때문만이 아니라
-`reject_empty_structured_failure` 가 읽는 구조화 실패 목록이 이 컨텍스트에 쌓이기
-때문이다 — 열지 않으면 #98 가드가 항상 통과한다.
+`reject_empty_result` 가 읽는 구조화 실패 목록이 이 컨텍스트에 쌓이기
+때문이다 — 열지 않으면 구조화 실패로 빈 결과도 `1202` 가 아니라 `1211` 로 보인다.
 
 `track_inflight` 로도 감싼다. 이 요청은 최대 `pipeline_timeout_sec` 동안 돌므로,
 세지 않으면 처리 도중 `GET /ping` 이 `Healthy` 를 답해 컨테이너가 회수될 수 있다.
@@ -55,7 +59,7 @@ from app.services.source_contract import (
     source_raw_ids,
 )
 from app.services.timeline_result import build_result_request
-from app.services.timeline_runner import reject_empty_structured_failure
+from app.services.timeline_runner import reject_empty_result
 from app.services.timeline_validator import ensure_timeline_valid_for_storage
 
 logger = get_logger(__name__)
@@ -96,7 +100,8 @@ async def run_timeline_test(
         SourceBatchError: 수집 원본 묶음이 입력 계약을 어겼다(1102).
         StructuredOutputError: 구조화 출력 실패로 event 가 하나도 없다(1202).
         TimelineValidationError: 결과가 입력에 없는 rawId 를 참조한다(1301).
-        AppError: 제한 시간 안에 확정본을 하나도 만들지 못했다(1201).
+        AppError: 제한 시간 안에 확정본을 하나도 만들지 못했다(1201), 또는 결과
+            event 가 0건이다(1211).
     """
 
     task_id = payload.task_id
@@ -145,7 +150,7 @@ async def run_timeline_test(
                 ),
             )
 
-        reject_empty_structured_failure(request, draft)
+        reject_empty_result(draft)
         ensure_timeline_valid_for_storage(draft, source_raw_ids(snapshot))
         return TimelineTestRun(
             result=build_result_request(draft, request),

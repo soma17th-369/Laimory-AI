@@ -120,8 +120,8 @@ class TimelineResultEvent(CamelModel):
 class TimelineResultRequest(CamelModel):
     """결과 저장 요청 body.
 
-    이벤트가 0건이어도 보낸다 — "생성 결과가 없음" 도 확정된 결과이고, App Server
-    가 그 사실을 알아야 기존 AI 생성분을 정리할 수 있다.
+    이벤트가 0건이면 보내지 않는다 — App Server 가 빈 결과를 400 으로 거절한다. 그때는
+    완료 콜백의 `1211` 로 알린다(#199).
     """
 
     events: list[TimelineResultEvent] = Field(default_factory=list)

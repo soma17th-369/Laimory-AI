@@ -7,11 +7,12 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.schemas import TaskStatus, TimelineDraft
+from app.schemas import TaskStatus
 from app.server import app
 from app.services import timeline_runner
 from app.services.app_server_client import get_app_server_client
 from tests.fixtures.app_server import FakeAppServerClient
+from tests.fixtures.drafts import one_event_draft
 from tests.fixtures.requests import default_source_items, make_snapshot
 
 _TASK_ID = "task-endpoint-1"
@@ -49,7 +50,8 @@ def client() -> FakeAppServerClient:
 
 @pytest.fixture
 def fake_main_agent(monkeypatch):
-    draft = TimelineDraft(user_id="u-1", date="2026-06-20", timezone="Asia/Seoul")
+    # event 가 0건이면 저장 전에 1211 로 끝나 저장·콜백 흐름을 볼 수 없다(#199).
+    draft = one_event_draft()
 
     async def _run(request, **_kwargs):
         return draft

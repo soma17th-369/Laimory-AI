@@ -95,6 +95,9 @@ uv run uvicorn app.server:app --reload
 - 두 경로는 ECR 저장소를 공유하지 않습니다. `scripts/prune_ecr_images.py` 가 저장소 전체에서
   EC2 배포 태그가 없는 이미지를 지우므로, 한 저장소를 쓰면 dev 배포가 운영 이미지를 지웁니다.
 - uvicorn worker 를 늘리지 않습니다. `app/core/inflight.py` 의 진행 중 처리 카운터가 프로세스 로컬이라 worker 가 여럿이면 `/ping` 이 잘못된 상태를 답합니다.
+- production 세션 쉬는 시간(`idleRuntimeSessionTimeout`)은 `deploy-production.yml` 이 매 배포 60초로 넣습니다(#204).
+  `/ping` 이 결과 저장·Langfuse 전송·완료 로그까지 `HealthyBusy` 라서 성립하는 값이므로, 이 마무리를
+  `track_inflight` 밖으로 옮기지 않습니다. 콘솔에서 바꾼 값은 다음 배포가 덮어씁니다.
 
 ## 스킬 공유
 
@@ -436,7 +439,7 @@ app/
     │                          #   (대화 `SOCIAL`, 결제 `SHOPPING`, 나머지 `ERRAND`). 글은 건드리지 않고 값은 v1~v3 가 쓰므로 enum 에 남는다.
     │                          #   **틀이 하나도 없는 날만 빠진 결제·예약·완료 알림을 되살린다**(`ensure_notification_events`):
     │                          #   그날은 알림이 그날의 기록이다. 제목은 Notification 단서의 `title` 이다. 대화와
-    │                          #   소식은 Timeline 이 고르되, 그래도 event 가 0건인 날은 대화(최대 3개)·소식까지 되살린다 — 0건은 정상 결과로 저장돼 아무것도 보이지 않는다.
+    │                          #   소식은 Timeline 이 고르되, 그래도 event 가 0건인 날은 대화(최대 3개)·소식까지 되살린다 — 0건이면 저장하지 못하고 1211 로 끝나 아무것도 보이지 않는다.
     │                          #   **대화 event 의 근거는 대화 알림뿐이다**(`keep_conversation_evidence`, #183, 사용자 결정 2026-11-02):
     │                          #   다른 근거를 빼고 `from` 을 비우고 시간을 그 대화가 온 시간으로 맞춘다. 일정·사진 없이 대화와 체류뿐인
     │                          #   `SOCIAL` 도 대화 event 다 — 받은 메시지와 체류만으로는 만났다고 할 수 없다. 구조 단계 앞과 대화 개수

@@ -18,12 +18,13 @@ from fastapi.testclient import TestClient
 from app.api.agentcore import InvocationRequestType
 from app.core import inflight
 from app.core.error_codes import ErrorCode
-from app.schemas import TaskStatus, TimelineDraft
+from app.schemas import TaskStatus
 from app.schemas.user_memory import UserMemory
 from app.server import app
 from app.services import timeline_runner, user_memory_runner
 from app.services.app_server_client import get_app_server_client
 from tests.fixtures.app_server import FakeAppServerClient
+from tests.fixtures.drafts import one_event_draft
 from tests.fixtures.requests import default_source_items, make_snapshot
 from tests.fixtures.user_memory import TASK_ID as _USER_MEMORY_TASK_ID
 from tests.fixtures.user_memory import update_body
@@ -65,7 +66,8 @@ def app_server() -> FakeAppServerClient:
 
 @pytest.fixture
 def fake_main_agent(monkeypatch):
-    draft = TimelineDraft(user_id="u-1", date="2026-06-20", timezone="Asia/Seoul")
+    # event 가 0건이면 저장 전에 1211 로 끝나 저장·콜백 흐름을 볼 수 없다(#199).
+    draft = one_event_draft()
 
     async def _run(request, **_kwargs):
         return draft
@@ -244,7 +246,7 @@ def test_background_task_marks_runtime_busy(app_server, monkeypatch):
 
     async def _run(request, **_kwargs):
         busy_during_run.append(inflight.is_busy())
-        return TimelineDraft(user_id="u-1", date="2026-06-20", timezone="Asia/Seoul")
+        return one_event_draft()
 
     monkeypatch.setattr(timeline_runner, "run_main_agent", _run)
 

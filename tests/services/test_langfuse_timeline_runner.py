@@ -9,9 +9,10 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 )
 
 from app.core import langfuse_tracing
-from app.schemas import TaskStatus, TimelineDraft
+from app.schemas import TaskStatus
 from app.services import timeline_runner
 from tests.fixtures.app_server import FakeAppServerClient
+from tests.fixtures.drafts import one_event_draft
 from tests.fixtures.requests import default_source_items, make_snapshot
 
 _TASK_ID = "task-langfuse-runner"
@@ -41,11 +42,8 @@ def test_runner_trace_contains_every_boundary_input_and_output(
     )
     monkeypatch.setattr(timeline_runner.settings, "langfuse_enabled", False)
 
-    draft = TimelineDraft(
-        user_id="u-1",
-        date="2026-06-20",
-        timezone="Asia/Seoul",
-    )
+    # event 가 0건이면 저장 전에 1211 로 끝나 저장 span 이 생기지 않는다(#199).
+    draft = one_event_draft()
 
     async def fake_main_agent(request, **_kwargs):
         return draft
@@ -149,7 +147,7 @@ def test_partial_save_is_visible_in_the_trace(monkeypatch) -> None:
     monkeypatch.setattr(timeline_runner.settings, "langfuse_enabled", False)
     monkeypatch.setattr(timeline_runner.settings, "pipeline_timeout_sec", 0.05)
 
-    confirmed = TimelineDraft(user_id="u-1", date="2026-06-20", timezone="Asia/Seoul")
+    confirmed = one_event_draft()
 
     async def slow_after_confirm(request, on_confirm=None, **_kwargs):
         if on_confirm is not None:
