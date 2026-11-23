@@ -513,9 +513,10 @@ def test_L11_far_apart_with_a_long_gap_is_still_an_unrecorded_movement():
 
 
 def test_L17_continuous_stays_250m_to_1km_apart_are_one_stay_with_the_longest_first():
-    """캠퍼스·단지 안의 여러 지점. 대표 지점은 가장 오래 머문 체류다."""
+    """캠퍼스·단지 안의 여러 지점. 한쪽이 30분 이하로 들른 곳이면 한 구간이고, 대표 지점은 가장 오래
+    머문 체류다. 두 곳에 각각 30분 넘게 머물렀으면 다른 방문이다(#201, 아래 「별도 방문」)."""
 
-    building = _stay("building", "09:00", "09:40", places=["공학관"])
+    building = _stay("building", "09:00", "09:30", places=["공학관"])
     library = _stay("library", "09:45", "13:00", lat=_BASE_LAT + 0.005, places=["도서관"])
 
     [segment] = _skeleton(stays=[building, library]).segments
