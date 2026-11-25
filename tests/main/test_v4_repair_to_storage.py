@@ -1,8 +1,12 @@
-"""저장 직전 마무리도 코드가 정한 하루의 구조를 따른다 (#203, v4).
+"""Repair 를 거쳐 저장 요청까지 코드가 정한 하루의 구조가 남는다 (#203, v4).
 
-확정 뒤에 draft 를 만지는 단계가 구조를 어긋나게 해도 저장 직전 자리(`enforce_final_photo_assignment`)가 확정과
-같은 기준으로 되돌리고, 맞는 draft 는 건드리지 않는다. 계획이 정하지 못한 사진(촬영 시각을 못 읽은 사진)이 저장
-직전에 event 가 돼도 종일 일정은 맨 앞이다. 실제 runner(`process_timeline_task`)를 돌리고 실제 LLM 은 부르지 않는다.
+#202 는 Timeline 을 부르기 전에 하루의 event 와 그 시간·위치 기록·사진·일정 귀속을 코드로 정했다. 이 파일은
+그 구조가 Repair 의 편집, 반복되는 확정, 저장 직전 마무리를 지나 App Server 가 받는 저장 요청 body 까지 같은지
+본다. 운영 사례(백화점 장식·디저트 사진, 같은 공간의 실내·입구 사진)는 합성 좌표와 가상 이름으로 옮겼다.
+
+가짜 LLM 의 Repair 계획은 운영에서 본 잘못된 편집을 반복한다 — 방문의 종류를 바꾸고 6조각으로 나누고, 장식 사진을
+다른 event 로 보내고, 시간을 자르고, 방문을 지운다. 실제 runner(`process_timeline_task`)를 돌리고 실제 LLM 은
+부르지 않는다.
 """
 
 import asyncio
@@ -162,6 +166,23 @@ def _calendar_day(*, all_day: bool = True, unreadable_photo: bool = False) -> _D
     )
 
 
+def _revisit_day() -> _Day:
+    """같은 카페에 점심과 저녁에 따로 갔다. 사이에 멀리 떨어진 사무실에 있었다."""
+
+    cafe = dict(places=["OO카페"], address="서울 마포구 연남동 3")
+    return _Day(
+        stays=[
+            stay_item("cafe-noon", lat=37.5600, lon=126.9200, start=_t("12:00"), end=_t("13:00"), **cafe),
+            stay_item("office", lat=37.5000, lon=127.0300, start=_t("13:40"), end=_t("17:00"), places=["OO타워"], address="서울 강남구 역삼동 5"),
+            stay_item("cafe-night", lat=37.5600, lon=126.9200, start=_t("18:00"), end=_t("19:00"), **cafe),
+        ],
+        photos=[
+            _photo("P1", "12:30", "라떼를 마셨다", lat=37.5601, lon=126.9201),
+            _photo("P2", "18:30", "케이크를 먹었다", lat=37.5601, lon=126.9201),
+        ],
+    )
+
+
 # --- 파이프라인 ----------------------------------------------------------------------------------
 
 
@@ -268,6 +289,21 @@ def _of_draft(day: _Day, draft) -> list[tuple]:
     return sorted((e.start_time, e.end_time, *day.split(r.raw_id for r in e.source_refs)) for e in draft.events)
 
 
+def _of_storage(day: _Day, stored, events=None) -> list[tuple]:
+    """저장 요청 body 의 구조."""
+
+    events = stored.events if events is None else events
+    return sorted((e.start_at, e.end_at, *day.split(e.source_raw_ids)) for e in events)
+
+
+def _assert_kept(day: _Day, confirmed, stored) -> None:
+    expected = _expected(day)
+    assert len(confirmed) == _ITERATIONS + 1, "첫 확정과 Repair 차례마다의 확정"
+    for number, draft in enumerate(confirmed, start=1):
+        assert _of_draft(day, draft) == expected, f"{number}번째 확정"
+    assert _of_storage(day, stored) == expected, "저장 요청"
+
+
 def _owners(day: _Day, stored) -> dict[str, list[int]]:
     """사진 id → 그 사진을 근거로 가진 저장 event 의 위치(0부터)."""
 
@@ -292,6 +328,131 @@ def _photo_ref(day: _Day, label: str) -> dict:
 
 def _stay_ref(item) -> dict:
     return {"sourceType": "STAY", "rawId": item.raw_id}
+
+
+# --- 운영 사례 ------------------------------------------------------------------------------------
+
+
+def _bad_edits_on_two_visits(day: _Day) -> str:
+    """운영 Repair 2~3회차가 한 편집과, v4 에서 같은 결과를 노리는 편집."""
+
+    store, hall = _event_ids(day).values()
+    pieces = [
+        ("10:47", "11:52", "CULTURE", "백화점 구경"),
+        ("11:52", "13:43", "STAY", "시간을 보냄"),
+        ("13:43", "14:16", "CULTURE", "크리스마스 장식 구경"),
+        ("14:16", "14:33", "STAY", "시간을 보냄"),
+        ("14:33", "15:24", "MEAL", "망고 디저트를 먹음"),
+        ("15:24", "15:24", "STAY", "시간을 보냄"),
+    ]
+    split = [
+        {"startTime": _iso(start), "endTime": _iso(end), "eventType": kind, "title": title, "description": f"{title}."}
+        for start, end, kind, title in pieces
+    ]
+    return _plan(
+        # 8.3시간 체류를 관람으로 바꾼다 — 운영에서는 이것이 4시간 검토 기준을 불렀다.
+        ("update_event", {"clientEventId": store, "fields": {"eventType": "CULTURE", "title": "백화점 구경"}}),
+        ("split_event", {"clientEventId": store, "parts": split}),
+        # 방문을 디저트만 말하는 조각으로 줄인다.
+        (
+            "update_event",
+            {
+                "clientEventId": store,
+                "fields": {
+                    "eventType": "MEAL", "title": "망고 디저트를 먹음", "description": "망고 디저트를 먹었다.",
+                    "startTime": _iso("14:33"), "endTime": _iso("15:24"),
+                    "photos": ["P3"], "evidence": ["P3"], "sourceRefs": [_photo_ref(day, "P3")],
+                },
+            },
+        ),
+        # 장식 사진을 다른 event 로 보낸다.
+        (
+            "update_event",
+            {
+                "clientEventId": hall,
+                "fields": {
+                    "description": "크리스마스 장식 앞에서 시간을 보냈다.", "photos": ["P1", "P2"],
+                    "evidence": ["P1", "P2"],
+                    "sourceRefs": [_photo_ref(day, "P1"), _photo_ref(day, "P2"), _photo_ref(day, "P4")],
+                },
+            },
+        ),
+        # 같은 공간의 뒷부분을 떼어 낸다.
+        ("update_event", {"clientEventId": hall, "fields": {"endTime": _iso("16:00")}}),
+        ("delete_event", {"clientEventId": hall}),
+    )
+
+
+def test_bad_repair_edits_do_not_reach_the_stored_result(monkeypatch):
+    day = _two_visits_day()
+    bad = _bad_edits_on_two_visits(day)
+
+    confirmed, stored = _run(monkeypatch, day, timeline=_narrations(day, _plain), repair=[bad])
+
+    _assert_kept(day, confirmed, stored)
+    assert len(stored.events) == 2, "한 방문에서 갈라진 체류 카드가 없다."
+    assert _owners(day, stored) == {"P1": [0], "P2": [0], "P3": [0], "P4": [1], "P5": [1]}, (
+        "장식·디저트는 백화점 방문, 실내·입구는 음악감상실 방문에 한 번씩 있다."
+    )
+    first, second = stored.events
+    assert (first.start_at, first.end_at) == (datetime(2026, 6, 20, 10, 47, tzinfo=_KST), datetime(2026, 6, 20, 15, 24, tzinfo=_KST))
+    assert (second.start_at, second.end_at) == (datetime(2026, 6, 20, 15, 32, tzinfo=_KST), datetime(2026, 6, 20, 19, 8, tzinfo=_KST))
+    # 편집은 실제로 실행됐다. 글과 종류는 Repair 의 것이고, 구조만 코드의 것이다.
+    assert (first.event_type.value, first.title) == ("MEAL", "망고 디저트를 먹음")
+    assert second.subtitle == "크리스마스 장식 앞에서 시간을 보냈다."
+
+
+def test_a_timeline_that_splits_by_photo_is_stored_as_the_codes_visits(monkeypatch):
+    """Timeline 이 사진마다 event 를 나눈 답을 내도 Repair·저장을 지나 방문 둘이다."""
+
+    day = _two_visits_day()
+    store, hall = day.clues().base_events
+    split_answer = json.dumps(
+        {
+            "conversations": [],
+            "events": [
+                {**_plain(store), "title": "크리스마스 장식", "photos": [{"id": "P1", "activity": ""}]},
+                {**_plain(store), "title": "망고 디저트를 먹음", "eventType": "MEAL", "photos": [{"id": "P3", "activity": ""}]},
+                {**_plain(hall), "title": "실내", "photos": [{"id": "P4", "activity": ""}]},
+                {**_plain(hall), "id": f"{hall.base_id}-2", "title": "입구", "photos": [{"id": "P5", "activity": ""}]},
+            ],
+            "warnings": [],
+        },
+        ensure_ascii=False,
+    )
+
+    confirmed, stored = _run(monkeypatch, day, timeline=split_answer, repair=[_bad_edits_on_two_visits(day)])
+
+    _assert_kept(day, confirmed, stored)
+    assert _owners(day, stored) == {"P1": [0], "P2": [0], "P3": [0], "P4": [1], "P5": [1]}
+
+
+def test_a_real_revisit_stays_two_visits(monkeypatch):
+    """같은 카페에 두 번 간 날은 저장까지 두 방문이다. 코드는 같은 장소라는 이유로 합치지 않는다."""
+
+    day = _revisit_day()
+    ids = list(_event_ids(day).values())
+    noon, night = ids[0], ids[-1]
+    cafe_noon, _, cafe_night = day.request.stays
+    bad = _plan(
+        ("update_event", {"clientEventId": noon, "fields": {"endTime": _iso("19:00"), "title": "카페에 두 번 감"}}),
+        (
+            "update_event",
+            {
+                "clientEventId": noon,
+                "fields": {"sourceRefs": [_stay_ref(cafe_noon), _stay_ref(cafe_night), _photo_ref(day, "P1"), _photo_ref(day, "P2")]},
+            },
+        ),
+        ("delete_event", {"clientEventId": night}),
+    )
+
+    confirmed, stored = _run(monkeypatch, day, timeline=_narrations(day, _plain), repair=[bad])
+
+    _assert_kept(day, confirmed, stored)
+    owners = _owners(day, stored)
+    assert len(owners["P1"]) == len(owners["P2"]) == 1 and owners["P1"] != owners["P2"]
+    cafe_events = [e for e in stored.events if {cafe_noon.raw_id, cafe_night.raw_id} & set(e.source_raw_ids)]
+    assert len(cafe_events) == 2, "점심과 저녁의 카페 방문이 따로 남는다."
 
 
 # --- 일정 ----------------------------------------------------------------------------------------
@@ -325,6 +486,48 @@ def _bad_edits_on_calendar_day(day: _Day) -> str:
         ("ensure_calendar_events", {}),
         ("delete_event", {"clientEventId": office}),
     )
+
+
+def test_calendar_events_keep_their_bounds_and_sources_through_repair_and_storage(monkeypatch):
+    day = _calendar_day()
+
+    confirmed, stored = _run(monkeypatch, day, timeline=_narrations(day, _plain), repair=[_bad_edits_on_calendar_day(day)])
+
+    _assert_kept(day, confirmed, stored)
+    calendar_ids = [item.raw_id for item in day.request.calendars]
+    held = [raw_id for event in stored.events for raw_id in event.source_raw_ids if raw_id in calendar_ids]
+    assert sorted(held) == sorted(calendar_ids), "일정마다 한 번씩이다 — 복제도 누락도 없다."
+    owners = _owners(day, stored)
+    [office_stay] = day.request.stays
+    office = next(position for position, e in enumerate(stored.events) if office_stay.raw_id in e.source_raw_ids and not set(e.source_raw_ids) & set(calendar_ids))
+    assert owners["P1"] == [office], "방문 사진은 시간이 겹치는 회의로 옮겨지지 않는다."
+    meeting = next(e for e in stored.events if any(c.title == "주간 회의" and c.raw_id in e.source_raw_ids for c in day.request.calendars))
+    assert (meeting.start_at.hour, meeting.end_at.hour) == (14, 15), "회의는 방문과 합쳐지지 않고 일정 시간이다."
+
+
+def test_all_day_calendars_lead_the_stored_day_once_each(monkeypatch):
+    day = _calendar_day()
+
+    _, stored = _run(monkeypatch, day, timeline=_narrations(day, _plain), repair=[_bad_edits_on_calendar_day(day)])
+
+    all_day = {item.raw_id for item in day.request.calendars if item.all_day}
+    leading = [set(e.source_raw_ids) & all_day for e in stored.events[:2]]
+    assert all(len(found) == 1 for found in leading) and set().union(*leading) == all_day
+    assert not any(set(e.source_raw_ids) & all_day for e in stored.events[2:]), "종일 일정은 한 번씩만 나온다."
+    starts = [e.start_at for e in stored.events[2:]]
+    assert starts == sorted(starts), "그 뒤는 시간순이다."
+
+
+def test_all_day_calendars_do_not_change_the_visits_or_photos(monkeypatch):
+    with_all_day = _calendar_day()
+    without = _calendar_day(all_day=False)
+
+    _, stored_with = _run(monkeypatch, with_all_day, timeline=_narrations(with_all_day, _plain), repair=[_bad_edits_on_calendar_day(with_all_day)])
+    _, stored_without = _run(monkeypatch, without, timeline=_narrations(without, _plain), repair=[_bad_edits_on_calendar_day(without)])
+
+    all_day = {item.raw_id for item in with_all_day.request.calendars if item.all_day}
+    rest = [e for e in stored_with.events if not set(e.source_raw_ids) & all_day]
+    assert _of_storage(with_all_day, stored_with, rest) == _of_storage(without, stored_without)
 
 
 # --- 저장 직전 자리 ------------------------------------------------------------------------------
