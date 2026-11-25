@@ -8,14 +8,14 @@ event 는 대화 3개 제한에도 세이지 않았다. 대화는 보조 근거�
 import json
 from datetime import datetime, timedelta, timezone
 
-from app.agents.timeline.timeline_agent import parse_timeline_clue_draft
+from app.agents.timeline.timeline_agent import parse_timeline_narration
 from app.schemas import (
     ConversationDecision,
     EventSourceType,
     EventType,
     InferenceLevel,
     SourceRef,
-    TimelineClueOutput,
+    TimelineNarrationOutput,
     TimelineConversationReview,
     TimelineDraft,
     TimelineEventDraft,
@@ -107,15 +107,15 @@ def _sources(event):
 # --- 대화 event 의 근거는 대화 알림뿐이다 -----------------------------------------------------------
 
 
-def test_a_conversation_written_with_from_keeps_only_the_conversation():
-    """`from` 을 적으면 그 구간의 체류 기록이 대화 event 의 근거가 됐다."""
+def test_a_conversation_carrying_a_stay_keeps_only_the_conversation():
+    """대화 event 에 체류 기록이 붙으면 대화만 남는다. 체류는 코드가 정한 그 방문의 것이다(#202)."""
 
     stay = stay_item("office", start=_posted(9), end=_posted(18))
     item, clue = _talk("N1", 12)
     request = make_request(stays=[stay], notifications=[item])
     talk = _event(
         [(EventSourceType.STAY, stay.raw_id), (EventSourceType.NOTIFICATION, item.raw_id)],
-        start=_at(12), end=_at(12), base=["E1"],
+        start=_at(12), end=_at(12),
     )
 
     draft = repair_draft(_draft(_frame(stay), talk), request, clues=_clues(request, [clue]))
@@ -132,7 +132,7 @@ def test_a_conversation_written_with_from_keeps_only_the_conversation():
 
 
 def test_a_conversation_on_a_movement_is_not_deleted_with_it():
-    """`from` 을 적은 대화가 이동 구간 분리에서 통째로 지워져 대화가 사라졌다."""
+    """이동 기록이 붙은 대화도 대화로 남는다. 이동은 그 이동 event 의 것이다."""
 
     home = stay_item("home", start=_posted(7), end=_posted(10), lat=37.5, lon=127.0)
     trip = movement_item("trip", start=_posted(10), end=_posted(11))
@@ -141,7 +141,7 @@ def test_a_conversation_on_a_movement_is_not_deleted_with_it():
     request = make_request(stays=[home, office], movements=[trip], notifications=[item])
     talk = _event(
         [(EventSourceType.MOVEMENT, trip.raw_id), (EventSourceType.NOTIFICATION, item.raw_id)],
-        start=_at(10, 30), end=_at(10, 30), base=["E2"],
+        start=_at(10, 30), end=_at(10, 30),
     )
 
     draft = repair_draft(_draft(talk), request, clues=_clues(request, [clue]))
@@ -150,7 +150,7 @@ def test_a_conversation_on_a_movement_is_not_deleted_with_it():
 
 
 def test_a_conversation_that_lost_its_photo_keeps_only_the_conversation():
-    """사진을 함께 적으면 사진은 식사로 옮겨지고 체류 기록과 대화만 남았다."""
+    """사진과 체류를 함께 가진 대화도 대화만 남는다. 사진은 코드가 정한 방문의 것이다(#202)."""
 
     stay = stay_item("office", start=_posted(9), end=_posted(18))
     photo = photo_item("lunch", taken=_posted(12, 10))
@@ -167,7 +167,7 @@ def test_a_conversation_that_lost_its_photo_keeps_only_the_conversation():
             (EventSourceType.PHOTO, photo.raw_id),
             (EventSourceType.NOTIFICATION, item.raw_id),
         ],
-        start=_at(12), end=_at(12), base=["E1"],
+        start=_at(12), end=_at(12),
     )
 
     draft = repair_draft(
@@ -237,7 +237,7 @@ def test_conversations_with_a_location_count_toward_the_limit():
     events = [
         _event(
             [(EventSourceType.STAY, stay.raw_id), (EventSourceType.NOTIFICATION, item.raw_id)],
-            start=_at(10 + i), end=_at(10 + i), title=f"대화{i}", base=["E1"],
+            start=_at(10 + i), end=_at(10 + i), title=f"대화{i}",
         )
         for i, (item, _) in enumerate(talks)
     ]
@@ -433,14 +433,15 @@ def test_a_conversation_stays_on_a_calendar_event_it_supports():
     stay = stay_item("office", start=_posted(9), end=_posted(18))
     item, clue = _talk("N1", 13, 40)
     request = make_request(stays=[stay], calendars=[meeting], notifications=[item])
+    # 사무실 방문(E1) 안의 회의 일정은 자기 event(E2)다(#202).
     event = _event(
         [(EventSourceType.CALENDAR, meeting.raw_id), (EventSourceType.NOTIFICATION, item.raw_id)],
-        start=_at(14), end=_at(15), event_type=EventType.CALENDAR_EVENT, title="프로젝트 회의",
+        start=_at(14), end=_at(15), event_type=EventType.CALENDAR_EVENT, title="프로젝트 회의", base=["E2"],
     )
 
     draft = repair_draft(_draft(_frame(stay), event), request, clues=_clues(request, [clue]))
 
-    assert _sources(_holder(draft, item)) == {EventSourceType.CALENDAR, EventSourceType.NOTIFICATION}
+    assert {EventSourceType.CALENDAR, EventSourceType.NOTIFICATION} <= _sources(_holder(draft, item))
 
 
 def test_a_conversation_stays_on_a_stay_it_supports():
@@ -594,7 +595,7 @@ def test_conversation_reviews_are_parsed_but_never_dumped():
         }
     )
 
-    draft = parse_timeline_clue_draft(text, request, _clues(request, [clue]))
+    draft = parse_timeline_narration(text, request, _clues(request, [clue]))
 
     assert [(r.clue_id, r.decision) for r in draft.conversation_reviews] == [("N1", ConversationDecision.RECORD)]
     assert "conversationReviews" not in draft.model_dump(by_alias=True, mode="json")
@@ -602,7 +603,7 @@ def test_conversation_reviews_are_parsed_but_never_dumped():
 
 
 def _parse(reviews, request, clues, events=()):
-    return parse_timeline_clue_draft(
+    return parse_timeline_narration(
         json.dumps({"conversations": reviews, "events": list(events)}), request, clues
     )
 
@@ -656,13 +657,15 @@ def test_only_a_recorded_conversation_becomes_an_event():
     assert _parse(reviews, request, _clues(request, [clue, pay_clue])).events == []
 
 
-def test_a_recorded_conversation_timeline_already_wrote_is_not_doubled():
+def test_a_recorded_conversation_timeline_already_used_is_not_doubled():
+    """`RECORD` 로 정한 대화를 다른 event 의 근거로도 적으면 event 를 하나 더 만들지 않는다."""
+
+    stay = stay_item("office", start=_posted(9), end=_posted(18))
     item, clue = _talk("N1", 12)
-    request = make_request(notifications=[item])
+    request = make_request(stays=[stay], notifications=[item])
     written = {
-        "eventType": "SOCIAL", "title": "친구와 대화", "description": "메시지를 받았다.", "from": [], "evidence": ["N1"],
-        "startTime": _at(12).isoformat(), "endTime": _at(12).isoformat(), "confidence": 0.7,
-        "inferenceLevel": "DIRECT", "uncertainty": [], "mergeReason": "", "placeCandidates": [],
+        "id": "E1", "eventType": "STAY", "title": "보낸 시간", "description": "{place}에서 시간을 보냈다.",
+        "evidence": ["N1"], "confidence": 0.7, "inferenceLevel": "DIRECT",
     }
 
     draft = _parse([_recorded()], request, _clues(request, [clue]), [written])
@@ -678,9 +681,8 @@ def test_recorded_conversations_keep_to_the_limits():
     request = make_request(stays=[stay], notifications=[item for item, _ in talks])
     clues = _clues(request, [clue for _, clue in talks])
     frame = {
-        "eventType": "STAY", "title": "보낸 시간", "description": "{place}에서 시간을 보냈다.", "from": ["E1"],
-        "evidence": [], "startTime": _at(9).isoformat(), "endTime": _at(18).isoformat(), "confidence": 0.7,
-        "inferenceLevel": "EVIDENCE_BASED", "uncertainty": [], "mergeReason": "", "placeCandidates": [],
+        "id": "E1", "eventType": "STAY", "title": "보낸 시간", "description": "{place}에서 시간을 보냈다.",
+        "confidence": 0.7, "inferenceLevel": "EVIDENCE_BASED",
     }
     draft = _parse([_recorded(clue.clue_id) for _, clue in talks], request, clues, [frame])
     report = ConfirmReport()
@@ -706,7 +708,7 @@ def test_a_conversation_meant_to_support_is_found_even_on_a_full_day():
 def test_conversations_come_before_events_in_the_output_schema():
     """모델은 schema 순서로 쓴다. 뒤에 두면 event 를 다 쓰고 대화를 몰아 처리한다."""
 
-    properties = list(TimelineClueOutput.model_json_schema()["properties"])
+    properties = list(TimelineNarrationOutput.model_json_schema()["properties"])
 
     assert properties.index("conversations") < properties.index("events")
 
@@ -823,7 +825,7 @@ def test_a_warning_keeps_the_reason_the_model_wrote():
         }
     )
 
-    draft = parse_timeline_clue_draft(text, request, _clues(request, [clue]))
+    draft = parse_timeline_narration(text, request, _clues(request, [clue]))
 
     [ref] = draft.warnings[0].source_refs
     assert (ref.raw_id, ref.reason) == (item.raw_id, "기록할 내용이 없다.")
@@ -834,7 +836,7 @@ def test_a_warning_without_a_reason_still_expands_the_id():
     request = make_request(notifications=[item])
     text = json.dumps({"events": [], "warnings": [{"message": "뺐다.", "sourceRefs": ["N1"]}]})
 
-    draft = parse_timeline_clue_draft(text, request, _clues(request, [clue]))
+    draft = parse_timeline_narration(text, request, _clues(request, [clue]))
 
     assert [ref.raw_id for ref in draft.warnings[0].source_refs] == [item.raw_id]
 

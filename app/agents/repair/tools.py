@@ -47,16 +47,15 @@ from app.schemas import (
     HealthMetric,
     RepairToolCall,
     RepairToolResult,
-    SourceRef,
     TimelineDraft,
     TimelineDraftRequest,
+    TimelineEventDraft,
 )
 from app.schemas.clues import NotificationClueKind
 from app.services.calendar_guard import ensure_calendar_events
 from app.services.clue_bundles import (
     TimelineClues,
-    expand_evidence,
-    misplaced_clues,
+    notification_evidence,
     timeline_input_sections,
 )
 from app.services.calendar_location import reinforce_calendar_location
@@ -66,6 +65,7 @@ from app.services.draft_edit import (
     absorb_location_event,
     add_conversation_event,
     delete_event,
+    find_event,
     split_event,
     update_event,
 )
@@ -85,7 +85,6 @@ from app.services.place_resolver import resolve_places
 from app.services.place_slots import confirm_place_slots
 from app.services.sleep_guard import enforce_sleep_boundary
 from app.services.source_lookup import raw_id_of
-from app.services.validator import parse_datetime, resolve_timezone
 
 logger = get_logger(__name__)
 
@@ -265,96 +264,101 @@ def _update_event(ctx: RepairContext, args: dict) -> str:
     if not isinstance(fields, dict):
         raise RepairToolError("fields 인자(바꿀 필드만 담은 객체)가 필요합니다.")
     _require_type_of_the_set(ctx, fields.get("eventType"))
-    named_photos: set[str] = set()
-    if "evidence" in fields:
-        identifiers = fields["evidence"]
-        fields = _with_expanded_evidence(ctx, fields, str(client_event_id))
-        named_photos = _named_photos(ctx, identifiers)
-        fields = _without_misplaced(ctx, str(client_event_id), fields, named_photos)
+    notes: list[str] = []
+    photos: list[str] | None = None
+    if ctx.clues is not None:
+        fields = dict(fields)
+        photos = _cited_photos(fields)
+        fields, notes = _clue_fields(ctx, fields, str(client_event_id))
+        if not fields:
+            event = find_event(ctx.draft, str(client_event_id))  # 없는 event 는 여기서 알린다
+            if photos is not None:
+                event.photo_ids = photos
+                return ". ".join([f"{client_event_id} 의 글이 쓴 사진을 적었습니다", *_photo_notes(ctx, event)])
+            if notes:
+                return f"{client_event_id} 는 바뀐 것이 없습니다. " + ". ".join(notes)
 
     event = update_event(ctx.draft, str(client_event_id), fields)
     # 제목만 고치면 문장이 빈 채로 남는다. 문장까지 있어야 다 쓴 것이다.
     if event.merge_reason == NEEDS_WRITING and "description" in fields and event.description.strip():
         event.merge_reason = None
-    # Repair 가 사진을 직접 적은 event 가 그 사진의 주인이다(사용자 결정 2026-10-30 — 코드는 Repair 를
-    # 따른다). 다른 event 에서 빼 두면 확정 pass 의 사진 단일 귀속이 자기 순서로 Repair 의 선택을 뒤집지
-    # 않는다. 회의·식사 실행에서 그 순서가 일정이 있는 회의를 골라 식사가 지워졌다.
-    for other in ctx.draft.events:
-        if other is not event:
-            other.source_refs = [ref for ref in other.source_refs if ref.raw_id not in named_photos]
-    return f"{client_event_id} 를 수정했습니다: {event.title} ({', '.join(sorted(fields))})"
+    if ctx.clues is not None and (photos is not None or "description" in fields):
+        # 문장을 다시 쓰면서 사진을 적지 않았으면 어느 사진으로 썼는지 모르는 글이다(확정 pass 가 짚는다).
+        event.photo_ids = photos if photos is not None else []
+        notes.extend(_photo_notes(ctx, event))
+    message = f"{client_event_id} 를 수정했습니다: {event.title} ({', '.join(sorted(fields))})"
+    return ". ".join([message, *notes])
 
 
-def _without_misplaced(
-    ctx: RepairContext, client_event_id: str, fields: dict, named_photos: set[str]
-) -> dict:
-    """묶음 id 로 딸려 온, 시간·장소가 맞지 않는 사진·일정 근거를 뺀다(사용자 결정 2026-10-30·31).
+def _cited_photos(fields: dict) -> list[str] | None:
+    """`update_event` 의 `photos`(v4, #202): 글이 근거로 쓴 사진 id. 문자열이나 `{id, activity}` 를 받는다."""
 
-    Repair 가 직접 적은 근거는 그대로 둔다 — 코드는 거절할 권리가 없다(사용자 결정 2026-11-02).
+    if "photos" not in fields:
+        return None
+    value = fields.pop("photos")
+    if not isinstance(value, list):
+        raise RepairToolError("photos 는 글이 근거로 쓴 사진 id(P2) 의 목록이어야 합니다.")
+    cited: list[str] = []
+    for item in value:
+        identifier = item.get("id") if isinstance(item, dict) else item
+        if not isinstance(identifier, str) or not identifier.strip():
+            raise RepairToolError("photos 의 항목은 사진 id(P2) 이거나 {\"id\": \"P2\", ...} 여야 합니다.")
+        cited.append(identifier.strip())
+    return cited
+
+
+def _photo_notes(ctx: RepairContext, event: TimelineEventDraft) -> list[str]:
+    """글이 쓴 사진이 그 event 의 사진과 다르면 결과에 적는다. 고친 것은 그대로 둔다(거절하지 않는다)."""
+
+    mismatch = ctx.clues.photo_mismatch(event)
+    if mismatch is None:
+        return []
+    foreign, missing = mismatch
+    notes = []
+    if foreign:
+        notes.append(f"{', '.join(foreign)} 는 이 event 의 사진이 아닙니다 — 그 내용을 이 event 의 글에 쓰지 않습니다")
+    if missing:
+        notes.append(f"이 event 의 사진 {', '.join(missing)} 를 글이 쓰지 않았습니다")
+    return notes
+
+
+#: v4 에서 Repair 가 바꾸지 않는 필드(#202). 시간은 코드가 정한 값이다.
+_CLUE_FIXED_FIELDS = ("startTime", "endTime")
+
+
+def _clue_fields(ctx: RepairContext, fields: dict, client_event_id: str) -> tuple[dict, list[str]]:
+    """v4 의 `update_event` 인자를 글 계약에 맞춘다(#202).
+
+    하루의 event 와 그 시간·위치 기록·사진·일정 근거는 코드가 정했다. Repair 가 바꾸는 근거는 알림·대화뿐이다.
+    `evidence` 는 그 event 의 알림·대화 근거를 통째로 바꾸고, 위치 기록·사진·일정 근거는 그대로 둔다.
+    시간이나 코드가 정한 근거를 적어도 호출은 실행하고, 그 값은 바꾸지 않았다고 결과에 적는다.
     """
 
+    notes: list[str] = []
+    fixed = [name for name in _CLUE_FIXED_FIELDS if name in fields]
+    updated = {key: value for key, value in fields.items() if key not in _CLUE_FIXED_FIELDS}
+    if fixed:
+        notes.append(f"{', '.join(fixed)} 는 코드가 정한 값이라 바꾸지 않았습니다")
+    if "evidence" not in updated:
+        return updated, notes
+
+    identifiers = updated.pop("evidence")
+    if not isinstance(identifiers, list):
+        raise RepairToolError("evidence 는 알림·대화 단서 id(N5) 의 목록이어야 합니다.")
     current = next((e for e in ctx.draft.events if e.client_event_id == client_event_id), None)
     if current is None:
-        return fields  # 없는 event 는 update_event 가 거절한다
-    tz = resolve_timezone(ctx.request.timezone)
-    start = parse_datetime(fields["startTime"], tz) if fields.get("startTime") else current.start_time
-    end = parse_datetime(fields["endTime"], tz) if fields.get("endTime") else current.end_time
-    refs = [SourceRef.model_validate(ref) for ref in fields["sourceRefs"]]
-    misplaced = misplaced_clues(ctx.clues, start or current.start_time, end or current.end_time, refs)
-    dropped = set(misplaced) - named_photos
-    kept = [ref for ref in fields["sourceRefs"] if ref.get("rawId") not in dropped]
-    return {**fields, "sourceRefs": kept} if kept else fields
-
-
-def _named_photos(ctx: RepairContext, identifiers: list) -> set[str]:
-    """`evidence` 에 Repair 가 직접 적은 사진의 rawId(단서 id `P2` 나 rawId). 묶음 id 로 딸려 온 사진은 아니다."""
-
-    owners = _source_index(ctx.request)
-    named = [str(i) for i in identifiers if ctx.clues.bundle(str(i)) is None]
-    [refs] = expand_evidence(ctx.clues, [[i for i in named if i not in owners]], ctx.request)
-    return {ref.raw_id for ref in refs if ref.source_type is EventSourceType.PHOTO} | {
-        i for i in named if i in owners and owners[i][0] is EventSourceType.PHOTO
-    }
-
-
-def _with_expanded_evidence(ctx: RepairContext, fields: dict, client_event_id: str) -> dict:
-    """v4 의 `evidence`(묶음·단서 id 와 rawId)를 `sourceRefs` 로 펼친다(#169).
-
-    도구 인자의 근거를 펼치는 자리는 여기 하나다. 묶음 id 는 그 구간과 붙은 사진·일정·대화 전부이고,
-    rawId 는 그대로 근거가 된다. 펼친 근거가 하나도 없으면 고치지 않는다. 다른 event 가 이미
-    가진 사진·대화는 묶음을 펼칠 때 빼고 단서 id 로 직접 적은 것만 담는다 — Timeline 출력을
-    펼칠 때와 같은 규칙이다.
-    """
-
-    if ctx.clues is None:
-        raise RepairToolError("evidence 는 v4 세트에서만 씁니다. sourceRefs 를 주세요.")
-    identifiers = fields.get("evidence")
-    if not isinstance(identifiers, list) or not identifiers:
-        raise RepairToolError("evidence 는 묶음·단서 id 나 rawId 의 목록이어야 합니다.")
-    raw_ids = [str(i) for i in identifiers if str(i) in _source_index(ctx.request)]
-    ids = [str(i) for i in identifiers if str(i) not in raw_ids]
-    held = {
-        ref.raw_id
-        for event in ctx.draft.events
-        if event.client_event_id != client_event_id
-        for ref in event.source_refs
-    }
-    [refs] = expand_evidence(ctx.clues, [ids], ctx.request, held_elsewhere=held)
-    known = {ref.raw_id for ref in refs}
-    owners = _source_index(ctx.request)
-    for raw_id in raw_ids:
-        if raw_id not in known:
-            refs.append(
-                SourceRef(
-                    source_type=owners[raw_id][0], raw_id=raw_id, reason="Repair 가 고른 근거"
-                )
-            )
-            known.add(raw_id)
-    if not refs:
-        raise RepairToolError(f"evidence {identifiers} 가 입력의 근거를 하나도 가리키지 않습니다.")
-    updated = {key: value for key, value in fields.items() if key != "evidence"}
-    updated["sourceRefs"] = [ref.model_dump(by_alias=True, mode="json") for ref in refs]
-    return updated
+        return {**updated, "evidence": identifiers}, notes  # 없는 event 는 update_event 가 거절한다
+    refs, ignored = notification_evidence(ctx.clues, identifiers, ctx.request)
+    notification_ids = {raw_id_of(item) for item in ctx.request.notifications}
+    kept = [ref for ref in current.source_refs if ref.raw_id not in notification_ids]
+    updated["sourceRefs"] = [
+        ref.model_dump(by_alias=True, mode="json") for ref in [*kept, *refs]
+    ]
+    if ignored:
+        notes.append(
+            f"{', '.join(ignored)} 는 코드가 정한 근거이거나 입력에 없는 id 라 바꾸지 않았습니다"
+        )
+    return updated, notes
 
 
 def _add_conversation_event(ctx: RepairContext, args: dict) -> str:
@@ -389,8 +393,15 @@ def _delete_event(ctx: RepairContext, args: dict) -> str:
     if not client_event_id:
         raise RepairToolError("clientEventId 인자가 필요합니다.")
 
-    # 그 시간의 유일한 위치 근거 event 를 지우지 않는 것은 v3 세트의 계약이다(#163). v4 는 거절하지 않는다
-    # (사용자 결정 2026-11-02) — 지운 구간은 확정의 위치 구간 복원이 되살린다.
+    if ctx.clues is not None:
+        # v4 의 하루의 event 는 코드가 정한다(#202). 지울 수 있는 것은 코드가 대화·알림으로 만든 event 다.
+        target = next((e for e in ctx.draft.events if e.client_event_id == str(client_event_id)), None)
+        if target is not None and target.base_event_ids:
+            raise RepairToolError(
+                f"{client_event_id} 는 코드가 정한 하루의 event 라 지울 수 없습니다. "
+                "글을 고치려면 update_event 를 씁니다."
+            )
+    # 그 시간의 유일한 위치 근거 event 를 지우지 않는 것은 v3 세트의 계약이다(#163).
     event = delete_event(
         ctx.draft, str(client_event_id), ctx.request if ctx.extended and ctx.clues is None else None
     )
@@ -696,9 +707,24 @@ _TOOLS: dict[str, RepairTool] = {
 }
 
 
-#: v4 세트에서 빼는 도구(#167·#169). Event Agent 결과가 없어 다시 돌릴 Agent 가 없고,
-#: 같은 장소 체류는 위치 뼈대가 이미 묶었다.
-_CLUE_EXCLUDED_TOOLS = frozenset({"rerun_event_agent", "merge_stay_events"})
+#: v4 세트에서 빼는 도구(#167·#169·#202). 하루의 event 와 그 시간·위치 기록·사진·일정 근거는 코드가 정해,
+#: event 를 나누거나 흡수하거나 시간을 다시 맞추는 도구가 할 일이 없다. 확정할 때마다 코드의 구조로 맞추므로
+#: 불러도 되돌아간다. Timeline 재실행도 같은 event 에 글만 다시 쓴다. Event Agent 결과도 없다.
+_CLUE_EXCLUDED_TOOLS = frozenset(
+    {
+        "rerun_event_agent",
+        "rerun_timeline_agent",
+        "merge_stay_events",
+        "split_event",
+        "absorb_location_event",
+        "repair_durations",
+        "align_location_events",
+        "enforce_meal_duration",
+        "enforce_sleep_boundary",
+        "ensure_calendar_events",
+        "resolve_overlaps",
+    }
+)
 
 #: v4 세트에서 다르게 도는 도구.
 _CLUE_TOOLS: dict[str, RepairTool] = {
@@ -708,18 +734,25 @@ _CLUE_TOOLS: dict[str, RepairTool] = {
             name="update_event",
             usage=(
                 'update_event(clientEventId="event-003", fields={"title": "...", '
-                '"evidence": ["B3", "P2"]})'
+                '"photos": ["P2", "P4"], "description": "...", "evidence": ["N5"]})'
             ),
             description=(
-                "event 한 건의 지정한 필드만 고친다. 바꿀 수 있는 필드: eventType, title, "
-                "description, startTime, endTime, confidence, inferenceLevel, uncertainty, "
-                "placeCandidates, evidence. evidence 는 근거 묶음·단서 id(B3·P2·C1·N5)나 "
-                "rawId 의 목록이고 event 의 근거를 통째로 바꾼다. 사진은 한 event 에만 있으므로 "
-                "단서 id 로 직접 적은 사진은 이 event 로 옮겨지고 다른 event 에서 빠진다. 묶음 id 는 "
-                "다른 event 가 가진 사진·대화를 가져오지 않는다. 장소(place·address)는 "
-                "코드가 근거로 정하므로 고치지 않는다."
+                "event 한 건의 지정한 필드만 고친다. 바꿀 수 있는 필드: eventType, title, photos, "
+                "description, confidence, inferenceLevel, uncertainty, placeCandidates, evidence. "
+                "photos 는 그 글이 근거로 쓴 사진 id 다 — description 을 쓸 때 함께 적고, 코드가 그 event 의 "
+                "사진과 맞춰 본다. evidence 는 그 event 의 알림·대화 근거(N5)를 통째로 바꾼다. 시간과 위치 기록·"
+                "사진·일정 근거는 코드가 정한 값이라 바뀌지 않는다. 장소(place·address)도 코드가 근거로 정한다."
             ),
             run=_update_event,
+        ),
+        RepairTool(
+            name="delete_event",
+            usage='delete_event(clientEventId="event-003")',
+            description=(
+                "코드가 대화·알림으로 만든 event 를 지운다. 하루의 event(위치·일정·사진의 event)는 "
+                "지우지 않는다 — 글을 고치려면 update_event 를 쓴다."
+            ),
+            run=_delete_event,
         ),
         _service_tool(
             "resolve_places",
@@ -953,12 +986,11 @@ def _candidate_summary(agent_name: str, candidate) -> dict:
 
 
 def clue_evidence_text(ctx: RepairContext) -> str:
-    """v4 의 `[event 근거]`(#169): 근거 묶음 전부와, event 마다 쓴 묶음·단서 id 와 병합 이유.
+    """v4 의 `[event 근거]`(#169, #202): 하루의 event 목록과, draft event 마다 쓴 알림·대화와 이유.
 
-    묶음 본문은 Timeline v4 가 본 것과 같은 모양으로 한 번만 싣는다. event 는 id 로 가리킨다.
-    어느 event 도 쓰지 않은 단서는 `unusedClues` 다 — Timeline 이 일부러 쓰지 않았을 수 있고,
-    그 이유는 warning 에 있다. 묶음 id 는 위치 구간의 것만 싣는다. 대화·사진·일정의 자기 묶음은 단서
-    id 와 같은 것을 가리키는데 근거에 단서 id 로 잡혀, 쓴 뒤에도 쓰이지 않은 것으로 보였다(#183).
+    event 목록은 Timeline v4 가 본 것과 같은 모양으로 한 번만 싣는다. draft 의 event 는 그 event id 로
+    가리킨다. 어느 event 도 쓰지 않은 알림·대화는 `unusedClues` 다 — Timeline 이 일부러 쓰지 않았을 수
+    있고, 그 이유는 warning 과 `conversationReviews` 에 있다.
     """
 
     clues = ctx.clues
@@ -971,27 +1003,29 @@ def clue_evidence_text(ctx: RepairContext) -> str:
     for event in ctx.draft.events:
         ids: list[str] = []
         for ref in event.source_refs:
-            for identifier in owners.get(ref.raw_id, ()):
-                if identifier not in ids:
-                    ids.append(identifier)
+            identifier = owners.get(ref.raw_id)
+            if identifier and identifier not in ids:
+                ids.append(identifier)
         used.update(ids)
-        entry: dict[str, object] = {"clientEventId": event.client_event_id, "evidence": ids}
+        entry: dict[str, object] = {"clientEventId": event.client_event_id}
         if event.base_event_ids:
-            entry["from"] = list(event.base_event_ids)
+            entry["event"] = event.base_event_ids[0]
+        if ids:
+            entry["evidence"] = ids
+        if event.photo_ids:
+            entry["photos"] = list(event.photo_ids)
         if event.merge_reason:
-            entry["mergeReason"] = event.merge_reason
+            entry["reason"] = event.merge_reason
         events.append(entry)
 
-    every = [bundle.bundle_id for bundle in clues.bundles if bundle.segment is not None]
-    every.extend(photo.clue_id for photo in clues.photos)
-    every.extend(calendar.clue_id for calendar in clues.calendars)
-    every.extend(clue.clue_id for clue in clues.notifications)
+    every = [clue.clue_id for clue in clues.notifications]
     payload = {
         "day": sections["day"],
-        "bundles": sections["bundles"],
+        "events": sections["events"],
+        "conversations": sections["conversations"],
         "emptyTimes": sections["emptyTimes"],
         "notifications": sections["notifications"],
-        "events": events,
+        "draftEvents": events,
         "unusedClues": [identifier for identifier in every if identifier not in used],
     }
     if ctx.draft.conversation_reviews:
@@ -1002,30 +1036,10 @@ def clue_evidence_text(ctx: RepairContext) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def _clue_owners(clues: TimelineClues) -> dict[str, list[str]]:
-    """rawId → 그 rawId 를 담은 묶음·단서 id."""
+def _clue_owners(clues: TimelineClues) -> dict[str, str]:
+    """알림 rawId → 그 알림 단서 id. 위치 기록·사진·일정은 event id 가 이미 말한다."""
 
-    owners: dict[str, list[str]] = {}
-
-    def add(raw_id: str, identifier: str) -> None:
-        owners.setdefault(raw_id, [])
-        if identifier not in owners[raw_id]:
-            owners[raw_id].append(identifier)
-
-    for bundle in clues.bundles:
-        if bundle.segment is not None:
-            for raw_id in bundle.segment.raw_ids:
-                add(raw_id, bundle.bundle_id)
-        for record in bundle.isolated:
-            add(record.raw_id, bundle.bundle_id)
-    for photo in clues.photos:
-        add(photo.raw_id, photo.clue_id)
-    for calendar in clues.calendars:
-        add(calendar.raw_id, calendar.clue_id)
-    for clue in clues.notifications:
-        for raw_id in clue.raw_ids:
-            add(raw_id, clue.clue_id)
-    return owners
+    return {raw_id: clue.clue_id for clue in clues.notifications for raw_id in clue.raw_ids}
 
 
 def event_evidence_text(ctx: RepairContext) -> str:

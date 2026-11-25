@@ -1,43 +1,76 @@
-"""근거 묶음 (#169, v4 세트).
+"""하루의 event 와 근거 (#169·#202, v4 세트).
 
-위치 뼈대의 구간마다 그 시간의 사진·일정·알림 단서를 붙여 **묶음**을 만든다. Timeline v4 는
-묶음을 읽고 event 를 판단하며, 근거를 rawId 대신 묶음·단서 id(`B3`·`P2`·`N5`)로 가리킨다.
-`location_link`(#138)의 방향이 뒤집힌 것이다 — 구간이 주인이고 단서가 붙는다.
+**코드가 하루의 event 를 정한다**(#202). 위치 뼈대의 구간, 방문을 다 덮지 않는 일정, 어느 방문·일정에도
+들지 않은 사진 장면이 각각 event 하나(기본 event, `base_events`)이고, 그 시간과 위치 기록·사진·일정 근거는
+여기서 정한 값이다. Timeline·Repair 는 event id 마다 종류와 글만 쓴다. 예전에는 사진·일정을 걸친 구간 모두에
+붙이고 어느 event 의 근거인지를 Timeline 이 골라, 같은 입력에서도 실행마다 사진이 다른 event 로 갔다.
 
-붙이는 규칙(사용자 결정 2026-10-29). **단서 하나가 여러 구간에 걸치면 걸친 구간 모두에
-붙는다.** 어느 구간의 근거인지는 Timeline 이 판단한다.
+묶음(`ClueBundle`) 하나가 기본 event 하나다. 대화만 예외로 event 가 없는 자기 묶음이다.
 
-- 일정: 시간이 겹치는 구간 모두. 배경 일정(종일·12시간 이상)은 자기 묶음이 되고, 안에 든
-  구간에는 배경 일정이 있다는 표시만 단다.
-- 사진: 촬영 시각을 품는 구간. 촬영 위치가 바로 앞·뒤 구간의 장소와 같으면(250m 이내) 그
-  구간에도 붙인다. 구간 경계나 빈 시간에 찍은 사진도 위치가 맞는 구간에 붙는다.
-- 대화: **구간에 붙이지 않고 언제나 자기 묶음이다**(#173, 사용자 결정 2026-10-31). "대화는 기존
-  이벤트와 연관이 크게 없다." 구간에 붙여 두자 Timeline 이 대화로 체류를 채워 `덕충동에서 대화` 가
-  됐다. 시간이 겹친다고 붙지 않고, Timeline·Repair 가 내용을 읽고 고를 때만 event 나 근거가 된다(#183).
-  대화 event 는 하루 3개까지이고 근거는 대화 알림뿐이다.
-- 그 밖의 알림(결제·예약·소식·행동 결과): 처음 받은 시각을 품는 구간 **하나**에 붙인다(#173, 사용자
-  결정 2026-10-31). 시각이 없던 때 이 알림은 근거로 거의 쓰이지 않았다(토스·문자 72건 중 2건). 어느
-  event 의 것인지는 Timeline·Repair 가 내용으로 판단한다. 묶음 id 를 펼쳐도 알림은 담기지 않고 `N5` 처럼
-  직접 적은 알림만 근거다 — 묶음 id 로 따라오게 두자 온라인 결제·설문 알림이 그 시각의 체류에 붙었다.
-  구간 밖 시각의 알림과 다른 날 일정을 말하는 알림은 붙이지 않고 하루 목록으로 둔다.
+같은 입력이면 같은 결과다. 보는 것은 시간·좌표·일정의 장소 문자열뿐이고, 모델의 사진 설명이나 답의 순서는
+보지 않는다.
 
-붙을 구간이 없는 사진·일정은 자기 묶음이 된다. 시간이 가깝다는 이유만으로 구간에 붙이지
-않는다(#163). 단독 위치 기록은 시간이 겹치는 묶음에 보태진다.
+**일정**(배경 일정이 아니고 시각이 있는 것)
 
-여러 묶음에 붙은 단서도 최종 event 에서는 기존 규칙을 따른다. 일정은 여러 event 가 함께 가질
-수 있고, 사진은 사진 단일 귀속(#119)대로 정확히 한 event 에만 남는다.
+- 체류·산책 방문을 덮으면 — 방문 중 일정 밖 시간이 20분(`SHORT_STAY_MAX`) 이하이고 장소가 충돌하지 않으면 —
+  그 방문 event 가 일정 event 다. 시간은 방문이다(위치 기록이 경계를 정한다). 한 방문을 여러 일정이 덮거나
+  한 일정이 여러 방문을 덮으면 하나씩만 짝짓는다. 장소가 맞는 쌍, 더 오래 겹친 쌍, 먼저 시작한 일정, 먼저
+  시작한 방문 순이다(가장 오래 겹친 체류 하나, 사용자 결정 2026-10-30 에 장소 조건을 더했다).
+- 그 밖의 일정은 자기 event 다. 시간은 일정이다. 긴 방문의 일부(09~18시 사무실 안의 14~15시 회의), 방문이
+  없는 시간, 장소가 충돌하는 일정, 짝짓기에서 밀린 일정이 여기 든다. 그 시간과 겹치는 방문(장소 충돌이
+  아닌 것)의 체류 기록을 장소 후보의 근거로 함께 갖는다.
+- 배경 일정(종일·12시간 이상)은 자기 event 이고 방문을 합치거나 사진을 갖지 않는다. 안에 든 구간에는 배경
+  일정이 있다는 표시만 단다. 캘린더 원본에서 종일로 표시된 일정은 하루 맨 앞에 둔다.
+- 시각을 읽지 못한 일정은 event 가 되지 않는다(캘린더 복원도 시간이 없어 되살리지 못한다).
+
+**사진**은 아래 순서로 처음 맞는 한 곳에만 든다(사용자 결정: 사진은 무조건 event 하나).
+
+1. 촬영 시각이 체류·산책 방문 안이거나 경계 앞뒤 20분 안이고, 촬영 위치가 그 방문과 250m 이내인 방문.
+   좌표를 모르면 시각이 방문 안일 때만이다. 산책은 움직이는 구간이라 위치를 보지 않는다. 후보가 여럿이면
+   시각을 품는 방문, 가까운 방문, 먼저 시작한 방문 순이다.
+2. 그 방문 안의 일정 event 가 촬영 시각을 품고 장소가 맞으면 그 일정 event. **장소를 모르는 일정은 방문
+   사진을 가져가지 않는다** — 시간만 겹친 일정이 방문의 사진을 가져가지 않게 한다.
+3. 방문이 없는 시간이면 촬영 시각을 품는 일정 event(배경 제외). 장소가 맞는 것, 짧은 것, 먼저 시작한 것 순이다.
+4. 나머지는 같은 장면(20분·250m, `same_photo_scene`)끼리 사진 event 하나다. 이동 중, 빈 시간, 위치 없는 날의
+   사진이 여기 든다. 가장 가까운 구간에 붙이지 않는다(#163).
+
+시각을 읽지 못한 사진은 event 에 넣지 않고 사진 단일 귀속(#119)이 처리한다.
+
+**장소가 맞음·충돌**: 일정의 장소명이 방문(사진)의 장소 후보와 같거나 일정 주소의 지명(구 + 동)이 같으면
+맞는다. 둘 다 주소가 있는데 시·도나 시군구가 다르면 충돌이다. 그 밖은 모른다.
+
+**대화**는 구간에 붙이지 않고 언제나 자기 묶음이다(#173, 사용자 결정 2026-10-31). "대화는 기존 이벤트와
+연관이 크게 없다." Timeline·Repair 가 내용을 읽고 고를 때만 event 나 근거가 된다(#183). 대화 event 는 하루
+3개까지이고 근거는 대화 알림뿐이다.
+
+**그 밖의 알림**(결제·예약·소식·행동 결과)은 처음 받은 시각을 품는 구간 하나에 보여 준다(#173, 사용자 결정
+2026-10-31). 근거는 아니다 — Timeline·Repair 가 내용으로 고른 event 의 근거가 된다. 구간 밖 시각의 알림과
+다른 날 일정을 말하는 알림은 하루 목록으로 둔다. **단독 위치 기록**은 시간이 겹치는 묶음에 보여 준다.
+
+event id(`E1`…)는 표시 순서다. 종일 일정이 먼저이고, 그다음 시작 시각, 같으면 짧은 것이 먼저다.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
+from enum import Enum
 
-from app.schemas import AgentWarning, EventSourceType, SourceRef, TimelineDraftRequest
+from app.schemas import (
+    AgentWarning,
+    EventSourceType,
+    SourceRef,
+    TimelineDraftRequest,
+    TimelineEventDraft,
+)
 from app.schemas.clues import NotificationClue, NotificationClueKind, PhotoClue
 from app.services.base_events import (
     AreaNamer,
     BaseEvent,
     area_namer,
     build_base_event,
+    calendar_base_event,
+    district_of,
+    photo_base_event,
+    structural_refs,
     with_calendar,
 )
 from app.services.calendar_clues import CalendarClue
@@ -54,34 +87,45 @@ from app.services.location_skeleton import (
     SkeletonSegment,
 )
 from app.services.place_resolver import unique_place_names
+from app.services.place_text import normalize_place_text
 from app.services.source_lookup import build_owner_index, raw_id_of
 
 
 @dataclass
 class ClueBundle:
-    """구간 하나와 거기 붙은 단서. 구간이 없는 묶음은 단서 하나로 된 묶음이다."""
+    """기본 event 하나와 그 단서. 대화 묶음만 기본 event 가 없다."""
 
     bundle_id: str
     start: datetime | None
     end: datetime | None
     segment: SkeletonSegment | None = None
+    #: 이 event 의 사진. 사진은 묶음 하나에만 있다(#202).
     photos: list[PhotoClue] = field(default_factory=list)
+    #: 이 event 의 일정(0개나 1개). 구간을 덮은 일정이거나 이 event 자체인 일정이다.
     calendars: list[CalendarClue] = field(default_factory=list)
     conversations: list[NotificationClue] = field(default_factory=list)
-    #: 이 구간의 시각에 받은, 대화가 아닌 알림(#173).
+    #: 이 구간의 시각에 받은, 대화가 아닌 알림(#173). 근거가 아니라 보여 주는 것이다.
     notifications: list[NotificationClue] = field(default_factory=list)
     isolated: list[LocationRecord] = field(default_factory=list)
     #: 이 구간을 덮는 배경 일정의 id. 배경 일정 자체는 자기 묶음에 있다.
     background_calendar_ids: list[str] = field(default_factory=list)
-    #: 구간 묶음의 기본 event(`E1`…). 단서만 든 묶음에는 없다.
+    #: 이 묶음의 기본 event(`E1`…). 대화 묶음에는 없다.
     base_event: BaseEvent | None = None
+    #: 방문 안의 일정 event 가 함께 갖는 그 방문의 체류 기록.
+    place_records: list[LocationRecord] = field(default_factory=list)
+    #: 이 일정·사진 event 를 감싸는 방문의 묶음.
+    host: "ClueBundle | None" = None
 
     @property
     def places(self) -> list[str]:
-        """이 묶음의 장소 후보 풀. 구간의 이름이 앞이고 사진의 이름이 뒤에 붙는다(#171)."""
+        """이 묶음의 장소 후보 풀. 구간의 이름이 앞이고, 함께 가진 체류·사진·일정의 이름이 뒤에 붙는다(#171)."""
 
         names = list(self.segment.places) if self.segment else []
+        names.extend(
+            name for record in self.place_records if record.spot for name in record.spot.places
+        )
         names.extend(name for photo in self.photos for name in photo.places)
+        names.extend(calendar.place for calendar in self.calendars if calendar.place)
         return unique_place_names(names)
 
 
@@ -123,6 +167,21 @@ class TimelineClues:
             for raw_id in clue.raw_ids
         }
 
+    @property
+    def base_events(self) -> list[BaseEvent]:
+        """하루의 event. 표시 순서다."""
+
+        return [bundle.base_event for bundle in self.bundles if bundle.base_event is not None]
+
+    @property
+    def structural_raw_ids(self) -> frozenset[str]:
+        """코드가 귀속을 정하는 근거(위치 기록·사진·일정)의 rawId. 모델이 옮기지 않는다(#202)."""
+
+        ids = set(self.skeleton.raw_ids())
+        ids.update(photo.raw_id for photo in self.photos)
+        ids.update(calendar.raw_id for calendar in self.calendars)
+        return frozenset(ids)
+
     def address(self, address: str | None) -> str | None:
         if not address:
             return address
@@ -142,6 +201,16 @@ class TimelineClues:
         return next(
             (b for b in self.bundles if b.base_event and b.base_event.base_id == base_id), None
         )
+
+    def photo_mismatch(self, event: TimelineEventDraft) -> tuple[list[str], list[str]] | None:
+        """event 의 글이 적은 사진과 그 event 의 사진의 차이(#202). 모델이 쓴 글이 아니면 `None` 이다."""
+
+        if event.photo_ids is None or not event.base_event_ids:
+            return None
+        bundle = self.base_bundle(event.base_event_ids[0])
+        if bundle is None or bundle.base_event is None:
+            return None
+        return bundle.base_event.photo_mismatch(event.photo_ids)
 
 
 def place_only_raw_ids(request: TimelineDraftRequest, clues: TimelineClues) -> set[str]:
@@ -168,7 +237,7 @@ def build_timeline_clues(
     warnings: list[AgentWarning] | None = None,
     same_place: dict[str, str] | None = None,
 ) -> TimelineClues:
-    """뼈대와 단서로 근거 묶음을 만든다."""
+    """뼈대와 단서로 하루의 event(기본 event)와 그 근거를 정한다(#202)."""
 
     same_place = dict(same_place or {})
     areas = area_namer(_day_addresses(skeleton, calendars, photos))
@@ -186,63 +255,58 @@ def build_timeline_clues(
         )
 
     segment_bundles = [
-        ClueBundle(
-            bundle_id="",
-            start=segment.start,
-            end=segment.end,
-            segment=segment,
-            base_event=build_base_event(
-                segment, number, area_of(segment.address), route_of(segment)
-            ),
-        )
-        for number, segment in enumerate(skeleton.segments, start=1)
+        ClueBundle(bundle_id="", start=segment.start, end=segment.end, segment=segment)
+        for segment in skeleton.segments
     ]
-    extra: list[ClueBundle] = []
-    _embed_calendars(segment_bundles, calendars)
+    visits = [b for b in segment_bundles if b.segment.kind is not SegmentKind.MOVEMENT]
+    timed = [c for c in calendars if c.start is not None and c.end is not None]
+    order = {calendar.clue_id: index for index, calendar in enumerate(calendars)}
 
-    for calendar in calendars:
-        if calendar.background or calendar.start is None:
-            extra.append(_own(calendar.start, calendar.end, calendars=[calendar]))
-            if calendar.background and calendar.start is not None:
-                for bundle in _overlapping(segment_bundles, calendar.start, calendar.end):
-                    bundle.background_calendar_ids.append(calendar.clue_id)
-            continue
-        hits = _overlapping(segment_bundles, calendar.start, calendar.end)
-        for bundle in hits:
-            bundle.calendars.append(calendar)
-        if not hits:
-            extra.append(_own(calendar.start, calendar.end, calendars=[calendar]))
+    linked = _link_calendars(visits, [c for c in timed if not c.background], order)
+    for bundle, calendar in linked:
+        bundle.calendars = [calendar]
+    linked_ids = {calendar.clue_id for _, calendar in linked}
 
-    for photo in sorted(photos, key=lambda p: (p.taken_at is None, p.taken_at or datetime.min)):
-        hits = _photo_bundles(segment_bundles, photo)
-        for bundle in hits:
-            bundle.photos.append(photo)
-        if hits:
+    calendar_bundles: list[ClueBundle] = []
+    for calendar in timed:
+        if calendar.clue_id in linked_ids:
             continue
-        # 구간에 붙지 않은 사진은 같은 장면이면 한 묶음이다(`same_photo_scene`). 2초 간격 저녁
-        # 사진 두 장이 묶음 둘이 되자 Timeline 이 식사 event 를 둘 만들었다.
-        scene = next(
-            (
-                bundle
-                for bundle in reversed(extra)
-                if bundle.photos
-                and not bundle.calendars
-                and same_photo_scene(
-                    bundle.photos[-1].taken_at,
-                    (bundle.photos[-1].latitude, bundle.photos[-1].longitude),
-                    photo.taken_at,
-                    (photo.latitude, photo.longitude),
-                )
+        if calendar.background:
+            for bundle in _overlapping(segment_bundles, calendar.start, calendar.end):
+                bundle.background_calendar_ids.append(calendar.clue_id)
+            calendar_bundles.append(_own(calendar.start, calendar.end, calendars=[calendar]))
+            continue
+        hosts = [
+            b
+            for b in visits
+            if _overlap(b.segment.start, b.segment.end, calendar.start, calendar.end) > timedelta(0)
+            and _relation(calendar, b.segment.places, b.segment.address) is not _Relation.CONFLICT
+        ]
+        own = _own(calendar.start, calendar.end, calendars=[calendar])
+        own.host = min(
+            hosts,
+            key=lambda b: (
+                -_overlap(b.segment.start, b.segment.end, calendar.start, calendar.end),
+                b.segment.start,
             ),
-            None,
+            default=None,
         )
-        if scene is not None:
-            scene.photos.append(photo)
-            scene.end = photo.taken_at
-        else:
-            extra.append(_own(photo.taken_at, photo.taken_at, photos=[photo]))
+        own.place_records = [
+            record
+            for b in hosts
+            if b.segment.kind is SegmentKind.STAY
+            for record in b.segment.records
+            if _touches(record.start, record.end, calendar.start, calendar.end)
+        ]
+        calendar_bundles.append(own)
+
+    photo_bundles: list[ClueBundle] = []
+    timed_photos = [p for p in photos if p.taken_at is not None]
+    for photo in sorted(timed_photos, key=lambda p: p.taken_at):
+        _photo_owner(photo, visits, calendar_bundles, photo_bundles, order).photos.append(photo)
 
     day_notifications: list[NotificationClue] = []
+    conversation_bundles: list[ClueBundle] = []
     for clue in notifications:
         if clue.kind is not NotificationClueKind.CONVERSATION:
             hits = _overlapping(segment_bundles, clue.first_at, clue.first_at)
@@ -251,18 +315,43 @@ def build_timeline_clues(
             else:
                 day_notifications.append(clue)
             continue
-        extra.append(_own(clue.first_at, clue.last_at or clue.first_at, conversations=[clue]))
+        conversation_bundles.append(
+            _own(clue.first_at, clue.last_at or clue.first_at, conversations=[clue])
+        )
 
-    bundles = sorted(
-        [*segment_bundles, *extra],
-        key=lambda b: (b.start is None, b.start.timestamp() if b.start else 0.0),
-    )
+    for bundle in segment_bundles:
+        base = build_base_event(bundle.segment, 0, area_of(bundle.segment.address), route_of(bundle.segment))
+        if bundle.calendars:
+            base = with_calendar(base, bundle.calendars[0])
+        bundle.base_event = replace(base, photos=tuple(bundle.photos))
+    for bundle in calendar_bundles:
+        bundle.base_event = replace(
+            calendar_base_event(bundle.calendars[0], place_records=bundle.place_records),
+            photos=tuple(bundle.photos),
+        )
+    for bundle in photo_bundles:
+        bundle.base_event = photo_base_event(bundle.photos)
+        bundle.start, bundle.end = bundle.base_event.start, bundle.base_event.end
+
+    events = sorted([*segment_bundles, *calendar_bundles, *photo_bundles], key=_display_key)
+    for number, bundle in enumerate(events, start=1):
+        bundle.base_event = replace(bundle.base_event, base_id=f"E{number}")
+    for bundle in events:
+        if bundle.host is not None:
+            bundle.base_event = replace(bundle.base_event, inside=bundle.host.base_event.base_id)
+
+    bundles = [*events, *sorted(conversation_bundles, key=lambda b: (b.start is None, b.start or datetime.min))]
+    bundles.sort(key=lambda b: (b.base_event is None or not b.base_event.all_day, _start_key(b)))
     for number, bundle in enumerate(bundles, start=1):
         bundle.bundle_id = f"B{number}"
 
     loose: list[LocationRecord] = []
     for record in skeleton.isolated:
-        hits = _overlapping(bundles, record.start, record.end)
+        hits = _overlapping(segment_bundles, record.start, record.end) or [
+            b
+            for b in _overlapping(events, record.start, record.end)
+            if not b.calendars or not b.calendars[0].background
+        ]
         for bundle in hits[:1]:
             bundle.isolated.append(record)
         if not hits:
@@ -282,6 +371,183 @@ def build_timeline_clues(
     )
 
 
+def display_key(base: BaseEvent) -> tuple:
+    """event 의 표시 순서. 종일 일정이 먼저이고, 그다음 시작 시각, 같으면 짧은 것이 먼저다(#202)."""
+
+    return (not base.all_day, base.start, base.end, _KIND_ORDER[base.kind.value])
+
+
+#: 같은 시간의 기본 event 를 늘어놓는 순서. 위치 구간이 먼저다.
+_KIND_ORDER = {"STAY": 0, "WALK": 1, "MOVEMENT": 2, "CALENDAR": 3, "PHOTO": 4}
+
+
+def _display_key(bundle: ClueBundle) -> tuple:
+    calendar = bundle.calendars[0] if bundle.calendars else None
+    segment = bundle.segment
+    all_day = segment is None and calendar is not None and calendar.all_day
+    kind = segment.kind.value if segment else ("CALENDAR" if calendar else "PHOTO")
+    first = (
+        segment.raw_ids[0] if segment and segment.raw_ids
+        else calendar.raw_id if calendar
+        else bundle.photos[0].raw_id
+    )
+    return (not all_day, bundle.start, bundle.end, _KIND_ORDER[kind], first)
+
+
+def _start_key(bundle: ClueBundle) -> tuple:
+    return (bundle.start is None, bundle.start or datetime.min)
+
+
+class _Relation(Enum):
+    MATCH = "MATCH"
+    CONFLICT = "CONFLICT"
+    UNKNOWN = "UNKNOWN"
+
+
+def _relation(calendar: CalendarClue, names, address: str | None) -> _Relation:
+    """일정의 장소와 방문·사진의 장소가 맞는가."""
+
+    if calendar.place and normalize_place_text(calendar.place) in {
+        normalize_place_text(name) for name in names if name
+    }:
+        return _Relation.MATCH
+    if not calendar.address or not address:
+        return _Relation.UNKNOWN
+    planned, there = AreaNamer().name(calendar.address), AreaNamer().name(address)
+    if planned and planned == there:
+        return _Relation.MATCH
+    left, right = district_of(calendar.address), district_of(address)
+    if left and right and (
+        left[1] != right[1] or (left[0] is not None and right[0] is not None and left[0] != right[0])
+    ):
+        return _Relation.CONFLICT
+    return _Relation.UNKNOWN
+
+
+def _link_calendars(
+    visits: list[ClueBundle], calendars: list[CalendarClue], order: dict[str, int]
+) -> list[tuple[ClueBundle, CalendarClue]]:
+    """방문을 덮는 일정과 그 방문을 하나씩 짝짓는다(사용자 결정 2026-10-30, #202)."""
+
+    pairs = []
+    for calendar in calendars:
+        for index, bundle in enumerate(visits):
+            segment = bundle.segment
+            overlap = _overlap(segment.start, segment.end, calendar.start, calendar.end)
+            if overlap <= timedelta(0) or _outside(segment.start, segment.end, calendar) > SHORT_STAY_MAX:
+                continue
+            relation = _relation(calendar, segment.places, segment.address)
+            if relation is _Relation.CONFLICT:
+                continue
+            key = (
+                relation is not _Relation.MATCH,
+                -overlap,
+                calendar.start,
+                order[calendar.clue_id],
+                segment.start,
+                index,
+            )
+            pairs.append((key, bundle, calendar))
+    linked: list[tuple[ClueBundle, CalendarClue]] = []
+    taken_visits: set[int] = set()
+    taken_calendars: set[str] = set()
+    for _, bundle, calendar in sorted(pairs, key=lambda pair: pair[0]):
+        if id(bundle) in taken_visits or calendar.clue_id in taken_calendars:
+            continue
+        linked.append((bundle, calendar))
+        taken_visits.add(id(bundle))
+        taken_calendars.add(calendar.clue_id)
+    return linked
+
+
+def _photo_owner(
+    photo: PhotoClue,
+    visits: list[ClueBundle],
+    calendar_bundles: list[ClueBundle],
+    photo_bundles: list[ClueBundle],
+    order: dict[str, int],
+) -> ClueBundle:
+    """사진이 들어갈 묶음 하나(모듈 docstring 의 1~4)."""
+
+    taken = photo.taken_at
+    visit = _photo_visit(photo, visits)
+    if visit is not None:
+        inner = [
+            b
+            for b in calendar_bundles
+            if b.host is visit
+            and b.calendars[0].start <= taken <= b.calendars[0].end
+            and _relation(b.calendars[0], photo.places, photo.address) is _Relation.MATCH
+        ]
+        return min(inner, key=lambda b: _calendar_rank(b.calendars[0], photo, order), default=visit)
+
+    free = [
+        b
+        for b in calendar_bundles
+        if b.host is None
+        and not b.calendars[0].background
+        and b.calendars[0].start <= taken <= b.calendars[0].end
+    ]
+    if free:
+        return min(free, key=lambda b: _calendar_rank(b.calendars[0], photo, order))
+
+    scene = photo_bundles[-1] if photo_bundles else None
+    if scene is not None and same_photo_scene(
+        scene.photos[-1].taken_at,
+        (scene.photos[-1].latitude, scene.photos[-1].longitude),
+        taken,
+        (photo.latitude, photo.longitude),
+    ):
+        return scene
+    scene = _own(taken, taken)
+    photo_bundles.append(scene)
+    return scene
+
+
+def _calendar_rank(calendar: CalendarClue, photo: PhotoClue, order: dict[str, int]) -> tuple:
+    return (
+        _relation(calendar, photo.places, photo.address) is not _Relation.MATCH,
+        calendar.end - calendar.start,
+        calendar.start,
+        order[calendar.clue_id],
+    )
+
+
+def _photo_visit(photo: PhotoClue, visits: list[ClueBundle]) -> ClueBundle | None:
+    """사진이 찍힌 방문. 시각과 위치가 모두 맞아야 한다."""
+
+    taken = photo.taken_at
+    point = (photo.latitude, photo.longitude) if photo.latitude is not None and photo.longitude is not None else None
+    found = []
+    for index, bundle in enumerate(visits):
+        segment = bundle.segment
+        inside = segment.start <= taken <= segment.end
+        if segment.kind is SegmentKind.WALK or point is None:
+            if inside:
+                found.append(((0, 0.0, segment.start, index), bundle))
+            continue
+        if not segment.start - SHORT_STAY_MAX <= taken <= segment.end + SHORT_STAY_MAX:
+            continue
+        distance = _distance_to(point, segment)
+        if distance is None:
+            if inside:
+                found.append(((0, 0.0, segment.start, index), bundle))
+            continue
+        if distance <= SAME_PLACE_MAX_METERS:
+            found.append(((0 if inside else 1, distance, segment.start, index), bundle))
+    return min(found, key=lambda item: item[0])[1] if found else None
+
+
+def _distance_to(point: tuple[float, float], segment: SkeletonSegment) -> float | None:
+    """구간의 지점들과 가장 가까운 거리. 체류는 구간 안 기록의 지점도 본다."""
+
+    points = [segment.spot.point] if segment.spot and segment.spot.point else []
+    if segment.kind is SegmentKind.STAY:
+        points.extend(r.spot.point for r in segment.records if r.spot and r.spot.point)
+    distances = [d for p in points if (d := distance_between(point, p)) is not None]
+    return min(distances) if distances else None
+
+
 def _day_addresses(
     skeleton: LocationSkeleton, calendars: list[CalendarClue], photos: list[PhotoClue]
 ) -> list[str | None]:
@@ -296,35 +562,16 @@ def _day_addresses(
     ]
 
 
-def _embed_calendars(bundles: list[ClueBundle], calendars: list[CalendarClue]) -> None:
-    """일정이 덮은 체류의 기본 event 를 일정 기본 event 로 바꾼다(사용자 결정 2026-10-30).
+def _overlap(start: datetime, end: datetime, other_start: datetime, other_end: datetime) -> timedelta:
+    return max(timedelta(0), min(end, other_end) - max(start, other_start))
 
-    배경 일정이 아니고 시각이 있는 일정이 체류 구간을 덮으면 — 구간 중 일정 밖 시간이 20분
-    (`SHORT_STAY_MAX`) 이하 — 그 구간이 일정의 위치다. 일정 하나는 가장 오래 겹친 체류 하나에만
-    넣는다. 같은 일정 시간 안의 다른 장소 체류는 자기 기본 event 그대로다(위치 뼈대는 살린다,
-    사용자 결정). 긴 체류의 일부만 덮는 일정(9시간 사무실 안의 1시간 회의)은 넣지 않는다 — 그
-    일정은 Timeline 이 체류 안으로 꺼낸다.
-    """
 
-    for calendar in calendars:
-        if calendar.background or calendar.start is None or calendar.end is None:
-            continue
-        covered = [
-            bundle
-            for bundle in bundles
-            if bundle.base_event is not None
-            and bundle.base_event.calendar is None
-            and bundle.segment is not None
-            and bundle.segment.kind is SegmentKind.STAY
-            and _outside(bundle.segment.start, bundle.segment.end, calendar) <= SHORT_STAY_MAX
-        ]
-        if not covered:
-            continue
-        bundle = max(
-            covered,
-            key=lambda b: min(b.segment.end, calendar.end) - max(b.segment.start, calendar.start),
-        )
-        bundle.base_event = with_calendar(bundle.base_event, calendar)
+def _touches(start: datetime, end: datetime, other_start: datetime, other_end: datetime) -> bool:
+    """두 시간이 겹치는가. 한 점짜리 일정은 그 시각을 품는 기록과 겹친다."""
+
+    if other_start == other_end:
+        return start <= other_start <= end
+    return start < other_end and other_start < end
 
 
 def _outside(start: datetime, end: datetime, calendar: CalendarClue) -> timedelta:
@@ -359,45 +606,10 @@ def _overlapping(
     return hits
 
 
-def _photo_bundles(bundles: list[ClueBundle], photo: PhotoClue) -> list[ClueBundle]:
-    """사진이 붙을 구간: 촬영 시각을 품는 구간과, 위치가 같은 바로 앞·뒤 구간."""
-
-    if photo.taken_at is None:
-        return []
-    containing = _overlapping(bundles, photo.taken_at, photo.taken_at)
-    if containing:
-        index = bundles.index(containing[0])
-        neighbors = [bundles[i] for i in (index - 1, index + 1) if 0 <= i < len(bundles)]
-    else:
-        before = [b for b in bundles if b.end is not None and b.end < photo.taken_at]
-        after = [b for b in bundles if b.start is not None and b.start > photo.taken_at]
-        neighbors = [*before[-1:], *after[:1]]
-    hits = list(containing)
-    for bundle in neighbors:
-        if bundle not in hits and _same_spot(photo, bundle.segment):
-            hits.append(bundle)
-    return sorted(hits, key=bundles.index)
-
-
-def _same_spot(photo: PhotoClue, segment: SkeletonSegment | None) -> bool:
-    if segment is None or photo.latitude is None or photo.longitude is None:
-        return False
-    points = [segment.spot.point] if segment.spot and segment.spot.point else []
-    if segment.kind is SegmentKind.STAY:
-        points.extend(r.spot.point for r in segment.records if r.spot and r.spot.point)
-    for point in points:
-        distance = distance_between((photo.latitude, photo.longitude), point)
-        if distance is not None and distance <= SAME_PLACE_MAX_METERS:
-            return True
-    return False
-
-
 # --- 근거 id 펼치기 -----------------------------------------------------------------
 
-#: 단서 종류마다 `sourceRefs.reason` 에 코드가 적는 말. 왜 묶였는지는 `mergeReason` 이 담는다.
+#: 단서 종류마다 `sourceRefs.reason` 에 코드가 적는 말.
 _REASONS = {
-    "segment": "위치 구간",
-    "isolated": "짧은 위치 기록",
     "photo": "사진",
     "calendar": "일정",
     "conversation": "대화 알림",
@@ -406,128 +618,68 @@ _REASONS = {
 
 
 def expand_evidence(
-    clues: TimelineClues,
-    events_evidence: list[list[str]],
-    request: TimelineDraftRequest,
-    events_bases: list[list[str]] | None = None,
-    *,
-    held_elsewhere: frozenset[str] | set[str] = frozenset(),
-) -> list[list[SourceRef]]:
-    """event 마다 근거 id 목록을 `sourceRefs` 로 펼친다.
+    clues: TimelineClues, identifiers: list[str], request: TimelineDraftRequest
+) -> list[SourceRef]:
+    """근거 id(event `E3`, 단서 `P2`·`C1`·`N5`)를 `sourceRefs` 로 펼친다. 모르는 id 는 버린다.
 
-    `held_elsewhere` 는 다른 event 가 이미 가진 rawId 다(Repair 가 event 하나를 고칠 때). 묶음을
-    펼칠 때 그 사진·대화는 빼고, 단서 id 로 직접 적은 것만 담는다. 실제 Repair 가 회의 event 의 근거를
-    `B5`·`C1` 로 다시 적자 B5 의 식사 사진까지 회의로 들어갔고, 사진 단일 귀속이 일정이 있는 회의에
-    사진을 남겨 사진뿐이던 식사 event 가 지워졌다.
-
-    기본 event id(`events_bases`)는 그 구간의 위치 기록이다. 묶음 id 는 그 구간과 거기 붙은 사진·일정·
-    대화 전부이고 알림은 담지 않는다(#173). 다만 **다른 event 가 단서 id 로 직접 가져간 단서는 그 묶음을 펼칠 때 빠진다** — 묶음에 붙은 점심 사진을 다른 event 가 `P2` 로 가져갔으면
-    그 묶음의 event 에는 넣지 않는다. 같은 event 안에서 같은 rawId 는 한 번만 담는다.
-    모르는 id 는 버린다.
+    event id 는 그 기본 event 의 위치 기록·일정·사진이다. warning 이 가리키는 근거를 rawId 로 바꿀 때 쓴다.
+    같은 rawId 는 한 번만 담는다.
     """
 
     by_clue_id = _clue_index(clues)
-    taken_directly = {
-        identifier
-        for evidence in events_evidence
-        for identifier in evidence
-        if identifier in by_clue_id
-    }
     owners = build_owner_index(request)
+    refs: list[SourceRef] = []
+    seen: set[str] = set()
 
-    expanded: list[list[SourceRef]] = []
-    bases_by_event = events_bases or [[] for _ in events_evidence]
-    for evidence, bases in zip(events_evidence, bases_by_event):
-        refs: list[SourceRef] = []
-        seen: set[str] = set()
+    def add(raw_id: str, reason: str) -> None:
+        source_type = _source_type(owners, raw_id)
+        if raw_id in seen or source_type is None:
+            return
+        seen.add(raw_id)
+        refs.append(SourceRef(source_type=source_type, raw_id=raw_id, reason=reason))
 
-        def add(raw_ids: list[str], kind: str) -> None:
+    for identifier in identifiers:
+        identifier = str(identifier).strip()
+        if identifier in by_clue_id:
+            kind, raw_ids = by_clue_id[identifier]
             for raw_id in raw_ids:
-                if raw_id in seen:
-                    continue
-                source_type = _source_type(owners, raw_id)
-                if source_type is None:
-                    continue
-                seen.add(raw_id)
-                refs.append(
-                    SourceRef(source_type=source_type, raw_id=raw_id, reason=_REASONS[kind])
-                )
-
-        # 기본 event 에서 온 event 는 그 구간의 위치 기록을 근거로 갖는다. 구간에 붙은 단서는
-        # evidence 에 적은 것만 담는다 — 나눈 조각마다 묶음의 사진을 모두 갖지 않게 한다.
-        for base_id in bases:
-            bundle = clues.base_bundle(base_id.strip())
-            if bundle is not None and bundle.segment is not None:
-                add(bundle.segment.raw_ids, "segment")
-        for identifier in evidence:
-            identifier = identifier.strip()
-            if identifier in by_clue_id:
-                kind, raw_ids = by_clue_id[identifier]
-                add(raw_ids, kind)
-                continue
-            bundle = clues.bundle(identifier)
-            if bundle is None:
-                continue
-            if bundle.segment is not None:
-                add(bundle.segment.raw_ids, "segment")
-            add([r.raw_id for r in bundle.isolated], "isolated")
-            for kind, items in (
-                ("photo", bundle.photos),
-                ("calendar", bundle.calendars),
-                ("conversation", bundle.conversations),
-            ):
-                for clue in items:
-                    if clue.clue_id in evidence:
-                        add(_raw_ids_of(clue), kind)
-                        continue
-                    if clue.clue_id in taken_directly:
-                        continue
-                    if kind != "calendar" and set(_raw_ids_of(clue)) <= set(held_elsewhere):
-                        continue
-                    add(_raw_ids_of(clue), kind)
-        expanded.append(refs)
-    return expanded
+                add(raw_id, _REASONS[kind])
+        elif (bundle := clues.base_bundle(identifier)) is not None:
+            for ref in structural_refs(bundle.base_event):
+                add(ref.raw_id, ref.reason or "")
+    return refs
 
 
-def misplaced_clues(
-    clues: TimelineClues, start: datetime, end: datetime, refs: list[SourceRef]
-) -> dict[str, str]:
-    """event 의 시간·장소와 맞지 않는 사진·일정 근거. rawId → 단서 id(사용자 결정 2026-10-30·31).
+def notification_evidence(
+    clues: TimelineClues, identifiers: list[str], request: TimelineDraftRequest
+) -> tuple[list[SourceRef], list[str]]:
+    """모델이 고르는 근거(알림·대화)만 펼친다(#202). 펼치지 않은 id 를 함께 돌려준다.
 
-    "시간과 장소 둘 다 봐야지 사진뿐만이 아니라 모든 근거들에 대해서". LLM 이 적은 근거를 그 자리에서
-    본다 — 같은 곳에 두 번 간 날 12:49 점심 사진이 아침 체류(08:54~10:22)의 근거로 적혔고, Repair 가
-    그 말을 믿고 아침 체류를 식사로 바꿨다.
-
-    - 사진: 촬영 시각이 event 시간 앞뒤 20분(`SHORT_STAY_MAX`) 밖이거나, 위치를 아는데 event 가 가진
-      체류 구간과 250m 넘게 떨어졌다. 체류 구간이 없으면 장소는 보지 않는다.
-    - 일정: event 시간과 앞뒤 20분 안에서도 겹치지 않는다. 일정은 계획이라 시간이 조금 어긋날 수 있다.
-    - 대화·알림은 보지 않는다. 약속 대화는 나중에 만난 event 의 근거이고, 알림의 받은 시각은 그 일이
-      일어난 때가 아닐 수 있다.
+    위치 기록·사진·일정은 코드가 정한 근거라 모델이 옮기지 않는다. 알림 rawId 를 직접 적어도 받는다.
     """
 
-    held = {ref.raw_id for ref in refs}
-    stays = [
-        segment
-        for segment in clues.skeleton.segments
-        if segment.kind is SegmentKind.STAY and held & set(segment.raw_ids)
-    ]
-    low, high = start - SHORT_STAY_MAX, end + SHORT_STAY_MAX
-    bad: dict[str, str] = {}
-    for photo in clues.photos:
-        if photo.raw_id not in held:
+    by_clue_id = _clue_index(clues)
+    notification_ids = {raw_id_of(item) for item in request.notifications}
+    refs: list[SourceRef] = []
+    seen: set[str] = set()
+    ignored: list[str] = []
+    for identifier in identifiers:
+        identifier = str(identifier).strip()
+        found = by_clue_id.get(identifier)
+        if found is not None and found[0] in ("conversation", "notification"):
+            pairs = [(raw_id, _REASONS[found[0]]) for raw_id in found[1]]
+        elif identifier in notification_ids:
+            pairs = [(identifier, _REASONS["notification"])]
+        else:
+            ignored.append(identifier)
             continue
-        if photo.taken_at is not None and not low <= photo.taken_at <= high:
-            bad[photo.raw_id] = photo.clue_id
-        elif stays and photo.latitude is not None and photo.longitude is not None and not any(
-            _same_spot(photo, segment) for segment in stays
-        ):
-            bad[photo.raw_id] = photo.clue_id
-    for calendar in clues.calendars:
-        if calendar.raw_id not in held or calendar.start is None or calendar.end is None:
-            continue
-        if calendar.end < low or calendar.start > high:
-            bad[calendar.raw_id] = calendar.clue_id
-    return bad
+        for raw_id, reason in pairs:
+            if raw_id not in seen:
+                seen.add(raw_id)
+                refs.append(
+                    SourceRef(source_type=EventSourceType.NOTIFICATION, raw_id=raw_id, reason=reason)
+                )
+    return refs, ignored
 
 
 def _clue_index(clues: TimelineClues) -> dict[str, tuple[str, list[str]]]:
@@ -540,12 +692,6 @@ def _clue_index(clues: TimelineClues) -> dict[str, tuple[str, list[str]]]:
         kind = "conversation" if clue.kind is NotificationClueKind.CONVERSATION else "notification"
         index[clue.clue_id] = (kind, list(clue.raw_ids))
     return index
-
-
-def _raw_ids_of(clue: PhotoClue | CalendarClue | NotificationClue) -> list[str]:
-    if isinstance(clue, NotificationClue):
-        return list(clue.raw_ids)
-    return [clue.raw_id]
 
 
 def _source_type(owners: dict[str, set[EventSourceType]], raw_id: str) -> EventSourceType | None:
@@ -564,7 +710,7 @@ def _source_type(owners: dict[str, set[EventSourceType]], raw_id: str) -> EventS
 
 
 def timeline_input_sections(clues: TimelineClues) -> dict[str, object]:
-    """Timeline·Repair v4 가 읽는 `[하루]`·`[근거 묶음]`·`[빈 시간]`·`[알림]`."""
+    """Timeline·Repair v4 가 읽는 `[하루]`·`[event]`·`[대화]`·`[빈 시간]`·`[알림]`."""
 
     skeleton = clues.skeleton
     day: dict[str, object] = {"hasLocation": skeleton.has_location}
@@ -574,22 +720,47 @@ def timeline_input_sections(clues: TimelineClues) -> dict[str, object]:
         day["lastObservedAt"] = skeleton.last_observed_at.isoformat()
     if skeleton.last_spot and (label := skeleton.last_spot.label):
         day["lastPlace"] = label
+    contains: dict[str, list[str]] = {}
+    for base in clues.base_events:
+        if base.inside:
+            contains.setdefault(base.inside, []).append(base.base_id)
     return {
         "day": day,
-        "bundles": [_bundle_dict(bundle, clues) for bundle in clues.bundles],
+        "events": [
+            _event_dict(bundle, clues, contains.get(bundle.base_event.base_id, []))
+            for bundle in clues.bundles
+            if bundle.base_event is not None
+        ],
+        "conversations": [
+            _notification_dict(clue) for bundle in clues.bundles for clue in bundle.conversations
+        ],
         "emptyTimes": [_empty_dict(empty, clues) for empty in skeleton.empty_times],
         "notifications": [_notification_dict(clue) for clue in clues.day_notifications],
     }
 
 
-def _bundle_dict(bundle: ClueBundle, clues: TimelineClues) -> dict[str, object]:
-    payload: dict[str, object] = {"id": bundle.bundle_id}
-    if bundle.start is not None:
-        payload["startAt"] = bundle.start.isoformat()
-    if bundle.end is not None:
-        payload["endAt"] = bundle.end.isoformat()
-    if bundle.base_event is not None:
-        payload["baseEvent"] = bundle.base_event.as_prompt_dict()
+def _event_dict(bundle: ClueBundle, clues: TimelineClues, contains: list[str]) -> dict[str, object]:
+    base = bundle.base_event
+    payload: dict[str, object] = {
+        "id": base.base_id,
+        "kind": base.kind.value,
+        "startAt": base.start.isoformat(),
+        "endAt": base.end.isoformat(),
+    }
+    if bundle.photos:
+        # 시간 바로 다음에 싣는다(#202). 긴 위치 기록 뒤 맨 끝에 두었을 때 Timeline 이 사진을 다음 event 의
+        # 것으로 읽었다. 위치 구간의 사진은 어디인지를 구간이 말한다 — 사진의 주소·장소 후보까지 실으면 같은
+        # 곳에 두 번 간 날 LLM 이 그 이름으로 다른 시간의 구간에 사진을 이었다(사용자 결정 2026-10-31).
+        payload["photos"] = [
+            _photo_dict(photo, clues, with_place=bundle.segment is None) for photo in bundle.photos
+        ]
+    if base.fixed_type is not None:
+        payload["eventType"] = base.fixed_type.value
+    if base.inside:
+        payload["inside"] = base.inside
+    if contains:
+        payload["contains"] = contains
+    payload["frame"] = base.as_prompt_dict()
     if bundle.segment is not None:
         payload["location"] = _segment_dict(bundle.segment, clues)
     if bundle.places:
@@ -597,18 +768,11 @@ def _bundle_dict(bundle: ClueBundle, clues: TimelineClues) -> dict[str, object]:
     if bundle.background_calendar_ids:
         payload["backgroundCalendars"] = list(bundle.background_calendar_ids)
     if bundle.calendars:
-        payload["calendars"] = [
-            {**calendar.as_prompt_dict(), **({"area": a} if (a := clues.area(calendar.address)) else {})}
-            for calendar in bundle.calendars
-        ]
-    if bundle.photos:
-        # 위치 구간에 붙은 사진은 어디인지를 묶음이 말한다. 사진의 주소·장소 후보까지 실으면 같은 곳에
-        # 두 번 간 날 LLM 이 그 이름으로 다른 시간의 구간에 사진을 이었다(사용자 결정 2026-10-31).
-        payload["photos"] = [
-            _photo_dict(photo, clues, with_place=bundle.segment is None) for photo in bundle.photos
-        ]
-    if bundle.conversations:
-        payload["conversations"] = [_notification_dict(clue) for clue in bundle.conversations]
+        [calendar] = bundle.calendars
+        payload["calendar"] = {
+            **calendar.as_prompt_dict(),
+            **({"area": a} if (a := clues.area(calendar.address)) else {}),
+        }
     if bundle.notifications:
         payload["notifications"] = [_notification_dict(clue) for clue in bundle.notifications]
     if bundle.isolated:
