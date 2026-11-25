@@ -99,9 +99,11 @@ def is_conversation_event(
     대화 알림을 가졌고 일정·사진이 없으며, 근거가 알림뿐이거나 `SOCIAL` 이다. 일정·사진 없이 체류와
     대화뿐인 `SOCIAL` 도 대화 event 다 — 받은 메시지와 그 시간의 체류만으로는 만났다고 할 수 없다.
     `STAY`·`WORK` 처럼 틀이 있는 event 에 붙은 대화는 그 event 의 보조 근거라 여기 들지 않는다.
+    코드가 정한 기본 event(`base_event_ids` 가 있는 event, #202)도 대화 event 가 아니다 — 그 시간과 근거는
+    코드의 것이고, 대화는 그 event 를 뒷받침할 뿐이다.
     """
 
-    if event.event_type in _TRANSACTION_EVENT_TYPES:
+    if event.base_event_ids or event.event_type in _TRANSACTION_EVENT_TYPES:
         return False
     if not any(ref.raw_id in conversation_ids for ref in event.source_refs):
         return False

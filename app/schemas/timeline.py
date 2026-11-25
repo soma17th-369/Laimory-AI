@@ -118,6 +118,10 @@ class TimelineEventDraft(TimelineAgentEvent):
     #: v4 세트에서 이 event 가 어느 기본 event(`E1`…)에서 왔는지(#169). 기본 event 는 코드가
     #: 뼈대 구간마다 만든 구조다. 내부·관측용이며 결과 저장 계약에는 나가지 않는다.
     base_event_ids: list[str] = Field(default_factory=list, alias="baseEventIds")
+    #: v4 세트에서 이 event 의 글이 근거로 적은 사진 단서 id(`P2`…, #202). Timeline·Repair 가 글과 함께
+    #: 적고 코드가 그 event 의 사진과 대조한다. `None` 은 모델이 쓴 글이 아니라는 뜻이다(틀 글).
+    #: dump 에 넣지 않는다 — v1~v3 의 Repair 프롬프트가 draft 를 그대로 싣는다. `update_event` 가 옮겨 준다.
+    photo_ids: list[str] | None = Field(default=None, exclude=True)
 
 
 # Backward-compatible export name used by existing imports.
@@ -196,6 +200,47 @@ class TimelineClueOutput(CamelModel):
     # `events` 에는 쓰지 않는 일이 잦았고, 코드가 만들면 근거가 대화뿐인 것이 처음부터 맞다.
     conversations: list[TimelineConversationReview] = Field(default_factory=list)
     events: list[TimelineClueEvent] = Field(default_factory=list)
+    warnings: list[TimelineWarning] = Field(default_factory=list)
+
+
+class TimelinePhotoUse(CamelModel):
+    """글에 담는 사진 한 장과 그 사진으로 한 일."""
+
+    photo_id: str = Field(alias="id", min_length=1)
+    activity: str = Field(default="")
+
+
+class TimelineEventNarration(CamelModel):
+    """Timeline v4 가 event 하나에 쓰는 것. 시간과 근거는 코드가 정한 값이라 쓰지 않는다."""
+
+    event_id: str = Field(alias="id", min_length=1)
+    event_type: _ClueEventType = Field(alias="eventType")
+    # 글보다 먼저 쓴다(#202). 코드가 사진을 event 마다 정확히 넣어 줘도, 하루를 한 번에 쓰는 모델은 옆 event 의
+    # 사진을 읽어 썼다(같은 날 trace 5회 중 1회, 집의 예매 화면이 백화점 글에, 백화점 디저트가 다음 방문 글에).
+    # 어느 사진으로 썼는지 id 로 적게 하면 코드가 그 event 의 사진과 대조할 수 있다.
+    photos: list[TimelinePhotoUse] = Field(default_factory=list)
+    title: str = Field(min_length=1)
+    description: str = Field(default="")
+    #: 이 event 에 더하는 알림·대화 단서 id(`N5`).
+    evidence: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+    inference_level: InferenceLevel = Field(alias="inferenceLevel")
+    uncertainty: list[str] = Field(default_factory=list)
+    reason: str = Field(default="")
+    place_candidates: list[str] = Field(default_factory=list, alias="placeCandidates")
+
+
+class TimelineNarrationOutput(CamelModel):
+    """Timeline v4 의 LLM 출력 계약(#202).
+
+    하루의 event 와 그 시간·위치 기록·사진·일정 근거는 코드가 정한다. 모델은 event id 마다 종류와 글만
+    쓴다 — event 를 합치거나 나누거나 근거를 옮길 자리가 출력에 없다. `TimelineClueOutput` 은 지우지 않는다
+    (스키마는 추가만 한다).
+    """
+
+    # `events` 보다 먼저인 이유는 `TimelineClueOutput.conversations` 와 같다(#183).
+    conversations: list[TimelineConversationReview] = Field(default_factory=list)
+    events: list[TimelineEventNarration] = Field(default_factory=list)
     warnings: list[TimelineWarning] = Field(default_factory=list)
 
 
