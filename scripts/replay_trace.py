@@ -124,7 +124,7 @@ class RecordedPhotoAgent(EventAgent):
 
 
 class _SilentQuestionAgent(QuestionAgent):
-    def generate(self, request, draft):
+    def generate(self, request, draft, **_):
         return draft
 
 
@@ -173,17 +173,63 @@ def skeleton_report(trace: dict) -> str:
 # --- 실제 LLM 재실행 ----------------------------------------------------------------
 
 
+def _writer_record() -> tuple[dict, list]:
+    """v4 에서 Timeline 이 쓴 글과 Repair 가 부른 도구를 따로 남긴다(#202). 최종 draft 만으로는 누가 그 글을
+    썼는지 알 수 없다 — 사진을 옆 event 의 것으로 읽은 글이 Timeline 의 것인지 Repair 의 것인지 가려야 했다."""
+
+    import app.agents.repair.repair_agent as repair_module
+    import app.agents.timeline.timeline_agent as timeline_module
+
+    record: dict = {"timeline": None, "repairCalls": []}
+    parse, execute = timeline_module.parse_timeline_narration, repair_module.execute_tool_calls
+
+    def parse_and_keep(text, request, clues):
+        draft = parse(text, request, clues)
+        record["timeline"] = {
+            "raw": _json(text[text.find("{") : text.rfind("}") + 1]),
+            "events": [
+                {
+                    "event": (event.base_event_ids or [None])[0],
+                    "title": event.title,
+                    "description": event.description,
+                    "photos": event.photo_ids,
+                    "reason": event.merge_reason,
+                }
+                for event in draft.events
+            ],
+        }
+        return draft
+
+    def execute_and_keep(ctx, calls):
+        results = execute(ctx, calls)
+        record["repairCalls"].extend(
+            {"tool": call.tool, "args": call.args, "ok": result.ok, "message": result.message}
+            for call, result in zip(calls, results)
+        )
+        return results
+
+    timeline_module.parse_timeline_narration = parse_and_keep
+    repair_module.execute_tool_calls = execute_and_keep
+    return record, [(timeline_module, "parse_timeline_narration", parse), (repair_module, "execute_tool_calls", execute)]
+
+
 async def replay(trace: dict) -> dict:
     request = load_request(trace)
     version = settings.prompt_version
     started = perf_counter()
+    writers: dict = {}
     with token_usage_scope() as usage:
         if version == "v4":
-            draft = await run_main_agent(
-                request,
-                question_agent=_SilentQuestionAgent(),
-                photo_clue_agent=PhotoClueAgent(describer=RecordedDescriber(recorded_descriptions(trace))),
-            )
+            writers, originals = _writer_record()
+            try:
+                draft = await run_main_agent(
+                    request,
+                    question_agent=_SilentQuestionAgent(),
+                    photo_clue_agent=PhotoClueAgent(describer=RecordedDescriber(recorded_descriptions(trace))),
+                )
+            finally:
+                for module, name, original in originals:
+                    setattr(module, name, original)
         else:
             agents = [a for a in default_event_agents() if a.name != "photo"]
             agents.append(RecordedPhotoAgent(recorded_photo_result(trace)))
@@ -199,6 +245,8 @@ async def replay(trace: dict) -> dict:
         "result": build_result_request(draft, request).model_dump(by_alias=True, mode="json"),
         "warnings": [w.message for w in draft.warnings],
         "draft": draft.model_dump(by_alias=True, mode="json"),
+        "photoIds": {event.client_event_id: event.photo_ids for event in draft.events},
+        **writers,
     }
 
 
