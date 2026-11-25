@@ -111,6 +111,7 @@ from app.services.location_link import link_location_evidence
 from app.services.location_only_overlap import find_location_only_overlaps
 from app.services.location_skeleton import LocationSkeleton
 from app.services.meal_guard import (
+    MEAL_STAY_MAX_DURATION,
     enforce_meal_duration,
     find_unsupported_meals,
     is_calendar_meal,
@@ -124,7 +125,6 @@ from app.services.narrative_place_guard import (
 from app.services.notification_guard import verify_notification_draft
 from app.services.photo_guard import (
     enforce_photo_assignment,
-    enforce_photo_scenes,
     verify_photo_assignment,
 )
 from app.services.place_resolver import resolve_places
@@ -135,23 +135,13 @@ from app.services.place_slots import (
     place_names_in_title,
 )
 from app.services.skeleton_guard import (
-    remove_calendar_events_without_calendar,
-    remove_stays_without_location,
     NEEDS_WRITING,
     ensure_notification_events,
-    ensure_skeleton_segments,
-    hand_restored_events_to_repair,
-    keep_calendar_base_events,
-    keep_stay_word_out,
+    follow_base_events,
     keep_conversation_evidence,
-    keep_one_event_per_journey,
-    remove_events_outside_evidence,
-    remove_notification_events,
-    remove_unrecorded_movements,
+    keep_stay_word_out,
     retire_unknown_events,
     settle_event_evidence,
-    separate_movement_segments,
-    spares_from_sleep,
 )
 from app.services.sleep_guard import (
     enforce_sleep_boundary,
@@ -244,10 +234,30 @@ def _sort_key(event: TimelineEventDraft):
     )
 
 
-def sort_events(draft: TimelineDraft) -> None:
-    """event 를 시간 기준으로 확정 정렬한다(in-place). LLM 순서를 신뢰하지 않는다."""
+def sort_events(draft: TimelineDraft, *, plan: "TimelineClues | None" = None) -> None:
+    """event 를 시간 기준으로 확정 정렬한다(in-place). LLM 순서를 신뢰하지 않는다.
 
-    draft.events.sort(key=_sort_key)
+    `plan` 을 주면(v4, #202) 종일 일정 event 가 맨 앞이고("하루의 맨 앞에 한 번씩 안내"), 같은 시간의
+    event 는 기본 event 의 표시 순서다. 시작·종료 시각이 있는 긴 일정은 길이만으로 앞에 두지 않는다.
+    """
+
+    if plan is None:
+        draft.events.sort(key=_sort_key)
+        return
+    ranks = {base.base_id: rank for rank, base in enumerate(plan.base_events)}
+    leading = {base.base_id for base in plan.base_events if base.all_day}
+
+    def key(event: TimelineEventDraft):
+        base = next((b for b in event.base_event_ids if b in ranks), None)
+        return (
+            base not in leading,
+            event.start_time,
+            event.end_time,
+            ranks.get(base, len(ranks)),
+            *_sort_key(event)[2:],
+        )
+
+    draft.events.sort(key=key)
 
 
 # --- 지속시간 repair ----------------------------------------------------------
@@ -739,6 +749,8 @@ def _correction_steps(
     candidates: Sequence[AiEventCandidate] = (),
     clues: TimelineClues | None = None,
 ) -> tuple[tuple[str, Callable[[TimelineDraft, TimelineDraftRequest], object]], ...]:
+    if clues is not None:
+        return _clue_correction_steps(clues)
     # 사진 단일 귀속은 Timeline 이 버린 사진 candidate 를 되살려야 해서 candidate 를 받는다(#163).
     overrides: dict[str, Callable[[TimelineDraft, TimelineDraftRequest], object]] = {
         "사진 단일 귀속": partial(enforce_photo_assignment, candidates=candidates),
@@ -747,8 +759,6 @@ def _correction_steps(
         # v3 세트는 식당에 머문 식사를 3시간까지 두고(#163), 빈 place 를 채우지 않는다(#150).
         overrides["식사 시간"] = partial(enforce_meal_duration, allow_stay_meal=True)
         overrides["장소 확정"] = _resolve_places_without_filling
-    if clues is not None:
-        return _clue_correction_steps(overrides, clues)
     steps = tuple((name, overrides.get(name, step)) for name, step in _CORRECTION_STEPS)
     if not extended:
         return steps
@@ -761,126 +771,51 @@ def _correction_steps(
     )
 
 
-#: v4 세트(#167·#171)에서 v3 의 단계 대신 도는 것과 빠지는 것.
-#:
-#: - `위치 근거 연결`(#138)은 돌리지 않는다. v4 는 근거 묶음이 이미 구간에 단서를 붙였다.
-#: - 뼈대가 정한 구조를 지키는 네 단계를 더한다(`skeleton_guard`). 이동 기록도 교통 결제·예약도
-#:   없는 MOVEMENT 를 지우고, 이동 구간의 기록을 다른 event 에서 빼고, 근거의 시간과 겹치지
-#:   않는 event 를 지운 뒤, 어느 event 도 덮지 않은 기본 event 의 시간을 되살린다.
-#: - `장소 확정` 은 장소 칸 확정이다. 근거가 이름을 가리키면 확정하고 아니면 후보를 정한다.
-#: - `체류 병합` 은 돌리지 않는다. 위치 뼈대가 이미 같은 장소의 체류를 묶었다.
-#: - `문장 주소 정리` 는 `문장 장소 칸` 이다. 이동 문장을 주소로 쓰고 칸을 맞춘다.
-_CLUE_SKIPPED_STEPS = frozenset({"체류 병합"})
-
 #: v4 에서 보정 기록에 싣지 않는 단계(#196). 장소 칸 확정은 `place`·`address` 만 바꾸는데, v4 문장은
 #: `{place}` 칸이라 그 값이 바뀌어도 문장이 틀려지지 않고 `place` 는 사용자가 고르기 전의 1번 후보다.
 #: Timeline 이 `place` 를 쓰지 않아 첫 확정에서 거의 모든 event 가 이 기록에 올랐고, Repair 는 그것을
 #: 문장과 어긋난 보정으로 읽어 1번 후보를 확정된 장소로 보고 활동을 고쳐 썼다(장보기 → 머리 손질).
-_CLUE_UNRECORDED_STEPS = frozenset({"장소 확정", "장소 다시 확정"})
+_CLUE_UNRECORDED_STEPS = frozenset({"장소 확정"})
 
 
 def _clue_correction_steps(
-    overrides: dict[str, Callable[[TimelineDraft, TimelineDraftRequest], object]],
     clues: TimelineClues,
 ) -> tuple[tuple[str, Callable[[TimelineDraft, TimelineDraftRequest], object]], ...]:
+    """v4 세트의 확정 단계(#167·#171·#202).
+
+    하루의 event 와 그 시간·위치 기록·사진·일정 근거는 코드가 정했다(`clue_bundles`). 확정은 그 구조로
+    맞추고(`기본 event 따르기`), 나머지 단계는 구조가 아닌 것만 다룬다 — 대화 event, 알림 근거, 틀이 없는
+    날의 알림 event, 장소 칸, 제목의 장소 이름과 `체류`. v1~v3 의 단계 중 시간·event 를 바꾸는 것(지속시간
+    복원, 근거 구간 정렬, 식사 시간, 수면 경계, 체류 병합, 중복 정리, 사진 단일 귀속, 수면과 겹친 event 제거,
+    event 개수 정리)은 돌리지 않는다. 그 단계들은 모델이 고른 eventType 에 따라 시간을 다르게 고쳐, 같은 입력에서도
+    event 수와 경계가 달라졌다. 식사가 너무 길면 고치지 않고 짚는다(`UNSUPPORTED_MEAL`).
+    """
+
     conversation_ids = clues.conversation_ids
-    overrides = {
-        **overrides,
-        "장소 확정": partial(_confirm_place_slots, clues=clues),
-        # 체류·이동의 시간은 뼈대 구간 안의 시간이다 — 원래 시각으로 맞추면 정리한 이동이 되늘어난다.
-        "지속시간 복원": partial(repair_durations, skeleton=clues.skeleton),
-        "근거 구간 정렬": partial(align_location_events, skeleton=clues.skeleton),
-        # 식사 일정의 시간은 일정이 정한다(#184).
-        "식사 시간": partial(enforce_meal_duration, allow_stay_meal=True, keep_calendar_meal=True),
-        # 일정이 활동 타입을 가지므로 타입·장소가 같아도 일정이나 시간이 다르면 다른 사건이다(#184).
-        "중복 정리": lambda draft, request: resolve_overlaps(draft, by_calendar=True),
-        # 사진 candidate 가 없어, 되살리는 사진은 이어 찍은 것끼리 묶고 같은 장면은 한 event 로 모은다.
-        "사진 단일 귀속": enforce_photo_scenes,
-        # 수면 일정은 계획이다 — 이동과 다른 장소의 체류는 겹쳐도 남긴다.
-        "수면과 겹친 event 제거": partial(remove_events_overlapping_sleep, spare=spares_from_sleep(clues)),
+    return (
+        ("입력에 없는 근거 정리", _filter_sources),
+        ("근거 타입 정정", normalize_source_types),
+        ("요청 시간 범위", _enforce_window),
+        ("기본 event 따르기", partial(_skeleton_step, follow_base_events, clues=clues)),
+        ("대화 근거 지키기", partial(_skeleton_step, keep_conversation_evidence, clues=clues)),
         # v4 는 대화를 Notification 단서로 센다 — 앱 사전으로 세면 대화로 쓴 문자가 빠진다.
         # 단독 위치 기록은 보태기만 하는 근거라 알림뿐인 event 를 가를 때 세지 않는다(#173).
-        "대화 개수 제한": partial(
-            enforce_conversation_limit,
-            conversation_ids=conversation_ids,
-            aside=clues.short_record_ids,
+        (
+            "대화 개수 제한",
+            partial(enforce_conversation_limit, conversation_ids=conversation_ids, aside=clues.short_record_ids),
         ),
-        # 대화 event 는 10개와 상관없이 들어간다(#183, 사용자 결정 2026-11-02).
-        "event 개수 정리": lambda draft, request: enforce_event_count(
-            draft, aside=clues.short_record_ids, conversation_ids=conversation_ids
-        ),
-    }
-    steps = tuple(
-        (name, overrides.get(name, step))
-        for name, step in _CORRECTION_STEPS
-        if name not in _CLUE_SKIPPED_STEPS
+        ("알림 event 복원", partial(_skeleton_step, ensure_notification_events, clues=clues)),
+        ("근거 정리", partial(_skeleton_step, settle_event_evidence, clues=clues)),
+        ("종류 없는 event 정리", partial(_skeleton_step, retire_unknown_events, clues=clues)),
+        ("캘린더 장소 일치", reinforce_calendar_location),
+        ("장소 확정", partial(_confirm_place_slots, clues=clues)),
+        # 글은 고치지 않는다(사용자 결정 2026-10-31). `_inspect` 가 제안으로 Repair 에 넘긴다. 예외는 장소 자리
+        # 둘이다. 문장의 장소 이름은 칸으로 바꿔야 사용자가 고른 장소를 따라가고, 제목과 이동 글에는 장소 이름이
+        # 절대 남지 않는다(사용자 결정 2026-10-31).
+        ("문장 장소 칸", partial(fill_place_slots, clues=clues, slots_only=True)),
+        ("제목·이동 장소 이름", partial(_skeleton_step, keep_place_names_out, clues=clues)),
+        ("제목 체류 표현", partial(_skeleton_step, keep_stay_word_out, clues=clues)),
     )
-    # 위치 구간 복원은 캘린더 일정 복원 바로 뒤다. 되살린 event 도 시간·장소·정렬을 똑같이 거친다.
-    # 일정 기본 event 지키기는 캘린더 일정 복원 바로 앞이다 — Timeline 이 일정 근거를 빠뜨린 일정
-    # event 에 먼저 일정을 붙여야 복원이 같은 일정을 하나 더 만들지 않는다.
-    position = [name for name, _ in steps].index("캘린더 일정 복원") + 1
-    steps = (
-        *steps[: position - 1],
-        # 구조를 지키는 단계보다 먼저다 — `from` 을 적은 대화는 위치 근거 때문에 체류처럼 다뤄져 지워진다.
-        ("대화 근거 지키기", partial(_skeleton_step, keep_conversation_evidence, clues=clues)),
-        ("일정 기본 event 지키기", partial(_skeleton_step, keep_calendar_base_events, clues=clues)),
-        *steps[position - 1 : position],
-        # 뼈대가 정한 구조를 Timeline 이 어긴 것을 바로잡은 뒤에 빠진 구간을 복원한다.
-        ("근거 없는 이동 정리", partial(_skeleton_step, remove_unrecorded_movements, clues=clues)),
-        ("일정 근거 없는 일정 정리", partial(_skeleton_step, remove_calendar_events_without_calendar, clues=clues)),
-        ("위치 근거 없는 체류 정리", partial(_skeleton_step, remove_stays_without_location, clues=clues)),
-        ("이동 구간 분리", partial(_skeleton_step, separate_movement_segments, clues=clues)),
-        # 복원보다 앞이어야 한다. 일부만 쓴 이동을 넓히지 않으면 복원이 겹치는 이동을 하나 더 만든다.
-        ("이동 구간 하나로 맞추기", partial(_skeleton_step, keep_one_event_per_journey, clues=clues)),
-        ("근거 시간 밖 event 정리", partial(_skeleton_step, remove_events_outside_evidence, clues=clues)),
-        ("위치 구간 복원", partial(_skeleton_step, ensure_skeleton_segments, clues=clues)),
-        *steps[position:],
-    )
-    extended: list[tuple[str, Callable[[TimelineDraft, TimelineDraftRequest], object]]] = []
-    for name, step in _EXTENDED_CORRECTION_STEPS:
-        if name == "문장 주소 정리":
-            # 캘린더 일정은 절대 빠지지 않는다(사용자 결정). 앞 단계가 일정 event 를 지웠으면 다시
-            # 되살리고, 되살린 event 도 장소 후보를 받게 장소를 한 번 더 정한다.
-            # 위치 구간도 같다 — 복원 뒤에 도는 식사 시간·수면 단계가 체류를 줄이거나 지우면 그 시간이
-            # 빈다. 실제 재실행에서 407분 체류를 채운 식사가 20분으로 줄어 오후 체류가 통째로 비었다.
-            extended.append(
-                ("위치 구간 다시 확인", partial(_skeleton_step, ensure_skeleton_segments, clues=clues))
-            )
-            extended.append(("캘린더 일정 다시 확인", ensure_calendar_events))
-            extended.append(("알림 event 복원", partial(_skeleton_step, ensure_notification_events, clues=clues)))
-            # event 시간이 모두 정해진 뒤에 근거를 맞추고, 그 근거로 장소를 다시 정한다.
-            extended.append(
-                ("근거 정리", partial(_skeleton_step, settle_event_evidence, clues=clues))
-            )
-            # 근거 정리가 체류 근거를 빼면 알림뿐인 event 가 새로 생긴다(#173). 마지막 확정이면 그대로
-            # 저장되므로 그 자리에서 다시 지운다.
-            extended.append(
-                ("알림 event 다시 정리", partial(_skeleton_step, remove_notification_events, clues=clues))
-            )
-            extended.append(("종류 없는 event 정리", partial(_skeleton_step, retire_unknown_events, clues=clues)))
-            extended.append(("장소 다시 확정", partial(_confirm_place_slots, clues=clues)))
-            # 글은 고치지 않는다(사용자 결정 2026-10-31). `_inspect` 가 제안으로 Repair 에 넘긴다.
-            extended.append(
-                ("되살린 event 넘기기", partial(_skeleton_step, hand_restored_events_to_repair, clues=clues))
-            )
-            # 예외는 장소 자리 둘이다. 문장의 장소 이름은 칸으로 바꿔야 사용자가 고른 장소를 따라가고,
-            # 제목과 이동 글에는 장소 이름이 절대 남지 않는다(사용자 결정 2026-10-31).
-            extended.append(("문장 장소 칸", partial(fill_place_slots, clues=clues, slots_only=True)))
-            extended.append(("제목·이동 장소 이름", partial(_skeleton_step, keep_place_names_out, clues=clues)))
-            extended.append(("제목 체류 표현", partial(_skeleton_step, keep_stay_word_out, clues=clues)))
-        else:
-            if name == "대화 개수 제한":
-                # 사진 단일 귀속이 사진을 옮기면 체류와 대화만 남은 `SOCIAL` 이 새로 생긴다.
-                extended.append(
-                    ("대화 근거 다시 지키기", partial(_skeleton_step, keep_conversation_evidence, clues=clues))
-                )
-            extended.append((name, overrides.get(name, step)))
-            if name == "대화 개수 제한":
-                # 알림은 틀의 근거다. 단독 event 로 남는 알림은 대화 3개뿐이다(#173).
-                extended.append(
-                    ("알림 event 정리", partial(_skeleton_step, remove_notification_events, clues=clues))
-                )
-    return (*steps, *extended)
 
 
 def _confirm_place_slots(
@@ -927,7 +862,8 @@ def _inspect(
     verify_notification_draft(draft, request)
 
     verify_narrative_length(draft)
-    for finding in verify_event_duration(draft, request, by_type=extended):
+    # v4 의 event 시간은 코드가 정한다(#202). 길이를 짚으면 Repair 가 나눌 사건을 찾는데, 나눌 수 없다.
+    for finding in [] if clue_contract else verify_event_duration(draft, request, by_type=extended):
         report.add_finding("DURATION_OVER_LIMIT", finding.detail(), event=finding.event)
     verify_event_count(
         draft,
@@ -939,7 +875,8 @@ def _inspect(
     if not extended:
         return
 
-    for found in verify_movement_stay_boundary(draft, request, limit_is_long=clue_contract):
+    # v4 는 이동과 체류가 처음부터 다른 기본 event 라 이동 사이에 낀 체류가 없다(#202).
+    for found in [] if clue_contract else verify_movement_stay_boundary(draft, request):
         # 나눌 자리는 event 의 시간 안으로 맞춘 값이라 최종 시간이 정해진 뒤에 만든다.
         report.add_finding("LONG_STAY_BETWEEN_MOVEMENTS", found.detail, event=found.event)
 
@@ -948,15 +885,17 @@ def _inspect(
     # 구조인데, 이 검사를 받은 Repair 가 7시간 체류를 식사로 고쳐 썼다.
     for overlap in [] if clue_contract else find_location_only_overlaps(draft, request):
         report.add_finding("LOCATION_ONLY_OVERLAP", overlap.detail, event=overlap.event)
-    for meal in find_unsupported_meals(draft):
+    # v4 는 식사 시간 guard 가 돌지 않아(#202) 식당에 머문 식사(3시간)보다 긴 식사도 짚는다.
+    for meal in find_unsupported_meals(draft, max_duration=MEAL_STAY_MAX_DURATION if clue_contract else None):
         # v4 는 식사 약속 일정도 식사의 근거다(#184). 먹었다고 쓰는 것은 문장 규칙의 몫이다.
         if clue_contract and is_calendar_meal(meal, request):
             continue
-        report.add_finding(
-            "UNSUPPORTED_MEAL",
-            {"sourceTypes": sorted({ref.source_type.value for ref in meal.source_refs})},
-            event=meal,
-        )
+        detail: dict[str, object] = {
+            "sourceTypes": sorted({ref.source_type.value for ref in meal.source_refs})
+        }
+        if clue_contract and meal.end_time - meal.start_time > MEAL_STAY_MAX_DURATION:
+            detail["durationHours"] = round((meal.end_time - meal.start_time).total_seconds() / 3600, 1)
+        report.add_finding("UNSUPPORTED_MEAL", detail, event=meal)
     for label in find_narrative_labels(draft):
         # v4 는 주소를 문장에 쓸 수 있다(이동 문장, 후보가 없을 때의 주소 대체, 사용자 결정).
         if clue_contract and label.kind == "ADDRESS_IN_NARRATION":
@@ -983,6 +922,21 @@ def _inspect(
                 report.add_finding(
                     "EVENT_TO_WRITE",
                     {"sourceTypes": sorted({ref.source_type.value for ref in event.source_refs})},
+                    event=event,
+                )
+                continue
+            # 글이 쓴 사진이 그 event 의 사진과 다르다(#202). 사진은 코드가 event 마다 정했으니 어긋난 쪽은 글이다.
+            # 고치지 않고 짚는다 — 글은 Repair 가 쓴다.
+            if (gap := clues.photo_mismatch(event)) is not None and any(gap):
+                foreign, missing = gap
+                bundle = clues.base_bundle(event.base_event_ids[0])
+                report.add_finding(
+                    "PHOTO_MISMATCH",
+                    {
+                        "eventPhotos": [photo.clue_id for photo in bundle.base_event.photos],
+                        "otherPhotos": foreign,
+                        "missingPhotos": missing,
+                    },
                     event=event,
                 )
         for event, suggestion in suggest_text_fixes(draft, request, clues):
@@ -1046,7 +1000,9 @@ def repair_draft(
 
     # 병합으로 event 구성이 바뀌었을 수 있어 한 번 더 정렬한 뒤 id 를 부여한다.
     # 번호는 여기서만 준다. 중간 guard 는 event 를 지워도 번호를 다시 매기지 않는다(#144).
-    sort_events(draft)
+    # v4 는 기본 event 의 표시 순서를 따른다 — 종일 일정이 맨 앞이고, 같은 시간이면 모델의 confidence 가
+    # 아니라 코드의 순서다(#202).
+    sort_events(draft, plan=clues)
     if issued_ids is None:
         renumber_events(draft)
     else:
@@ -1067,6 +1023,7 @@ def enforce_final_photo_assignment(
     candidates: Sequence[AiEventCandidate] = (),
     *,
     prefer_extracted: bool = False,
+    plan: TimelineClues | None = None,
 ) -> None:
     """저장으로 넘어가기 직전에 사진 단일 귀속을 한 번 더 강제한다(#119).
 
@@ -1074,13 +1031,57 @@ def enforce_final_photo_assignment(
     단계가 생겨 사진 참조가 어긋나더라도, 어긋난 채로 저장되지는 않게 하는 마지막 자리다.
     저장을 실패시키지 않고 바로잡는다 — 실패로 막으면 사진 한 장 때문에 하루 기록 전체가
     사라진다.
+
+    `plan` 을 주면(v4, #203) 확정과 같은 기준으로 먼저 맞춘다(`follow_base_events`). 촬영 시각으로 사진 주인을
+    고르는 아래 강제는 코드가 정한 귀속(방문 → 방문 안 장소가 맞는 일정 …)과 기준이 달라, 계획이 정하지 못한
+    사진(촬영 시각을 읽지 못한 사진)만 다룬다. 정렬도 계획을 따른다 — 계획 없이 정렬하자 사진 event 하나가
+    생기는 것만으로 종일 일정이 하루 맨 앞에서 맨 뒤로 밀렸다.
     """
 
     # 남아 있는 event 의 번호는 바꾸지 않고 새로 만든 사진 event 에만 번호를 준다(#144).
     issued = {event.client_event_id for event in draft.events}
+    restructured = plan is not None and _follow_plan_before_storage(draft, request, plan)
     enforcement = enforce_photo_assignment(
         draft, request, candidates, prefer_extracted=prefer_extracted
     )
-    if enforcement.changed_composition:
-        sort_events(draft)
+    if restructured or enforcement.changed_composition:
+        sort_events(draft, plan=plan)
         assign_event_ids(draft, issued)
+
+
+def _structure(draft: TimelineDraft) -> list[tuple]:
+    """event 마다 코드가 정하는 값(기본 event·시간·종류·근거 rawId). 글과 질문은 넣지 않는다."""
+
+    return sorted(
+        (
+            tuple(event.base_event_ids),
+            event.start_time,
+            event.end_time,
+            event.event_type.value,
+            tuple(sorted(ref.raw_id for ref in event.source_refs)),
+        )
+        for event in draft.events
+    )
+
+
+def _follow_plan_before_storage(
+    draft: TimelineDraft, request: TimelineDraftRequest, plan: TimelineClues
+) -> bool:
+    """draft 가 코드가 정한 구조와 다르면 다시 맞춘다(in-place, #203). 맞췄으면 참이다.
+
+    마지막 확정이 이미 맞췄으므로 보통은 다르지 않다. 사본에서 먼저 대조해, 같으면 draft 를 건드리지 않는다
+    (`follow_base_events` 는 되살린 것이 없으면 마지막 확정이 남긴 되살림 warning 을 지운다).
+    """
+
+    probe = draft.model_copy(deep=True)
+    follow_base_events(probe, request, plan)
+    if _structure(probe) == _structure(draft):
+        return False
+    before = len(draft.events)
+    follow_base_events(draft, request, plan)
+    # 있어서는 안 되는 일이다. 확정 뒤에 구조를 바꾸는 단계가 생겼다는 뜻이라 찾을 수 있게 남긴다.
+    logger.warning(
+        "저장 직전 draft 가 코드가 정한 구조와 달라 다시 맞췄습니다",
+        extra=log_fields(eventCountBefore=before, eventCountAfter=len(draft.events)),
+    )
+    return True

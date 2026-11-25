@@ -4,12 +4,16 @@ v3 Location 프롬프트의 규칙을 코드로 옮긴 것이므로, 계획의 �
 테스트를 둔다(테스트 이름 앞의 `L번호`). 거리 기준(250m·1km)은 사용자 결정이다(처음 300m, 2026-10-30 에 250m).
 
 좌표는 위도 0.001 이 약 111m 다. 0.002 는 같은 장소(250m 이내), 0.005 는 250m~1km,
-0.02 는 다른 장소(1km 초과)다.
+0.02 는 다른 장소(1km 초과)다. 250m~1km 라도 두 곳에 각각 30분 넘게 머물렀으면 다른 방문이다(#201).
 """
+
+import math
+from datetime import datetime, timedelta
 
 import pytest
 
 from app.schemas import GeoPlace, MovementItem, TimeWindow
+from app.services import location_skeleton
 from app.services.location_skeleton import (
     EmptyTimeKind,
     SegmentKind,
@@ -22,8 +26,10 @@ _BASE_LAT = 37.5
 _BASE_LON = 127.0
 
 
-def _t(hhmm: str) -> str:
-    return f"2026-06-20T{hhmm}:00"
+def _t(clock: str) -> str:
+    """`HH:MM` 이나 `HH:MM:SS` 를 그날의 시각 문자열로."""
+
+    return f"2026-06-20T{clock}" if clock.count(":") == 2 else f"2026-06-20T{clock}:00"
 
 
 def _stay(label, start, end, *, lat=_BASE_LAT, lon=_BASE_LON, places=None, address=None):
@@ -513,9 +519,10 @@ def test_L11_far_apart_with_a_long_gap_is_still_an_unrecorded_movement():
 
 
 def test_L17_continuous_stays_250m_to_1km_apart_are_one_stay_with_the_longest_first():
-    """캠퍼스·단지 안의 여러 지점. 대표 지점은 가장 오래 머문 체류다."""
+    """캠퍼스·단지 안의 여러 지점. 한쪽이 30분 이하로 들른 곳이면 한 구간이고, 대표 지점은 가장 오래
+    머문 체류다. 두 곳에 각각 30분 넘게 머물렀으면 다른 방문이다(#201, 아래 「별도 방문」)."""
 
-    building = _stay("building", "09:00", "09:40", places=["공학관"])
+    building = _stay("building", "09:00", "09:30", places=["공학관"])
     library = _stay("library", "09:45", "13:00", lat=_BASE_LAT + 0.005, places=["도서관"])
 
     [segment] = _skeleton(stays=[building, library]).segments
@@ -562,6 +569,211 @@ def test_a_stay_at_another_place_between_same_place_stays_keeps_them_apart():
 def test_missing_coordinates_fall_back_to_the_same_address():
     first = stay_item("a", lat=None, lon=None, start=_t("09:00"), end=_t("10:00"), address="같은 주소", places=[])
     second = stay_item("b", lat=None, lon=None, start=_t("14:00"), end=_t("15:00"), address="같은 주소", places=[])
+
+    assert _kinds(_skeleton(stays=[first, second])) == [(SegmentKind.STAY, 2)]
+
+
+# --- 별도 방문 (#201) — 250m 넘게 떨어진 두 곳에 각각 30분 넘게 머물렀으면 따로 ------------------
+
+_APART_681M = 0.00613  # 위도 차 약 681m — 운영 사례의 두 장소 사이 거리
+
+
+def _visits_681m():
+    """운영 사례의 모양: 첫 장소 체류 3건, 7분 18초 공백, 두 번째 장소 체류 4건(첫 기록 28분)."""
+
+    there = _BASE_LAT + _APART_681M
+    first = [
+        _stay("a1", "09:00", "09:25"),
+        _stay("a2", "09:25", "09:50", lat=_BASE_LAT + 0.0003),
+        _stay("a3", "09:50", "10:10"),
+    ]
+    second = [
+        _stay("b1", "10:17:18", "10:45:18", lat=there),
+        _stay("b2", "10:45:18", "11:20", lat=there + 0.0002),
+        _stay("b3", "11:20", "11:50", lat=there),
+        _stay("b4", "11:50", "12:30", lat=there),
+    ]
+    return first, second
+
+
+def _shape(skeleton):
+    return [(s.kind, s.raw_ids, s.start, s.end) for s in skeleton.segments]
+
+
+def test_two_long_stays_681m_apart_are_separate_visits_despite_a_7_minute_gap():
+    """두 번째 장소의 첫 기록은 28분이지만 그곳에 이어 머문 기록까지 세면 30분을 넘는다.
+    나눈 사이는 7분이라 빈 시간이 아니고, 1km 안이라 기록되지 않은 이동도 아니다."""
+
+    first, second = _visits_681m()
+
+    skeleton = _skeleton(stays=[*first, *second])
+
+    assert _kinds(skeleton) == [(SegmentKind.STAY, 3), (SegmentKind.STAY, 4)]
+    here, there = skeleton.segments
+    assert here.raw_ids == [stay.raw_id for stay in first]
+    assert there.raw_ids == [stay.raw_id for stay in second]
+    assert here.end.time().isoformat() == "10:10:00"
+    assert there.start.time().isoformat() == "10:17:18"
+    assert [e for e in skeleton.empty_times if e.before and e.after] == []
+
+
+def test_the_same_input_gives_the_same_visits():
+    first, second = _visits_681m()
+    stays = [*first, *second]
+
+    once = _shape(_skeleton(stays=stays))
+
+    assert _shape(_skeleton(stays=stays)) == once
+    assert _shape(_skeleton(stays=list(reversed(stays)))) == once
+
+
+@pytest.mark.parametrize(
+    ("meters", "segments", "unrecorded"),
+    [
+        (250.0, [(SegmentKind.STAY, 2)], False),
+        (math.nextafter(250.0, math.inf), [(SegmentKind.STAY, 1), (SegmentKind.STAY, 1)], False),
+        (1000.0, [(SegmentKind.STAY, 1), (SegmentKind.STAY, 1)], False),
+        (math.nextafter(1000.0, math.inf), [(SegmentKind.STAY, 1), (SegmentKind.STAY, 1)], True),
+    ],
+    ids=["정확히 250m", "250m 직후", "정확히 1km", "1km 직후"],
+)
+def test_distance_boundaries_between_two_long_stays(monkeypatch, meters, segments, unrecorded):
+    """거리 함수를 고정해 경계값을 그대로 잰다. 250m 까지는 같은 장소, 1km 까지는 기록되지 않은 이동이 아니다."""
+
+    monkeypatch.setattr(
+        location_skeleton,
+        "distance_between",
+        lambda left, right: None if left is None or right is None else (0.0 if left == right else meters),
+    )
+    first = _stay("a", "09:00", "10:00")
+    second = _stay("b", "10:05", "11:00", lat=_BASE_LAT + 0.01)
+
+    skeleton = _skeleton(stays=[first, second])
+
+    assert _kinds(skeleton) == segments
+    between = [e.kind for e in skeleton.empty_times if e.before and e.after]
+    assert between == ([EmptyTimeKind.UNRECORDED_MOVEMENT] if unrecorded else [])
+
+
+@pytest.mark.parametrize("measured", ["앞", "뒤"])
+@pytest.mark.parametrize(
+    ("seconds", "separate"),
+    [(30 * 60 - 1, False), (30 * 60, False), (30 * 60 + 1, True)],
+    ids=["29분59초", "정확히 30분", "30분 1초"],
+)
+def test_30_minutes_on_either_side_is_where_visits_separate(measured, seconds, separate):
+    """다른 쪽은 2시간 머문 곳이다. 재는 쪽이 30분을 넘어야 다른 방문이다."""
+
+    day = datetime(2026, 6, 20, 9, 0)
+
+    def clock(moment):
+        return moment.strftime("%H:%M:%S")
+
+    if measured == "앞":
+        short_start = day
+        long_start = day + timedelta(seconds=seconds, minutes=5)
+    else:
+        long_start = day - timedelta(hours=2, minutes=5)
+        short_start = day
+    long_end = long_start + timedelta(hours=2)
+    long_stay = _stay("long", clock(long_start), clock(long_end))
+    measured_stay = _stay(
+        "measured",
+        clock(short_start),
+        clock(short_start + timedelta(seconds=seconds)),
+        lat=_BASE_LAT + 0.005,
+    )
+
+    kinds = _kinds(_skeleton(stays=[long_stay, measured_stay]))
+
+    assert kinds == ([(SegmentKind.STAY, 1)] * 2 if separate else [(SegmentKind.STAY, 2)])
+
+
+@pytest.mark.parametrize(
+    ("second", "separate"),
+    [
+        (
+            [("b1", "09:05", "09:20"), ("b2", "09:40", "09:55")],  # 걸친 시간 50분, 기록된 시간 30분
+            False,
+        ),
+        (
+            [("b1", "09:05", "09:25"), ("b2", "09:15", "09:35")],  # 기록 합 40분, 겹침을 빼면 30분
+            False,
+        ),
+        (
+            [("b1", "09:05", "09:15"), ("b2", "09:15", "10:00")],  # 첫 기록만 10분, 이어 머문 시간 55분
+            True,
+        ),
+    ],
+    ids=["공백은 세지 않음", "겹친 시간은 한 번만", "첫 기록만 짧음"],
+)
+def test_stay_time_counts_only_recorded_time_at_that_place(second, separate):
+    there = _BASE_LAT + 0.005
+    long_stay = _stay("a", "07:00", "09:00")
+    stays = [_stay(label, start, end, lat=there) for label, start, end in second]
+
+    kinds = _kinds(_skeleton(stays=[long_stay, *stays]))
+
+    assert kinds == ([(SegmentKind.STAY, 1), (SegmentKind.STAY, 2)] if separate else [(SegmentKind.STAY, 3)])
+
+
+def test_a_short_stop_between_two_long_visits_does_not_join_them():
+    """경유는 앞 방문에 남는다. 바로 앞(경유)만 견주면 셋이 다시 한 구간이 된다."""
+
+    home = _stay("home", "07:00", "09:00")
+    stop = _stay("stop", "09:05", "09:30", lat=_BASE_LAT + 0.005)  # 집에서 약 556m
+    office = _stay("office", "09:35", "12:00", lat=_BASE_LAT + 0.008)  # 경유에서 약 333m, 집에서 약 890m
+
+    skeleton = _skeleton(stays=[home, stop, office])
+
+    assert [segment.raw_ids for segment in skeleton.segments] == [
+        [home.raw_id, stop.raw_id],
+        [office.raw_id],
+    ]
+
+
+def test_a_short_stop_and_back_to_the_same_place_is_one_visit():
+    home = _stay("home-1", "07:00", "09:00")
+    stop = _stay("stop", "09:05", "09:30", lat=_BASE_LAT + 0.005)
+    back = _stay("home-2", "09:35", "12:00", lat=_BASE_LAT + 0.0005)
+
+    assert _kinds(_skeleton(stays=[home, stop, back])) == [(SegmentKind.STAY, 3)]
+
+
+def test_beyond_1km_a_short_side_still_means_another_place():
+    """한쪽이 짧은 경유라도 1km 넘게 떨어졌으면 지금처럼 따로이고 기록되지 않은 이동이다."""
+
+    first = _stay("a", "09:00", "11:00")
+    second = _stay("b", "11:05", "11:30", lat=_BASE_LAT + 0.02)
+
+    skeleton = _skeleton(stays=[first, second])
+
+    assert _kinds(skeleton) == [(SegmentKind.STAY, 1), (SegmentKind.STAY, 1)]
+    between = [e.kind for e in skeleton.empty_times if e.before and e.after]
+    assert between == [EmptyTimeKind.UNRECORDED_MOVEMENT]
+
+
+def test_a_movement_between_two_long_stays_681m_apart_stays_a_movement():
+    first = _stay("a", "07:00", "09:00")
+    movement = _move("m", "09:00", "09:10", to_lat=_BASE_LAT + _APART_681M)
+    second = _stay("b", "09:10", "12:00", lat=_BASE_LAT + _APART_681M)
+
+    assert _kinds(_skeleton(stays=[first, second], movements=[movement])) == [
+        (SegmentKind.STAY, 1),
+        (SegmentKind.MOVEMENT, 1),
+        (SegmentKind.STAY, 1),
+    ]
+
+
+def test_without_coordinates_two_long_stays_stay_together_when_continuous():
+    """거리를 모르면 30분 규칙으로 나누지 않는다 — 이름이 달라도 이어지면 지금처럼 한 구간이다."""
+
+    first = stay_item(
+        "a", lat=None, lon=None, start=_t("09:00"), end=_t("10:00"), address="주소 가", places=["공학관"]
+    )
+    second = stay_item(
+        "b", lat=None, lon=None, start=_t("10:05"), end=_t("12:00"), address="주소 나", places=["도서관"]
+    )
 
     assert _kinds(_skeleton(stays=[first, second])) == [(SegmentKind.STAY, 2)]
 

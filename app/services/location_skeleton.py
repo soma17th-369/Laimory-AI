@@ -23,11 +23,17 @@ v3 Location Agent(LLM)가 프롬프트 규칙으로 하던 일을 코드가 한�
 - **체류 뒤의 이동**: 체류 뒤에 기록이 끊겼다가 1km 넘게 떨어진 곳에서 이동이 시작되면, 그 이동은
   체류가 끝난 때 체류한 곳에서 출발한 것이다(#180, 사용자 결정 2026-11-01). 사이에 체류 정보가 없으니
   끊긴 시간도 이동이다. 역에서 기다린 뒤 기차 안에서 수집이 끊긴 날이 이 경우다.
-- **체류끼리**(사이에 이동 기록이 없을 때만, 바로 앞 체류와 잰다):
+- **체류끼리**(사이에 이동 기록이 없을 때만, 거리는 바로 앞 체류와 잰다):
   - 250m 이내면 같은 장소다. 공백이 아무리 길어도 하나로 묶는다(수집은 끊길 수 있다).
   - 1km 넘게 떨어지면 언제나 다른 장소다. 그 사이는 **기록되지 않은 이동**이다.
-  - 250m~1km 는 이어졌을 때만 묶는다(장소명이 달라도 하나 — 캠퍼스·단지).
-  - 좌표가 없으면 주소나 장소명이 같을 때 같은 장소로 보고, 아니면 250m~1km 처럼 다룬다.
+  - 250m~1km 는 이어졌을 때만 묶는다(장소명이 달라도 하나 — 캠퍼스·단지). 다만 두 곳에 각각
+    30분 넘게 머물렀으면 이어져도 다른 방문이다(#201). 머문 시간은 같은 장소로 이어진 체류 기록을
+    모아 기록된 시간만 잰다 — 공백과 겹친 시간은 세지 않고, 경계 뒤 첫 기록이 짧아도 그곳에 이어
+    머문 기록까지 센다. 한쪽이 30분 이하인 경유는 묶는다. 짧은 경유를 사이에 둔 두 긴 방문은 다시
+    합치지 않는다(바로 앞이 아니라 묶음 안의 긴 방문 모두와 견주고, 경유는 앞 방문에 남는다). 나눈
+    사이에 기록되지 않은 이동을 적지 않는다 — 그것은 1km 초과의 몫이다.
+  - 좌표가 없으면 주소나 장소명이 같을 때 같은 장소로 보고, 아니면 250m~1km 처럼 다룬다. 거리를
+    모르므로 30분 규칙으로는 나누지 않는다.
 - **산책**: 한 여정의 출발지와 최종 도착지가 같고(같은 이름이거나 250m 이내), 전체 30분
   이상이며, 모든 이동이 도보이고 이동 방식 충돌이 없다. 30분 미만 도보 왕복은 왕복 표시를 단
   이동이다. 방식을 모르는 이동이 하나라도 있으면 산책이 아니다.
@@ -48,11 +54,13 @@ v3 Location Agent(LLM)가 프롬프트 규칙으로 하던 일을 코드가 한�
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, tzinfo
 from enum import StrEnum
+from functools import cached_property
 
 from app.schemas import GeoPlace, MovementItem, StayItem, TimelineDraftRequest
 from app.services.location_metrics import (
     DIFFERENT_PLACE_MIN_METERS,
     SAME_PLACE_MAX_METERS,
+    SEPARATE_VISIT_OVER,
     SHORT_STAY_MAX,
     WALK_MIN_DURATION,
     MovementMetric,
@@ -411,9 +419,12 @@ def _flows(records: list[LocationRecord]) -> tuple[list[list[LocationRecord]], s
     """
 
     to_movement = _short_stays_on_journeys(records)
+    places = _places(records, to_movement)
     flows: list[list[LocationRecord]] = []
     far_splits: set[int] = set()
     current: list[LocationRecord] = []
+    #: 지금 체류 흐름에 든 장소 묶음. 여정 흐름에서는 비어 있다.
+    current_places: list[_Place] = []
     current_is_journey = False
 
     def close() -> None:
@@ -424,25 +435,33 @@ def _flows(records: list[LocationRecord]) -> tuple[list[list[LocationRecord]], s
 
     for index, record in enumerate(records):
         journey_part = not record.is_stay or index in to_movement
+        place = places[index]
         if not current:
             current, current_is_journey = [record], journey_part
+            current_places = [place] if place else []
             continue
         reached = max(r.end for r in current)
         if journey_part and current_is_journey and not _stopped_between(current[-1], record, reached):
             current.append(record)
             continue
-        if not journey_part and not current_is_journey:
-            decision = _stay_decision(current[-1], record, reached)
+        if place is not None and not current_is_journey:
+            decision = _stay_decision(
+                current[-1], record, reached, separate=_separate_visit(current_places, place)
+            )
             if decision == "merge":
                 current.append(record)
+                if place not in current_places:
+                    current_places.append(place)
                 continue
             close()
             if decision == "far":
                 far_splits.add(len(flows) - 1)
             current, current_is_journey = [record], journey_part
+            current_places = [place]
             continue
         close()
         current, current_is_journey = [record], journey_part
+        current_places = [place] if place else []
     close()
     return flows, far_splits
 
@@ -492,21 +511,114 @@ def _short_stays_on_journeys(records: list[LocationRecord]) -> set[int]:
     return attached
 
 
-def _stay_decision(previous: LocationRecord, record: LocationRecord, reached: datetime) -> str:
+def _stay_decision(
+    previous: LocationRecord, record: LocationRecord, reached: datetime, *, separate: bool
+) -> str:
     """사이에 이동 기록이 없는 두 체류를 묶을지. `merge`·`split`·`far` 중 하나다.
 
-    거리는 바로 앞 체류와 재고, 공백은 묶음이 닿은 마지막 시각부터 잰다.
+    거리는 바로 앞 체류와 재고, 공백은 묶음이 닿은 마지막 시각부터 잰다. `separate` 는 두 곳에
+    각각 오래 머물렀다는 뜻이다(`_separate_visit`, #201). 같은 장소와 1km 초과 판단이 그보다
+    먼저이고, 나눌 때도 `far` 가 아니라 `split` 이다 — 그 사이를 기록되지 않은 이동으로 적지 않는다.
     """
+
+    if _same_stay_place(previous, record):
+        return "merge"
+    distance = _spot_distance(previous.spot, record.spot)
+    if distance is not None and distance > DIFFERENT_PLACE_MIN_METERS:
+        return "far"
+    if separate:
+        return "split"
+    return "merge" if is_continuous(record.start - reached) else "split"
+
+
+def _same_stay_place(previous: LocationRecord, record: LocationRecord) -> bool:
+    """두 체류를 시간과 상관없이 같은 장소로 묶는가. 좌표가 있으면 거리만, 없으면 이름·주소를 본다."""
 
     distance = _spot_distance(previous.spot, record.spot)
     if distance is not None:
-        if distance <= SAME_PLACE_MAX_METERS:
-            return "merge"
-        if distance > DIFFERENT_PLACE_MIN_METERS:
-            return "far"
-    elif _same_name(previous.spot, record.spot):
-        return "merge"
-    return "merge" if is_continuous(record.start - reached) else "split"
+        return distance <= SAME_PLACE_MAX_METERS
+    return _same_name(previous.spot, record.spot)
+
+
+# --- 장소별 관측 체류시간 (#201) --------------------------------------------------
+
+
+@dataclass(eq=False)
+class _Place:
+    """이동에 묶이지 않고 연달아 같은 장소에 있던 체류 기록 묶음. 같은지는 객체로 가린다."""
+
+    records: list[LocationRecord]
+
+    @cached_property
+    def is_long(self) -> bool:
+        """이곳에 30분 넘게 머물렀는가. 묶음이 다 모인 뒤에만 읽는다."""
+
+        return _observed_duration(self.records) > SEPARATE_VISIT_OVER
+
+
+def _places(records: list[LocationRecord], to_movement: set[int]) -> list[_Place | None]:
+    """자리마다 그 체류가 든 장소 묶음. 이동과 이동에 묶인 짧은 체류는 None 이고 묶음을 끊는다.
+
+    같은 장소는 `_stay_decision` 이 시간과 상관없이 합치는 조건(`_same_stay_place`)과 같아서 묶음이
+    구간 경계에 걸치지 않는다. 뒤 기록까지 미리 모으므로, 다른 장소에서 넘어온 첫 기록이 짧아도
+    그곳에 이어 머문 기록이 묶음에 들어 머문 시간에 센다.
+    """
+
+    places: list[_Place | None] = []
+    for index, record in enumerate(records):
+        if not record.is_stay or index in to_movement:
+            places.append(None)
+            continue
+        previous = places[-1] if places else None
+        if previous is not None and _same_stay_place(records[index - 1], record):
+            previous.records.append(record)
+            places.append(previous)
+        else:
+            places.append(_Place([record]))
+    return places
+
+
+def _observed_duration(records: list[LocationRecord]) -> timedelta:
+    """기록이 덮는 시간의 길이. 기록 사이 공백은 세지 않고 겹친 시간은 한 번만 센다.
+
+    20분 판정처럼 window 로 자르기 전의 원래 시각으로 잰다.
+    """
+
+    total = timedelta(0)
+    reached: datetime | None = None
+    for record in sorted(records, key=lambda r: (r.start, r.end)):
+        start = record.start if reached is None else max(record.start, reached)
+        if record.end > start:
+            total += record.end - start
+        reached = record.end if reached is None else max(reached, record.end)
+    return total
+
+
+def _separate_visit(flow_places: list[_Place], incoming: _Place) -> bool:
+    """들어오는 장소와 흐름 안의 다른 장소가 둘 다 오래 머문 별도 방문인가(#201).
+
+    바로 앞 장소만 보지 않는다. 그러면 짧은 경유 하나를 사이에 둔 두 긴 방문이 경유를 거쳐 다시
+    합쳐진다. 흐름 안의 긴 방문이 들어오는 장소와 같은 곳이면(250m 이내) 나갔다 돌아온 것이라
+    나누지 않는다.
+    """
+
+    if not incoming.is_long:
+        return False
+    return any(
+        place is not incoming and place.is_long and _apart(place, incoming) for place in flow_places
+    )
+
+
+def _apart(left: _Place, right: _Place) -> bool:
+    """두 장소가 250m 넘게 떨어졌다고 좌표로 확인되는가. 좌표가 있는 기록끼리 가장 가까운 거리로 잰다."""
+
+    distances = [
+        distance
+        for one in left.records
+        for other in right.records
+        if (distance := _spot_distance(one.spot, other.spot)) is not None
+    ]
+    return bool(distances) and min(distances) > SAME_PLACE_MAX_METERS
 
 
 def _is_isolated(flow: list[LocationRecord], records: list[LocationRecord]) -> bool:

@@ -129,6 +129,7 @@ def test_a_calendar_covering_a_stay_becomes_that_stays_base_event():
     "캘린더의 경우 Timeline이 처리하기 전에 Location 의 결과물에다가 박아넣어버려". 회의 일정(12:00~23:00)과
     같은 체류(12:08~20:36)를 Timeline 이 회의와 `보낸 시간` 으로 따로 썼다. 일정이 주인이고 체류는 그 위치
     근거다. 같은 일정 시간 안의 다른 장소 체류(22:34 청파로)는 자기 기본 event 그대로다(위치 뼈대는 살린다).
+    시간은 체류다 — 방문의 경계는 위치 기록이 정한다(#202).
     """
 
     from app.schemas import EventType
@@ -140,93 +141,24 @@ def test_a_calendar_covering_a_stay_becomes_that_stays_base_event():
     assert office.event_type is EventType.CALENDAR_EVENT
     assert office.title == "팀 정기 회의 일정이 있었음", "제목에 지명을 붙이지 않고 음슴체로 끝난다(#179)."
     assert office.description == "{place}에서 팀 정기 회의 일정이 있었다."
-    assert (office.start.hour, office.end.hour) == (12, 23), "시간은 일정 시간이다."
-    prompt = office.as_prompt_dict()
-    assert prompt["calendar"] == office.calendar.clue_id and prompt["startAt"].startswith("2026-06-20T12:00")
+    assert (office.start, office.end) == (office.segment.start, office.segment.end), "시간은 체류 구간이다."
+    assert (office.start.hour, office.start.minute, office.end.hour, office.end.minute) == (12, 8, 20, 36)
     assert station.calendar is None and station.event_type is EventType.STAY
 
 
-def test_a_short_calendar_inside_a_long_stay_stays_a_clue():
-    """9시간 체류 안의 1시간 회의는 체류의 일부라 기본 event 를 바꾸지 않는다 — Timeline 이 체류 안으로 꺼낸다."""
+def test_a_short_calendar_inside_a_long_stay_is_its_own_event_inside_the_visit():
+    """9시간 체류 안의 1시간 회의는 방문과 회의 두 건이다(#202). 방문의 경계는 그대로다."""
 
     request = _meeting_day("2026-06-20T14:00:00", "2026-06-20T15:00:00")
     clues = _clues_with_calendars(request)
+    office, meeting, station = clues.base_events
 
-    assert all(b.base_event.calendar is None for b in clues.bundles if b.base_event)
-    assert any(b.calendars for b in clues.bundles), "일정은 그 체류 묶음의 단서로 남는다."
+    assert office.calendar is None and (office.start.hour, office.end.hour) == (12, 20)
+    assert meeting.segment is None and (meeting.start.hour, meeting.end.hour) == (14, 15)
+    assert meeting.inside == office.base_id
+    assert [r.raw_id for r in meeting.place_records] == office.segment.raw_ids, "방문의 체류가 장소 후보의 근거다."
+    assert station.calendar is None
 
-
-def test_restore_counts_the_calendar_event_and_brings_back_the_rest_as_a_stay():
-    """일정이 빠져 캘린더 복원이 되살린 일정 event 도 그 체류를 덮는다. 일정 event 가 체류 일부만 덮으면
-    나머지는 일정이 아니라 체류 틀로 되살린다."""
-
-    from datetime import datetime, timedelta, timezone
-
-    from app.schemas import EventSourceType, EventType, InferenceLevel, SourceRef, TimelineDraft, TimelineEventDraft
-    from app.services.skeleton_guard import ensure_skeleton_segments
-
-    kst = timezone(timedelta(hours=9))
-    request = _meeting_day("2026-06-20T12:00:00", "2026-06-20T23:00:00")
-    clues = _clues_with_calendars(request)
-    office = next(b.base_event for b in clues.bundles if b.base_event and b.base_event.calendar)
-
-    def meeting(end_hour):
-        return TimelineEventDraft(
-            client_event_id="calendar-restored-001", event_type=EventType.CALENDAR_EVENT, title="팀 정기 회의",
-            description="캘린더에 적어 둔 일정이다.", start_time=datetime(2026, 6, 20, 12, tzinfo=kst),
-            end_time=datetime(2026, 6, 20, end_hour, tzinfo=kst), confidence=0.5, inference_level=InferenceLevel.DIRECT,
-            source_refs=[SourceRef(source_type=EventSourceType.CALENDAR, raw_id=office.calendar.raw_id)],
-        )
-
-    whole = TimelineDraft(user_id="u", date="2026-06-20", timezone="Asia/Seoul", events=[meeting(23)])
-    ensure_skeleton_segments(whole, request, clues)
-    assert not [e for e in whole.events if office.base_id in e.base_event_ids], "일정 event 가 덮었다."
-
-    part = TimelineDraft(user_id="u", date="2026-06-20", timezone="Asia/Seoul", events=[meeting(15)])
-    ensure_skeleton_segments(part, request, clues)
-    [rest] = [e for e in part.events if office.base_id in e.base_event_ids]
-    assert rest.event_type is EventType.STAY and rest.description == "{place}에서 시간을 보냈다."
-    assert rest.start_time.hour == 15
-
-
-@pytest.mark.parametrize("cites_calendar", [True, False])
-def test_the_calendar_base_event_ends_up_as_one_event_at_the_calendar_time(cites_calendar):
-    """Timeline 이 일정과 같은 체류의 `보낸 시간` 을 따로 쓰거나, 일정 event 에 일정 근거를 빠뜨린 실제 출력.
-
-    일정 기본 event 에서 온 event 중 체류를 덮는 것은 하나로 합치고 일정이 주인이다. 시간은 일정 시간이고,
-    체류 일부만 덮는 식사는 그대로다.
-    """
-
-    from datetime import datetime, timedelta, timezone
-
-    from app.schemas import EventSourceType, EventType, InferenceLevel, SourceRef, TimelineDraft, TimelineEventDraft
-    from app.services.skeleton_guard import keep_calendar_base_events
-
-    kst = timezone(timedelta(hours=9))
-    request = _meeting_day("2026-06-20T12:00:00", "2026-06-20T23:00:00")
-    clues = _clues_with_calendars(request)
-    office = next(b.base_event for b in clues.bundles if b.base_event and b.base_event.calendar)
-    stay_refs = [SourceRef(source_type=EventSourceType.STAY, raw_id=r) for r in office.segment.raw_ids]
-
-    def event(title, event_type, start, end, refs):
-        return TimelineEventDraft(
-            client_event_id=f"event-{title}", event_type=event_type, title=title, description="",
-            start_time=datetime(2026, 6, 20, *start, tzinfo=kst), end_time=datetime(2026, 6, 20, *end, tzinfo=kst),
-            confidence=0.7, inference_level=InferenceLevel.DIRECT, source_refs=list(refs),
-            base_event_ids=[office.base_id],
-        )
-
-    calendar_ref = [SourceRef(source_type=EventSourceType.CALENDAR, raw_id=office.calendar.raw_id)]
-    meeting = event("회의", EventType.MEETING, (12, 8), (20, 36), stay_refs + (calendar_ref if cites_calendar else []))
-    stayed = event("보낸 시간", EventType.STAY, (12, 8), (20, 36), stay_refs)
-    meal = event("식사", EventType.MEAL, (17, 24), (18, 4), stay_refs)
-    draft = TimelineDraft(user_id="u", date="2026-06-20", timezone="Asia/Seoul", events=[meeting, stayed, meal])
-
-    keep_calendar_base_events(draft, request, clues)
-
-    assert [e.title for e in draft.events] == ["회의", "식사"]
-    assert any(ref.raw_id == office.calendar.raw_id for ref in meeting.source_refs), "일정이 주인이다."
-    assert (meeting.start_time.hour, meeting.end_time.hour) == (12, 23), "시간은 일정 시간이다."
 
 
 def test_photos_in_a_location_bundle_carry_no_place_of_their_own():
@@ -276,39 +208,6 @@ def _find_photos(node):
             return
 
 
-def test_a_meal_holding_the_calendar_becomes_the_calendar_event_and_goes_to_repair():
-    """Repair 가 회의 event 를 식사로 바꾸며 묶음 id 로 일정을 다시 담은 실제 출력. 일정을 가진 식사가 일정의
-    주인으로 남자 식사 시간이 20분으로 줄여 회의 일정이 17:24~17:44 가 됐다. 일정 기본 event 의 주인은 일정
-    event 다 — 식사·사진·`보낸 시간` 이면 종류와 시간을 일정으로 맞추고 글은 Repair 에 맡긴다.
-    """
-
-    from datetime import datetime, timedelta, timezone
-
-    from app.schemas import EventSourceType, EventType, InferenceLevel, SourceRef, TimelineDraft, TimelineEventDraft
-    from app.services.skeleton_guard import NEEDS_WRITING, keep_calendar_base_events
-
-    kst = timezone(timedelta(hours=9))
-    request = _meeting_day("2026-06-20T12:00:00", "2026-06-20T23:00:00")
-    clues = _clues_with_calendars(request)
-    office = next(b.base_event for b in clues.bundles if b.base_event and b.base_event.calendar)
-    meal = TimelineEventDraft(
-        client_event_id="event-005", event_type=EventType.MEAL, title="점심", description="{place}에서 점심을 먹고 시간을 보냈다.",
-        start_time=datetime(2026, 6, 20, 12, tzinfo=kst), end_time=datetime(2026, 6, 20, 23, tzinfo=kst),
-        confidence=0.7, inference_level=InferenceLevel.INFERRED, base_event_ids=[office.base_id],
-        source_refs=[
-            *(SourceRef(source_type=EventSourceType.STAY, raw_id=r) for r in office.segment.raw_ids),
-            SourceRef(source_type=EventSourceType.CALENDAR, raw_id=office.calendar.raw_id),
-        ],
-    )
-    draft = TimelineDraft(user_id="u", date="2026-06-20", timezone="Asia/Seoul", events=[meal])
-
-    keep_calendar_base_events(draft, request, clues)
-
-    assert meal.event_type is EventType.CALENDAR_EVENT
-    assert meal.merge_reason == NEEDS_WRITING
-    assert meal.title == "점심", "글은 코드가 바꾸지 않는다."
-    assert (meal.start_time.hour, meal.end_time.hour) == (12, 23)
-
 
 def _kst_event(title, event_type, start, end, refs, base=()):
     from datetime import datetime, timedelta, timezone
@@ -321,51 +220,6 @@ def _kst_event(title, event_type, start, end, refs, base=()):
         start_time=datetime(2026, 6, 20, *start, tzinfo=kst), end_time=datetime(2026, 6, 20, *end, tzinfo=kst),
         confidence=0.7, inference_level=InferenceLevel.DIRECT, source_refs=list(refs), base_event_ids=list(base),
     )
-
-
-def test_the_calendar_evidence_stays_on_its_owner_only():
-    """일정 시간과 조금 겹친 이동·다른 장소 체류가 같은 일정을 근거로 가진 실제 출력. 일정 근거는 주인 하나다."""
-
-    from app.schemas import EventSourceType, EventType, SourceRef, TimelineDraft
-    from app.services.skeleton_guard import keep_calendar_base_events
-
-    request = _meeting_day("2026-06-20T12:00:00", "2026-06-20T23:00:00")
-    clues = _clues_with_calendars(request)
-    office = next(b.base_event for b in clues.bundles if b.base_event and b.base_event.calendar)
-    calendar_ref = SourceRef(source_type=EventSourceType.CALENDAR, raw_id=office.calendar.raw_id)
-    stay_ref = SourceRef(source_type=EventSourceType.STAY, raw_id=request.stays[1].raw_id)
-    meeting = _kst_event("회의", EventType.MEETING, (12, 0), (23, 0), [calendar_ref], base=[office.base_id])
-    station = _kst_event("청파로", EventType.STAY, (22, 34), (22, 59), [stay_ref, calendar_ref])
-    draft = TimelineDraft(user_id="u", date="2026-06-20", timezone="Asia/Seoul", events=[meeting, station])
-
-    keep_calendar_base_events(draft, request, clues)
-
-    assert [r.raw_id for r in station.source_refs] == [request.stays[1].raw_id]
-    assert office.calendar.raw_id in [r.raw_id for r in meeting.source_refs]
-
-
-def test_a_meal_appointment_stays_a_meal():
-    """식사 약속은 일정이 식사다. 3시간 이하면 식사가 일정의 주인으로 남는다 — 일정 틀로 되돌리면 무엇을 먹었는지가 사라진다."""
-
-    from app.schemas import EventSourceType, EventType, SourceRef, TimelineDraft
-    from app.services.skeleton_guard import keep_calendar_base_events
-    from tests.fixtures.requests import calendar_item
-
-    lunch_place = stay_item("lunch", lat=37.55, start="2026-06-20T12:05:00", end="2026-06-20T12:55:00", address="서울 마포구 도화동 17-13")
-    appointment = calendar_item("lunch", "점심 약속", start="2026-06-20T12:00:00", end="2026-06-20T13:00:00")
-    request = make_request(stays=[lunch_place], calendars=[appointment])
-    clues = _clues_with_calendars(request)
-    base = next(b.base_event for b in clues.bundles if b.base_event and b.base_event.calendar)
-    meal = _kst_event(
-        "순두부찌개", EventType.MEAL, (12, 0), (13, 0),
-        [SourceRef(source_type=EventSourceType.CALENDAR, raw_id=appointment.raw_id)], base=[base.base_id],
-    )
-
-    keep_calendar_base_events(
-        TimelineDraft(user_id="u", date="2026-06-20", timezone="Asia/Seoul", events=[meal]), request, clues
-    )
-
-    assert meal.event_type is EventType.MEAL and meal.title == "순두부찌개"
 
 
 

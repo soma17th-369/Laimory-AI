@@ -119,6 +119,7 @@ def update_event(
         updated = TimelineEventDraft.model_validate(payload)
     except ValidationError as exc:
         raise DraftEditError(f"수정한 event 가 스키마 검증에 실패했습니다: {exc}") from exc
+    updated.photo_ids = event.photo_ids  # dump 에 없는 값이다. 바꾸는 것은 호출자다(v4 Repair).
 
     index = draft.events.index(event)
     draft.events[index] = updated

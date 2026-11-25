@@ -20,7 +20,6 @@ from app.schemas import (
     SourceRef,
     TimelineDraft,
     TimelineEventDraft,
-    TimeWindow,
 )
 from app.schemas.clues import NotificationClue, NotificationClueKind, PhotoClue
 from app.services.calendar_clues import build_calendar_clues
@@ -29,14 +28,8 @@ from app.services.confirm_report import ConfirmReport as _ConfirmReport
 from app.services.conversation_guard import conversation_events, enforce_conversation_limit
 from app.services.draft_repair import repair_draft, resolve_overlaps
 from app.services.location_skeleton import build_location_skeleton
-from app.services.photo_guard import merge_photo_scenes
 from app.services.place_slots import fix_title_places
-from app.services.skeleton_guard import (
-    NEEDS_WRITING,
-    remove_calendar_events_without_calendar,
-    remove_stays_without_location,
-    separate_movement_segments,
-)
+from app.services.skeleton_guard import NEEDS_WRITING
 from tests.fixtures.requests import (
     calendar_item,
     fixture_raw_id,
@@ -78,34 +71,6 @@ def _clues(request, notifications=()):
 
 # --- 같은 장면 사진 -------------------------------------------------------------------------
 
-
-def test_photos_of_one_scene_end_up_in_one_event():
-    """2초 간격 저녁 사진 두 장이 식사 event 둘이 된 실제 출력."""
-
-    a = photo_item("a", taken="2026-06-20T22:56:45")
-    b = photo_item("b", taken="2026-06-20T22:56:47")
-    request = make_request(photos=[a, b])
-    soup = _event([(EventSourceType.PHOTO, a.raw_id)], start=_at(22, 56), end=_at(23, 16), event_type=EventType.MEAL, title="국물 요리")
-    pork = _event([(EventSourceType.PHOTO, b.raw_id)], start=_at(22, 56), end=_at(23, 16), event_type=EventType.MEAL, title="수육과 김치")
-    draft = _draft(soup, pork)
-
-    merge_photo_scenes(draft, request)
-
-    assert len(draft.events) == 1
-    assert {ref.raw_id for ref in draft.events[0].source_refs} == {a.raw_id, b.raw_id}
-
-
-def test_photos_far_apart_in_time_stay_separate():
-    a = photo_item("a", taken="2026-06-20T12:00:00")
-    b = photo_item("b", taken="2026-06-20T13:00:00")
-    request = make_request(photos=[a, b])
-    lunch = _event([(EventSourceType.PHOTO, a.raw_id)], start=_at(12), end=_at(12, 20), title="점심")
-    later = _event([(EventSourceType.PHOTO, b.raw_id)], start=_at(13), end=_at(13), title="다른 장면")
-    draft = _draft(lunch, later)
-
-    merge_photo_scenes(draft, request)
-
-    assert len(draft.events) == 2
 
 
 def test_unbundled_photos_of_one_scene_share_one_bundle():
@@ -177,75 +142,6 @@ def test_v4_confirm_pass_itself_keeps_three_conversations():
 # --- 캘린더 ---------------------------------------------------------------------------------
 
 
-def test_notification_cannot_become_a_calendar_event():
-    """Gmail·문자로 온 예비소집 안내를 일정 event 로 만든 실제 출력."""
-
-    mail = notification_item("mail", "Gmail", "예비소집 안내", posted="2026-06-20T16:56:00")
-    stay = stay_item("stay", start="2026-06-20T09:00:00", end="2026-06-20T18:00:00")
-    request = make_request(stays=[stay], notifications=[mail])
-    only_mail = _event([(EventSourceType.NOTIFICATION, mail.raw_id)], start=_at(11), end=_at(23, 59), event_type=EventType.CALENDAR_EVENT, title="예비소집 안내")
-    with_stay = _event([(EventSourceType.STAY, stay.raw_id), (EventSourceType.NOTIFICATION, mail.raw_id)], start=_at(9), end=_at(18), event_type=EventType.CALENDAR_EVENT, title="체류")
-    draft = _draft(only_mail, with_stay)
-
-    remove_calendar_events_without_calendar(draft, request, _clues(request))
-
-    assert draft.events == [with_stay]
-    assert with_stay.event_type is EventType.STAY
-    assert with_stay.merge_reason == NEEDS_WRITING, "예매 알림으로 쓴 `일정이 있었다` 가 그대로 남은 실제 출력."
-
-
-def test_a_calendar_event_with_only_a_stay_becomes_a_stay():
-    """일정 근거가 없고 체류만 남으면 그 체류의 event 다. `UNKNOWN` 은 체류를 뜻하지 않는다(#172)."""
-
-    stay = stay_item("stay", start="2026-06-20T09:00:00", end="2026-06-20T18:00:00")
-    request = make_request(stays=[stay])
-    event = _event([(EventSourceType.STAY, stay.raw_id)], start=_at(9), end=_at(18), event_type=EventType.CALENDAR_EVENT, title="체류")
-    draft = _draft(event)
-
-    remove_calendar_events_without_calendar(draft, request, _clues(request))
-
-    assert draft.events == [event]
-    assert event.event_type is EventType.STAY
-
-
-def test_a_stay_type_without_location_is_not_a_stay():
-    """위치 근거 없이 체류를 말하는 event 는 타입이 `STAY` 여도 지운다."""
-
-    chat = notification_item("mom", "카카오톡", "엄마", posted="2026-06-20T22:01:00")
-    request = make_request(notifications=[chat])
-    night = _event(
-        [(EventSourceType.NOTIFICATION, chat.raw_id)], start=_at(22), end=_at(23), event_type=EventType.STAY,
-        title="도화동에서 보낸 밤", description="밤을 보냈다.",
-    )
-    draft = _draft(night)
-
-    remove_stays_without_location(draft, request, _clues(request))
-
-    assert draft.events == []
-
-
-def test_calendar_event_spanning_a_movement_keeps_its_time():
-    """일정 시간은 바꾸지 않는다 — 이동을 품은 일정 event 를 이동 앞뒤로 자르지 않는다."""
-
-    home = stay_item("home", lat=37.27, start="2026-06-20T06:00:00", end="2026-06-20T08:30:00")
-    office = stay_item("office", lat=37.54, start="2026-06-20T09:10:00", end="2026-06-20T18:00:00")
-    commute = MovementItem(
-        raw_id=fixture_raw_id("movement-commute"), start_at="2026-06-20T08:30:00", end_at="2026-06-20T09:10:00",
-        start=GeoPlace(latitude=37.27, longitude=127.0), end=GeoPlace(latitude=37.54, longitude=127.0),
-        transports=["IN_VEHICLE"], distance_meters=30000,
-    )
-    workshop = calendar_item("w", "워크숍", start="2026-06-20T08:00:00", end="2026-06-20T12:00:00")
-    request = make_request(stays=[home, office], movements=[commute], calendars=[workshop])
-    event = _event(
-        [(EventSourceType.CALENDAR, workshop.raw_id), (EventSourceType.STAY, office.raw_id)],
-        start=_at(8), end=_at(12), event_type=EventType.CALENDAR_EVENT, title="워크숍",
-    )
-    draft = _draft(event)
-
-    separate_movement_segments(draft, request, _clues(request))
-
-    assert (event.start_time, event.end_time) == (_at(8), _at(12))
-
 
 def test_v4_confirm_never_loses_a_calendar_event():
     """Timeline 이 일정을 통째로 빠뜨려도 확정이 끝나면 일정 event 가 있고 장소 후보도 받는다."""
@@ -253,7 +149,7 @@ def test_v4_confirm_never_loses_a_calendar_event():
     office = stay_item("office", start="2026-06-20T09:00:00", end="2026-06-20T18:00:00", places=["OO타워"], address="서울 마포구 도화동 1")
     meeting = calendar_item("m", "주간 회의", start="2026-06-20T10:00:00", end="2026-06-20T11:00:00", location_text="OO타워")
     request = make_request(stays=[office], calendars=[meeting])
-    clues = build_timeline_clues(build_location_skeleton(request), [], [], [])
+    clues = build_timeline_clues(build_location_skeleton(request), build_calendar_clues(request), [], [])
     draft = _draft(
         _event([(EventSourceType.STAY, office.raw_id)], start=_at(9), end=_at(18), event_type=EventType.WORK, title="업무", description="{place}에서 일했다.", base=["E1"])
     )
@@ -269,40 +165,6 @@ def test_v4_confirm_never_loses_a_calendar_event():
 
 # --- 위치 근거 없는 체류 문장 ------------------------------------------------------------------
 
-
-def test_night_made_of_dinner_photos_after_location_ends_is_removed():
-    """22시에 위치 기록이 끊긴 뒤 저녁 사진과 대화로 만든 `도화동에서 보낸 밤` (실제 출력)."""
-
-    office = stay_item("office", start="2026-06-20T09:00:00", end="2026-06-20T22:00:00")
-    dinner = photo_item("dinner", taken="2026-06-20T22:56:00")
-    chat = notification_item("mom", "카카오톡", "엄마", posted="2026-06-20T22:01:00")
-    request = make_request(stays=[office], photos=[dinner], notifications=[chat])
-    night = _event(
-        [(EventSourceType.NOTIFICATION, chat.raw_id), (EventSourceType.PHOTO, dinner.raw_id)],
-        start=_at(22), end=_at(23, 16), title="도화동에서 보낸 밤", description="밤을 보냈다.",
-    )
-    meal = _event([(EventSourceType.PHOTO, dinner.raw_id)], start=_at(22, 56), end=_at(23, 16), event_type=EventType.MEAL, title="한식 식사", description="국물 요리를 먹었다.")
-    draft = _draft(night, meal)
-
-    remove_stays_without_location(draft, request, _clues(request))
-
-    assert draft.events == [meal], "사진으로 무엇을 했는지 말하는 event 는 남는다."
-
-
-def test_photo_meal_that_spent_time_at_the_restaurant_is_not_a_stay_without_location():
-    """식사 문장 뼈대 `먹으며 시간을 보냈다` 는 체류 문장이 아니다 — 사진만 근거인 식사가 지워졌다."""
-
-    lunch = photo_item("lunch", taken="2026-06-20T12:58:00")
-    request = make_request(photos=[lunch])
-    meal = _event(
-        [(EventSourceType.PHOTO, lunch.raw_id)], start=_at(12, 58), end=_at(13, 18),
-        event_type=EventType.MEAL, title="한식 식사", description="{place}에서 한식을 먹으며 시간을 보냈다.",
-    )
-    draft = _draft(meal)
-
-    remove_stays_without_location(draft, request, _clues(request))
-
-    assert draft.events == [meal]
 
 
 def test_address_written_without_its_number_becomes_the_slot():
@@ -453,10 +315,11 @@ def _meeting_day():
 
 
 def _meeting_event(office, meeting, title, *, refs=None, event_type=EventType.CALENDAR_EVENT):
+    # 사무실 방문(E1) 안의 회의 일정은 자기 event(E2)다(#202).
     event = _event(
         refs or [(EventSourceType.STAY, office.raw_id), (EventSourceType.CALENDAR, meeting.raw_id)],
         start=_at(10), end=_at(11), event_type=event_type, title=title,
-        description="{place}에서 프로젝트 회의를 했다.",
+        description="{place}에서 프로젝트 회의를 했다.", base=("E2",),
     )
     event.address = office.address
     event.place_candidates = ["공덕 SK 리더스뷰"]
@@ -826,174 +689,9 @@ def test_v4_confirm_separates_two_places_merged_across_an_empty_time():
     assert not [e for e in draft.events if e.start_time < _at(14) and _at(13) < e.end_time], "빈 시간은 비워 둔다."
 
 
-def test_v4_calendar_spanning_two_places_keeps_its_time_and_the_other_place_comes_back():
-    """일정은 그대로 두되, 일정 시간 안에 다른 곳에 있었으면 그 위치 구간도 따로 남긴다(사용자 결정).
-
-    "일정을 그렇게 등록해놔도 잠깐 바깥에 나가서 카페에 있을 수도 있고 그렇기 때문에 위치 뼈대는
-    살리는 게 맞다."
-    """
-
-    meeting = calendar_item("m", "업무", start="2026-06-20T10:00:00", end="2026-06-20T16:00:00")
-    request, office, cafe = _office_cafe_request(calendars=[meeting])
-    clues = _clues(request)
-    work = _event(
-        [(EventSourceType.CALENDAR, meeting.raw_id), (EventSourceType.STAY, office.raw_id), (EventSourceType.STAY, cafe.raw_id)],
-        start=_at(10), end=_at(16), event_type=EventType.WORK, title="업무", description="{place}에서 일했다.",
-        base=["E1", "E2"],
-    )
-    draft = _draft(work)
-
-    repair_draft(draft, request, extended=True, clues=clues)
-
-    calendar_event = next(e for e in draft.events if any(r.raw_id == meeting.raw_id for r in e.source_refs))
-    assert (calendar_event.start_time, calendar_event.end_time) == (_at(10), _at(16))
-    assert not any(r.raw_id == cafe.raw_id for r in calendar_event.source_refs)
-    assert [e for e in draft.events if e is not calendar_event and any(r.raw_id == cafe.raw_id for r in e.source_refs)]
-
-
-def test_v4_movement_that_starts_inside_a_sleep_plan_is_kept():
-    """수면 일정(00:30~08:30)은 계획이고 08:09 에 실제로 이동했다. 실제 재실행에서 수면과 겹친다고
-    출근 이동이 지워졌다. 이동과 다른 장소의 체류는 수면 계획보다 기록이 맞다(사용자 결정: 일정은 그대로,
-    위치 뼈대도 살린다)."""
-
-    home = stay_item("home", lat=35.8275, lon=128.6283, start="2026-06-20T00:00:00", end="2026-06-20T08:09:00",
-                     address="대구 수성구 지범로17길 85")
-    school = stay_item("school", lat=35.8880, lon=128.6110, start="2026-06-20T08:54:00", end="2026-06-20T10:22:00",
-                       address="대구 북구 대현동 1")
-    trip = MovementItem(
-        raw_id=fixture_raw_id("movement-trip"), start_at="2026-06-20T08:09:00", end_at="2026-06-20T08:54:00",
-        start=GeoPlace(latitude=35.8275, longitude=128.6283), end=GeoPlace(latitude=35.8880, longitude=128.6110),
-        transports=["IN_VEHICLE"], distance_meters=8000,
-    )
-    sleep_plan = calendar_item("sleep", "수면 zzz", start="2026-06-20T00:30:00", end="2026-06-20T08:30:00")
-    request = make_request(stays=[home, school], movements=[trip], calendars=[sleep_plan])
-    clues = _clues(request)
-    draft = _draft(
-        _event([(EventSourceType.CALENDAR, sleep_plan.raw_id), (EventSourceType.STAY, home.raw_id)],
-               start=_at(0, 30), end=_at(8, 30), event_type=EventType.SLEEP, title="잠", description="{place}에서 잠을 잤다.", base=["E1"]),
-        _event([(EventSourceType.MOVEMENT, trip.raw_id)], start=_at(8, 9), end=_at(8, 54),
-               event_type=EventType.MOVEMENT, title="이동", base=["E2"]),
-        _event([(EventSourceType.STAY, school.raw_id)], start=_at(8, 54), end=_at(10, 22), title="학교", base=["E3"]),
-    )
-
-    repair_draft(draft, request, extended=True, clues=clues)
-
-    movements = [e for e in draft.events if e.event_type is EventType.MOVEMENT]
-    assert [(m.start_time, m.end_time) for m in movements] == [(_at(8, 9), _at(8, 54))]
-    sleep = next(e for e in draft.events if e.event_type is EventType.SLEEP)
-    assert (sleep.start_time, sleep.end_time) == (_at(0, 30), _at(8, 30)), "수면 일정 시간은 그대로다."
-
-
-def test_v4_restore_does_not_fill_a_gap_without_records_inside_a_stay():
-    """같은 집 구간 안에서 기록이 없는 00:02~00:46 을 틀 문장으로 채우자 근거 기록과 겹치지 않아
-    지명도 장소 후보도 없는 `보낸 시간` 이 남았다(실제 재실행). 되살리는 것은 기록이 덮는 시간이다."""
-
-    late = stay_item("late", lat=35.8275, lon=128.6283, start="2026-06-20T18:49:00", end="2026-06-21T00:02:00",
-                     places=["화성파크드림"], address="대구 수성구 지범로17길 85")
-    night = stay_item("night", lat=35.8275, lon=128.6283, start="2026-06-21T00:46:00", end="2026-06-21T05:00:00",
-                      places=["화성파크드림"], address="대구 수성구 지범로17길 85")
-    sleep_plan = calendar_item("sleep", "수면 zzz", start="2026-06-21T00:30:00", end="2026-06-21T05:00:00")
-    request = make_request(stays=[late, night], calendars=[sleep_plan],
-                           window=TimeWindow(start="2026-06-20T18:00:00", end="2026-06-21T05:00:00"))
-    clues = _clues(request)
-    day2 = lambda h, m=0: _at(h, m, day=21)
-    draft = _draft(
-        _event([(EventSourceType.STAY, late.raw_id)], start=_at(18, 49), end=day2(0, 2), title="집", base=["E1"]),
-        _event([(EventSourceType.CALENDAR, sleep_plan.raw_id), (EventSourceType.STAY, late.raw_id), (EventSourceType.STAY, night.raw_id)],
-               start=day2(0, 30), end=day2(5), event_type=EventType.SLEEP, title="잠", description="{place}에서 잠을 잤다.", base=["E1"]),
-    )
-
-    repair_draft(draft, request, extended=True, clues=clues)
-
-    in_gap = [e for e in draft.events if e.start_time < day2(0, 30) and day2(0, 2) < e.end_time and e.event_type is not EventType.SLEEP]
-    assert not in_gap, [(e.title, e.start_time, e.end_time) for e in in_gap]
-
-
-def test_v4_stay_time_cut_by_a_later_step_comes_back():
-    """Timeline 이 대현동 체류 전체(10:57~17:45, 407분)를 점심 `MEAL` 로 채웠고, 위치 구간 복원 뒤에 도는
-    식사 시간 단계가 20분으로 줄여 오후 체류가 통째로 비었다(실제 재실행). 시간을 바꾸는 단계가 모두
-    끝난 뒤 위치 구간을 다시 확인한다."""
-
-    campus = stay_item("campus", lat=35.8880, lon=128.6110, start="2026-06-20T10:57:00", end="2026-06-20T17:45:00",
-                       places=["경북대학교"], address="대구 북구 대현동 1")
-    lunch = photo_item("lunch", taken="2026-06-20T12:49:00", lat=35.8880, lon=128.6110)
-    request = make_request(stays=[campus], photos=[lunch])
-    clues = build_timeline_clues(
-        build_location_skeleton(request), [],
-        [PhotoClue(id="P1", rawId=lunch.raw_id, takenAt=_at(12, 49), latitude=35.8880, longitude=128.6110, activity="점심을 먹었다")], []
-    )
-    draft = _draft(
-        _event([(EventSourceType.STAY, campus.raw_id), (EventSourceType.PHOTO, lunch.raw_id)],
-               start=_at(10, 57), end=_at(17, 45), event_type=EventType.MEAL, title="점심 식사",
-               description="{place}에서 점심을 먹었다.", base=["E1"]),
-    )
-
-    repair_draft(draft, request, extended=True, clues=clues)
-
-    covered = sorted((e.start_time, e.end_time) for e in draft.events)
-    assert covered[0][0] == _at(10, 57) and covered[-1][1] == _at(17, 45), covered
-    meal = next(e for e in draft.events if e.event_type is EventType.MEAL)
-    assert meal.end_time - meal.start_time <= timedelta(hours=1)
-
-
 
 # --- 꺼낸 event 가 사진을 갖는다 ------------------------------------------------------------
 
-
-def test_v4_photo_stays_with_the_event_extracted_from_it():
-    """Timeline 이 음식 사진으로 식사를 꺼내고 같은 사진을 회의 근거에도 남긴 실제 출력.
-
-    다른 근거(일정·체류)가 있는 회의가 사진을 가져가 사진뿐이던 식사가 지워졌다. 꺼냈으면 원래 event
-    에서 뺀다(사용자 결정 2026-10-30, "꺼냈으면 원래거는 지워야지") — 회의와 식사 둘 다 남는다.
-    """
-
-    from app.services.photo_guard import enforce_photo_scenes
-
-    office = stay_item("office", start="2026-06-20T12:08:00", end="2026-06-20T20:36:00")
-    meeting_cal = calendar_item("meeting", "팀 정기 회의", start="2026-06-20T12:00:00", end="2026-06-20T23:00:00")
-    food = photo_item("food", taken="2026-06-20T17:24:00")
-    request = make_request(stays=[office], calendars=[meeting_cal], photos=[food])
-    meeting = _event(
-        [(EventSourceType.CALENDAR, meeting_cal.raw_id), (EventSourceType.STAY, office.raw_id), (EventSourceType.PHOTO, food.raw_id)],
-        start=_at(12), end=_at(23), event_type=EventType.MEETING, title="회의",
-    )
-    meal = _event(
-        [(EventSourceType.PHOTO, food.raw_id)], start=_at(17, 24), end=_at(18, 4), event_type=EventType.MEAL, title="식사",
-    )
-    draft = _draft(meeting, meal)
-
-    enforce_photo_scenes(draft, request)
-
-    assert [e.title for e in draft.events] == ["회의", "식사"], "둘 다 남는다."
-    assert food.raw_id in [r.raw_id for r in meal.source_refs]
-    assert food.raw_id not in [r.raw_id for r in meeting.source_refs], "꺼냈으면 원래 event 에서 뺀다."
-
-
-def test_v4_same_scene_photos_gather_in_the_extracted_event():
-    """같은 장면(12:49)의 음식 사진은 식사에, 두 사람 사진은 체류에 있을 때 짧은 식사 쪽으로 모은다 —
-    체류 쪽으로 모으면 음식 사진이 7시간 체류를 `점심을 먹으며` 로 만든다."""
-
-    from app.services.photo_guard import merge_photo_scenes
-
-    stay = stay_item("campus", start="2026-06-20T10:57:00", end="2026-06-20T17:45:00")
-    food = photo_item("food", taken="2026-06-20T12:49:00", lat=35.89, lon=128.61)
-    together = photo_item("together", taken="2026-06-20T12:49:30", lat=35.89, lon=128.61)
-    request = make_request(stays=[stay], photos=[food, together])
-    stayed = _event(
-        [(EventSourceType.STAY, stay.raw_id), (EventSourceType.PHOTO, together.raw_id)],
-        start=_at(10, 57), end=_at(17, 45), title="보낸 시간",
-    )
-    meal = _event(
-        [(EventSourceType.STAY, stay.raw_id), (EventSourceType.PHOTO, food.raw_id)],
-        start=_at(12, 49), end=_at(13, 9), event_type=EventType.MEAL, title="식사",
-    )
-    draft = _draft(stayed, meal)
-
-    merge_photo_scenes(draft, request)
-
-    assert {r.raw_id for r in meal.source_refs} >= {food.raw_id, together.raw_id}
-    assert together.raw_id not in [r.raw_id for r in stayed.source_refs]
-    assert [e.title for e in draft.events] == ["보낸 시간", "식사"]
 
 
 def test_v4_does_not_send_location_only_overlap_to_repair():
@@ -1057,35 +755,6 @@ def test_v3_confirm_still_reports_place_resolution():
     repair_draft(_draft(stayed), request, report=report, extended=True)
 
     assert "장소 확정" in {item["step"] for item in report.corrected}
-
-
-def test_v4_location_evidence_matches_the_event_time():
-    """기본 event 에서 온 식사의 근거에 그 구간의 기록이 모두 실린 실제 출력 — 17:24 식사에 12:08 체류.
-
-    event 와 근거의 연계는 시간이 맞아야 한다(사용자 결정 2026-10-31). 앞뒤 20분까지는 그 시간의 기록이다.
-    근거가 모두 빠지는 event 는 건드리지 않는다.
-    """
-
-    from app.services.skeleton_guard import settle_event_evidence
-
-    morning = stay_item("am", start="2026-06-20T12:08:00", end="2026-06-20T14:38:00")
-    evening = stay_item("pm", start="2026-06-20T17:00:00", end="2026-06-20T20:36:00")
-    request = make_request(stays=[morning, evening])
-    clues = _clues(request)
-    meal = _event(
-        [(EventSourceType.STAY, morning.raw_id), (EventSourceType.STAY, evening.raw_id)],
-        start=_at(17, 24), end=_at(18, 4), event_type=EventType.MEAL, title="식사",
-    )
-    near = _event(
-        [(EventSourceType.STAY, morning.raw_id)], start=_at(14, 50), end=_at(15, 0), title="바로 뒤",
-    )
-    alone = _event([(EventSourceType.STAY, morning.raw_id)], start=_at(22), end=_at(22, 30), title="근거가 이것뿐")
-
-    settle_event_evidence(_draft(meal, near, alone), request, clues)
-
-    assert [r.raw_id for r in meal.source_refs] == [evening.raw_id]
-    assert [r.raw_id for r in near.source_refs] == [morning.raw_id], "앞뒤 20분은 그 시간의 기록이다."
-    assert [r.raw_id for r in alone.source_refs] == [morning.raw_id]
 
 
 
@@ -1171,24 +840,6 @@ def test_a_notification_that_is_the_only_evidence_stays_where_it_is():
 
     assert [r.raw_id for r in second.source_refs] == [message.raw_id]
 
-
-def test_a_stay_covered_by_an_activity_from_the_same_base_joins_it():
-    """사진 하나로 체류 전체를 덮은 event 옆에 같은 시간의 `보낸 시간` 이 나란히 남은 실제 출력."""
-
-    stay, base, settle = _stay_day()
-    rest = _event(
-        [(EventSourceType.STAY, stay.raw_id)], start=_at(10, 57), end=_at(17, 45), title="보낸 시간",
-        description="{place}에서 시간을 보냈다.", base=[base.base_id],
-    )
-    social = _event(
-        [(EventSourceType.PHOTO, fixture_raw_id("photo"))], start=_at(10, 57), end=_at(17, 45),
-        event_type=EventType.SOCIAL, title="두 사람과 시간", base=[base.base_id],
-    )
-
-    draft = settle(rest, social)
-
-    assert draft.events == [social]
-    assert stay.raw_id in [r.raw_id for r in social.source_refs]
 
 
 def test_a_stay_elsewhere_inside_a_long_calendar_stays():
@@ -1548,75 +1199,6 @@ def test_a_shopping_event_with_a_payment_keeps_its_type():
     assert not [s for _, s in settle.suggest(settle(event)) if "eventType" in s or "title" in s]
 
 
-def test_twins_on_the_same_stay_become_one():
-    """같은 체류를 같은 시간으로 가진 두 event 는 하나만 남는다. 활동 근거가 있는 쪽이 남는다."""
-
-    message = notification_item("n", "YouTube", "답글", posted="2026-06-20T16:23:00")
-    stay, base, settle = _stay_day(message)
-    rest = _event(
-        [(EventSourceType.STAY, stay.raw_id), (EventSourceType.NOTIFICATION, message.raw_id)],
-        start=_at(10, 57), end=_at(17, 45), title="보낸 시간", description="{place}에서 시간을 보냈다.", base=[base.base_id],
-    )
-    social = _event(
-        [(EventSourceType.STAY, stay.raw_id)], start=_at(10, 57), end=_at(17, 45), event_type=EventType.SOCIAL,
-        title="함께한 시간", description="{place}에서 OO와 함께했다.", base=[base.base_id],
-    )
-
-    assert settle(rest, social).events == [rest]
-
-
-def test_two_place_only_twins_do_not_absorb_each_other():
-    stay, base, settle = _stay_day()
-    twins = [
-        _event(
-            [(EventSourceType.STAY, stay.raw_id)], start=_at(10, 57), end=_at(17, 45), title=f"보낸 시간 {label}",
-            description="{place}에서 시간을 보냈다.", base=[base.base_id],
-        )
-        for label in ("가", "나")
-    ]
-
-    assert len(settle(*twins).events) == 1
-
-
-
-def test_a_restored_photo_keeps_what_the_photo_shows():
-    """`사진을 남겼다` 로는 사진의 내용이 사라진다. Repair 가 쓰기 전까지 사진 단서의 말을 둔다."""
-
-    from app.schemas.clues import PhotoClue
-    from app.services.photo_guard import CREATED_PHOTO_TITLE
-    from app.services.skeleton_guard import NEEDS_WRITING, hand_restored_events_to_repair
-
-    photo = photo_item("lunch", taken="2026-06-20T12:49:00")
-    request = make_request(photos=[photo])
-    clue = PhotoClue(
-        id="P1", rawId=photo.raw_id, takenAt=_at(12, 49), activity="매운 국물 요리와 만두를 먹었다",
-    )
-    clues = build_timeline_clues(build_location_skeleton(request), [], [clue], [])
-    event = _event(
-        [(EventSourceType.PHOTO, photo.raw_id)], start=_at(12, 49), end=_at(12, 49),
-        event_type=EventType.PHOTO_MOMENT, title=CREATED_PHOTO_TITLE, description="사진을 남겼다.",
-    )
-
-    hand_restored_events_to_repair(_draft(event), request, clues)
-
-    assert event.description == "매운 국물 요리와 만두를 먹었다."
-    assert event.merge_reason == NEEDS_WRITING
-
-
-def test_a_restored_calendar_carries_no_code_sentence():
-    from app.services.calendar_guard import RESTORED_CALENDAR_DESCRIPTION
-    from app.services.skeleton_guard import NEEDS_WRITING, hand_restored_events_to_repair
-
-    request = make_request()
-    event = _event(
-        [(EventSourceType.CALENDAR, fixture_raw_id("c"))], start=_at(12), end=_at(13),
-        event_type=EventType.CALENDAR_EVENT, title="팀 회의", description=RESTORED_CALENDAR_DESCRIPTION,
-    )
-
-    hand_restored_events_to_repair(_draft(event), request, _clues(request))
-
-    assert (event.title, event.description, event.merge_reason) == ("팀 회의 일정이 있었음", "", NEEDS_WRITING)
-
 
 def test_a_slot_with_no_place_never_reaches_app_server():
     """칸만 남으면 App Server 가 하루치를 400 으로 거절한다."""
@@ -1849,10 +1431,19 @@ def _titles(draft):
     return sorted(event.title for event in draft.events)
 
 
-def test_with_a_frame_only_conversations_stay_as_alert_events():
-    """결제·예약·완료·소식 모두 단독 event 가 되지 않는다(사용자 결정 2026-10-31)."""
+def _photo_clues(request, photo, notifications):
+    """사진 한 장이 그날의 틀인 날. 사진은 자기 사진 event(E1)다."""
 
-    from app.services.skeleton_guard import remove_notification_events
+    return build_timeline_clues(
+        build_location_skeleton(request),
+        [],
+        [PhotoClue(clue_id="P1", raw_id=photo.raw_id, taken_at=_at(9))],
+        list(notifications),
+    )
+
+
+def test_with_a_frame_only_conversations_stay_as_alert_events():
+    """결제·예약·완료·소식 모두 단독 event 가 되지 않는다(사용자 결정 2026-10-31). 대화는 대화 event 다."""
 
     photo = photo_item("p", taken="2026-06-20T09:00:00")
     request, clues, events = _alert_day(
@@ -1863,29 +1454,27 @@ def test_with_a_frame_only_conversations_stay_as_alert_events():
         ("news", NotificationClueKind.NEWS),
         photos=[photo],
     )
-    frame = _event([(EventSourceType.PHOTO, photo.raw_id)], start=_at(9), end=_at(9), title="사진")
+    frame = _event([(EventSourceType.PHOTO, photo.raw_id)], start=_at(9), end=_at(9), title="사진", base=("E1",))
     draft = _draft(frame, *events)
 
-    remove_notification_events(draft, request, _clues(request, clues))
+    repair_draft(draft, request, clues=_photo_clues(request, photo, clues))
 
     assert _titles(draft) == ["chat", "사진"]
-    assert "알림으로 만든 event 4건" in draft.warnings[-1].message
+    assert next(e for e in draft.events if e.title == "chat").event_type is EventType.SOCIAL
 
 
 def test_a_conversation_with_a_payment_still_counts_as_a_conversation():
     """당근 거래 대화 — 대화에 거래 알림이 함께 붙어도 대화다(#167)."""
-
-    from app.services.skeleton_guard import remove_notification_events
 
     photo = photo_item("p", taken="2026-06-20T09:00:00")
     request, clues, [chat, pay] = _alert_day(
         ("chat", NotificationClueKind.CONVERSATION), ("pay", NotificationClueKind.PAYMENT), photos=[photo]
     )
     chat.source_refs = [*chat.source_refs, *pay.source_refs]
-    frame = _event([(EventSourceType.PHOTO, photo.raw_id)], start=_at(9), end=_at(9), title="사진")
+    frame = _event([(EventSourceType.PHOTO, photo.raw_id)], start=_at(9), end=_at(9), title="사진", base=("E1",))
     draft = _draft(frame, chat)
 
-    remove_notification_events(draft, request, _clues(request, clues))
+    repair_draft(draft, request, clues=_photo_clues(request, photo, clues))
 
     assert _titles(draft) == ["chat", "사진"]
 
@@ -1911,9 +1500,10 @@ def test_a_day_with_photos_does_not_restore_a_payment():
     request, clues, [pay] = _alert_day(("pay", NotificationClueKind.PAYMENT), photos=[photo])
     frame = _event(
         [(EventSourceType.PHOTO, photo.raw_id)], start=_at(9), end=_at(9), event_type=EventType.PHOTO_MOMENT, title="사진",
+        base=("E1",),
     )
 
-    draft = repair_draft(_draft(frame, pay), request, clues=_clues(request, clues))
+    draft = repair_draft(_draft(frame, pay), request, clues=_photo_clues(request, photo, clues))
 
     assert _titles(draft) == ["사진"]
 
@@ -1931,30 +1521,6 @@ def _stay_with_alert(kind, event_type=EventType.UNKNOWN):
     )
     return request, _clues(request, [clue]), whole, piece, item
 
-
-def test_an_alert_event_pulled_out_of_a_stay_goes_back_as_its_evidence():
-    """`from` 을 적어 위치 근거를 가져도 알림으로 만든 event 다. 근거는 체류 event 로 옮긴다."""
-
-    from app.services.skeleton_guard import remove_notification_events
-
-    request, clues, whole, piece, item = _stay_with_alert(NotificationClueKind.NEWS)
-    draft = _draft(whole, piece)
-
-    remove_notification_events(draft, request, clues)
-
-    assert draft.events == [whole]
-    assert item.raw_id in [ref.raw_id for ref in whole.source_refs]
-
-
-def test_a_meal_pulled_out_by_a_payment_stays():
-    from app.services.skeleton_guard import remove_notification_events
-
-    request, clues, whole, piece, _ = _stay_with_alert(NotificationClueKind.PAYMENT, EventType.MEAL)
-    draft = _draft(whole, piece)
-
-    remove_notification_events(draft, request, clues)
-
-    assert _titles(draft) == ["꺼낸 event", "체류"]
 
 
 def test_an_alert_outside_the_event_time_is_not_its_evidence():
@@ -2122,6 +1688,7 @@ def test_a_calendar_alone_keeps_its_type_time_and_source(event_type):
         _event(
             [(EventSourceType.CALENDAR, calendar.raw_id)],
             start=_at(14), end=_at(15, 30), event_type=event_type, title="일정", description="일정이 있었다.",
+            base=["E1"],
         )
     )
 
@@ -2226,54 +1793,6 @@ def test_a_meal_calendar_shorter_than_twenty_minutes_is_not_stretched():
     assert (draft.events[0].start_time, draft.events[0].end_time) == (_at(15), _at(15, 15))
 
 
-def test_a_meal_inside_a_calendar_still_needs_a_photo_or_a_payment():
-    """일정 시간과 다른 식사는 일정이 시간을 정한 것이 아니다. 회의 일정을 근거로 댄 두 시간 식사는 그대로 짧아진다."""
-
-    calendar = calendar_item("day", "팀 회의", start="2026-06-20T09:00:00", end="2026-06-20T18:00:00")
-    request = make_request(calendars=[calendar])
-    draft = _draft(
-        _event(
-            [(EventSourceType.CALENDAR, calendar.raw_id)],
-            start=_at(9), end=_at(18), event_type=EventType.MEETING, title="팀 회의", description="팀 회의 일정이 있었다.",
-        ),
-        _event(
-            [(EventSourceType.CALENDAR, calendar.raw_id)],
-            start=_at(12), end=_at(14), event_type=EventType.MEAL, title="점심", description="점심을 먹었다.",
-        ),
-    )
-
-    kinds = _confirm_twice(draft, request, _calendar_clues(request))
-
-    meal = next(event for event in draft.events if event.event_type is EventType.MEAL)
-    assert (meal.start_time, meal.end_time) == (_at(12), _at(13))
-    assert "UNSUPPORTED_MEAL" in kinds
-
-
-def test_an_activity_owns_the_calendar_over_a_stay_that_holds_it():
-    """일정을 가진 `보낸 시간` 이 주인이 되면 Timeline 이 고른 `MEETING` 이 합쳐져 사라진다."""
-
-    stay = stay_item("office", start="2026-06-20T14:00:00", end="2026-06-20T16:00:00", address="서울 마포구 도화동 1")
-    calendar = calendar_item("meeting", "팀 회의", start="2026-06-20T14:00:00", end="2026-06-20T16:00:00")
-    request = make_request(stays=[stay], calendars=[calendar])
-    draft = _draft(
-        _event(
-            [(EventSourceType.CALENDAR, calendar.raw_id), (EventSourceType.STAY, stay.raw_id)],
-            start=_at(14), end=_at(16), event_type=EventType.STAY, title="보낸 시간",
-            description="{place}에서 시간을 보냈다.", base=["E1"],
-        ),
-        _event(
-            [(EventSourceType.STAY, stay.raw_id)],
-            start=_at(14), end=_at(16), event_type=EventType.MEETING, title="팀 회의",
-            description="{place}에서 팀 회의를 했다.", base=["E1"],
-        ),
-    )
-
-    _confirm_twice(draft, request, _calendar_clues(request))
-
-    [owner] = draft.events
-    assert (owner.event_type, owner.title) == (EventType.MEETING, "팀 회의")
-    assert _holds(owner, calendar) and _holds(owner, stay)
-
 
 def _exercise_day():
     home = stay_item("home", lat=37.27, start="2026-06-20T06:00:00", end="2026-06-20T18:00:00", address="서울 마포구 망원동 1")
@@ -2285,31 +1804,6 @@ def _exercise_day():
     )
     return home, gym, move
 
-
-def test_an_exercise_calendar_gives_up_the_movement_it_borrowed():
-    """`EXERCISE` 는 산책 때문에 이동 분리에서 빠져 있었다. 운동 일정이 앞 이동을 근거로 품은 채 남았다."""
-
-    home, gym, move = _exercise_day()
-    calendar = calendar_item("pt", "PT 수업", start="2026-06-20T18:30:00", end="2026-06-20T20:30:00")
-    request = make_request(stays=[home, gym], movements=[move], calendars=[calendar])
-    draft = _draft(
-        _event(
-            [(EventSourceType.STAY, home.raw_id)],
-            start=_at(6), end=_at(18), event_type=EventType.STAY, title="집", description="{place}에서 시간을 보냈다.", base=["E1"],
-        ),
-        _event(
-            [(EventSourceType.CALENDAR, calendar.raw_id), (EventSourceType.MOVEMENT, move.raw_id), (EventSourceType.STAY, gym.raw_id)],
-            start=_at(18, 30), end=_at(20, 30), event_type=EventType.EXERCISE, title="PT 수업",
-            description="{place}에서 PT 수업을 했다.", base=["E3"],
-        ),
-    )
-
-    _confirm_twice(draft, request, _calendar_clues(request))
-
-    exercise = next(event for event in draft.events if event.event_type is EventType.EXERCISE)
-    assert (exercise.start_time, exercise.end_time) == (_at(18, 30), _at(20, 30)), "일정 시간은 자르지 않는다."
-    assert not _holds(exercise, move)
-    assert any(event.event_type is EventType.MOVEMENT and _holds(event, move) for event in draft.events)
 
 
 def test_an_exercise_calendar_keeps_the_walk_it_is_about():
@@ -2355,78 +1849,42 @@ def _long_work_day(*, all_day=False):
     return office, dinner, calendar, make_request(stays=[office, dinner], calendars=[calendar])
 
 
-@pytest.mark.parametrize(("all_day", "start", "end"), [(False, _at(9), _at(23)), (True, _at(0), _at(23, 59))])
+# 시간은 일정 원본의 것이다(#202). 종일 일정은 다음 날 0시에 끝난다.
+@pytest.mark.parametrize(("all_day", "start", "end"), [(False, _at(9), _at(23)), (True, _at(0), _at(0, day=21))])
 def test_a_day_long_calendar_takes_its_type_and_leaves_the_stays_alone(all_day, start, end):
     """길이는 타입을 정할 이유가 아니다(사용자 지적 2026-11-02). 배경 일정의 뜻은 구조가 지킨다."""
 
     office, dinner, calendar, request = _long_work_day(all_day=all_day)
     clues = _calendar_clues(request)
+    ids = {
+        (base.segment.raw_ids[0] if base.segment else base.calendar.raw_id): base.base_id
+        for base in clues.base_events
+    }
     draft = _draft(
         _event(
             [(EventSourceType.CALENDAR, calendar.raw_id)],
             start=start, end=end, event_type=EventType.WORK, title=calendar.title, description=f"{calendar.title} 일정이 있었다.",
+            base=[ids[calendar.raw_id]],
         ),
         _event(
             [(EventSourceType.STAY, office.raw_id)],
             start=_at(9), end=_at(18), event_type=EventType.STAY, title="도화동에서 보낸 시간",
-            description="{place}에서 시간을 보냈다.", base=["E1"],
+            description="{place}에서 시간을 보냈다.", base=[ids[office.raw_id]],
         ),
         _event(
             [(EventSourceType.STAY, dinner.raw_id)],
             start=_at(18, 30), end=_at(22), event_type=EventType.STAY, title="망원동에서 보낸 시간",
-            description="{place}에서 시간을 보냈다.", base=["E3"],
+            description="{place}에서 시간을 보냈다.", base=[ids[dinner.raw_id]],
         ),
     )
 
     _confirm_twice(draft, request, clues)
 
-    assert not any(bundle.base_event and bundle.base_event.calendar for bundle in clues.bundles), "체류의 주인이 되지 않는다."
+    assert not any(base.segment and base.calendar for base in clues.base_events), "체류의 주인이 되지 않는다."
     long_event = next(event for event in draft.events if _holds(event, calendar))
     assert (long_event.event_type, long_event.start_time, long_event.end_time) == (EventType.WORK, start, end)
     assert sum(event.event_type is EventType.STAY for event in draft.events) == 2
 
-
-def test_work_inside_a_long_work_calendar_stays_when_they_share_a_stay():
-    """타입·장소가 같다고 합치자 09:00~23:00 `WORK` 일정 안의 `배포 준비` 가 사라졌다."""
-
-    office, dinner, calendar, request = _long_work_day()
-    draft = _draft(
-        _event(
-            [(EventSourceType.CALENDAR, calendar.raw_id), (EventSourceType.STAY, office.raw_id)],
-            start=_at(9), end=_at(23), event_type=EventType.WORK, title="프로젝트 개발",
-            description="{place}에서 프로젝트 개발 일정이 있었다.",
-        ),
-        _event(
-            [(EventSourceType.STAY, office.raw_id)],
-            start=_at(13), end=_at(15), event_type=EventType.WORK, title="배포 준비",
-            description="{place}에서 배포를 준비했다.", base=["E1"],
-        ),
-    )
-
-    _confirm_twice(draft, request, _calendar_clues(request))
-
-    assert {"프로젝트 개발", "배포 준비"} <= {event.title for event in draft.events}
-
-
-def test_work_inside_a_long_work_calendar_stays_when_they_cite_the_same_calendar():
-    """위치가 없는 날에는 같은 일정을 근거로 가졌다는 것이 합치는 이유가 됐다."""
-
-    calendar = calendar_item("dev", "프로젝트 개발", start="2026-06-20T09:00:00", end="2026-06-20T23:00:00")
-    request = make_request(calendars=[calendar])
-    draft = _draft(
-        _event(
-            [(EventSourceType.CALENDAR, calendar.raw_id)],
-            start=_at(9), end=_at(23), event_type=EventType.WORK, title="프로젝트 개발", description="프로젝트 개발 일정이 있었다.",
-        ),
-        _event(
-            [(EventSourceType.CALENDAR, calendar.raw_id)],
-            start=_at(13), end=_at(15), event_type=EventType.WORK, title="배포 준비", description="배포를 준비했다.",
-        ),
-    )
-
-    _confirm_twice(draft, request, _calendar_clues(request))
-
-    assert {event.title for event in draft.events} == {"프로젝트 개발", "배포 준비"}
 
 
 def _same_place_meetings(first, second):

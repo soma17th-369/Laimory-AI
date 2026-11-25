@@ -5,6 +5,7 @@
 한쪽만 바꾸면 모델은 없는 키를 찾고 있는 키는 모른다.
 """
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,8 +18,6 @@ from app.schemas.clues import NotificationClue, NotificationClueKind, PhotoClue
 from app.schemas.user_memory import NARRATIVE_FIELDS, UserMemoryPatch, UserMemoryPlacesPatch
 from app.services.calendar_clues import build_calendar_clues
 from app.services.clue_bundles import build_timeline_clues, timeline_input_sections
-from app.services.duration_guard import DURATION_LIMITS
-from app.services.event_count_guard import MAX_EVENT_COUNT
 from app.services.location_skeleton import build_location_skeleton
 from tests.fixtures.requests import calendar_item, fixture_raw_id, make_request, stay_item
 
@@ -59,8 +58,8 @@ def test_timeline_v4_reads_top_to_bottom_in_working_order():
         "## 입력과 단서가 말하는 것",
         "## 전체 작업 흐름",
         "## 1단계. 하루 읽기",
-        "## 2단계. 기본 event에서 하루의 event로",
-        "## 3단계. eventType과 시간",
+        "## 2단계. 대화 정하기",
+        "## 3단계. event마다 종류 정하기",
         "## 4단계. User Memory 반영",
         "## 5단계. 문장",
         "## confidence·inferenceLevel·uncertainty",
@@ -137,8 +136,15 @@ def test_v3_output_schema_does_not_gain_the_places_field():
     assert "places" in UserMemoryPlacesPatch.model_json_schema()["properties"]
 
 
-def test_timeline_v4_states_the_event_limit_the_code_enforces():
-    assert f"**최종 event는 {MAX_EVENT_COUNT}개를 넘지 않습니다.**" in _timeline()
+def test_timeline_v4_writes_on_the_events_the_code_made():
+    """하루의 event 와 그 근거는 코드가 정한다(#202). Timeline 은 event 를 더하거나 빼거나 나누지 않는다."""
+
+    text = _timeline()
+
+    assert "**당신은 event를 더하거나 빼거나 나누지 않고, event마다 무엇을 했는지를 씁니다.**" in text
+    assert "`events`에는 `[event]`의 event마다 하나씩, 그 `id`로 씁니다" in text
+    for gone in ("10개를 넘지 않습니다", "꺼내기", "경계 옮기기", '"startTime"', '"from"'):
+        assert gone not in text, gone
 
 
 @pytest.mark.parametrize(
@@ -146,25 +152,17 @@ def test_timeline_v4_states_the_event_limit_the_code_enforces():
     [member.value for member in EventType if member not in (EventType.WAKE_UP, EventType.UNKNOWN)],
 )
 def test_timeline_v4_type_table_has_every_type(event_type: str):
-    table = _between(_timeline(), "### eventType 표", "#### `MEAL`과 `SLEEP`")
+    table = _between(_timeline(), "### eventType 표", "## 4단계. User Memory 반영")
 
     assert f"| `{event_type}` |" in table
 
 
-def test_timeline_v4_review_limits_match_the_code():
-    """검토 기준 값의 정본은 `DURATION_LIMITS` 다."""
+def test_timeline_v4_has_no_time_rules_for_the_model():
+    """시간은 코드가 정한다(#202). 검토 기준·식사 길이 같은 시간 규칙을 모델에게 주지 않는다."""
 
-    table = _between(_timeline(), "### eventType 표", "#### `MEAL`과 `SLEEP`")
-    for event_type, limit in DURATION_LIMITS.items():
-        if event_type is EventType.UNKNOWN:  # v4 에 없는 종류다(#173).
-            continue
-        row = next((line for line in table.splitlines() if line.startswith(f"| `{event_type.value}` |")), None)
-        if limit is None:
-            if row is not None:
-                assert "검토 기준" not in row, f"{event_type.value} 는 검토 기준이 없습니다."
-            continue
-        hours = int(limit.total_seconds() // 3600)
-        assert row is not None and f"검토 기준 {hours}시간" in row, event_type.value
+    table = _between(_timeline(), "### eventType 표", "## 4단계. User Memory 반영")
+
+    assert "검토 기준" not in table and "20~60분" not in _timeline()
 
 
 # --- 장소 칸과 문장 ----------------------------------------------------------------
@@ -203,7 +201,7 @@ def test_v4_title_needs_the_area_only_where_nothing_else_says_what_happened():
         }
         assert named == {
             "이동", "체류, 활동 근거 없음", "체류, 활동 근거 없음, 밤을 보낸 곳", "산책",
-            "음식 사진·결제", "결제·예약이 말하는 용무",
+            "음식 사진·결제", "결제·예약이 말하는 용무", "장소·풍경 사진", "포즈를 취한 사람 사진",
         }
         assert "활동이 곧 제목이고(`프로젝트 회의를 함`, `국물 요리와 만두를 먹음`)" in text
         assert "여행지처럼 그곳이라는 사실이 사건의 일부이면 활동 제목에도" in text, "지명을 금지하는 것은 아니다."
@@ -249,8 +247,45 @@ def test_v4_title_has_no_merchant_either():
 def test_v4_a_photo_of_a_building_is_not_an_activity():
     """건물 사진을 찍은 것은 큰 의미가 없다(사용자 결정 2026-11-02). 어디였는지를 말하는 단서다."""
 
-    assert "장소만 보여 주는 사진은 활동도 회상할 장면도 아닙니다" in _timeline()
+    assert "장소·풍경을 찍은 사진만 있는 방문도 그곳에서 시간을 보낸 것이라 `STAY`입니다" in _timeline()
     assert "`STAY`와 체류 뼈대로 씁니다" in _repair()
+
+
+def test_v4_photos_are_written_by_why_they_were_taken():
+    """사진은 찍은 사실이 아니라 왜 찍었는지로 쓴다(사용자 결정 2026-11-25). 음식은 먹은 것, 장소는 시간을 보낸 것,
+    포즈를 취한 사람 사진은 그곳에 다녀온 것이다. 사진만으로 `봤다` 로 쓰지 않는다."""
+
+    for text in (_timeline(), _repair()):
+        assert "사진은 찍었다는 사실이 아니라 왜 찍었는지로 씁니다" in text
+        assert "{본 것}" not in text and "노을을 봤다" not in text and "노을을 봄" not in text
+        assert "사진만으로 `봤다`·`둘러봤다`" in text
+    # 제목은 단순하게, 내용은 한 일을 다 묘사한다(사용자 결정 2026-11-25).
+    assert "**한 event에 사진이 여러 장이면 문장은 그 방문에서 한 일을 사진마다 빠짐없이 이어서 묘사합니다.**" in _timeline()
+    for text in (_timeline(), _repair()):
+        rows = {row.split(" | ")[0].removeprefix("| "): row.split(" | ") for row in _format_table(text)[2:]}
+        for situation in ("장소·풍경 사진", "포즈를 취한 사람 사진"):
+            title, description = rows[situation][1], rows[situation][2]
+            assert "{사진 속 장면}" in description and "{사진 속 장면}" not in title, situation
+    photo = _read("agents/events/photo/prompts/v4/prompt.md")
+    assert "장소·풍경·장식·무대가 보이면 그곳에서 시간을 보낸 것입니다" in photo
+    assert "그곳에 갔다는 것을 남긴 것입니다" in photo and "풍경은 본 것입니다" not in photo
+    assert "포즈를 취했거나 셀카인지" in _read("agents/events/photo/prompts/v4/describe_vision_prompt.md")
+
+
+def test_v4_writers_name_the_photos_their_text_used():
+    """글을 쓰기 전에 그 글이 쓰는 사진 id 를 적는다(#202). 코드가 그 event 의 사진과 맞춰 본다 — 하루를 한 번에
+    쓰는 모델이 옆 event 의 사진을 읽어 썼다."""
+
+    timeline = _timeline()
+    example = json.loads(timeline.split("## 출력 형식", 1)[1].split("```json", 1)[1].split("```", 1)[0])
+    [event] = example["events"]
+    assert list(event).index("photos") < list(event).index("title"), "사진을 글보다 먼저 쓴다."
+    assert "**사진이 있는 event는 먼저 그 event의 사진을 id마다 출력의 `photos`에 적고**" in timeline
+    assert "사진·일정이 있는 event에는 틀 문장이 없습니다" in timeline
+
+    repair = _repair()
+    assert "사진 id를 `photos`에 함께 적습니다" in repair
+    assert "`PHOTO_MISMATCH`는 그 event의 사진으로 `photos`와 `description`을 다시 써야 해소됩니다" in repair
 
 
 def test_v4_a_photo_of_a_place_is_not_an_activity():
@@ -276,33 +311,11 @@ def test_v4_movement_title_and_sentence_use_the_same_route():
 
 
 def test_timeline_v4_follows_the_base_events_without_being_told_to_merge():
-    """Timeline 은 기본 event 의 틀을 따르고, 합치라는 말을 듣지 않는다(사용자 결정 2026-10-30).
-
-    "합치지 말라고 하는 게 아니라 그냥 저 틀을 따라라 라고 하면서 합치라는 말을 아예 안하는 거지".
-    합치기를 허용했을 때 장소 이름 후보만 보고 다른 장소를 한 event 로 묶을 수 있었다.
-    """
+    """Timeline 은 코드가 정한 event 를 따르고, 합치라는 말을 듣지 않는다(사용자 결정 2026-10-30, #202)."""
 
     text = _timeline()
-    assert "기본 event 하나가 하루의 event 하나" in text
+    assert "하루의 event는 이미 정해져 있습니다" in text
     assert not re.search(r"합치|합쳐|합친|병합", text)
-
-
-def test_v4_prompts_say_what_the_journey_guard_does():
-    """이동 구간 하나는 이동 event 하나이고, 체류는 20분 이상이면 끊는다(#180). 코드와 같은 말을 한다."""
-
-    repair = _repair()
-    for text in (_timeline(), repair):
-        assert "이동 구간 하나는 이동 event 하나" in text
-    assert "20분 이상 체류" in repair
-    assert not re.search(r"20분 이하|20분을 넘", repair)
-
-
-def test_repair_v4_tells_places_apart_by_the_code_address():
-    """다른 장소인지는 코드가 같은 장소마다 하나로 맞춘 주소로 가른다 — 장소 이름은 후보라 기준이 못 된다."""
-
-    text = _repair()
-    assert "주소가 다른 체류 구간을 한 event가 함께 가지면 이유와 상관없이 장소마다 나눕니다" in text
-    assert "어느 조각으로도 채우지 않습니다" in text
 
 
 def test_timeline_and_repair_v4_share_one_sentence_table():
@@ -417,8 +430,6 @@ def test_repair_v4_explains_every_finding_the_v4_confirm_pass_reports():
     text = _repair()
 
     for kind in (
-        "LONG_STAY_BETWEEN_MOVEMENTS",
-        "DURATION_OVER_LIMIT",
         "UNSUPPORTED_MEAL",
         "STAY_WORD_IN_TITLE",
         "TIME_IN_TITLE",
@@ -426,10 +437,16 @@ def test_repair_v4_explains_every_finding_the_v4_confirm_pass_reports():
         "SAME_TITLE_IN_A_ROW",
         "EVENT_TO_WRITE",
         "TEXT_CORRECTION",
+        "PHOTO_MISMATCH",
     ):
         assert f"`{kind}`" in text, kind
     # `LOCATION_ONLY_OVERLAP` 은 v4 확정이 내지 않는다(사용자 결정 2026-10-31) — 받은 Repair 가 7시간 체류를 식사로 고쳐 썼다.
-    for gone in ("ADDRESS_IN_NARRATION", "PLACE_MISMATCH", "PLACE_NAME_MISMATCH", "LOCATION_ONLY_OVERLAP", "rerun_event_agent", "장소 후보 다시 고르기"):
+    # 나누라고 짚는 검사와 구조를 바꾸는 도구는 v4 에 없다(#202).
+    for gone in (
+        "ADDRESS_IN_NARRATION", "PLACE_MISMATCH", "PLACE_NAME_MISMATCH", "LOCATION_ONLY_OVERLAP", "rerun_event_agent",
+        "장소 후보 다시 고르기", "LONG_STAY_BETWEEN_MOVEMENTS", "DURATION_OVER_LIMIT", "split_event",
+        "rerun_timeline_agent", "absorb_location_event",
+    ):
         assert gone not in text, gone
 
 
@@ -449,51 +466,32 @@ def test_repair_v4_keeps_the_v3_tone_contract():
     assert "헤지" in text
 
 
-def test_v4_calendar_owns_its_time_and_a_stay_without_activity_is_filled():
-    """일정은 그 시간의 주인이고 위치는 그 근거다. 활동을 모르는 체류는 사진으로 채운다(사용자 결정 2026-10-30).
-
-    "캘린더 일정은 중요한 일정이라서 오히려 위치가 그것의 근거가 되어야돼", "보낸 시간은 사실 어떤
-    활동이 아니잖아 그래서 함께한 순간이랑 따로 볼 수가 없는거야". 실제 재실행에서 회의 일정과 같은
-    장소의 `보낸 시간` 이 따로 나왔고, 두 사람 사진 한 장이 `함께한 시간` 으로 꺼내졌다. 「꺼내기」의
-    `(식사·회의·수업·별도 방문)` 은 v3 의 "긴 체류 안의 짧은 사건" 에서 왔는데 일부라는 조건이 빠졌었다.
-    """
+def test_v4_calendar_owns_the_visit_it_covers():
+    """일정은 그 시간의 주인이고 위치는 그 근거다(사용자 결정 2026-10-30). 방문을 덮은 일정은 그 방문의 일정이다."""
 
     timeline = _timeline()
-    assert "**일정은 그 시간의 주인이고 위치는 그 근거입니다.**" in timeline
-    assert "**활동을 모르는 체류는 다른 활동과 견줄 수 없습니다.**" in timeline
-    assert "식사·회의·수업·별도 방문" not in timeline
-    assert "그 시간의 일부에서 끝나는 다른 사건" in timeline
-    repair = _repair()
-    assert "식사·회의·수업·별도 방문" not in repair
-    assert "일정이 event 시간의 대부분을 덮으면 그 일정이 event의 주인이고 위치는 그 근거라 나누지 않습니다." in repair
+    assert "방문 event에 일정이 있으면 그 일정이 그 방문을 덮은 것입니다 — 일정이 주인이고 위치는 그 근거입니다." in timeline
+    for text in (timeline, _repair()):
+        assert "식사·회의·수업·별도 방문" not in text
 
 
 def test_v4_evidence_must_match_both_time_and_place():
-    """근거는 시간과 장소를 둘 다 본다 — 사진만이 아니라 모든 근거(사용자 결정 2026-10-30).
-
-    같은 곳(일청담)에 아침과 점심 두 번 간 날, Timeline 이 12:49 점심 사진을 아침 체류의 근거로 적었고
-    Repair 가 그걸 믿고 아침 체류를 식사로 바꿨다. "같은 위치에서 찍은 사진은 다른 묶음에서 가져온다" 는
-    문장이 장소만으로 가져오게 하고 시간을 깎아내렸다.
-    """
+    """사진·일정이 어느 event 의 것인지는 코드가 시간과 장소로 정한다(#202). 모델이 고르는 알림도 시간·장소가 맞아야 한다."""
 
     timeline, repair = _timeline(), _repair()
-    assert "**근거는 시간과 장소가 모두 맞는 event에만 씁니다.**" in timeline
+    assert "어느 위치 기록·사진·일정이 그 event의 것인지도 코드가 정했습니다" in timeline
     assert "같은 위치에서 찍은 사진" not in timeline
-    assert "**근거는 단서의 시간과 장소가 모두 그 event와 맞을 때만 넣습니다**" in repair
+    assert "**알림은 그 event의 시간·장소에서 한 일을 말할 때만 근거로 넣습니다.**" in repair
     assert "의미상 다른 event의 것이면" not in repair
-    for text in (timeline, repair):
-        assert "장소 이름이 같아도 시간이 다르면 다른 방문입니다" in text
 
 
-
-def test_timeline_v4_makes_events_from_notifications_on_a_day_without_location():
-    """위치 없는 날 결제·대화를 모두 버려 v3 절반의 event 가 됐다. 그날은 알림 자체가 event 다."""
+def test_timeline_v4_reads_a_day_without_location():
+    """위치가 없는 날의 event 는 일정과 사진 장면이다. 알림은 event 를 만들지 않는다."""
 
     text = _timeline()
 
-    assert "내용이 있는 대화만 그날의 event이고" in text
-    assert "대화가 아닌 알림은 event가 되지 않습니다" in text
-    assert "구간에 붙지 않은 사진·일정, 대화" in text
+    assert "event는 일정과 사진 장면이고, 그날의 일은 그 일정·사진·대화가 말하는 것입니다" in text
+    assert "**대화가 아닌 알림은 event를 새로 만들지 않습니다.**" in text
 
 
 def test_timeline_v4_uses_notifications_as_evidence_not_events():
@@ -501,8 +499,8 @@ def test_timeline_v4_uses_notifications_as_evidence_not_events():
 
     text = _timeline()
 
-    assert "**대화가 아닌 알림은 event를 새로 만들거나 꺼내지 않습니다.**" in text
-    assert "다만 알림은 담기지 않아 `N5`처럼 직접 적습니다" in text
+    assert "**대화가 아닌 알림은 event를 새로 만들지 않습니다.**" in text
+    assert "`evidence`에 `N5`처럼 적어" in text
     assert "`scheduleToday`가 `true`가 아닌 예약·일정 알림" in text
     assert "`PROMOTION`" not in text and "`unread`" not in text
 
@@ -536,14 +534,6 @@ def test_timeline_v4_keeps_what_a_received_message_can_say():
         assert "대화 알림은 받은 메시지뿐이라 `주고받았다`, `이야기했다`로 쓰지 않습니다" in text
     assert "**미래의 약속을 오늘 한 것처럼 쓰지 않습니다.**" in timeline
     assert "일정·사진 없이 대화와 체류뿐이면 만남이 아니다" in timeline
-
-
-def test_v4_says_conversations_do_not_count_toward_ten_events():
-    """대화는 전체 10개와 상관없이 들어간다(사용자 결정 2026-11-02)."""
-
-    assert "대화 event는 이 개수에 들지 않습니다" in _timeline()
-    assert "대화 event는 10개에 들지 않습니다" in _repair()
-    assert "대화 event부터 뺍니다" not in _timeline()
 
 
 def test_timeline_v4_says_why_a_conversation_was_left_out():
@@ -607,16 +597,14 @@ def test_timeline_v4_keeps_what_the_photo_shows_in_the_meal_sentence():
     assert "음식을 모르면 `{끼니}를 먹음`" in text
 
 
-def test_timeline_v4_takes_a_meal_out_of_a_meeting():
-    """일정의 타입을 Timeline 이 정하자 음식 사진을 회의에 흡수해 식사가 사라졌다(사용자 결정: 둘 다 산다)."""
+def test_timeline_v4_tells_a_meal_inside_a_long_visit_in_its_sentence():
+    """방문을 나누지 않는다(#202). 긴 방문 안의 식사는 그 방문의 문장에 담고, 방문이 곧 식사일 때만 `MEAL` 이다."""
 
     text = _timeline()
 
-    assert "만남·회의·일정 중이어도 사진의 `activity`가 먹었다고 말하거나 음식 결제가 있으면 `MEAL`로" in text
+    assert "방문이 곧 식사일 때만 그 방문이 `MEAL`입니다" in text
+    assert "그 방문의 종류는 그 방문의 주된 일이고 먹은 것은 문장에 담습니다" in text
     assert "회의 장면 사진" in text
-    # #184: 이 문장을 `그 안에서 따로 한 일은` 으로 고치자 회의 날 두 판 모두 음식 사진을 회의에 담았다.
-    assert "배경 일정은 event로 하나 남기고 그 위에 실제 활동 event를 얹습니다" in text
-
 
 
 def test_timeline_v4_types_a_calendar_by_what_it_says():
@@ -631,13 +619,13 @@ def test_timeline_v4_types_a_calendar_by_what_it_says():
     assert "종일 일정과 긴 일정도 같습니다" in text
 
 
-def test_timeline_v4_takes_meals_out_before_typing_a_calendar():
-    """틀의 타입을 뺐을 때 회의 날 식사가 사라졌다(#167). 틀은 두고 꺼낸 뒤에 고르게 한다."""
+def test_timeline_v4_types_a_calendar_with_its_photos():
+    """틀의 `CALENDAR_EVENT` 는 아직 고르지 않았다는 표시다(#184). 일정과 그 event 의 사진·알림을 함께 읽고 고른다."""
 
     text = _timeline()
 
-    assert "기본 event의 `CALENDAR_EVENT`는 아직 고르지 않았다는 표시입니다" in text
-    assert "그 안의 식사·사진을 먼저 꺼낸 뒤 남은 일정의 타입을 고릅니다" in text
+    assert "틀의 `CALENDAR_EVENT`는 아직 고르지 않았다는 표시입니다" in text
+    assert "일정과 그 event의 사진·알림을 함께 읽고 고릅니다" in text
 
 
 def test_a_calendar_type_does_not_mean_it_happened():

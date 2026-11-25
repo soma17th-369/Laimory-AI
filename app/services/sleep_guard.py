@@ -224,8 +224,8 @@ def remove_events_overlapping_sleep(
     골랐다. `SLEEP` 끼리, 그리고 수면이 끝난 순간인 `WAKE_UP` 은 지우지 않는다. 지운
     event 의 사진·캘린더 근거는 겹친 수면 event 로 옮긴다.
 
-    `spare(event, sleep)` 가 참인 event 는 겹쳐도 남긴다. v4 는 이동과 수면 장소가 아닌 곳의
-    체류를 남긴다(`skeleton_guard.spares_from_sleep`) — 수면 일정은 계획이고 위치는 기록이다.
+    `spare(event, sleep)` 가 참인 event 는 겹쳐도 남긴다. 수면 일정은 계획이고 위치는 기록이라, 이동과
+    수면 장소가 아닌 곳의 체류를 남기려고 둔 자리다(v4 는 #202 부터 이 단계를 돌리지 않는다).
     """
 
     sleeps = [event for event in draft.events if event.event_type is EventType.SLEEP]

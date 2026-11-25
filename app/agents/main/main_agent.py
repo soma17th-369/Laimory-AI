@@ -601,7 +601,8 @@ async def run_main_agent(
         )
         draft = final_state["draft"]
         # 저장으로 넘어가기 전에 사진 단일 귀속을 한 번 더 강제한다(이슈 #119). 확정
-        # pass 가 이미 강제했으므로 보통은 아무것도 하지 않는다.
+        # pass 가 이미 강제했으므로 보통은 아무것도 하지 않는다. v4 는 확정과 같은 기준(코드가 정한
+        # 하루의 event)으로 먼저 대조한다(#203).
         enforce_final_photo_assignment(
             draft,
             request,
@@ -611,6 +612,7 @@ async def run_main_agent(
                 for candidate in result.candidates
             ],
             prefer_extracted=uses_clue_contract(),
+            plan=final_state.get("clues"),
         )
         update_observation(
             langfuse_observation,
