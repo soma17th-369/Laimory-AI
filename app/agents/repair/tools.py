@@ -322,8 +322,10 @@ def _photo_notes(ctx: RepairContext, event: TimelineEventDraft) -> list[str]:
     return notes
 
 
-#: v4 에서 Repair 가 바꾸지 않는 필드(#202). 시간은 코드가 정한 값이다.
-_CLUE_FIXED_FIELDS = ("startTime", "endTime")
+#: v4 에서 Repair 가 바꾸지 않는 필드(#202·#203). 시간과 근거는 코드가 정한 값이고, 장소는 장소 칸 확정이 근거로
+#: 정한다. 근거를 `sourceRefs` 로 통째로 받으면 다른 방문의 사진이 다음 확정까지 이 event 에도 들어가고 Repair 는
+#: 고쳐졌다고 읽는다. 알림·대화 근거는 `evidence` 로 바꾼다.
+_CLUE_FIXED_FIELDS = ("startTime", "endTime", "sourceRefs", "place", "address")
 
 
 def _clue_fields(ctx: RepairContext, fields: dict, client_event_id: str) -> tuple[dict, list[str]]:
@@ -338,7 +340,8 @@ def _clue_fields(ctx: RepairContext, fields: dict, client_event_id: str) -> tupl
     fixed = [name for name in _CLUE_FIXED_FIELDS if name in fields]
     updated = {key: value for key, value in fields.items() if key not in _CLUE_FIXED_FIELDS}
     if fixed:
-        notes.append(f"{', '.join(fixed)} 는 코드가 정한 값이라 바꾸지 않았습니다")
+        hint = " — 알림·대화 근거는 evidence 로 바꿉니다" if "sourceRefs" in fixed else ""
+        notes.append(f"{', '.join(fixed)} 는 코드가 정한 값이라 바꾸지 않았습니다{hint}")
     if "evidence" not in updated:
         return updated, notes
 

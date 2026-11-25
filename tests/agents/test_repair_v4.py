@@ -362,6 +362,44 @@ def test_update_event_does_not_change_the_time():
     )
     assert only_time.ok and "바뀐 것이 없습니다" in only_time.message, "시간만 보내도 오류가 아니라 바꾸지 않았다고 알린다."
 
+
+def test_update_event_does_not_take_source_refs_or_places():
+    """근거와 장소도 코드가 정한 값이다(#203). `sourceRefs` 로 다른 방문의 사진을 붙이면 다음 확정까지
+    사진이 두 event 에 있었고, 도구는 고쳤다고만 답했다. 호출은 실행하고 글은 적용한다."""
+
+    ctx, photo = _context()
+    ctx.draft.events[0].source_refs.append(SourceRef(source_type=EventSourceType.PHOTO, raw_id=photo.raw_id))
+    talk = TimelineEventDraft(
+        client_event_id="event-002", event_type=EventType.SOCIAL, title="대화", description="메시지를 받았다.",
+        start_time=datetime(2026, 6, 20, 12, 30, tzinfo=_KST), end_time=datetime(2026, 6, 20, 12, 30, tzinfo=_KST),
+        confidence=0.7, inference_level=InferenceLevel.DIRECT,
+        source_refs=[SourceRef(source_type=EventSourceType.STAY, raw_id=ctx.request.stays[0].raw_id)],
+    )
+    ctx.draft.events.append(talk)
+    before = list(talk.source_refs)
+    moved = [SourceRef(source_type=EventSourceType.PHOTO, raw_id=photo.raw_id).model_dump(by_alias=True, mode="json")]
+
+    [result] = execute_tool_calls(
+        ctx,
+        [
+            RepairToolCall(
+                tool="update_event",
+                args={
+                    "clientEventId": "event-002",
+                    "fields": {"sourceRefs": moved, "place": "OO식당", "address": "어딘가", "title": "점심 대화"},
+                },
+            )
+        ],
+    )
+
+    assert result.ok, result.message
+    assert "sourceRefs" in result.message and "place" in result.message and "evidence" in result.message
+    talk = next(e for e in ctx.draft.events if e.client_event_id == "event-002")  # update_event 는 새 객체로 바꿔 끼운다
+    assert talk.title == "점심 대화", "글은 적용한다."
+    assert talk.source_refs == before and talk.place is None and talk.address is None
+    holders = [e.client_event_id for e in ctx.draft.events if photo.raw_id in {r.raw_id for r in e.source_refs}]
+    assert holders == ["event-001"], "사진은 코드가 정한 방문 하나에만 있다."
+
 def test_a_long_stay_with_its_meal_photo_can_say_so():
     """긴 체류에 음식 사진이 있으면 `점심을 먹고 시간을 보냈다` 로 쓸 수 있다(사용자 결정). 길이는 타입에만 본다."""
 
