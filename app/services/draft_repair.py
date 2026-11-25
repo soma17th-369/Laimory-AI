@@ -1023,6 +1023,7 @@ def enforce_final_photo_assignment(
     candidates: Sequence[AiEventCandidate] = (),
     *,
     prefer_extracted: bool = False,
+    plan: TimelineClues | None = None,
 ) -> None:
     """저장으로 넘어가기 직전에 사진 단일 귀속을 한 번 더 강제한다(#119).
 
@@ -1030,13 +1031,57 @@ def enforce_final_photo_assignment(
     단계가 생겨 사진 참조가 어긋나더라도, 어긋난 채로 저장되지는 않게 하는 마지막 자리다.
     저장을 실패시키지 않고 바로잡는다 — 실패로 막으면 사진 한 장 때문에 하루 기록 전체가
     사라진다.
+
+    `plan` 을 주면(v4, #203) 확정과 같은 기준으로 먼저 맞춘다(`follow_base_events`). 촬영 시각으로 사진 주인을
+    고르는 아래 강제는 코드가 정한 귀속(방문 → 방문 안 장소가 맞는 일정 …)과 기준이 달라, 계획이 정하지 못한
+    사진(촬영 시각을 읽지 못한 사진)만 다룬다. 정렬도 계획을 따른다 — 계획 없이 정렬하자 사진 event 하나가
+    생기는 것만으로 종일 일정이 하루 맨 앞에서 맨 뒤로 밀렸다.
     """
 
     # 남아 있는 event 의 번호는 바꾸지 않고 새로 만든 사진 event 에만 번호를 준다(#144).
     issued = {event.client_event_id for event in draft.events}
+    restructured = plan is not None and _follow_plan_before_storage(draft, request, plan)
     enforcement = enforce_photo_assignment(
         draft, request, candidates, prefer_extracted=prefer_extracted
     )
-    if enforcement.changed_composition:
-        sort_events(draft)
+    if restructured or enforcement.changed_composition:
+        sort_events(draft, plan=plan)
         assign_event_ids(draft, issued)
+
+
+def _structure(draft: TimelineDraft) -> list[tuple]:
+    """event 마다 코드가 정하는 값(기본 event·시간·종류·근거 rawId). 글과 질문은 넣지 않는다."""
+
+    return sorted(
+        (
+            tuple(event.base_event_ids),
+            event.start_time,
+            event.end_time,
+            event.event_type.value,
+            tuple(sorted(ref.raw_id for ref in event.source_refs)),
+        )
+        for event in draft.events
+    )
+
+
+def _follow_plan_before_storage(
+    draft: TimelineDraft, request: TimelineDraftRequest, plan: TimelineClues
+) -> bool:
+    """draft 가 코드가 정한 구조와 다르면 다시 맞춘다(in-place, #203). 맞췄으면 참이다.
+
+    마지막 확정이 이미 맞췄으므로 보통은 다르지 않다. 사본에서 먼저 대조해, 같으면 draft 를 건드리지 않는다
+    (`follow_base_events` 는 되살린 것이 없으면 마지막 확정이 남긴 되살림 warning 을 지운다).
+    """
+
+    probe = draft.model_copy(deep=True)
+    follow_base_events(probe, request, plan)
+    if _structure(probe) == _structure(draft):
+        return False
+    before = len(draft.events)
+    follow_base_events(draft, request, plan)
+    # 있어서는 안 되는 일이다. 확정 뒤에 구조를 바꾸는 단계가 생겼다는 뜻이라 찾을 수 있게 남긴다.
+    logger.warning(
+        "저장 직전 draft 가 코드가 정한 구조와 달라 다시 맞췄습니다",
+        extra=log_fields(eventCountBefore=before, eventCountAfter=len(draft.events)),
+    )
+    return True
