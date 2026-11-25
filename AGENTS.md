@@ -569,7 +569,9 @@ app/
     │                           #   **v4 의 사진 귀속은 `clue_bundles` 가 Timeline 전에 정한다**(#202 — 사진은 한 event 에만 들고 같은 장면은
     │                           #   한 event 다). 확정 pass 는 이 단계를 돌리지 않는다. 저장 직전 강제(`enforce_final_photo_assignment`)만
     │                           #   남는데 v4 는 꺼낸 event 가 사진을 갖는 순서(`prefer_extracted`)이고, 시각을 읽지 못한 사진처럼 코드가
-    │                           #   정하지 못한 사진만 다룬다. 빠진 사진을 이어 붙이는 것은 같은 장면(`same_photo_scene`)일 때뿐이다
+    │                           #   정하지 못한 사진만 다룬다. 빠진 사진을 이어 붙이는 것은 같은 장면(`same_photo_scene`)일 때뿐이다.
+    │                           #   그 앞에서 확정과 같은 기준(`follow_base_events`)으로 대조하고 정렬은 계획을 따른다(#203) — 계획 없이
+    │                           #   정렬하자 사진 event 하나가 생기는 것만으로 종일 일정이 맨 뒤로 밀렸다
     ├── event_count_guard.py    # 최종 event 개수 상한 (#118, #163). **v4 의 대화 event 는 10개와 상관없이
     │                           #   들어간다**(#183, 사용자 결정 2026-11-02) — 세지도 지우지도 않고 하루 3개
     │                           #   제한만 받는다. v4 는 event 를 지우지 않고 warning 만 남긴다(#202 — 하루의 event 는 코드가 정한다.
@@ -865,8 +867,8 @@ app/
 #     나누라고 짚는 검사(`DURATION_OVER_LIMIT`·`LONG_STAY_BETWEEN_MOVEMENTS`)와 `LOCATION_ONLY_OVERLAP` 은 돌리지 않는다.
 #     3시간보다 긴 `MEAL` 은 `UNSUPPORTED_MEAL` 로 짚는다.
 #   - Repair v4 는 **글만 다듬는다**(#202, 승인 결정 1). 같은 event 목록(`[event 근거]` 의 `events`·`draftEvents`)과 이유를 읽는다.
-#     `split_event`·`absorb_location_event`·`rerun_timeline_agent`·시간 재맞춤 도구가 없고, `update_event` 는 시간을 바꾸지
-#     않으며 `evidence` 는 알림·대화 id 만 받는다(위치 기록·사진·일정 id 는 바꾸지 않았다고 결과에 적는다). `delete_event`
+#     `split_event`·`absorb_location_event`·`rerun_timeline_agent`·시간 재맞춤 도구가 없고, `update_event` 는 시간·`sourceRefs`·
+#     `place`·`address` 를 바꾸지 않으며(#203) `evidence` 는 알림·대화 id 만 받는다(위치 기록·사진·일정 id 는 바꾸지 않았다고 결과에 적는다). `delete_event`
 #     는 코드가 대화·알림으로 만든 event 만 지운다. `add_conversation_event` 는 v4 에만 있다(#183). `unusedClues` 는
 #     쓰이지 않은 알림·대화 id 다. 문장을 쓸 때 `update_event` 의 `photos` 에 그 글이 쓴 사진 id 를 함께 적는다. 다른 event 의
 #     사진이어도 고친 것은 받고 결과에 알리며 `PHOTO_MISMATCH` 가 남으면 반복 상한까지 돈다(`_writing_left`).
