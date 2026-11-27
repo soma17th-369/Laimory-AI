@@ -3,6 +3,9 @@
 > 기준일: 2026-08-25 (이슈 #90)
 > 대상: `main` 을 production 의 정본으로 삼아 AgentCore Runtime 에 배포하는 경로
 
+> 사용자 트래픽은 OCI prod 가 받는다. 같은 merge 가 `deploy-oci.yml`(#211)로 OCI 에도 나가며, 이 문서는
+> 병행 유지하는 AgentCore 경로만 다룬다.
+
 `dev → main` 일반 승격 PR 또는 `hotfix → main` 긴급 수정 PR이 merge 되면
 GitHub Actions 가 arm64 이미지를 production 전용 ECR 에
 올리고, AgentCore Runtime 새 버전을 만들어 엔드포인트를 전환한다. `dev` push 는 지금처럼

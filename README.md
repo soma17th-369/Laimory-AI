@@ -106,7 +106,8 @@ Dockerfile                     # EC2/AgentCore 공용 배포 이미지 (non-root
 .dockerignore                  # 빌드 컨텍스트 허용 목록
 .github/workflows/
 ├── deploy-ec2.yml             # dev push → amd64 이미지 → EC2 자동 배포(개발)
-├── deploy-production.yml      # main push → 승인 → arm64 이미지 → AgentCore 배포(운영)
+├── deploy-oci.yml             # main push → arm64 이미지(GHCR) → OCI prod 무중단 교체(#211)
+├── deploy-production.yml      # main push → 승인 → arm64 이미지 → AgentCore 배포(병행 유지)
 ├── rollback-production.yml    # 엔드포인트를 이전 Runtime 버전으로 되돌림(재빌드 없음)
 └── pr-main-guard.yml          # main 대상 PR 이 dev 에서 왔는지 검사(필수 check)
 scripts/deploy-ec2.sh          # SSM에서 실행하는 EC2 교체·자동 복구 스크립트
@@ -116,8 +117,8 @@ docs/deploy-agentcore.md       # AgentCore 컨테이너 계약과 AWS 자원 준
 docs/agentcore-cutover-manual.md # AgentCore 전환 수동 작업 매뉴얼(#89)
 ```
 
-배포는 브랜치로 갈립니다. `dev` push 는 EC2(개발, amd64), `main` push 는 AgentCore
-Runtime(운영, arm64)으로 나가며 ECR 저장소와 IAM 역할이 분리돼 있습니다(#90).
+배포는 브랜치로 갈립니다. `dev` push 는 EC2(개발, amd64), `main` push 는 OCI prod(사용자 트래픽, arm64, #211)와
+AgentCore Runtime(병행 유지, arm64, #90)으로 나갑니다. 사용자 반영은 OCI 배포 결과로 판단합니다.
 
 처리 흐름은 `taskId 접수 → 202 즉시 응답 → DB 조회 → normalize → main agent → timeline_events/timeline_items 저장 → 완료 상태 콜백` 순서입니다.
 

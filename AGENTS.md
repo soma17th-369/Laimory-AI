@@ -73,13 +73,15 @@ uv run uvicorn app.server:app --reload
 | 브랜치 | 워크플로 | 대상 | 아키텍처 | ECR |
 |---|---|---|---|---|
 | `dev` push | `deploy-ec2.yml` | EC2 단일 컨테이너 | `linux/amd64` | `laimory-ai` |
-| `main` push | `deploy-production.yml` | AgentCore Runtime | `linux/arm64` | `laimory-ai-prod` |
+| `main` push | `deploy-oci.yml` | OCI prod(사용자 트래픽, #211) | `linux/arm64` | GHCR `laimory-ai` |
+| `main` push | `deploy-production.yml` | AgentCore Runtime(병행 유지) | `linux/arm64` | `laimory-ai-prod` |
 
 `main` 에는 `dev` 에서 온 PR 로만 들어갑니다. merge 되면 production 배포가 승인 대기로
 뜨고, 승인해야 AWS 자격증명이 발급됩니다. IAM 배포 역할은 두 경로가 함께 쓰므로
 (`AWS_DEPLOY_ROLE_ARN`) **역할이 권한 경계가 아닙니다.** 경계는 ECR 저장소 분리, 승인
 게이트, Environment 배포 브랜치 정책, 워크플로별 실행 브랜치 가드가 만듭니다.
 
+- 사용자 트래픽은 OCI 의 AI 컨테이너가 받습니다. AgentCore 배포 성공은 사용자 반영이 아니므로 `Deploy OCI` 결과를 봅니다(#211).
 - production 승격·배포·롤백과 GitHub·AWS 설정은 [docs/deploy-production.md](docs/deploy-production.md)를 따릅니다(#90).
 - EC2(개발) 절차와 AWS 사전 준비는 [docs/deploy-ec2.md](docs/deploy-ec2.md)를 따릅니다.
 - AgentCore Runtime 계약과 AWS 자원 준비는 [docs/deploy-agentcore.md](docs/deploy-agentcore.md)를 따릅니다.
@@ -1119,6 +1121,8 @@ Dockerfile                     # amd64/arm64 공용, uv 멀티스테이지, non-
 .github/workflows/
 ├── deploy-ec2.yml             # dev push → amd64 빌드 → ECR(laimory-ai) → SSM 으로 EC2 교체.
 │                              #   dev 이외 브랜치에서는 수동 실행도 막는다
+├── deploy-oci.yml             # main push → arm64 빌드 → GHCR → OCI host 무중단 교체(#211).
+│                              #   Environment prod-oci 를 선언한 deploy job 만 접속 자격을 받는다
 ├── deploy-production.yml      # main push → 승인 → arm64 빌드 → ECR(laimory-ai-prod) →
 │                              #   Runtime 새 버전 → 엔드포인트 전환 → 실패 시 자동 복구.
 │                              #   Environment production 을 선언한 job 하나뿐이라
