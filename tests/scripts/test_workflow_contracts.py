@@ -22,6 +22,7 @@ DEPLOY_PRODUCTION = WORKFLOWS / "deploy-production.yml"
 ROLLBACK_PRODUCTION = WORKFLOWS / "rollback-production.yml"
 PR_MAIN_GUARD = WORKFLOWS / "pr-main-guard.yml"
 DEPLOY_EC2 = WORKFLOWS / "deploy-ec2.yml"
+DEPLOY_OCI = WORKFLOWS / "deploy-oci.yml"
 
 #: ruleset 의 required status check `context` 와 **글자 그대로** 같아야 한다.
 #: docs/github/main-ruleset.example.json 과 docs/deploy-production.md §3.2 참고.
@@ -315,3 +316,115 @@ def test_production_keeps_session_idle_timeout_on_runtime_update(deploy_producti
     assert '--lifecycle-configuration "$lifecycle"' in script
     assert "maxLifetime =" not in script
     assert "--max-lifetime" not in script
+
+
+# --- OCI 배포 (#211) -----------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def deploy_oci() -> dict:
+    return _load(DEPLOY_OCI)
+
+
+def test_oci_deploys_only_from_main(deploy_oci) -> None:
+    triggers = _triggers(deploy_oci)
+
+    assert set(triggers) == {"push", "workflow_dispatch"}
+    assert triggers["push"]["branches"] == ["main"]
+    assert triggers["push"]["paths"] == [
+        "app/**",
+        "Dockerfile",
+        ".dockerignore",
+        "pyproject.toml",
+        "uv.lock",
+        ".github/workflows/deploy-oci.yml",
+    ]
+    assert "github.ref == 'refs/heads/main'" in deploy_oci["jobs"]["deploy"]["if"]
+
+
+def test_oci_push_honors_the_pause_switch(deploy_oci) -> None:
+    """스위치가 켜져 있으면 빌드도 배포도 하지 않는다. 수동 실행은 통과한다."""
+
+    build, deploy = deploy_oci["jobs"]["build"], deploy_oci["jobs"]["deploy"]
+
+    assert "github.event_name == 'push' && vars.DEPLOY_PAUSED != 'true'" in build["if"]
+    assert "github.event_name == 'push' && needs.build.result == 'success'" in deploy["if"]
+
+
+def test_oci_does_not_share_credentials_with_agentcore(deploy_oci, deploy_production) -> None:
+    """Environment 를 공유하면 OIDC subject 가 같아져 서로의 자격증명을 얻는다."""
+
+    jobs = deploy_oci["jobs"]
+
+    assert "environment" not in jobs["build"]
+    assert jobs["deploy"]["environment"] == "prod-oci"
+    assert deploy_oci["concurrency"]["group"] != deploy_production["concurrency"]["group"]
+    assert deploy_oci["concurrency"]["cancel-in-progress"] is False
+    body = DEPLOY_OCI.read_text(encoding="utf-8")
+    for name in ("AWS_DEPLOY_ROLE_ARN", "configure-aws-credentials", "AGENTCORE", "ECR"):
+        assert name not in body
+
+
+def test_oci_jobs_hold_only_the_permissions_they_need(deploy_oci) -> None:
+    jobs = deploy_oci["jobs"]
+
+    assert deploy_oci["permissions"] == {"contents": "read"}
+    assert jobs["build"]["permissions"] == {"contents": "read", "packages": "write"}
+    assert jobs["deploy"]["permissions"] == {"contents": "read", "id-token": "write"}
+
+
+def test_oci_tailscale_uses_workload_identity_and_is_pinned(deploy_oci) -> None:
+    """장기 secret 없이 임시 기기로 붙고, 자격증명을 쥔 job 의 action 은 커밋으로 고정한다."""
+
+    steps = deploy_oci["jobs"]["deploy"]["steps"]
+    uses = [step["uses"] for step in steps if "uses" in step]
+    tailscale = next(step["with"] for step in steps if step.get("uses", "").startswith("tailscale/"))
+
+    assert all(len(use.rsplit("@", 1)[1]) == 40 for use in uses)
+    assert tailscale["tags"] == "tag:ci"
+    assert "audience" in tailscale
+    assert "authkey" not in tailscale and "oauth-secret" not in tailscale
+
+
+def test_oci_deploy_sends_one_verified_command(deploy_oci) -> None:
+    """host key 를 검증하고 배포 명령을 한 번만 보낸다. 저장소가 PUBLIC 이라 추적 출력을 켜지 않는다."""
+
+    ssh = next(
+        step for step in deploy_oci["jobs"]["deploy"]["steps"] if "ssh -i" in step.get("run", "")
+    )
+    runs = "\n".join(
+        step.get("run", "") for job in deploy_oci["jobs"].values() for step in job["steps"]
+    )
+
+    assert ssh["run"].count('"deploy $SHA $DIGEST"') == 1
+    assert "StrictHostKeyChecking=yes" in ssh["run"]
+    assert all("secrets." in ssh["env"][name] for name in ("SSH_KEY", "HOST", "KNOWN_HOSTS"))
+    assert "${{" not in runs
+    assert "set -x" not in runs and "set -eux" not in runs
+
+
+def test_oci_builds_native_arm64_with_revision_label(deploy_oci) -> None:
+    """host 는 revision label 이 요청 SHA 와 다르면 배포하지 않는다."""
+
+    build = deploy_oci["jobs"]["build"]
+    run = next(step["run"] for step in build["steps"] if "run" in step)
+
+    assert build["runs-on"] == "ubuntu-24.04-arm"
+    assert "org.opencontainers.image.revision=$GITHUB_SHA" in run
+
+
+def test_oci_build_only_does_not_displace_a_pending_deploy(deploy_oci) -> None:
+    """대기 슬롯이 1개라 같은 group 이면 build-only 가 대기 중인 main 배포를 밀어낸다."""
+
+    assert "inputs.action == 'build-only'" in deploy_oci["concurrency"]["group"]
+
+
+def test_oci_manual_deploy_accepts_only_commits_on_main(deploy_oci) -> None:
+    """다른 브랜치를 build-only 로 빌드한 image 를 수동 deploy 로 올리지 못하게 main 이력을 확인한다."""
+
+    steps = deploy_oci["jobs"]["deploy"]["steps"]
+    checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
+    resolve = next(step["run"] for step in steps if step.get("name") == "Resolve image")
+
+    assert checkout["with"] == {"fetch-depth": 0, "persist-credentials": False}
+    assert 'git merge-base --is-ancestor "$sha" "$GITHUB_SHA"' in resolve
