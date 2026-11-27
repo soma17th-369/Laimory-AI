@@ -1,0 +1,148 @@
+name: Deploy OCI
+
+# main 머지 → arm64 이미지 빌드(GHCR 공개 패키지) → Tailscale로 OCI host에 접속해 배포를 요청한다(#211).
+# 교체·확인·복귀는 host의 laimory-deploy(Laimory-server의 deploy/oci/deploy)가 끝까지 수행한다. 이 workflow가
+# host에서 할 수 있는 일은 forced command가 허용한 "이 SHA·digest의 ai 이미지 배포" 하나다.
+#
+# AgentCore 배포(deploy-production.yml)와 job·Environment·concurrency를 공유하지 않는다. 공유하면 두 경로가
+# 서로의 자격증명(AWS 배포 역할 / OCI 접속 키)을 얻는다.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/deploy-oci.yml"
+  # build-only: 이미지만 빌드한다(host에 닿지 않음). deploy: 이미 빌드된 SHA를 배포한다(main ref에서만, 수동 rollback 겸용).
+  # DEPLOY_PAUSED와 무관하게 실행된다.
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "build-only = 이 ref를 빌드만, deploy = image_sha를 배포(main에서 실행)"
+        required: true
+        type: choice
+        options: [build-only, deploy]
+      image_sha:
+        description: "deploy일 때 배포할 40자 commit SHA"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# 진행 중 배포는 취소하지 않는다. 대기 슬롯은 1개라 새 실행이 대기 중인 실행을 대체한다(main 최신 우선).
+# build-only는 host에 닿지 않으므로 다른 group을 써서, 대기 중인 main 배포를 밀어내지 않게 한다.
+concurrency:
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.action == 'build-only' && 'deploy-oci-build' || 'deploy-oci' }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/soma17th-369/laimory-ai
+
+jobs:
+  build:
+    if: >-
+      (github.event_name == 'push' && vars.DEPLOY_PAUSED != 'true') ||
+      (github.event_name == 'workflow_dispatch' && inputs.action == 'build-only')
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build and push image
+        id: push
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # host가 이 label을 요청 SHA와 대조한다. provenance를 붙이면 index digest가 되므로 끈다.
+          docker buildx build --provenance=false --sbom=false --platform linux/arm64 \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --tag "$IMAGE:$GITHUB_SHA" --push .
+          digest=$(docker buildx imagetools inspect "$IMAGE:$GITHUB_SHA" --format '{{.Manifest.Digest}}')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "image $GITHUB_SHA $digest" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: build
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'push' && needs.build.result == 'success') ||
+       (github.event_name == 'workflow_dispatch' && inputs.action == 'deploy'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # 접속 자격(SSH 키·host·Tailscale federated identity)은 이 Environment(main만)에만 있다.
+    environment: prod-oci
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # 수동 deploy의 image_sha가 main 이력에 있는지 보려고 전체 이력을 받는다(build-only는 아무 ref나 빌드할 수 있다).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve image
+        id: image
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_SHA: ${{ inputs.image_sha }}
+          BUILT_DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "push" ]; then
+            sha=$GITHUB_SHA; digest=$BUILT_DIGEST
+          else
+            sha=$INPUT_SHA
+            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "image_sha must be a 40-char lowercase hex commit SHA" >&2; exit 1; }
+            # 다른 브랜치를 build-only로 빌드한 image를 실수로 올리지 않게 main 이력에 있는 커밋만 받는다
+            # (이전 main 커밋으로의 rollback은 그대로 된다). SHA만 보므로 image 내용까지 보장하지는 않는다.
+            { git cat-file -e "$sha^{commit}" 2>/dev/null && git merge-base --is-ancestor "$sha" "$GITHUB_SHA"; } \
+              || { echo "image_sha must be a commit on main" >&2; exit 1; }
+            digest=$(docker buildx imagetools inspect "$IMAGE:$sha" --format '{{.Manifest.Digest}}') \
+              || { echo "image for this commit was not found; run build-only first" >&2; exit 1; }
+          fi
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "image digest is invalid" >&2; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      # 장기 secret 없이 GitHub OIDC로 임시 기기(tag:ci)를 붙인다. ACL이 OCI host 22번만 허용한다.
+      - name: Connect Tailscale
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
+        with:
+          oauth-client-id: ${{ vars.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ vars.TS_AUDIENCE }}
+          tags: tag:ci
+          log-mode: quiet
+
+      - name: Deploy on OCI host
+        env:
+          SSH_KEY: ${{ secrets.OCI_DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.OCI_DEPLOY_HOST }}
+          KNOWN_HOSTS: ${{ secrets.OCI_DEPLOY_KNOWN_HOSTS }}
+          SHA: ${{ steps.image.outputs.sha }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s\n' "$SSH_KEY" > "$RUNNER_TEMP/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
+          trap 'rm -f "$RUNNER_TEMP/key" "$RUNNER_TEMP/known_hosts"' EXIT
+          # 새 기기가 tailnet에 퍼질 때까지 접속만 재시도한다(배포 명령은 한 번만 보낸다).
+          for attempt in 1 2 3 4 5 6; do
+            if timeout 10 bash -c 'exec 3<>"/dev/tcp/$0/22"' "$HOST" 2>/dev/null; then break; fi
+            [ "$attempt" != "6" ] || { echo "OCI host is unreachable over Tailscale" >&2; exit 1; }
+            sleep 10
+          done
+          ssh -i "$RUNNER_TEMP/key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            "deploy@$HOST" "deploy $SHA $DIGEST"

@@ -2,7 +2,7 @@
 
 ## Scope
 
-Docker image, branch별 배포 대상(dev=EC2 / main=AgentCore), production 승격 경계, health·idle·rollback·image 보존과 환경 설정 경계를 설명한다.
+Docker image, branch별 배포 대상(dev=EC2 / main=OCI·AgentCore), production 승격 경계, health·idle·rollback·image 보존과 환경 설정 경계를 설명한다.
 
 ## Read When
 
@@ -13,7 +13,7 @@ Docker image, branch별 배포 대상(dev=EC2 / main=AgentCore), production 승�
 ## Authoritative Sources
 
 - `Dockerfile`, `.dockerignore`
-- `.github/workflows/deploy-ec2.yml`, `deploy-production.yml`, `rollback-production.yml`, `pr-main-guard.yml`
+- `.github/workflows/deploy-ec2.yml`, `deploy-production.yml`, `deploy-oci.yml`, `rollback-production.yml`, `pr-main-guard.yml`
 - `docs/deploy-production.md`, `docs/github/main-ruleset.example.json`
 - `scripts/deploy-ec2.sh`, `scripts/prune_ecr_images.py`
 - `app/api/agentcore.py`, `app/core/inflight.py`, `app/core/config.py`
@@ -31,7 +31,7 @@ image default는 prod/json/bedrock/v1이고 환경별 model, App Server URL, Lan
 
 ### branch별 배포 대상
 
-배포 경로가 branch로 갈린다. `dev`는 개발(EC2), `main`은 production(AgentCore)이며 workflow, ECR repository, IAM role, 변수·secret이 전부 분리돼 있다. 두 경로가 공유하는 것은 `AWS_REGION`과 Dockerfile뿐이다.
+배포 경로가 branch로 갈린다. `dev`는 개발(EC2)이다. `main`은 두 곳으로 나간다 — **사용자 트래픽을 받는 OCI**(`deploy-oci.yml`, #211)와 AgentCore Runtime(`deploy-production.yml`)이다. App Server prod는 OCI의 AI 컨테이너를 HTTP로 부르므로(2026-11-23부터) AgentCore 배포 성공은 사용자 반영을 뜻하지 않는다. EC2와 AgentCore는 workflow, ECR repository, 변수·secret이 분리돼 있고 `AWS_REGION`·IAM 배포 role·Dockerfile을 공유한다. OCI 경로는 AWS를 쓰지 않는다.
 
 ### 개발 EC2 배포
 
@@ -44,6 +44,18 @@ EC2에는 앱 `runtime.env`, Filebeat 설정·env·registry data가 GitHub 밖 `
 deploy script는 architecture와 env file, Docker daemon을 확인하고 image를 pull한다. 앱 교체 전에 Filebeat를 확인·기동하되 Filebeat 실패는 앱 배포를 중단하지 않는다. 기존 앱 `/ping`이 `HealthyBusy`이면 10초 간격으로 최대 20분 기다리고, 알 수 없는 상태면 교체를 중단한다.
 
 기존 image URI를 기록한 뒤 컨테이너를 교체한다. 새 container가 정해진 시간 안에 `Healthy` 또는 `HealthyBusy`가 아니면 새 container 로그를 남기고 직전 image로 자동 복구를 시도한다. 성공 뒤 현재 image와 실제 직전 image만 보존하도록 ECR을 정리한다.
+
+### OCI 배포 (main → OCI prod, #211)
+
+`deploy-oci.yml`은 `main` push(image 입력 path만)와 수동 실행으로 동작한다. build job은 `ubuntu-24.04-arm`에서 native로 빌드해 GHCR 공개 패키지(`laimory-ai`)에 commit SHA tag로 push하고 `org.opencontainers.image.revision` label을 붙인다. deploy job은 `main`에서만, Environment `prod-oci`(OCI 접속 키)로 실행한다. GitHub OIDC 기반 Tailscale 임시 기기로 host에 붙어 forced command `deploy <sha> <digest>`를 한 번 보낸다. 수동 `action=deploy`는 `main` 이력에 있는 commit만 받고(다른 브랜치를 `build-only`로 빌드한 image를 실수로 올리는 것을 막는다. SHA만 보므로 image 내용까지 보장하지는 않는다), `build-only`는 배포와 다른 concurrency group을 써서 대기 중인 `main` 배포를 밀어내지 않는다.
+
+교체는 host의 `laimory-deploy`(Laimory-server 저장소 `deploy/oci/deploy`)가 blue/green으로 한다. 새 색의 `/ping`이 200이면 nginx upstream을 옮기고, 새 색이 실제로 응답함을 확인한 뒤 옛 색에 SIGTERM을 보내 최대 300초 기다린다. uvicorn은 SIGTERM 뒤 새 연결만 닫고 진행 중인 background 처리를 끝까지 기다리므로, 접수한 작업은 옛 색이 마친다(`--timeout-graceful-shutdown`을 주면 이 전제가 깨진다). 실패하면 옛 색이 계속 서빙한다. App Server의 접수에는 재시도가 없어 중단 교체를 쓰지 않는다.
+
+배포 확인은 `/ping`과 image digest만 쓰고 AI 호출을 보내지 않는다. 두 색은 `AGENT_VERSION=<sha>`로 로그 version·Langfuse release가 갈린다. prod 값은 host `ai.env`와 compose가 소유하고 secret bundle을 쓰지 않는다(`SECRETS_BUNDLE_NAME` 빈 값).
+
+저장소 변수 `DEPLOY_PAUSED=true`면 push 빌드·배포를 건너뛴다(수동 실행은 통과). 되돌리기는 host의 `laimory-deploy rollback ai`(직전 배포가 성공했을 때) 또는 `action=deploy`로 이전 SHA 재배포다. Environment·변수·GHCR 공개 설정과 host 설치는 저장소 밖에 있어 workflow 존재만으로 활성화를 뜻하지 않는다.
+
+활성화 설정은 Laimory-server `deploy/oci/deploy/README.md`를 따르되 AI 값으로 바꾼다. Environment는 `prod-oci`(배포 브랜치 `main`만)이고, Secrets `OCI_DEPLOY_SSH_KEY`·`OCI_DEPLOY_HOST`·`OCI_DEPLOY_KNOWN_HOSTS`와 Variables `TS_OAUTH_CLIENT_ID`·`TS_AUDIENCE`를 저장소가 아닌 이 Environment에 둔다. SSH 키는 host에서 `laimory-deploy-gate ai`에 묶인 AI 전용 키다(서버 키를 쓰면 host가 서버 image 저장소에서 AI digest를 찾다 실패한다). Tailscale federated identity의 subject는 `repo:soma17th-369/Laimory-AI:environment:prod-oci`다. GHCR 패키지는 첫 push 때 비공개로 생기므로 첫 실행은 `build-only` → `laimory-ai` 패키지 공개 전환 → host 익명 pull 확인 → `DEPLOY_PAUSED` 해제 순서로 한다.
 
 ### production 배포 (main → AgentCore)
 
@@ -67,8 +79,10 @@ IAM 배포 role은 dev와 **공용**이다(`AWS_DEPLOY_ROLE_ARN`, 저장소 수�
 
 ## Invariants
 
-- production 운영 경로는 `main` push → AgentCore Runtime이고 `dev` push → EC2는 개발 경로다.
-- EC2는 amd64, AgentCore는 arm64다.
+- 사용자 트래픽 경로는 `main` push → OCI이고, `main` push → AgentCore는 병행 유지 경로, `dev` push → EC2는 개발 경로다.
+- EC2는 amd64, AgentCore와 OCI는 arm64다.
+- OCI 배포는 AgentCore 배포와 Environment·concurrency group·자격증명을 공유하지 않는다.
+- OCI 배포의 공개 로그에는 고정 문구·SHA·digest만 남긴다. container log와 환경변수를 출력하지 않는다.
 - 두 경로는 ECR repository를 공유하지 않는다. `prune_ecr_images.py`가 repository 전체에서 EC2 배포 tag가 없는 image를 architecture 구분 없이 지우므로, 공유하면 dev 배포가 production image를 삭제한다.
 - production image에 이동 tag를 붙이지 않는다. Runtime version과 image가 1:1이어야 rollback이 성립한다.
 - production repository에는 정리 step도 lifecycle policy도 두지 않는다. AgentCore는 cold start마다 image를 pull하므로 version이 살아 있는 동안 image가 남아 있어야 한다.
