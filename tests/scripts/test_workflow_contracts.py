@@ -351,6 +351,15 @@ def test_oci_push_honors_the_pause_switch(deploy_oci) -> None:
     assert "github.event_name == 'push' && needs.build.result == 'success'" in deploy["if"]
 
 
+def test_oci_cancelling_a_run_stops_the_deploy(deploy_oci) -> None:
+    """always() 는 실행을 취소해도 참이라, 대기 중인 수동 deploy 를 취소해도 host 에 명령이 간다."""
+
+    condition = deploy_oci["jobs"]["deploy"]["if"]
+
+    assert condition.startswith("!cancelled() &&")
+    assert "always()" not in condition
+
+
 def test_oci_does_not_share_credentials_with_agentcore(deploy_oci, deploy_production) -> None:
     """Environment 를 공유하면 OIDC subject 가 같아져 서로의 자격증명을 얻는다."""
 
@@ -374,10 +383,12 @@ def test_oci_jobs_hold_only_the_permissions_they_need(deploy_oci) -> None:
 
 
 def test_oci_tailscale_uses_workload_identity_and_is_pinned(deploy_oci) -> None:
-    """장기 secret 없이 임시 기기로 붙고, 자격증명을 쥔 job 의 action 은 커밋으로 고정한다."""
+    """장기 secret 없이 임시 기기로 붙는다. build 결과도 prod 에 가므로 모든 job 의 action 을 커밋으로 고정한다."""
 
     steps = deploy_oci["jobs"]["deploy"]["steps"]
-    uses = [step["uses"] for step in steps if "uses" in step]
+    uses = [
+        step["uses"] for job in deploy_oci["jobs"].values() for step in job["steps"] if "uses" in step
+    ]
     tailscale = next(step["with"] for step in steps if step.get("uses", "").startswith("tailscale/"))
 
     assert all(len(use.rsplit("@", 1)[1]) == 40 for use in uses)

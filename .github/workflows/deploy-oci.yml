@@ -54,7 +54,7 @@ jobs:
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build and push image
         id: push
         env:
@@ -75,7 +75,7 @@ jobs:
   deploy:
     needs: build
     if: >-
-      always() && github.ref == 'refs/heads/main' &&
+      !cancelled() && github.ref == 'refs/heads/main' &&
       ((github.event_name == 'push' && needs.build.result == 'success') ||
        (github.event_name == 'workflow_dispatch' && inputs.action == 'deploy'))
     runs-on: ubuntu-latest
@@ -104,7 +104,8 @@ jobs:
           else
             sha=$INPUT_SHA
             [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "image_sha must be a 40-char lowercase hex commit SHA" >&2; exit 1; }
-            # 리뷰를 거쳐 main에 들어간 커밋만 prod에 올린다(이전 main 커밋으로의 rollback은 그대로 된다).
+            # 다른 브랜치를 build-only로 빌드한 image를 실수로 올리지 않게 main 이력에 있는 커밋만 받는다
+            # (이전 main 커밋으로의 rollback은 그대로 된다). SHA만 보므로 image 내용까지 보장하지는 않는다.
             { git cat-file -e "$sha^{commit}" 2>/dev/null && git merge-base --is-ancestor "$sha" "$GITHUB_SHA"; } \
               || { echo "image_sha must be a commit on main" >&2; exit 1; }
             digest=$(docker buildx imagetools inspect "$IMAGE:$sha" --format '{{.Manifest.Digest}}') \
